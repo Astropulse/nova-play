@@ -318,8 +318,8 @@ export class PlayingState {
 
                 if (target) {
                     const aimAngle = Math.atan2(target.worldY - this.player.worldY, target.worldX - this.player.worldX);
-                    // Reduced damage slightly
-                    const damage = 1.05 * (this.player.hasLaserOverride ? 1.3 : 1.0);
+                    // Increased damage and applied modifiers
+                    const damage = (10.0 + this.player.permDamageBonus) * (this.player.hasLaserOverride ? 1.3 : 1.0);
                     const spriteKey = 'blue_laser_ball_big';
 
                     const proj = new Projectile(this.game, this.player.worldX, this.player.worldY, aimAngle, 1200, spriteKey, this.player, damage);
