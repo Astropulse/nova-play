@@ -19,6 +19,7 @@ export class FracturedStationEvent {
         this.positions = positions; // Array of 3 {x, y} objects
         this.alive = true;
         this.revealed = false; // Hidden until detection
+        this.discovered = false; // Track if already counted for stats
 
         this.state = FRACTURED_STATION_STATE.WAIT_SUB1;
 

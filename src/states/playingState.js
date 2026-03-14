@@ -76,7 +76,7 @@ export class PlayingState {
             enemiesDefeated: 0,
             wavesCleared: 0,
             scrapCollected: 0,
-            shopsUnlocked: 0,
+            shopsUnlocked: 1,
             eventsDiscovered: 0
         };
 
@@ -243,7 +243,8 @@ export class PlayingState {
         for (const ev of this.events) {
             const wasRevealed = ev.revealed;
             ev.update(dt, this.player);
-            if (!wasRevealed && ev.revealed) {
+            if (!wasRevealed && ev.revealed && !ev.discovered) {
+                ev.discovered = true;
                 this.stats.eventsDiscovered++;
             }
             if (ev.isActive) {

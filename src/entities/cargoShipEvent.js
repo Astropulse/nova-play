@@ -12,6 +12,7 @@ export class CargoShipEvent {
         this.worldY = worldY;
         this.alive = true;
         this.revealed = false; // Hidden until discovered
+        this.discovered = false; // Track for stats
 
         this.state = CARGO_SHIP_STATE.OPENED;
         this.angle = Math.random() * Math.PI * 2;

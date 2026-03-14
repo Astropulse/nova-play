@@ -17,6 +17,7 @@ export class CthulhuEvent {
         this.worldY = worldY;
         this.alive = true;
         this.revealed = false; // Hidden until discovered
+        this.discovered = false; // Track for stats
 
         this.state = CTHULHU_STATE.DORMANT;
 
