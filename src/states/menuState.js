@@ -353,14 +353,14 @@ export class MenuState {
         const uiScale = game.uiScale;
         const margin = Math.floor(uiScale * 12);
         const x = margin;
-        
+
         const controls = [
             { key: 'W/S', desc: 'FORWARDS / BACK' },
+            { key: 'J/L', desc: 'ROTATE CCW / CW' },
             { key: 'A/D', desc: 'DODGE (IF CAPABLE)' },
             { key: 'SPACE', desc: 'BOOST' },
-            { key: 'MOUSE', desc: 'AIM' },
-            { key: 'L-MB', desc: 'SHOOT' },
-            { key: 'R-MB', desc: 'SHIELD' },
+            { key: 'L-MB/I', desc: 'SHOOT' },
+            { key: 'R-MB/SHIFT', desc: 'SHIELD' },
             { key: 'E', desc: 'INTERACT' },
             { key: 'ESC', desc: 'PAUSE / INVENTORY' }
         ];
@@ -373,11 +373,11 @@ export class MenuState {
         ctx.font = `${10 * uiScale}px Astro5x`;
         ctx.textAlign = 'left';
         ctx.fillText('CONTROLS', x, y);
-        
+
         y += Math.floor(uiScale * 14);
         ctx.font = `${7 * uiScale}px Astro4x`;
 
-        const keyW = Math.floor(uiScale * 35);
+        const keyW = Math.floor(uiScale * 52);
         for (const ctrl of controls) {
             ctx.fillStyle = '#44ddff';
             ctx.fillText(ctrl.key, x, y);

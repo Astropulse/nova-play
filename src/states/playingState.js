@@ -93,7 +93,13 @@ export class PlayingState {
             musicDec: { x: 0, y: 0, w: 0, h: 0, hovered: false },
             musicInc: { x: 0, y: 0, w: 0, h: 0, hovered: false },
             sfxDec: { x: 0, y: 0, w: 0, h: 0, hovered: false },
-            sfxInc: { x: 0, y: 0, w: 0, h: 0, hovered: false }
+            sfxInc: { x: 0, y: 0, w: 0, h: 0, hovered: false },
+            shipSelection: { x: 0, y: 0, w: 0, h: 0, hovered: false }
+        };
+        this.confirmRestart = false;
+        this.confirmRestartButtons = {
+            yes: { x: 0, y: 0, w: 0, h: 0, hovered: false },
+            no: { x: 0, y: 0, w: 0, h: 0, hovered: false }
         };
     }
 
@@ -1617,6 +1623,33 @@ export class PlayingState {
         this.pauseButtons.sfxDec.w = volBtnW;
         this.pauseButtons.sfxDec.h = volBtnH;
 
+        // Ship Selection Button Positioning
+        const shipSelSize = this.game.spriteSize('ship_selection_off', uiScale);
+        this.pauseButtons.shipSelection.x = Math.floor(cw / 2 - shipSelSize.w / 2);
+        this.pauseButtons.shipSelection.y = ch - Math.floor(uiScale * 30) - shipSelSize.h;
+        this.pauseButtons.shipSelection.w = shipSelSize.w;
+        this.pauseButtons.shipSelection.h = shipSelSize.h;
+
+        // Confirmation Dialog Positioning
+        if (this.confirmRestart) {
+            const yesSize = this.game.spriteSize('fly_again_off', uiScale); // Reusing fly again sprite as "YES" if needed or text
+            const gap = 16 * uiScale;
+            this.confirmRestartButtons.yes = {
+                x: Math.floor(cw / 2 - 40 * uiScale),
+                y: ch / 2 + 20 * uiScale,
+                w: 30 * uiScale,
+                h: 20 * uiScale,
+                hovered: false
+            };
+            this.confirmRestartButtons.no = {
+                x: Math.floor(cw / 2 + 10 * uiScale),
+                y: ch / 2 + 20 * uiScale,
+                w: 30 * uiScale,
+                h: 20 * uiScale,
+                hovered: false
+            };
+        }
+
         // Hover Checks
         const pb = this.pauseButtons;
         for (const k in pb) {
@@ -1624,7 +1657,33 @@ export class PlayingState {
             b.hovered = mouse.x >= b.x && mouse.x <= b.x + b.w && mouse.y >= b.y && mouse.y <= b.y + b.h;
         }
 
+        if (this.confirmRestart) {
+            for (const k in this.confirmRestartButtons) {
+                const b = this.confirmRestartButtons[k];
+                b.hovered = mouse.x >= b.x && mouse.x <= b.x + b.w && mouse.y >= b.y && mouse.y <= b.y + b.h;
+            }
+        }
+
         if (this.game.input.isMouseJustPressed(0)) {
+            if (this.confirmRestart) {
+                if (this.confirmRestartButtons.yes.hovered) {
+                    this.game.sounds.play('select', 1.0);
+                    this.game.setState(new MenuState(this.game));
+                    return;
+                }
+                if (this.confirmRestartButtons.no.hovered) {
+                    this.game.sounds.play('click', 0.5);
+                    this.confirmRestart = false;
+                    return;
+                }
+            } else {
+                if (pb.shipSelection.hovered) {
+                    this.game.sounds.play('click', 0.5);
+                    this.confirmRestart = true;
+                    return;
+                }
+            }
+
             if (pb.musicDec.hovered) this.game.sounds.setMusicVolume(this.game.sounds.musicVolume - 0.1);
             if (pb.musicInc.hovered) this.game.sounds.setMusicVolume(this.game.sounds.musicVolume + 0.1);
             if (pb.sfxDec.hovered) this.game.sounds.setSfxVolume(this.game.sounds.sfxVolume - 0.1);
@@ -1970,8 +2029,6 @@ export class PlayingState {
         ctx.textAlign = 'center';
         ctx.fillText('PAUSED', cw / 2, this.game.uiScale * 16);
 
-        this._drawPauseVolumeControls(ctx);
-
         // --- Inventory using 9-slice panel ---
         const slotSize = 32 * this.game.uiScale;
         const playerInv = this.player.inventory;
@@ -1990,6 +2047,7 @@ export class PlayingState {
         this._drawInventoryGrid(ctx, playerInv, gridX, gridY, slotSize);
 
         // Label
+        ctx.textAlign = 'center';
         ctx.fillStyle = '#88aabb';
         ctx.font = `${8 * this.game.uiScale}px Astro4x`;
         ctx.fillText('SHIP INVENTORY', cw / 2, panelY + totalH + this.game.uiScale * 12);
@@ -1997,6 +2055,7 @@ export class PlayingState {
         // Stats summary below inventory
         const p = this.player;
         const statsY = panelY + totalH + this.game.uiScale * 20;
+        ctx.textAlign = 'center';
         ctx.fillStyle = '#667788';
         ctx.font = `${8 * this.game.uiScale}px Astro4x`;
         ctx.fillText(`HEALTH: ${Math.ceil(p.health)}/${p.maxHealth}`, cw / 2, statsY);
@@ -2015,6 +2074,7 @@ export class PlayingState {
         }
 
         // Resume hint
+        ctx.textAlign = 'center';
         ctx.fillStyle = '#445566';
         ctx.fillText('Drag to move | Right-click to use | ESC to resume', cw / 2, ch - this.game.uiScale * 8);
 
@@ -2032,10 +2092,40 @@ export class PlayingState {
             }
         }
 
-        ctx.textAlign = 'left';
-
         // Audio Controls
         this._drawPauseVolumeControls(ctx);
+
+        // --- Ship Selection Button ---
+        if (!this.confirmRestart) {
+            const ss = this.pauseButtons.shipSelection;
+            this.game.drawSprite(ctx, ss.hovered ? 'ship_selection_on' : 'ship_selection_off', ss.x, ss.y, this.game.uiScale);
+        } else {
+            // Confirmation Dialog
+            ctx.fillStyle = 'rgba(0,0,0,0.85)';
+            ctx.fillRect(0, 0, cw, ch);
+
+            ctx.fillStyle = '#ffffff';
+            ctx.font = `${10 * this.game.uiScale}px Astro5x`;
+            ctx.textAlign = 'center';
+            ctx.fillText('ARE YOU SURE YOU WANT TO RESTART?', cw / 2, ch / 2 - 10 * this.game.uiScale);
+
+            // YES Button
+            const yb = this.confirmRestartButtons.yes;
+            ctx.fillStyle = yb.hovered ? '#44ff44' : '#228822';
+            ctx.fillRect(yb.x, yb.y, yb.w, yb.h);
+            ctx.fillStyle = '#ffffff';
+            ctx.font = `${8 * this.game.uiScale}px Astro4x`;
+            ctx.textBaseline = 'middle';
+            ctx.fillText('YES', yb.x + yb.w / 2, yb.y + yb.h / 2);
+
+            // NO Button
+            const nb = this.confirmRestartButtons.no;
+            ctx.fillStyle = nb.hovered ? '#ff4444' : '#882222';
+            ctx.fillRect(nb.x, nb.y, nb.w, nb.h);
+            ctx.fillStyle = '#ffffff';
+            ctx.fillText('NO', nb.x + nb.w / 2, nb.y + nb.h / 2);
+            ctx.textBaseline = 'bottom';
+        }
     }
 
     _drawPauseVolumeControls(ctx) {

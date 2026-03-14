@@ -41,7 +41,7 @@ export class Game {
         const refW = 2560;
         const refH = 1440;
         const refMean = Math.sqrt(refW * refH);
-        
+
         // World uses geometric mean to preserve context across orientations
         const currentMean = Math.sqrt(this.canvas.width * this.canvas.height);
         const meanRatio = currentMean / refMean;
@@ -61,8 +61,8 @@ export class Game {
         this.hudScale = Math.max(1, Math.round(4 * heightRatio));
     }
 
-    get width() { return this.canvas.width; }
-    get height() { return this.canvas.height; }
+    get width() { return window.innerWidth; }
+    get height() { return window.innerHeight; }
 
     async init() {
         await this.assets.loadAll(this._getAssetManifest());
@@ -240,6 +240,7 @@ export class Game {
     // Shared UI Component: Volume Control Row
     // Bar is derived from decBtn/incBtn positions — no barW hint needed.
     drawVolumeRow(ctx, label, volume, decBtn, incBtn) {
+        ctx.save();
         const uiScale = this.uiScale;
         const midY = Math.floor(decBtn.y + decBtn.h / 2);
         const barH = Math.floor(decBtn.h * 0.75);
@@ -263,15 +264,14 @@ export class Game {
         const barW = gapW - barPad * 2;
         const barX = gapStart + barPad;
         this._drawVolumeBar(ctx, barX, midY, barW, barH, volume);
-
-        ctx.textBaseline = 'alphabetic';
+        ctx.restore();
     }
 
     _drawVolumeBar(ctx, x, midY, w, h, val) {
         const segments = 10;
         const segW = Math.floor(w / segments);
         const gap = Math.max(1, Math.floor(this.uiScale * 1));
-        const totalRendered = segW * segments;
+        const totalRendered = (segW * segments) - gap;
         const leftover = w - totalRendered;
         const startX = x + Math.floor(leftover / 2); // center segments in available width
         const sy = Math.floor(midY - h / 2);

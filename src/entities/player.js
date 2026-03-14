@@ -121,6 +121,18 @@ export class Player {
 
         // Visual feedback
         this.lowHealthPulseTimer = 0;
+
+        // Aiming control state
+        this.useKeyboardAim = false;
+        this.lastMouseX = 0;
+        this.lastMouseY = 0;
+        this.mouseThreshold = 20;
+
+        // Rotation physics
+        this.rotationVelocity = 0;
+        this.rotationAcceleration = 30.0;  // Rapid spin-up
+        this.rotationFriction = 0.80;      // Snappy stop
+        this.maxRotationVelocity = 10.0;   // Increased cap
     }
 
     /**
@@ -169,24 +181,59 @@ export class Player {
         const centerX = this.game.width / 2;
         const centerY = this.game.height / 2;
 
-        // Angle toward mouse
-        const dx = mouse.x - centerX;
-        const dy = mouse.y - centerY;
-        if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
-            const targetAngle = Math.atan2(dy, dx);
+        // Angle toward mouse (only if not using keyboard rotation)
+        const isRotatingCCW = input.isKeyDown('KeyJ');
+        const isRotatingCW = input.isKeyDown('KeyL');
 
-            // Normalize current angle to [-PI, PI] to match atan2 output
-            // (though atan2 already returns [-PI, PI], this.angle might have drifted or been set differently)
+        const currentRotationAccel = this.rotationAcceleration * this.mechanicalEngineTurnMult;
 
-            let diff = targetAngle - this.angle;
+        if (isRotatingCCW) {
+            this.rotationVelocity -= currentRotationAccel * dt;
+            this.useKeyboardAim = true;
+            this.lastMouseX = mouse.x;
+            this.lastMouseY = mouse.y;
+        } else if (isRotatingCW) {
+            this.rotationVelocity += currentRotationAccel * dt;
+            this.useKeyboardAim = true;
+            this.lastMouseX = mouse.x;
+            this.lastMouseY = mouse.y;
+        } else {
+            // Apply friction only when not accelerating
+            this.rotationVelocity *= this.rotationFriction;
+            if (Math.abs(this.rotationVelocity) < 0.01) this.rotationVelocity = 0;
+        }
 
-            // Normalize difference to [-PI, PI] to always turn the shortest way
-            while (diff < -Math.PI) diff += Math.PI * 2;
-            while (diff > Math.PI) diff -= Math.PI * 2;
+        // Cap only
+        if (Math.abs(this.rotationVelocity) > this.maxRotationVelocity) {
+            this.rotationVelocity = Math.sign(this.rotationVelocity) * this.maxRotationVelocity;
+        }
 
-            // Smoothly interpolate toward target
-            // 12 * dt provides a responsive but smooth feel
-            this.angle += diff * Math.min(1, 12 * dt * this.mechanicalEngineTurnMult);
+        // Apply velocity to angle
+        this.angle += this.rotationVelocity * dt;
+
+        // Mouse aiming logic (only if keyboard hasn't taken over or mouse moved substantially)
+        if (!isRotatingCCW && !isRotatingCW) {
+            // Check if mouse has moved enough to regain control
+            if (this.useKeyboardAim) {
+                const dx = mouse.x - this.lastMouseX;
+                const dy = mouse.y - this.lastMouseY;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist > this.mouseThreshold) {
+                    this.useKeyboardAim = false;
+                }
+            }
+
+            if (!this.useKeyboardAim && Math.abs(this.rotationVelocity) < 0.1) {
+                const dx = mouse.x - centerX;
+                const dy = mouse.y - centerY;
+                if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
+                    const targetAngle = Math.atan2(dy, dx);
+                    let diff = targetAngle - this.angle;
+                    while (diff < -Math.PI) diff += Math.PI * 2;
+                    while (diff > Math.PI) diff -= Math.PI * 2;
+                    this.angle += diff * Math.min(1, 12 * dt * this.mechanicalEngineTurnMult);
+                }
+            }
         }
 
         // Thrusting logic
@@ -349,7 +396,8 @@ export class Player {
         }
 
         // --- Shield ---
-        const wantShield = input.isMouseDown(2) && !this.shieldBroken && this.shieldEnergy > 0;
+        const isShiftDown = input.isKeyDown('ShiftLeft') || input.isKeyDown('ShiftRight');
+        const wantShield = (input.isMouseDown(2) || isShiftDown) && !this.shieldBroken && this.shieldEnergy > 0;
 
         // Sound: Shield activation
         if (wantShield && !this.shielding) {
@@ -378,7 +426,8 @@ export class Player {
         this.shootTimer = Math.max(0, this.shootTimer - dt);
 
         if (this.hasRailgun) {
-            if (input.isMouseDown(0) && this.shootTimer <= 0 && !this.isRailgunTargeting) {
+            const isShooting = input.isMouseDown(0) || input.isKeyDown('KeyI');
+            if (isShooting && this.shootTimer <= 0 && !this.isRailgunTargeting) {
                 this.isRailgunTargeting = true;
                 // Repeater reduces charge time, control module reduces it further
                 let baseCharge = (this.hasRepeater ? 0.1 : 0.25) * this.fireRateMult;
@@ -405,12 +454,12 @@ export class Player {
             // Let's stick to simple: if released, targeting continues but maybe user wants it to stop.
             // "When player presses or holds" implies it might be a hold-only or fire-one.
             // Let's make it so releasing stops targeting.
-            if (!input.isMouseDown(0) && this.isRailgunTargeting) {
+            if (!isShooting && this.isRailgunTargeting) {
                 this.isRailgunTargeting = false;
                 this.railgunTargetTimer = 0;
             }
         } else {
-            if (input.isMouseDown(0) && this.shootTimer <= 0) {
+            if ((input.isMouseDown(0) || input.isKeyDown('KeyI')) && this.shootTimer <= 0) {
                 const noseOffset = 30 * this.game.worldScale;
                 const px = this.worldX + Math.cos(this.angle) * noseOffset;
                 const py = this.worldY + Math.sin(this.angle) * noseOffset;
