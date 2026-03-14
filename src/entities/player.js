@@ -731,6 +731,7 @@ export class Player {
         if (!this._tintCanvas) {
             this._tintCanvas = document.createElement('canvas');
             this._tintCtx = this._tintCanvas.getContext('2d');
+            this._tintCtx.imageSmoothingEnabled = false;
         }
 
         // Ensure canvas is large enough for the image (unscaled)

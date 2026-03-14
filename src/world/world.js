@@ -125,6 +125,7 @@ export class World {
         if (this.layerCanvas.width !== cw || this.layerCanvas.height !== ch) {
             this.layerCanvas.width = cw;
             this.layerCanvas.height = ch;
+            this.layerCtx.imageSmoothingEnabled = false;
         }
 
         const boostIntensity = player ? player.boostIntensity : 0;

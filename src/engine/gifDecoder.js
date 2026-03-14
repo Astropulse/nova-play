@@ -37,6 +37,7 @@ export async function decodeGif(url) {
     compCanvas.width = width;
     compCanvas.height = height;
     const compCtx = compCanvas.getContext('2d');
+    compCtx.imageSmoothingEnabled = false;
 
     while (pos < data.length) {
         const block = data[pos++];
@@ -123,7 +124,9 @@ export async function decodeGif(url) {
             const frameCanvas = document.createElement('canvas');
             frameCanvas.width = width;
             frameCanvas.height = height;
-            frameCanvas.getContext('2d').drawImage(compCanvas, 0, 0);
+            const frameCtx = frameCanvas.getContext('2d');
+            frameCtx.imageSmoothingEnabled = false;
+            frameCtx.drawImage(compCanvas, 0, 0);
             frames.push({ canvas: frameCanvas, delay: gce ? gce.delay : 100 });
 
             if (disposal === 3 && prevData) compCtx.putImageData(prevData, 0, 0);

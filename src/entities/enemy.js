@@ -23,6 +23,7 @@ class CollisionScanner {
         canvas.width = img.width;
         canvas.height = img.height;
         const ctx = canvas.getContext('2d');
+        ctx.imageSmoothingEnabled = false;
         ctx.drawImage(img, 0, 0);
 
         const data = ctx.getImageData(0, 0, img.width, img.height).data;

@@ -28,6 +28,7 @@ function computeCollisionRadius(img) {
     canvas.width = img.width;
     canvas.height = img.height;
     const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = false;
     ctx.drawImage(img, 0, 0);
 
     const data = ctx.getImageData(0, 0, img.width, img.height).data;
@@ -71,6 +72,7 @@ export class VoronoiSlicer {
         canvas.width = w;
         canvas.height = h;
         const ctx = canvas.getContext('2d');
+        ctx.imageSmoothingEnabled = false;
         ctx.drawImage(img, 0, 0);
         const imgData = ctx.getImageData(0, 0, w, h);
         const data = imgData.data;
