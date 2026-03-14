@@ -15,6 +15,7 @@ export class MenuState {
         this.musicIncBtn = { x: 0, y: 0, w: 0, h: 0, hovered: false };
         this.sfxDecBtn = { x: 0, y: 0, w: 0, h: 0, hovered: false };
         this.sfxIncBtn = { x: 0, y: 0, w: 0, h: 0, hovered: false };
+        this.wordmarkBtn = { x: 0, y: 0, w: 0, h: 0, hovered: false };
 
         // Track last hover state for click sound
         this.lastHovered = { left: false, right: false, start: false, mDec: false, mInc: false, sDec: false, sInc: false };
@@ -55,7 +56,8 @@ export class MenuState {
             } else if (this._isInside(mouse, this.startBtn)) {
                 this.game.sounds.play('select', 1.0);
             } else if (this._isInside(mouse, this.musicDecBtn) || this._isInside(mouse, this.musicIncBtn) ||
-                this._isInside(mouse, this.sfxDecBtn) || this._isInside(mouse, this.sfxIncBtn)) {
+                this._isInside(mouse, this.sfxDecBtn) || this._isInside(mouse, this.sfxIncBtn) ||
+                this._isInside(mouse, this.wordmarkBtn)) {
                 this.game.sounds.play('click', 1.0);
             }
         };
@@ -85,6 +87,7 @@ export class MenuState {
         this.musicIncBtn.hovered = this._isInside(mouse, this.musicIncBtn);
         this.sfxDecBtn.hovered = this._isInside(mouse, this.sfxDecBtn);
         this.sfxIncBtn.hovered = this._isInside(mouse, this.sfxIncBtn);
+        this.wordmarkBtn.hovered = this._isInside(mouse, this.wordmarkBtn);
 
         // Hover sounds - literal "play once on hover start" logic
         if (this.leftArrowBtn.hovered && !this.lastHovered.left) {
@@ -108,6 +111,7 @@ export class MenuState {
         this.lastHovered.mInc = this.musicIncBtn.hovered;
         this.lastHovered.sDec = this.sfxDecBtn.hovered;
         this.lastHovered.sInc = this.sfxIncBtn.hovered;
+        this.lastHovered.wordmark = this.wordmarkBtn.hovered;
 
         // Visual state changes handled here, sounds handled in _onMouseDown for reliability
         if (this.game.input.isMouseJustPressed(0)) {
@@ -132,6 +136,9 @@ export class MenuState {
             }
             if (this.sfxIncBtn.hovered) {
                 this.game.sounds.setSfxVolume(this.game.sounds.sfxVolume + 0.1);
+            }
+            if (this.wordmarkBtn.hovered) {
+                window.open('https://www.retrodiffusion.ai/', '_blank');
             }
         }
 
@@ -213,6 +220,14 @@ export class MenuState {
         this.sfxIncBtn.y = this.sfxDecBtn.y;
         this.sfxIncBtn.w = volBtnSize.w;
         this.sfxIncBtn.h = volBtnSize.h;
+
+        // Wordmark Hit Area (matching draw offset)
+        const wordmarkSize = game.spriteSize('pixel_wordmark', game.uiScale);
+        const marginTL = Math.floor(game.uiScale * 12);
+        this.wordmarkBtn.x = marginTL - (1 * game.uiScale);
+        this.wordmarkBtn.y = marginTL + 7 * game.uiScale;
+        this.wordmarkBtn.w = wordmarkSize.w;
+        this.wordmarkBtn.h = wordmarkSize.h;
     }
 
     draw(ctx) {
@@ -299,6 +314,14 @@ export class MenuState {
         }
 
         game.drawSprite(ctx, this.startBtn.hovered ? 'start_flight_on' : 'start_flight_off', this.startBtn.x, this.startBtn.y, game.uiScale);
+
+        // "Made with" Wordmark (Top Left)
+        const marginTL = Math.floor(game.uiScale * 12);
+        ctx.fillStyle = '#8899aa';
+        ctx.font = `${8 * game.uiScale}px Astro4x`;
+        ctx.textAlign = 'left';
+        ctx.fillText('Made with', marginTL, marginTL + 4 * game.uiScale);
+        game.drawSprite(ctx, 'pixel_wordmark', marginTL - (1 * game.uiScale), marginTL + 7 * game.uiScale, game.uiScale);
 
         this._drawControls(ctx);
         this._drawVolumeControls(ctx);

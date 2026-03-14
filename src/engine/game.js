@@ -356,6 +356,7 @@ export class Game {
             'left_arrow_on': 'Assets/UI/left_arrow_button_on.png',
             'right_arrow_off': 'Assets/UI/right_arrow_button_off.png',
             'right_arrow_on': 'Assets/UI/right_arrow_button_on.png',
+            'pixel_wordmark': 'Assets/UI/pixel_wordmark.png',
             'health_bar_empty': 'Assets/UI/health_bar_empty.png',
             'health_bar_full': 'Assets/UI/health_bar_full.png',
             'shield_bar_empty': 'Assets/UI/shield_bar_empty.png',
