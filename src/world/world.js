@@ -63,6 +63,9 @@ export class World {
                     x: rng() * regionSize,
                     y: rng() * regionSize,
                     rotation: Math.floor(rng() * 4) * (Math.PI / 2),
+                    twinkleSpeed: rng() * 1.5 + 0.5,
+                    twinkleOffset: rng() * Math.PI * 2,
+                    pulseAmount: 0.1 // Starfields pulse subtly
                 });
             }
 
@@ -75,6 +78,9 @@ export class World {
                     x: rng() * regionSize,
                     y: rng() * regionSize,
                     rotation: Math.floor(rng() * 4) * (Math.PI / 2),
+                    twinkleSpeed: rng() * 2 + 1,
+                    twinkleOffset: rng() * Math.PI * 2,
+                    pulseAmount: 0.3 // Individual stars pulse more
                 });
             }
 
@@ -90,7 +96,10 @@ export class World {
                         x: rng() * regionSize,
                         y: rng() * regionSize,
                         rotation: Math.floor(rng() * 4) * (Math.PI / 2),
-                        isRare: true
+                        isRare: true,
+                        twinkleSpeed: rng() * 0.8 + 0.2,
+                        twinkleOffset: rng() * Math.PI * 2,
+                        pulseAmount: 0.05 // Rare large objects pulse very slowly/subtly
                     });
                 }
             }
@@ -106,7 +115,7 @@ export class World {
 
     }
 
-    draw(ctx, camera, player) {
+    draw(ctx, camera, player, worldTime = 0) {
         const cw = this.game.width;
         const ch = this.game.height;
         if (!this.layerCanvas) {
@@ -146,6 +155,10 @@ export class World {
 
                 let sx = ((star.x - offsetX) % rs + rs) % rs;
                 let sy = ((star.y - offsetY) % rs + rs) % rs;
+
+                // Pulsing effect
+                const pulseAlpha = star.pulseAmount * Math.sin(worldTime * star.twinkleSpeed + star.twinkleOffset);
+                this.layerCtx.globalAlpha = Math.max(0.1, Math.min(1.0, layer.alpha + pulseAlpha));
 
                 for (let wy = sy - rs; wy < ch + h; wy += rs) {
                     for (let wx = sx - rs; wx < cw + w; wx += rs) {
