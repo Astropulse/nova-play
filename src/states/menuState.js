@@ -300,6 +300,7 @@ export class MenuState {
 
         game.drawSprite(ctx, this.startBtn.hovered ? 'start_flight_on' : 'start_flight_off', this.startBtn.x, this.startBtn.y, game.uiScale);
 
+        this._drawControls(ctx);
         this._drawVolumeControls(ctx);
     }
 
@@ -345,5 +346,44 @@ export class MenuState {
     _drawVolumeControls(ctx) {
         this.game.drawVolumeRow(ctx, 'MUSIC', this.game.sounds.musicVolume, this.musicDecBtn, this.musicIncBtn);
         this.game.drawVolumeRow(ctx, 'SOUNDS', this.game.sounds.sfxVolume, this.sfxDecBtn, this.sfxIncBtn);
+    }
+
+    _drawControls(ctx) {
+        const game = this.game;
+        const uiScale = game.uiScale;
+        const margin = Math.floor(uiScale * 12);
+        const x = margin;
+        
+        const controls = [
+            { key: 'W/S', desc: 'FORWARDS / BACK' },
+            { key: 'A/D', desc: 'DODGE (IF CAPABLE)' },
+            { key: 'SPACE', desc: 'BOOST' },
+            { key: 'MOUSE', desc: 'AIM' },
+            { key: 'L-MB', desc: 'SHOOT' },
+            { key: 'R-MB', desc: 'SHIELD' },
+            { key: 'E', desc: 'INTERACT' },
+            { key: 'ESC', desc: 'PAUSE / INVENTORY' }
+        ];
+
+        const lineHeight = Math.floor(uiScale * 9);
+        const totalHeight = Math.floor(uiScale * 14) + controls.length * lineHeight;
+        let y = game.height - margin - totalHeight + Math.floor(uiScale * 10);
+
+        ctx.fillStyle = '#ffffff';
+        ctx.font = `${10 * uiScale}px Astro5x`;
+        ctx.textAlign = 'left';
+        ctx.fillText('CONTROLS', x, y);
+        
+        y += Math.floor(uiScale * 14);
+        ctx.font = `${7 * uiScale}px Astro4x`;
+
+        const keyW = Math.floor(uiScale * 35);
+        for (const ctrl of controls) {
+            ctx.fillStyle = '#44ddff';
+            ctx.fillText(ctrl.key, x, y);
+            ctx.fillStyle = '#8899aa';
+            ctx.fillText(ctrl.desc, x + keyW, y);
+            y += lineHeight;
+        }
     }
 }

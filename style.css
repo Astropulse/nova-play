@@ -2,10 +2,12 @@
     font-family: 'Astro3x';
     src: url('Assets/Fonts/Astro3x8pt.ttf') format('truetype');
 }
+
 @font-face {
     font-family: 'Astro4x';
     src: url('Assets/Fonts/Astro4x8pt.ttf') format('truetype');
 }
+
 @font-face {
     font-family: 'Astro5x';
     src: url('Assets/Fonts/Astro5x8pt.ttf') format('truetype');
@@ -17,7 +19,8 @@
     box-sizing: border-box;
 }
 
-html, body {
+html,
+body {
     width: 100%;
     height: 100%;
     overflow: hidden;
