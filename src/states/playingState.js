@@ -13,6 +13,7 @@ import { CargoShipEvent, CARGO_SHIP_STATE } from '../entities/cargoShipEvent.js'
 import { FracturedStationEvent } from '../entities/fracturedStationEvent.js';
 import { Projectile } from '../entities/projectile.js';
 import { MenuState } from './menuState.js';
+import { MUSIC_STATE } from '../engine/soundManager.js';
 
 export class PlayingState {
     constructor(game, shipData) {
@@ -70,6 +71,11 @@ export class PlayingState {
         this.difficultyScale = 1.0;
         this.flashTimer = 0;
 
+        // Music System Overhaul State
+        this.musicCombatTriggered = false;
+        this.postWaveTimer = 0;
+        this.quietTimer = 0;
+
         // Stats tracking
         this.stats = {
             asteroidsDestroyed: 0,
@@ -101,6 +107,11 @@ export class PlayingState {
             yes: { x: 0, y: 0, w: 0, h: 0, hovered: false },
             no: { x: 0, y: 0, w: 0, h: 0, hovered: false }
         };
+    }
+
+    enter() {
+        document.body.classList.add('playing');
+        this.game.sounds.startMusic();
     }
 
     _spawnInitialShops() {
@@ -532,9 +543,35 @@ export class PlayingState {
 
             // Wave timer: fixed 2-minute interval
             this.waveTimer -= dt;
+            this.postWaveTimer += dt;
+
+            // --- Music System Logic ---
+            // 1. Pre-wave combat trigger (6s before)
+            if (this.waveTimer <= 6 && !this.musicCombatTriggered) {
+                this.game.sounds.setTargetState(MUSIC_STATE.COMBAT);
+                this.musicCombatTriggered = true;
+            }
+
+            // 2. Post-wave exploration return
+            // 10 seconds after wave start (1:50 on 2min timer), start checking for enemies
+            // (Only if we are in the combat state and the countdown isn't active)
+            if (this.musicCombatTriggered && this.postWaveTimer >= 10 && this.waveTimer > 10) {
+                if (this.enemies.length === 0) {
+                    this.quietTimer += dt;
+                    if (this.quietTimer >= 3.0) { // 3s of continuous silence
+                        this.game.sounds.setTargetState(MUSIC_STATE.EXPLORATION);
+                        this.musicCombatTriggered = false;
+                        this.quietTimer = 0;
+                    }
+                } else {
+                    this.quietTimer = 0;
+                }
+            }
+
             if (this.waveTimer <= 0) {
                 this._triggerWave();
                 this.waveTimer = 120;
+                this.postWaveTimer = 0;
             }
 
             // Spawn enemies

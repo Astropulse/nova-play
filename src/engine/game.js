@@ -139,24 +139,34 @@ export class Game {
             ])
         ]);
 
-        this.sounds.registerMusic([
-            'Assets/Sounds/Songs/Asteroid Drift.mp3',
-            'Assets/Sounds/Songs/Cosmic Plan.mp3',
-            'Assets/Sounds/Songs/Gravity Well.mp3',
-            'Assets/Sounds/Songs/Liftoff.mp3',
-            'Assets/Sounds/Songs/Outer Orbit.mp3',
-            'Assets/Sounds/Songs/Pixel Drift Through The Void.mp3',
-            'Assets/Sounds/Songs/Pixel Stars.mp3',
-            'Assets/Sounds/Songs/Space Cruise.mp3',
-            'Assets/Sounds/Songs/Starfield Side Quest.mp3',
-            'Assets/Sounds/Songs/Starfield.mp3',
-            'Assets/Sounds/Songs/Starlight Survey.mp3',
-            'Assets/Sounds/Songs/Starlit Pixel Drift.mp3',
+        this.sounds.registerExplorationMusic([
+            'Assets/Sounds/Songs/Exploration/Alone in the Stars.mp3',
+            'Assets/Sounds/Songs/Exploration/Blue Shift.mp3',
+            'Assets/Sounds/Songs/Exploration/Cosmic Plan.mp3',
+            'Assets/Sounds/Songs/Exploration/Distant Nebula.mp3',
+            'Assets/Sounds/Songs/Exploration/Gravity Well.mp3',
+            'Assets/Sounds/Songs/Exploration/Orbital Daydream.mp3',
+            'Assets/Sounds/Songs/Exploration/Pixel Stars.mp3',
+            'Assets/Sounds/Songs/Exploration/Slingshot.mp3',
+            'Assets/Sounds/Songs/Exploration/Starlight Armada.mp3',
+        ]);
+
+        this.sounds.registerCombatMusic([
+            'Assets/Sounds/Songs/Combat/Binary Orbit.mp3',
+            'Assets/Sounds/Songs/Combat/Direct Hit.mp3',
+            'Assets/Sounds/Songs/Combat/Starfield Dogfight.mp3',
+            'Assets/Sounds/Songs/Combat/Starfighter Cascade.mp3',
+            'Assets/Sounds/Songs/Combat/Warning Lights.mp3',
         ]);
 
         // Register boss music separately
         this.sounds.registerBossMusic('Starlight Devourer', 'Assets/Sounds/Songs/Boss/Starlight Devourer.mp3');
         this.sounds.registerBossMusic('Derelict Orbit', 'Assets/Sounds/Songs/Boss/Derelict Orbit.mp3');
+        this.sounds.registerBossMusic('Asteroid Crusher', 'Assets/Sounds/Songs/Boss/Asteroid Crusher.mp3');
+        this.sounds.registerBossMusic('Event Horizon Chase', 'Assets/Sounds/Songs/Boss/Event Horizon Chase.mp3');
+        this.sounds.registerBossMusic('Lidless Above the Void', 'Assets/Sounds/Songs/Boss/Lidless Above the Void.mp3');
+        this.sounds.registerBossMusic('Starcore Showdown', 'Assets/Sounds/Songs/Boss/Starcore Showdown.mp3');
+        this.sounds.registerBossMusic('The Yellow One', 'Assets/Sounds/Songs/Boss/The Yellow One.mp3');
 
         this.sounds.registerTitleMusic('Assets/Sounds/Songs/Title/NOVA.mp3');
         this.sounds.registerGameOverMusic('Assets/Sounds/Songs/Game Over/Sendoff.mp3');
@@ -198,6 +208,8 @@ export class Game {
             this.devConsole.toggle();
         }
         this._devPressedPrev = devPressed;
+
+        this.sounds.update(dt);
 
         if (this.devConsole.active) {
             this.devConsole.update(dt);
