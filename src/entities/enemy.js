@@ -104,6 +104,8 @@ export class Enemy {
         this.damageMult = 1.0;
 
         this.pendingProjectiles = [];
+        this.externalVx = 0;
+        this.externalVy = 0;
     }
 
     _applyUpgrades() {
@@ -184,11 +186,15 @@ export class Enemy {
         }
         // ATTACK pass 1+: full base speed dive
 
-        this.vx = Math.cos(this.angle) * currentMaxSpeed * this.speedMult;
-        this.vy = Math.sin(this.angle) * currentMaxSpeed * this.speedMult;
+        this.vx = Math.cos(this.angle) * currentMaxSpeed * this.speedMult + this.externalVx;
+        this.vy = Math.sin(this.angle) * currentMaxSpeed * this.speedMult + this.externalVy;
 
         this.worldX += this.vx * dt;
         this.worldY += this.vy * dt;
+
+        // Dampen external forces
+        this.externalVx *= 0.99;
+        this.externalVy *= 0.99;
 
         // 6. Combat — shoot only during attack runs
         if (this.state === AI_STATE.ATTACK) {

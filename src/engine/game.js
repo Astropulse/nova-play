@@ -414,7 +414,13 @@ export class Game {
             'energy_blaster_3x1': 'Assets/Upgrades/energy_blaster_3x1.png',
             'repeater_4x1': 'Assets/Upgrades/repeater_4x1.png',
             'laser_override_2x2': 'Assets/Upgrades/laser_override_2x2.png',
-            'warning_system_1x1': 'Assets/Upgrades/warning_system_1x1.png',
+            'warning_system': 'Assets/Upgrades/warning_system_1x1.png',
+            'knowledge': 'Assets/Events/knowledge.png',
+            'radar_frame': 'Assets/UI/radar_frame.png',
+            'radar_frame_back': 'Assets/UI/radar_frame_back.png',
+            'obedience_1x1': 'Assets/Upgrades/obedience_1x1.png',
+            'sacrifice_1x2': 'Assets/Upgrades/sacrifice_1x2.png',
+            'knowledge_1x1': 'Assets/Upgrades/knowledge_1x1.png',
             'pulse_jet_2x1': 'Assets/Upgrades/pulse_jet_2x1.png',
             'shield_booster_1x1': 'Assets/Upgrades/shield_booster_1x1.png',
             'targeting_module_2x2': 'Assets/Upgrades/targeting_module_2x2.png',
@@ -442,8 +448,8 @@ export class Game {
             'starfield_6': 'Assets/Space/starfield_6.png',
             'starfield_7': 'Assets/Space/starfield_7.png',
             'big_star': 'Assets/Space/big_star.png',
-            'galaxy': 'Assets/Space/galaxy.png',
             'nebula': 'Assets/Space/nebula.png',
+            'galaxy': 'Assets/Space/galaxy.png',
             'star_0': 'Assets/Space/star_0.png',
             'star_1': 'Assets/Space/star_1.png',
             'star_2': 'Assets/Space/star_2.png',
@@ -550,6 +556,7 @@ export class Game {
             'fighter_flying': 'Assets/Ships/Fighter/fighter_flying.gif',
             'looper_flying': 'Assets/Ships/Looper/looper_flying.gif',
             'cthulhu_wake': 'Assets/Events/cthulhu_wake.gif',
+            'knowledge_eye': 'Assets/Events/knowledge_eye.gif',
         };
     }
 }

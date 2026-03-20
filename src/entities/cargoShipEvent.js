@@ -80,6 +80,10 @@ export class CargoShipEvent {
         return false;
     }
 
+    getSpawnOnDeath() {
+        return [];
+    }
+
     // Called by playingState to collect spawns
     popSpawns() {
         if (this.pendingSpawns && this.pendingSpawns.length > 0) {

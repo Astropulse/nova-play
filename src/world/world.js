@@ -31,7 +31,8 @@ export class World {
         // Individual stars to mix into fields
         this.singleStars = [];
         for (let i = 0; i <= 10; i++) {
-            this.singleStars.push(game.assets.get(`star_${i}`));
+            const img = game.assets.get(`star_${i}`);
+            if (img) this.singleStars.push(img);
         }
 
         // Build parallax layers
@@ -151,6 +152,7 @@ export class World {
 
             for (const star of layer.stars) {
                 const img = star.img;
+                if (!img) continue;
                 const w = img.width * this.game.worldScale;
                 const h = img.height * this.game.worldScale;
 

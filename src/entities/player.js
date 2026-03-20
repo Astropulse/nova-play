@@ -56,6 +56,11 @@ export class Player {
         this.hasAncientCurse = false;
         this.hasBoostDrive = false;
 
+        // Knowledge Event Upgrades
+        this.hasSacrifice = false;
+        this.hasRadar = false;
+        this.obedienceMult = 1.0;
+
         this.boostTimer = 0;
         this.boostCooldownTimer = 0;
         this.isBoosting = false;
@@ -711,7 +716,8 @@ export class Player {
 
     updateMaxHealth(multiplier) {
         this.maxHealthMult = multiplier;
-        this.maxHealth = this.shipData.health * this.maxHealthMult + this.permHealthBonus;
+        const base = this.shipData.health * this.obedienceMult;
+        this.maxHealth = base * this.maxHealthMult + this.permHealthBonus;
 
         // Clamp health to new max and ensure it doesn't go below 0
         this.health = Math.max(0, Math.min(this.maxHealth, this.health));
@@ -719,7 +725,8 @@ export class Player {
 
     updateMaxShield(flatBonus) {
         this.permShieldBonus += flatBonus;
-        this.maxShieldEnergy = (this.shipData.shield * 15 + this.permShieldBonus) * this.shieldBoosterMult;
+        const base = this.shipData.shield * 15 * this.obedienceMult;
+        this.maxShieldEnergy = (base + this.permShieldBonus) * this.shieldBoosterMult;
         this.shieldEnergy += flatBonus; // instantly grant the new capacity
         this.shieldEnergy = Math.max(0, Math.min(this.maxShieldEnergy, this.shieldEnergy));
     }

@@ -11,6 +11,7 @@ import { UPGRADES } from '../data/upgrades.js';
 import { CthulhuEvent, CTHULHU_STATE } from '../entities/cthulhuEvent.js';
 import { CargoShipEvent, CARGO_SHIP_STATE } from '../entities/cargoShipEvent.js';
 import { FracturedStationEvent } from '../entities/fracturedStationEvent.js';
+import { KnowledgeEvent, KNOWLEDGE_STATE } from '../entities/knowledgeEvent.js';
 import { Projectile } from '../entities/projectile.js';
 import { MenuState } from './menuState.js';
 import { MUSIC_STATE } from '../engine/soundManager.js';
@@ -85,6 +86,9 @@ export class PlayingState {
             shopsUnlocked: 1,
             eventsDiscovered: 0
         };
+
+        this.lastIsEventActive = false;
+        this.eventBufferTimer = 0;
 
         // Death state
         this.isDead = false;
@@ -165,6 +169,13 @@ export class PlayingState {
             { x: f2x, y: f2y },
             { x: f3x, y: f3y }
         ]));
+
+        // Spawn Knowledge Event (Extreme distance)
+        const kAngle = Math.random() * Math.PI * 2;
+        const kDist = (30000 + Math.random() * 15000) * this.game.worldScale;
+        const kx = Math.cos(kAngle) * kDist;
+        const ky = Math.sin(kAngle) * kDist;
+        this.events.push(new KnowledgeEvent(this.game, kx, ky));
     }
 
     _spawnInitialAsteroids() {
@@ -194,10 +205,7 @@ export class PlayingState {
         }
     }
 
-    enter() {
-        document.body.classList.add('playing');
-        this.game.sounds.startMusic();
-    }
+
 
     exit() {
         document.body.classList.remove('playing');
@@ -265,7 +273,12 @@ export class PlayingState {
                 this.stats.eventsDiscovered++;
             }
             if (ev.isActive) {
-                isEventActive = true;
+                const edx = ev.worldX - this.player.worldX;
+                const edy = ev.worldY - this.player.worldY;
+                const dist = Math.sqrt(edx * edx + edy * edy);
+                if (dist < 5000 * this.game.worldScale) {
+                    isEventActive = true;
+                }
             }
             if (ev.popEnemies) {
                 const newEnemies = ev.popEnemies();
@@ -287,6 +300,11 @@ export class PlayingState {
                 }
             }
         }
+
+        if (this.lastIsEventActive && !isEventActive) {
+            this.eventBufferTimer = 6.0;
+        }
+        this.lastIsEventActive = isEventActive;
 
         // --- Active Upgrades Logic ---
         // Rockets
@@ -506,8 +524,12 @@ export class PlayingState {
             }
         }
 
+        if (this.eventBufferTimer > 0) {
+            this.eventBufferTimer -= dt;
+        }
+
         // --- Freeze spawning if an event is active ---
-        if (!isEventActive) {
+        if (!isEventActive && this.eventBufferTimer <= 0) {
             // Spawn asteroids
             const newAsteroids = this.asteroidSpawner.update(
                 dt, this.player.worldX, this.player.worldY,
@@ -859,8 +881,21 @@ export class PlayingState {
             this.game.sounds.play('ship_explode', { volume: 0.5, x: this.player.worldX, y: this.player.worldY });
 
             if (this.player.health <= 0) {
-                this.player.health = 0;
-                this._triggerDeath();
+                if (this.player.hasSacrifice) {
+                    this.player.hasSacrifice = false; // Consume it
+                    this.player.health = this.player.maxHealth;
+                    this.player.shieldEnergy = this.player.maxShieldEnergy;
+                    this.player.shieldBroken = false;
+                    this.player.invulnTimer = 3.0; // Extra invuln duration
+                    this.triggerFlash('#b400ff', 1.2, 0.6); // Dramatic purple flash
+                    this.game.sounds.play('shield', { volume: 1.0, x: this.player.worldX, y: this.player.worldY });
+
+                    // Also need to remove the Sacrifice item from inventory
+                    this._removeSacrificeItem();
+                } else {
+                    this.player.health = 0;
+                    this._triggerDeath();
+                }
             }
         }
 
@@ -897,6 +932,10 @@ export class PlayingState {
             s.draw(ctx, this.camera);
         }
 
+        for (const ev of this.events) {
+            ev.draw(ctx, this.camera);
+        }
+
         for (const it of this.itemPickups) {
             it.draw(ctx, this.camera);
         }
@@ -907,10 +946,6 @@ export class PlayingState {
 
         for (const e of this.enemies) {
             e.draw(ctx, this.camera);
-        }
-
-        for (const ev of this.events) {
-            ev.draw(ctx, this.camera);
         }
 
         for (const p of this.projectiles) {
@@ -978,18 +1013,22 @@ export class PlayingState {
         // Screen Flash Effect (Vignette Pulse)
         if (this.flashTimer > 0) {
             const pulse = Math.sin(this.flashTimer * 6) * 0.5 + 0.5;
-            const alpha = Math.min(0.35, this.flashTimer * 0.5) * (0.7 + 0.3 * pulse);
+            const alpha = Math.min(this.flashAlpha || 0.35, this.flashTimer * 0.5) * (0.7 + 0.3 * pulse);
 
-            // Re-use or create the vignette gradient only when needed (on first flash frame usually)
-            if (!this._vignetteGrad || this._vignetteWidth !== this.game.width || this._vignetteHeight !== this.game.height) {
+            // Re-use or create the vignette gradient only when needed
+            const color = this.flashColor || '#ff0000';
+            if (!this._vignetteGrad || this._vignetteWidth !== this.game.width || this._vignetteHeight !== this.game.height || this._lastFlashColor !== color) {
                 this._vignetteWidth = this.game.width;
                 this._vignetteHeight = this.game.height;
+                this._lastFlashColor = color;
                 this._vignetteGrad = ctx.createRadialGradient(
                     this.game.width / 2, this.game.height / 2, 0,
                     this.game.width / 2, this.game.height / 2, this.game.width * 0.8
                 );
-                this._vignetteGrad.addColorStop(0, 'rgba(255, 0, 0, 0)');
-                this._vignetteGrad.addColorStop(1, 'rgba(255, 0, 0, 1)');
+
+                // Convert hex/string color to rgba for gradient if needed, or just use it
+                this._vignetteGrad.addColorStop(0, 'rgba(0,0,0,0)');
+                this._vignetteGrad.addColorStop(1, color);
             }
 
             ctx.save();
@@ -1000,11 +1039,17 @@ export class PlayingState {
         }
     }
 
+    triggerFlash(color = '#ff0000', duration = 0.8, alpha = 0.35) {
+        this.flashColor = color;
+        this.flashTimer = duration;
+        this.flashAlpha = alpha;
+    }
+
     _triggerWave() {
         this.stats.wavesCleared++;
         const waveEnemies = this.enemySpawner.spawnWave(this.player.worldX, this.player.worldY, this.difficultyScale);
         this.enemies.push(...waveEnemies);
-        this.flashTimer = 0.8; // Shorter flash for "blink" feel
+        this.triggerFlash('#ff0000', 0.8, 0.35); // Standard red wave flash
         this.game.sounds.play('ship_explode', 0.6); // Use explosion sound for wave impact
     }
 
@@ -1817,7 +1862,7 @@ export class PlayingState {
         const p = this.player;
         const oldMax = p.maxHealth;
 
-        // Reset multipliers
+        // Reset multipliers and flags
         p.fireRateMult = 1.0;
         p.boostRangeMult = 1.0;
         p.boostSpeedMult = 1.0;
@@ -1843,29 +1888,40 @@ export class PlayingState {
         p.hasAncientCurse = false;
         p.hasBoostDrive = false;
 
-        let blinkEngines = 0;
-        let maxHealthMultiplier = 1.0;
+        // Knowledge Event Upgrades
+        p.hasSacrifice = false;
+        p.hasRadar = false;
+        p.obedienceMult = 1.0;
+
         this.hasAutoTurret = false;
         this.hasMechanicalClaw = false;
         this.hasRockets = false;
 
+        let boostCooldownMult = 1.0;
+        let boostRangeMult = 1.0;
+        let shieldDrainMult = 1.0;
+        let scrapRangeMult = 1.0;
+        let fireRateMult = 1.0;
+        let shieldRegenMult = 1.0;
+        let maxHealthMult = 1.0;
+
+        let blinkEngines = 0;
         let repeaters = 0;
+
         for (const entry of p.inventory.items) {
             const item = entry.item;
 
             if (item.id === 'blink_engine') blinkEngines++;
-            if (item.id === 'firing_coordinator') p.fireRateMult *= 0.9;
+            if (item.id === 'firing_coordinator') fireRateMult *= 0.9;
             if (item.id === 'energy_canisters') {
-                maxHealthMultiplier *= 1.6;
-                // Healing from canisters is handled upon pickup, which is tricky in this pure state-syncing method.
-                // We'll handle the heal only when it's first added in _updateShopUI
+                maxHealthMult *= 1.6;
             }
             if (item.id === 'pulse_boosters') {
-                p.boostRangeMult *= 1.4;
-                p.boostCooldownMult *= 0.7;
+                boostRangeMult *= 1.4;
+                boostCooldownMult *= 0.7;
             }
-            if (item.id === 'field_array') p.shieldDrainMult *= 0.7;
-            if (item.id === 'scrap_drone') p.scrapRangeMult *= 4.0;
+            if (item.id === 'field_array') shieldDrainMult *= 0.7;
+            if (item.id === 'scrap_drone') scrapRangeMult *= 4.0;
             if (item.id === 'auto_turret') this.hasAutoTurret = true;
             if (item.id === 'mechanical_claw') this.hasMechanicalClaw = true;
             if (item.id === 'railgun') p.hasRailgun = true;
@@ -1885,26 +1941,27 @@ export class PlayingState {
                 p.mechanicalEngineSpeedMult *= 1.25;
             }
             if (item.id === 'multishot_guns') p.hasMultishotGuns = true;
-            if (item.id === 'high_density_capacitor') p.boostCooldownMult *= 0.5;
-            if (item.id === 'energy_cell') p.shieldRegenMult *= 1.3;
+            if (item.id === 'high_density_capacitor') boostCooldownMult *= 0.5;
+            if (item.id === 'energy_cell') shieldRegenMult *= 1.3;
             if (item.id === 'explosives_unit') p.hasExplosivesUnit = true;
             if (item.id === 'small_boosters') p.boostSpeedMult *= 1.1;
             if (item.id === 'rockets') this.hasRockets = true;
             if (item.id === 'ancient_curse') p.hasAncientCurse = true;
             if (item.id === 'boost_drive') p.hasBoostDrive = true;
+
+            // Knowledge Upgrades
+            if (item.id === 'obedience') p.obedienceMult = 1.2;
+            if (item.id === 'sacrifice') p.hasSacrifice = true;
+            if (item.id === 'knowledge') p.hasRadar = true;
         }
 
         if (repeaters > 0) {
-            // Diminishing returns for firerate:
-            // 1st: 0.5 (2x speed)
-            // 2nd: 0.75 (total 0.375, ~2.66x speed)
-            // 3rd+: 0.85 per
             let rMult = 0.5;
             for (let i = 1; i < repeaters; i++) {
                 if (i === 1) rMult *= 0.75;
                 else rMult *= 0.85;
             }
-            p.fireRateMult *= rMult;
+            fireRateMult *= rMult;
         }
 
         if (blinkEngines > 0) {
@@ -1912,14 +1969,36 @@ export class PlayingState {
             p.dodgeCooldown = Math.max(0.2, 0.6 - (blinkEngines - 1) * 0.15);
         }
 
-        p.updateMaxHealth(maxHealthMultiplier);
+        // Apply calculated multipliers to player
+        p.boostCooldownMult = boostCooldownMult;
+        p.boostRangeMult = boostRangeMult;
+        p.shieldDrainMult = shieldDrainMult;
+        p.scrapRangeMult = scrapRangeMult;
+        p.fireRateMult = fireRateMult;
+        p.shieldRegenMult = shieldRegenMult;
+
+        // Update Max Stats
+        p.updateMaxHealth(maxHealthMult);
+        p.updateMaxShield(0); // This uses obedienceMult internally now
+
+        // Update base speed and acceleration
+        p.baseSpeed = p.shipData.speed * 240 * p.obedienceMult;
+        p.acceleration = p.baseSpeed * 3;
 
         if (healAcquisition) {
             const diff = p.maxHealth - oldMax;
             if (diff > 0) p.health += diff;
         }
+    }
 
-        p.updateMaxShield(0);
+    _removeSacrificeItem() {
+        if (!this.player.inventory) return;
+        const entry = this.player.inventory.items.find(i => i.item.id === 'sacrifice');
+        if (entry) {
+            this.player.inventory.removeItemAt(entry.x, entry.y);
+            this._onInventoryChanged();
+            this.game.sounds.play('asteroid_break', { volume: 0.8, x: this.player.worldX, y: this.player.worldY });
+        }
     }
 
     spawnDistantShop() {

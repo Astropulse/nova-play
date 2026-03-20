@@ -2,14 +2,14 @@
 
 // Projectile fired by ships
 export class Projectile {
-    constructor(game, worldX, worldY, angle, speed, spriteKey = 'blue_laser_ball', owner = null, damage = 1) {
+    constructor(game, worldX, worldY, angle, speed, spriteKey = 'blue_laser_ball', owner = null, damage = 1, lifetime = 2.0) {
         this.game = game;
         this.worldX = worldX;
         this.worldY = worldY;
         this.vx = Math.cos(angle) * speed;
         this.vy = Math.sin(angle) * speed;
         this.alive = true;
-        this.lifetime = 2.0; // seconds before despawn
+        this.lifetime = lifetime; // seconds before despawn
         this.damage = damage;
         this.owner = owner; // Who fired this (to prevent self-damage)
 

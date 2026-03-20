@@ -295,6 +295,36 @@ export const UPGRADES = [
         height: 1,
         cost: 50,
         rarity: 'rare'
+    },
+    {
+        id: 'obedience',
+        name: 'Obedience',
+        description: 'Increases all base stats by 20%.',
+        assetKey: 'obedience_1x1',
+        width: 1,
+        height: 1,
+        cost: 0,
+        rarity: 'unique'
+    },
+    {
+        id: 'sacrifice',
+        name: 'Sacrifice',
+        description: 'Grants an extra life. Consumed on use.',
+        assetKey: 'sacrifice_1x2',
+        width: 1,
+        height: 2,
+        cost: 0,
+        rarity: 'unique'
+    },
+    {
+        id: 'knowledge',
+        name: 'Knowledge',
+        description: 'Enables a radar minimap in the HUD.',
+        assetKey: 'knowledge_1x1',
+        width: 1,
+        height: 1,
+        cost: 0,
+        rarity: 'unique'
     }
 ];
 
