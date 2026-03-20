@@ -138,6 +138,13 @@ export class Player {
         this.rotationAcceleration = 30.0;  // Rapid spin-up
         this.rotationFriction = 0.80;      // Snappy stop
         this.maxRotationVelocity = 10.0;   // Increased cap
+
+        // Trail effect for Ancient Curse
+        this.trailHistory = [];
+        this.trailTimer = 0;
+        this.trailInterval = 0.005; // Faster interval for more copies
+        this.maxTrailLength = 10; // Even more copies for solidity
+        this._trailCache = new Map(); // Cache for tinted sprites
     }
 
     /**
@@ -549,11 +556,82 @@ export class Player {
         } else {
             this.lowHealthPulseTimer = 0;
         }
+
+        // --- Trail History ---
+        if (this.hasAncientCurse) {
+            this.trailTimer -= dt;
+            if (this.trailTimer <= 0) {
+                this.trailTimer = this.trailInterval;
+
+                // Store current state
+                let trailImg;
+                if (this.thrusting && this.flyingFrames.length > 0) {
+                    trailImg = this.flyingFrames[this.currentFrame].canvas;
+                } else {
+                    trailImg = this.stillImg;
+                }
+
+                // Record state regardless of movement for a solid feel
+                this.trailHistory.unshift({
+                    x: this.worldX,
+                    y: this.worldY,
+                    angle: this.angle,
+                    img: trailImg,
+                    life: 1.0
+                });
+
+                if (this.trailHistory.length > this.maxTrailLength) {
+                    this.trailHistory.pop();
+                }
+            }
+        } else if (this.trailHistory.length > 0) {
+            this.trailHistory = [];
+        }
+
+        // Age trail life slightly even if not active (for smooth fade out if needed, 
+        // though here we just clear it for simplicity if curse is removed)
+        for (let i = 0; i < this.trailHistory.length; i++) {
+            this.trailHistory[i].life -= dt * 6; // Fast fade but enough to see the length
+        }
+        this.trailHistory = this.trailHistory.filter(t => t.life > 0);
     }
 
     draw(ctx) {
         const centerX = this.game.width / 2;
         const centerY = this.game.height / 2;
+
+        // --- Ghost Trail ---
+        if (this.hasAncientCurse && this.trailHistory.length > 0) {
+            ctx.save();
+            ctx.globalCompositeOperation = 'lighter'; // Additive blending for solid feel
+            for (let i = 0; i < this.trailHistory.length; i++) {
+                const t = this.trailHistory[i];
+                // Slightly higher alpha for the "core" trail
+                const alpha = t.life * 0.15 * (1 - i / this.maxTrailLength);
+                if (alpha <= 0) continue;
+
+                const relX = (t.x - this.worldX);
+                const relY = (t.y - this.worldY);
+
+                const w = t.img.width * this.game.worldScale;
+                const h = t.img.height * this.game.worldScale;
+
+                // Use cached tinted version for performance and consistency
+                let greenImg = this._trailCache.get(t.img);
+                if (!greenImg) {
+                    greenImg = this._createGreenGhost(t.img);
+                    this._trailCache.set(t.img, greenImg);
+                }
+
+                ctx.save();
+                ctx.translate(Math.floor(centerX + relX), Math.floor(centerY + relY));
+                ctx.rotate(t.angle + Math.PI / 2);
+                ctx.globalAlpha = alpha;
+                ctx.drawImage(greenImg, -Math.floor(w / 2), -Math.floor(h / 2), w, h);
+                ctx.restore();
+            }
+            ctx.restore();
+        }
 
         // Choose sprite
         let img;
@@ -761,5 +839,26 @@ export class Player {
 
         // 3. Draw the resulting tinted image to the main context
         ctx.drawImage(this._tintCanvas, 0, 0, img.width, img.height, x, y, w, h);
+    }
+
+    _createGreenGhost(img) {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const tCtx = canvas.getContext('2d');
+        tCtx.imageSmoothingEnabled = false;
+
+        // Apply a slight blur to help bleed edges together for a "glow" look
+        tCtx.filter = 'blur(2px)';
+
+        // 1. Draw base
+        tCtx.drawImage(img, 0, 0);
+
+        // 2. Green tint
+        tCtx.globalCompositeOperation = 'source-atop';
+        tCtx.fillStyle = 'rgba(0, 255, 100, 1)';
+        tCtx.fillRect(0, 0, img.width, img.height);
+
+        return canvas;
     }
 }

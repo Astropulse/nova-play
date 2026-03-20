@@ -167,7 +167,7 @@ export class DevConsole {
         if (!state || !state.events) return;
 
         if (args.length < 1) {
-            console.log("Locate requires an event type: cthulhu, station, cargo");
+            console.log("Locate requires an event type: knowledge, cthulhu, station, cargo");
             return;
         }
 
@@ -176,7 +176,8 @@ export class DevConsole {
 
         for (const ev of state.events) {
             const name = ev.constructor ? ev.constructor.name.toLowerCase() : '';
-            if (type === 'cthulhu' && name.includes('cthulhu')) targetEvent = ev;
+            if (type === 'knowledge' && name.includes('knowledge')) targetEvent = ev;
+            else if (type === 'cthulhu' && name.includes('cthulhu')) targetEvent = ev;
             else if (type === 'station' && name.includes('station')) targetEvent = ev;
             else if (type === 'cargo' && name.includes('cargo')) targetEvent = ev;
         }

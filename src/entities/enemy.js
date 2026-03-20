@@ -554,6 +554,14 @@ export class Enemy {
             }
         }
 
+        // Advanced locator drop: 6x rarer than small batteries (~3.33%)
+        if (Math.random() < 0.20 / 6) {
+            const locator = UPGRADES.find(u => u.id === 'advanced_locator');
+            if (locator) {
+                spawns.push(new ItemPickup(this.game, this.worldX, this.worldY, locator));
+            }
+        }
+
         return spawns;
     }
 
@@ -762,6 +770,15 @@ export class KamikazeEnemy extends Enemy {
         const count = 1 + Math.floor(Math.random() * 2);
         for (let i = 0; i < count; i++) spawns.push(new Scrap(this.game, this.worldX, this.worldY));
         for (let i = 0; i < 4; i++) spawns.push(new Rubble(this.game, this.worldX, this.worldY));
+
+        // Advanced locator drop: 6x rarer than small batteries (~3.33%)
+        if (Math.random() < 0.20 / 6) {
+            const locator = UPGRADES.find(u => u.id === 'advanced_locator');
+            if (locator) {
+                spawns.push(new ItemPickup(this.game, this.worldX, this.worldY, locator));
+            }
+        }
+
         return spawns;
     }
 
@@ -815,6 +832,15 @@ export class CthulhuEnemy extends Enemy {
         const count = 1 + Math.floor(Math.random() * 2);
         for (let i = 0; i < count; i++) spawns.push(new Scrap(this.game, this.worldX, this.worldY));
         for (let i = 0; i < 4; i++) spawns.push(new Rubble(this.game, this.worldX, this.worldY));
+
+        // Advanced locator drop: 6x rarer than small batteries (~3.33%)
+        if (Math.random() < 0.20 / 6) {
+            const locator = UPGRADES.find(u => u.id === 'advanced_locator');
+            if (locator) {
+                spawns.push(new ItemPickup(this.game, this.worldX, this.worldY, locator));
+            }
+        }
+
         return spawns;
     }
 
