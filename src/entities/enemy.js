@@ -777,16 +777,16 @@ export class KamikazeEnemy extends Enemy {
     }
 }
 
-export class CuthuluEnemy extends Enemy {
+export class CthulhuEnemy extends Enemy {
     constructor(game, worldX, worldY, difficultyScale = 1.0) {
         super(game, worldX, worldY, difficultyScale);
 
-        // Selection of Cuthulu-specific sprites
+        // Selection of Cthulhu-specific sprites
         const variant = Math.floor(Math.random() * 3);
-        this.spriteKey = `cuthulu_ship_${variant}`;
+        this.spriteKey = `cthulhu_ship_${variant}`;
         this.img = game.assets.get(this.spriteKey);
 
-        // Custom stats for cuthulu enemies (similar to kamikaze)
+        // Custom stats for cthulhu enemies (similar to kamikaze)
         const speedScale = 1 + (difficultyScale - 1) * 0.15;
         this.baseSpeed = (1000 + Math.random() * 100) * speedScale;
         this.turnSpeed = 7.0 + Math.random() * 1.0;

@@ -1,4 +1,4 @@
-import { KamikazeEnemy, Enemy, CuthuluEnemy } from './enemy.js';
+import { KamikazeEnemy, Enemy, CthulhuEnemy } from './enemy.js';
 import { Rubble, ItemPickup } from './asteroid.js';
 import { UPGRADES } from '../data/upgrades.js';
 
@@ -24,8 +24,8 @@ export class CthulhuEvent {
         this.angle = 0;
 
         // Visuals
-        this.stillImg = game.assets.get('cuthulu');
-        this.wakeAnim = game.assets.get('cuthulu_wake');
+        this.stillImg = game.assets.get('cthulhu');
+        this.wakeAnim = game.assets.get('cthulhu_wake');
         this.frameIndex = 0;
         this.frameTimer = 0;
 
@@ -91,7 +91,7 @@ export class CthulhuEvent {
                     const ex = player.worldX + Math.cos(angle) * dist;
                     const ey = player.worldY + Math.sin(angle) * dist;
 
-                    const enemy = new CuthuluEnemy(this.game, ex, ey, 1 + (this.wave * 0.5));
+                    const enemy = new CthulhuEnemy(this.game, ex, ey, 1 + (this.wave * 0.5));
                     // Respect player inventory for upgrades
                     Enemy.rollUpgrade(enemy, player);
                     this.activeEnemies.push(enemy);   // Consumed by playingState

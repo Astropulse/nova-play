@@ -389,9 +389,9 @@ export class Game {
             'enemy_ship_2': 'Assets/Ships/Enemy/enemy_ship_2.png',
             'enemy_ship_3': 'Assets/Ships/Enemy/enemy_ship_3.png',
             'enemy_ship_4': 'Assets/Ships/Enemy/enemy_ship_4.png',
-            'cuthulu_ship_0': 'Assets/Ships/Cuthulu/cuthulu_0.png',
-            'cuthulu_ship_1': 'Assets/Ships/Cuthulu/cuthulu_1.png',
-            'cuthulu_ship_2': 'Assets/Ships/Cuthulu/cuthulu_2.png',
+            'cthulhu_ship_0': 'Assets/Ships/Cthulhu/cthulhu_0.png',
+            'cthulhu_ship_1': 'Assets/Ships/Cthulhu/cthulhu_1.png',
+            'cthulhu_ship_2': 'Assets/Ships/Cthulhu/cthulhu_2.png',
             // Shops
             'shop_0': 'Assets/Shops/shop_0.png',
             'shop_1': 'Assets/Shops/shop_1.png',
@@ -427,7 +427,7 @@ export class Game {
             'ancient_curse_2x2': 'Assets/Upgrades/ancient_curse_2x2.png',
             'boost_drive_2x1': 'Assets/Upgrades/boost_drive_2x1.png',
             // Events
-            'cuthulu': 'Assets/Events/cuthulu.png',
+            'cthulhu': 'Assets/Events/cthulhu.png',
             'cargo_ship': 'Assets/Events/cargo_ship.png',
             'fractured_station_0': 'Assets/Events/fractured_station_0.png',
             'fractured_station_1': 'Assets/Events/fractured_station_1.png',
@@ -549,7 +549,7 @@ export class Game {
             'bruiser_flying': 'Assets/Ships/Bruiser/bruiser_flying.gif',
             'fighter_flying': 'Assets/Ships/Fighter/fighter_flying.gif',
             'looper_flying': 'Assets/Ships/Looper/looper_flying.gif',
-            'cuthulu_wake': 'Assets/Events/cuthulu_wake.gif',
+            'cthulhu_wake': 'Assets/Events/cthulhu_wake.gif',
         };
     }
 }

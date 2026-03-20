@@ -521,9 +521,9 @@ export class PlayingState {
             // --- Tunable Difficulty Constants ---
             this.difficultyRampTime = 600; // 10 minutes (600 seconds)
             this.difficultyExponent = 0.5;
-            this.difficultyGain = 0.16;
-            this.difficultySteadyRate = 0.006; // Steady growth per second after ramp
-            this.upgradeDifficultyBonus = 0.15; // Per occupied inventory item
+            this.difficultyGain = 0.12;
+            this.difficultySteadyRate = 0.005; // Steady growth per second after ramp
+            this.upgradeDifficultyBonus = 0.10; // Per occupied inventory item
 
             let timeScale = 1.0;
             if (this.totalGameTime <= this.difficultyRampTime) {
