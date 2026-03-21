@@ -915,6 +915,7 @@ export class PlayingState {
             difficultyScale: this.difficultyScale,
             stats: { ...this.stats },
             waveTimer: this.waveTimer,
+            shipId: this.shipData.id,
             player: this.player.serialize(),
             events: this.events.map(ev => ({
                 type: ev.constructor.name,
@@ -929,11 +930,10 @@ export class PlayingState {
                 positions: ev.positions, // FracturedStation
                 angles: ev.angles // FracturedStation
             })),
-            shops: this.shops.map(s => ({
-                worldX: s.worldX,
-                worldY: s.worldY,
-                revealed: s.revealed
-            }))
+            itemPickups: this.itemPickups.map(i => i.serialize()),
+            scrapEntities: this.scrapEntities.map(s => s.serialize()),
+            asteroids: this.asteroids.map(a => a.serialize()),
+            shops: this.shops.map(s => s.serialize())
         };
     }
 
@@ -946,6 +946,9 @@ export class PlayingState {
         if (data.player) {
             await this.player.deserialize(data.player);
         }
+
+        const { UPGRADES } = await import('../data/upgrades.js');
+        const { Asteroid, Scrap, ItemPickup } = await import('../entities/asteroid.js');
 
         // Recreate events
         this.events = [];
@@ -979,20 +982,55 @@ export class PlayingState {
         // Recreate shops
         this.shops = [];
         this.revealedShops = [];
-        for (const shopData of data.shops) {
+        for (const shopData of (data.shops || [])) {
             const s = new Shop(this.game, shopData.worldX, shopData.worldY);
-            s.revealed = shopData.revealed;
+            await s.deserialize(shopData);
             this.shops.push(s);
             if (s.revealed) this.revealedShops.push(s);
         }
 
-        // Cleanup transient entities
-        this.projectiles = [];
+        // Recreate items on ground
+        this.itemPickups = [];
+        for (const iData of (data.itemPickups || [])) {
+            const upgrade = UPGRADES.find(u => u.id === iData.itemId);
+            if (upgrade) {
+                const item = new ItemPickup(this.game, iData.worldX, iData.worldY, upgrade);
+                item.vx = iData.vx;
+                item.vy = iData.vy;
+                item.rotation = iData.rotation;
+                item.rotSpeed = iData.rotSpeed;
+                this.itemPickups.push(item);
+            }
+        }
+
+        // Recreate scrap
+        this.scrapEntities = [];
+        for (const sData of (data.scrapEntities || [])) {
+            const scrap = new Scrap(this.game, sData.worldX, sData.worldY, sData.type);
+            scrap.vx = sData.vx;
+            scrap.vy = sData.vy;
+            scrap.rotation = sData.rotation;
+            scrap.rotSpeed = sData.rotSpeed;
+            scrap.lifetime = sData.lifetime;
+            scrap.assetKey = sData.assetKey;
+            this.scrapEntities.push(scrap);
+        }
+
+        // Recreate asteroids
         this.asteroids = [];
+        for (const aData of (data.asteroids || [])) {
+            const ast = new Asteroid(this.game, aData.worldX, aData.worldY, aData.size, aData.vx, aData.vy);
+            ast.hp = aData.hp;
+            ast.rotation = aData.rotation;
+            ast.rotSpeed = aData.rotSpeed;
+            ast.assetKey = aData.assetKey;
+            this.asteroids.push(ast);
+        }
+
+        // Cleanup other lists
+        this.projectiles = [];
         this.enemies = [];
         this.rubble = [];
-        this.scrapEntities = [];
-        this.itemPickups = [];
         
         // Reset camera
         this.camera.follow(this.player);

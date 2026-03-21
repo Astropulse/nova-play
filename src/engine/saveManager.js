@@ -30,16 +30,31 @@ export class SaveManager {
             }
 
             const saveData = JSON.parse(rawData);
+            const { SHIPS } = await import('../data/ships.js');
+            const { PlayingState } = await import('../states/playingState.js');
             
-            // If we are already in PlayingState, we can just deserialize.
-            // If not (e.g. from Menu), we need to transition to PlayingState first.
-            if (game.currentState && game.currentState.constructor.name === 'PlayingState') {
-                await game.currentState.deserialize(saveData);
+            let targetState = game.currentState;
+
+            // If we're not in PlayingState or the ship has changed, we must transition
+            const currentShipId = (game.currentState && game.currentState.shipData) ? game.currentState.shipData.id : null;
+            const needsTransition = !(game.currentState instanceof PlayingState) || (saveData.shipId && currentShipId !== saveData.shipId);
+
+            if (needsTransition) {
+                const shipId = saveData.shipId || 'fighter'; // default to fighter if missing
+                const shipData = SHIPS.find(s => s.id === shipId);
+                if (!shipData) {
+                    console.error('Saved ship ID not found:', shipId);
+                    return;
+                }
+                targetState = new PlayingState(game, shipData);
+                game.setState(targetState);
+            }
+
+            if (targetState instanceof PlayingState) {
+                await targetState.deserialize(saveData);
                 console.log('Game loaded successfully.');
             } else {
-                // This part might need adjustment depending on how shipData is handled.
-                // For now, let's assume we load from within an active game.
-                console.log('Load can only be performed from within an active game session for now.');
+                console.warn('Could not load game: target state is not PlayingState.');
             }
         } catch (err) {
             console.error('Failed to load game:', err);

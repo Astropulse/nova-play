@@ -131,4 +131,27 @@ export class Shop {
     get radius() {
         return (this.img ? Math.max(this.img.width, this.img.height) / 2 : 32) * this.game.worldScale;
     }
+
+    serialize() {
+        return {
+            worldX: this.worldX,
+            worldY: this.worldY,
+            revealed: this.revealed,
+            assetKey: this.assetKey,
+            permUpgrades: { ...this.permUpgrades },
+            inventory: this.inventory.serialize()
+        };
+    }
+
+    async deserialize(data) {
+        this.worldX = data.worldX;
+        this.worldY = data.worldY;
+        this.revealed = data.revealed;
+        this.assetKey = data.assetKey;
+        this.img = this.game.assets.get(this.assetKey);
+        this.permUpgrades = { ...data.permUpgrades };
+        if (data.inventory) {
+            await this.inventory.deserialize(data.inventory);
+        }
+    }
 }

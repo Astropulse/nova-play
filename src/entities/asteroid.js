@@ -325,6 +325,20 @@ export class Scrap {
         if (this.lifetime <= 0) this.alive = false;
     }
 
+    serialize() {
+        return {
+            worldX: this.worldX,
+            worldY: this.worldY,
+            type: this.type,
+            vx: this.vx,
+            vy: this.vy,
+            rotation: this.rotation,
+            rotSpeed: this.rotSpeed,
+            lifetime: this.lifetime,
+            assetKey: this.assetKey
+        };
+    }
+
     draw(ctx, camera) {
         if (!this.alive || !this.img) return;
         const screen = camera.worldToScreen(this.worldX, this.worldY, this.game.width, this.game.height);
@@ -403,6 +417,18 @@ export class ItemPickup {
         this.rotation += this.rotSpeed * dt;
     }
 
+    serialize() {
+        return {
+            worldX: this.worldX,
+            worldY: this.worldY,
+            itemId: this.item.id,
+            vx: this.vx,
+            vy: this.vy,
+            rotation: this.rotation,
+            rotSpeed: this.rotSpeed
+        };
+    }
+
     draw(ctx, camera) {
         if (!this.alive || !this.img) return;
         const screen = camera.worldToScreen(this.worldX, this.worldY, this.game.width, this.game.height);
@@ -472,6 +498,20 @@ export class Asteroid {
         this.worldX += this.vx * dt;
         this.worldY += this.vy * dt;
         this.rotation += this.rotSpeed * dt;
+    }
+
+    serialize() {
+        return {
+            worldX: this.worldX,
+            worldY: this.worldY,
+            size: this.size,
+            vx: this.vx,
+            vy: this.vy,
+            hp: this.hp,
+            rotation: this.rotation,
+            rotSpeed: this.rotSpeed,
+            assetKey: this.assetKey
+        };
     }
 
     hit(damage) {
