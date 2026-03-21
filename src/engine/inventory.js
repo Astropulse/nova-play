@@ -116,4 +116,30 @@ export class Inventory {
         }
         return false;
     }
+
+    serialize() {
+        return {
+            cols: this.cols,
+            rows: this.rows,
+            items: this.items.map(entry => ({
+                id: entry.item.id,
+                x: entry.x,
+                y: entry.y
+            }))
+        };
+    }
+
+    async deserialize(data) {
+        this.clear();
+        this.cols = data.cols;
+        this.rows = data.rows;
+        
+        const { UPGRADES } = await import('../data/upgrades.js');
+        for (const itemData of data.items) {
+            const upgrade = UPGRADES.find(u => u.id === itemData.id);
+            if (upgrade) {
+                this.addItem(upgrade, itemData.x, itemData.y);
+            }
+        }
+    }
 }

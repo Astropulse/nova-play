@@ -234,8 +234,15 @@ export class SoundManager {
         return this.breakDuration >= this.requiredBreakDuration;
     }
 
-    setTargetState(state) {
+    setTargetState(state, force = false) {
         if (this.targetMusicState === state) return;
+
+        // Protection: Don't allow normal transitions to override BOSS state unless forced
+        if (!force && this.musicState === MUSIC_STATE.BOSS) {
+            if (state === MUSIC_STATE.EXPLORATION || state === MUSIC_STATE.COMBAT) {
+                return;
+            }
+        }
 
         // Calculate transition cutoff window
         let cutoff = 4.0; // Default
@@ -439,7 +446,7 @@ export class SoundManager {
     }
 
     playGameOverMusic() {
-        this.setTargetState(MUSIC_STATE.GAMEOVER);
+        this.setTargetState(MUSIC_STATE.GAMEOVER, true);
     }
 
     stopMusic() {
@@ -453,7 +460,7 @@ export class SoundManager {
     }
 
     playTitleMusic() {
-        this.setTargetState(MUSIC_STATE.TITLE);
+        this.setTargetState(MUSIC_STATE.TITLE, true);
     }
 
     playSpecificMusic(key) {
@@ -470,8 +477,8 @@ export class SoundManager {
     }
 
     restoreMusic() {
-        // Restore to exploration by default
-        this.setTargetState(MUSIC_STATE.EXPLORATION);
+        // Restore to exploration by default, bypass boss protection
+        this.setTargetState(MUSIC_STATE.EXPLORATION, true);
     }
 
     setMusicVolume(v) {

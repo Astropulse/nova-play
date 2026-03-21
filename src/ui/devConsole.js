@@ -1,3 +1,5 @@
+import { SaveManager } from '../engine/saveManager.js';
+
 export class DevConsole {
     constructor(game) {
         this.game = game;
@@ -15,6 +17,8 @@ export class DevConsole {
             'wave': (args) => this._cmdWave(args),
             'scrap': (args) => this._cmdScrap(args),
             'locate': (args) => this._cmdLocate(args),
+            'save': () => this._cmdSave(),
+            'load': () => this._cmdLoad(),
             'help': () => this._cmdHelp()
         };
 
@@ -190,8 +194,16 @@ export class DevConsole {
         }
     }
 
+    _cmdSave() {
+        SaveManager.save(this.game.currentState);
+    }
+
+    _cmdLoad() {
+        SaveManager.load(this.game);
+    }
+
     _cmdHelp() {
-        console.log("Available commands: time, spawn, stat, wave, scrap, locate, help");
+        console.log("Available commands: time, spawn, stat, wave, scrap, locate, save, load, help");
     }
 
     draw(ctx) {

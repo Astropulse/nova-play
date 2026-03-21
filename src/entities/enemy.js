@@ -385,8 +385,8 @@ export class Enemy {
                 const pdist = Math.sqrt(pdx * pdx + pdy * pdy);
 
                 // Only dodge lasers if there is enough space (don't freak out when player is close)
-                const playerDist = this.game.currentState.player ? 
-                    Math.sqrt(Math.pow(this.game.currentState.player.worldX - this.worldX, 2) + Math.pow(this.game.currentState.player.worldY - this.worldY, 2)) : 
+                const playerDist = this.game.currentState.player ?
+                    Math.sqrt(Math.pow(this.game.currentState.player.worldX - this.worldX, 2) + Math.pow(this.game.currentState.player.worldY - this.worldY, 2)) :
                     Infinity;
 
                 if (pdist < 400 * this.game.worldScale && playerDist > 450 * this.game.worldScale) {
@@ -461,7 +461,7 @@ export class Enemy {
             const dx = player.worldX - startX;
             const dy = player.worldY - startY;
             const dist = Math.sqrt(dx * dx + dy * dy);
-            
+
             if (dist < length) {
                 const dot = (dx * dirX + dy * dirY) / dist;
                 if (dot > 0.99) { // Very narrow beam
@@ -508,7 +508,7 @@ export class Enemy {
 
     _generateProceduralDebris() {
         if (!this.img || !this.img.width) return [];
-        
+
         // 10-15 organic shards for enemies
         const numPieces = 10 + Math.floor(Math.random() * 6);
         const shards = VoronoiSlicer.slice(this.img, numPieces);
@@ -517,7 +517,7 @@ export class Enemy {
         for (const shard of shards) {
             const cosA = Math.cos(this.angle + Math.PI / 2);
             const sinA = Math.sin(this.angle + Math.PI / 2);
-            
+
             // Transform local fragment offset to world space
             const worldOffX = (shard.offsetX * cosA - shard.offsetY * sinA) * this.game.worldScale;
             const worldOffY = (shard.offsetX * sinA + shard.offsetY * cosA) * this.game.worldScale;
@@ -554,8 +554,7 @@ export class Enemy {
             }
         }
 
-        // Advanced locator drop: 6x rarer than small batteries (~3.33%)
-        if (Math.random() < 0.20 / 6) {
+        if (Math.random() < 0.01) {
             const locator = UPGRADES.find(u => u.id === 'advanced_locator');
             if (locator) {
                 spawns.push(new ItemPickup(this.game, this.worldX, this.worldY, locator));
@@ -771,8 +770,7 @@ export class KamikazeEnemy extends Enemy {
         for (let i = 0; i < count; i++) spawns.push(new Scrap(this.game, this.worldX, this.worldY));
         for (let i = 0; i < 4; i++) spawns.push(new Rubble(this.game, this.worldX, this.worldY));
 
-        // Advanced locator drop: 6x rarer than small batteries (~3.33%)
-        if (Math.random() < 0.20 / 6) {
+        if (Math.random() < 0.01) {
             const locator = UPGRADES.find(u => u.id === 'advanced_locator');
             if (locator) {
                 spawns.push(new ItemPickup(this.game, this.worldX, this.worldY, locator));
@@ -833,8 +831,7 @@ export class CthulhuEnemy extends Enemy {
         for (let i = 0; i < count; i++) spawns.push(new Scrap(this.game, this.worldX, this.worldY));
         for (let i = 0; i < 4; i++) spawns.push(new Rubble(this.game, this.worldX, this.worldY));
 
-        // Advanced locator drop: 6x rarer than small batteries (~3.33%)
-        if (Math.random() < 0.20 / 6) {
+        if (Math.random() < 0.01) {
             const locator = UPGRADES.find(u => u.id === 'advanced_locator');
             if (locator) {
                 spawns.push(new ItemPickup(this.game, this.worldX, this.worldY, locator));

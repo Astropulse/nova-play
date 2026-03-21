@@ -861,4 +861,45 @@ export class Player {
 
         return canvas;
     }
+
+    serialize() {
+        return {
+            worldX: this.worldX,
+            worldY: this.worldY,
+            vx: this.vx,
+            vy: this.vy,
+            angle: this.angle,
+            health: this.health,
+            maxHealth: this.maxHealth,
+            scrap: this.scrap,
+            shieldEnergy: this.shieldEnergy,
+            shieldBroken: this.shieldBroken,
+            permHealthBonus: this.permHealthBonus,
+            permShieldBonus: this.permShieldBonus,
+            permDamageBonus: this.permDamageBonus,
+            inventoryUpgradeTier: this.inventoryUpgradeTier,
+            inventory: this.inventory ? this.inventory.serialize() : null
+        };
+    }
+
+    async deserialize(data) {
+        this.worldX = data.worldX;
+        this.worldY = data.worldY;
+        this.vx = data.vx;
+        this.vy = data.vy;
+        this.angle = data.angle;
+        this.health = data.health;
+        this.maxHealth = data.maxHealth;
+        this.scrap = data.scrap;
+        this.shieldEnergy = data.shieldEnergy;
+        this.shieldBroken = data.shieldBroken;
+        this.permHealthBonus = data.permHealthBonus;
+        this.permShieldBonus = data.permShieldBonus;
+        this.permDamageBonus = data.permDamageBonus;
+        this.inventoryUpgradeTier = data.inventoryUpgradeTier;
+
+        if (data.inventory && this.inventory) {
+            await this.inventory.deserialize(data.inventory);
+        }
+    }
 }

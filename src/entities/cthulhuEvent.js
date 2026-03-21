@@ -128,7 +128,7 @@ export class CthulhuEvent {
     }
 
     get isActive() {
-        return this.state !== CTHULHU_STATE.DORMANT && this.state !== CTHULHU_STATE.SLEEPING;
+        return this.state !== CTHULHU_STATE.DORMANT;
     }
 
     startWave(player) {

@@ -909,6 +909,95 @@ export class PlayingState {
         }
     }
 
+    serialize() {
+        return {
+            totalGameTime: this.totalGameTime,
+            difficultyScale: this.difficultyScale,
+            stats: { ...this.stats },
+            waveTimer: this.waveTimer,
+            player: this.player.serialize(),
+            events: this.events.map(ev => ({
+                type: ev.constructor.name,
+                worldX: ev.worldX,
+                worldY: ev.worldY,
+                revealed: ev.revealed,
+                discovered: ev.discovered,
+                state: ev.state,
+                // Specific fields for certain events
+                wave: ev.wave, // Cthulhu
+                spawnedInitialScrap: ev.spawnedInitialScrap, // CargoShip
+                positions: ev.positions, // FracturedStation
+                angles: ev.angles // FracturedStation
+            })),
+            shops: this.shops.map(s => ({
+                worldX: s.worldX,
+                worldY: s.worldY,
+                revealed: s.revealed
+            }))
+        };
+    }
+
+    async deserialize(data) {
+        this.totalGameTime = data.totalGameTime;
+        this.difficultyScale = data.difficultyScale;
+        this.stats = { ...data.stats };
+        this.waveTimer = data.waveTimer;
+
+        if (data.player) {
+            await this.player.deserialize(data.player);
+        }
+
+        // Recreate events
+        this.events = [];
+        const EVENT_CLASSES = {
+            'CthulhuEvent': CthulhuEvent,
+            'CargoShipEvent': CargoShipEvent,
+            'FracturedStationEvent': FracturedStationEvent,
+            'KnowledgeEvent': KnowledgeEvent
+        };
+
+        for (const evData of data.events) {
+            const Cls = EVENT_CLASSES[evData.type];
+            if (Cls) {
+                let ev;
+                if (evData.type === 'FracturedStationEvent') {
+                    ev = new Cls(this.game, evData.positions);
+                    if (evData.angles) ev.angles = evData.angles;
+                    ev.state = evData.state;
+                } else {
+                    ev = new Cls(this.game, evData.worldX, evData.worldY);
+                    ev.state = evData.state;
+                    if (evData.type === 'CthulhuEvent') ev.wave = evData.wave;
+                    if (evData.type === 'CargoShipEvent') ev.spawnedInitialScrap = evData.spawnedInitialScrap;
+                }
+                ev.revealed = evData.revealed;
+                ev.discovered = evData.discovered;
+                this.events.push(ev);
+            }
+        }
+
+        // Recreate shops
+        this.shops = [];
+        this.revealedShops = [];
+        for (const shopData of data.shops) {
+            const s = new Shop(this.game, shopData.worldX, shopData.worldY);
+            s.revealed = shopData.revealed;
+            this.shops.push(s);
+            if (s.revealed) this.revealedShops.push(s);
+        }
+
+        // Cleanup transient entities
+        this.projectiles = [];
+        this.asteroids = [];
+        this.enemies = [];
+        this.rubble = [];
+        this.scrapEntities = [];
+        this.itemPickups = [];
+        
+        // Reset camera
+        this.camera.follow(this.player);
+    }
+
     _spawnExplosion(x, y, damage) {
         // Simple explosion object for now, could be a class later
         this.explosions.push({

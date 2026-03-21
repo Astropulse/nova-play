@@ -217,9 +217,7 @@ export class FracturedStationEvent {
     }
 
     get isActive() {
-        return this.state === FRACTURED_STATION_STATE.WAVE_SUB1 ||
-               this.state === FRACTURED_STATION_STATE.WAVE_SUB2 ||
-               this.state === FRACTURED_STATION_STATE.BELT_SUB3;
+        return this.state !== FRACTURED_STATION_STATE.FINISHED;
     }
 
     getSpawnOnDeath() {

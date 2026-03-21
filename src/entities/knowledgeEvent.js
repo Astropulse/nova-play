@@ -48,8 +48,8 @@ export class KnowledgeEvent {
         this.beamTimer = 1.0; // Start sooner
 
         // Health Phase 1: 50 damage to wake up
-        this.health = 10;
-        this.maxBossHealth = 50;
+        this.health = 5;
+        this.maxBossHealth = 40;
         this.invulnTimer = 0;
 
         this.pendingSpawns = [];
@@ -333,10 +333,10 @@ export class KnowledgeEvent {
     _fireLasers(player, diff) {
         // Spiral pattern
         const count = Math.floor(8 + (diff * 2));
-        const damage = 1 * diff;
+        const damage = (1 + (diff - 1) * 0.5);
         for (let i = 0; i < count; i++) {
             const angle = (i / count) * Math.PI * 2 + (Math.random() * 0.2);
-            const speed = (500 + (diff * 100)) * this.game.worldScale;
+            const speed = (500 + (diff * 30)) * this.game.worldScale;
             const proj = new Projectile(this.game, this.worldX, this.worldY, angle, speed, 'red_laser_ball_big', this, damage, 4.0);
             this.game.currentState.projectiles.push(proj);
         }
@@ -345,9 +345,9 @@ export class KnowledgeEvent {
 
     _fireSwirlingProjectiles(player, diff) {
         const count = Math.floor(12 + (diff * 4));
-        const damage = 1 * diff;
+        const damage = (1 + (diff - 1) * 0.5);
         const baseAngle = Math.random() * Math.PI * 2;
-        const speed = (400 + (diff * 50)) * this.game.worldScale;
+        const speed = (400 + (diff * 20)) * this.game.worldScale;
         const angularVelocity = 1.0 + Math.random() * 1.0; // Variable radius: 1.5 was current (small), 0.5 is large spiral
 
         for (let i = 0; i < count; i++) {
@@ -370,14 +370,14 @@ export class KnowledgeEvent {
     }
 
     _fireWaveProjectiles(player, diff) {
-        const damage = 1 * diff;
+        const damage = (1 + (diff - 1) * 0.5);
         const waveAngle = Math.atan2(player.worldY - this.worldY, player.worldX - this.worldX);
-        const arc = Math.PI * 0.6; // 60% of a circle
+        const arc = Math.PI * 0.4; // 40% of a circle
         const count = Math.floor(15 + (diff * 5));
 
         for (let i = 0; i < count; i++) {
             const angle = (waveAngle - arc / 2) + (i / (count - 1)) * arc;
-            const speed = (600 + (diff * 80)) * this.game.worldScale;
+            const speed = (600 + (diff * 20)) * this.game.worldScale;
             const proj = new Projectile(this.game, this.worldX, this.worldY, angle, speed, 'red_laser_ball_big', this, damage, 4.0);
             this.game.currentState.projectiles.push(proj);
         }
@@ -386,7 +386,7 @@ export class KnowledgeEvent {
 
     _fireHitscanBeam(player, diff) {
         const angle = this.targetingAngle;
-        const damage = 4 * diff;
+        const damage = (1 + (diff - 1) * 0.5) * 2.5;
         const length = 12000 * this.game.worldScale;
 
         this.activeBeams.push({
@@ -493,7 +493,7 @@ export class KnowledgeEvent {
     }
 
     get isActive() {
-        return this.state === KNOWLEDGE_STATE.BOSS;
+        return this.state === KNOWLEDGE_STATE.NEAR || this.state === KNOWLEDGE_STATE.BOSS;
     }
 
     draw(ctx, camera) {
