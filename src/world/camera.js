@@ -8,6 +8,44 @@ export class Camera {
         this.y = 0;
         this.vx = 0;
         this.vy = 0;
+
+        // Screen Shake
+        this.shakeIntensity = 0;
+        this.shakeDecay = 10.0; // Higher = shorter duration
+        this.shakeX = 0;
+        this.shakeY = 0;
+    }
+
+    /**
+     * Immediately aligns the camera's position and velocity with the target.
+     * @param {object} target - The object to snap to (must have worldX, worldY, vx, vy).
+     */
+    snapTo(target) {
+        this.x = target.worldX || 0;
+        this.y = target.worldY || 0;
+        this.vx = target.vx || 0;
+        this.vy = target.vy || 0;
+        this.displacementX = 0;
+        this.displacementY = 0;
+    }
+
+    /**
+     * Adds shake intensity to the camera.
+     * @param {number} intensity - The amount of shake to add.
+     * @param {number} [decay] - Optional decay rate override.
+     */
+    shake(intensity, decay = 10.0) {
+        this.shakeIntensity = Math.min(5.0, this.shakeIntensity + intensity);
+        this.shakeDecay = decay;
+    }
+
+    /**
+     * Sets a minimum shake intensity for the current frame.
+     * Useful for continuous rumble that doesn't accumulate.
+     * @param {number} intensity 
+     */
+    rumble(intensity) {
+        this.shakeIntensity = Math.max(this.shakeIntensity, intensity);
     }
 
     update(dt, target) {
@@ -26,14 +64,25 @@ export class Camera {
         this.x += this.vx * dt;
         this.y += this.vy * dt;
 
+        // Update Screen Shake
+        if (this.shakeIntensity > 0) {
+            this.shakeIntensity = Math.max(0, this.shakeIntensity - this.shakeDecay * dt * 3);
+            const scale = 4.5; 
+            this.shakeX = (Math.random() - 0.5) * this.shakeIntensity * scale;
+            this.shakeY = (Math.random() - 0.5) * this.shakeIntensity * scale;
+        } else {
+            this.shakeX = 0;
+            this.shakeY = 0;
+        }
+
         this.displacementX = this.x - target.worldX;
         this.displacementY = this.y - target.worldY;
     }
 
     worldToScreen(wx, wy, canvasW, canvasH) {
         return {
-            x: (wx - this.x) * this.game.worldScale + canvasW / 2,
-            y: (wy - this.y) * this.game.worldScale + canvasH / 2
+            x: (wx - this.x) * this.game.worldScale + canvasW / 2 + this.shakeX,
+            y: (wy - this.y) * this.game.worldScale + canvasH / 2 + this.shakeY
         };
     }
 

@@ -44,6 +44,9 @@ export class CthulhuEvent {
         // Damage tracking
         this.health = 20; // Only matters in DESTRUCTIBLE state
         this.invulnTimer = 0;
+
+        // Wake Rumble for polish
+        this.wakeRumbleTimer = 0;
     }
 
     update(dt, player) {
@@ -125,6 +128,17 @@ export class CthulhuEvent {
             // Rotates slowly
             this.angle += dt * 0.5;
         }
+
+        // --- Wake Rumble Update ---
+        if (this.wakeRumbleTimer > 0) {
+            this.wakeRumbleTimer -= dt;
+            const t = 1.0 - this.wakeRumbleTimer; // 0.0 to 1.0 over 1 second
+            if (t <= 1.0) {
+                // Bell curve intensity: peaks at 0.5s
+                const intensity = Math.sin(t * Math.PI) * 5.0; // Strong max intensity of 5.0
+                this.game.camera.rumble(intensity);
+            }
+        }
     }
 
     get isActive() {
@@ -163,6 +177,7 @@ export class CthulhuEvent {
 
     triggerEvent() {
         this.state = CTHULHU_STATE.WAKING;
+        this.wakeRumbleTimer = 1.0; // 1 second pulse
         this.game.sounds.playSpecificMusic('Starlight Devourer');
     }
 

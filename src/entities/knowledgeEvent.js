@@ -130,6 +130,17 @@ export class KnowledgeEvent {
                 this.game.sounds.playSpecificMusic('Lidless Above the Void');
             }
         }
+
+        // Proximity-based approach rumble (900 to 500 units)
+        if (this.state === KNOWLEDGE_STATE.DORMANT || this.state === KNOWLEDGE_STATE.NEAR) {
+            if (dist < 700 && dist > 500) {
+                const ratio = 1 - (dist - 500) / 200; // 0 at 700, 1 at 500
+                const intensity = ratio * 2.0;
+                this.game.camera.rumble(intensity);
+            } else if (dist <= 500) {
+                this.game.camera.rumble(2.0);
+            }
+        }
         // Removed distance-based trigger for BOSS state - triggered in hit()
 
         // Eye tracking logic

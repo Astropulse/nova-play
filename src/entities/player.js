@@ -303,6 +303,7 @@ export class Player {
                 // Play sound once when starting
                 if (!this.isBoosting) {
                     this.game.sounds.play('boost', { volume: 0.5, x: this.worldX, y: this.worldY });
+                    this.game.camera.shake(1.2, 15.0);
                 }
 
                 this.isBoosting = true;
@@ -313,6 +314,9 @@ export class Player {
                 const power = this.acceleration * 4.5 * dt;
                 this.vx += Math.cos(this.angle) * power;
                 this.vy += Math.sin(this.angle) * power;
+
+                // Subtle continuous jitter while holding boost
+                this.game.camera.rumble(0.4);
             } else {
                 this.isBoosting = false;
                 this.boostIntensity = 0;
@@ -328,6 +332,7 @@ export class Player {
                 this.vx += Math.cos(this.angle) * power;
                 this.vy += Math.sin(this.angle) * power;
                 this.game.sounds.play('boost', { volume: 0.5, x: this.worldX, y: this.worldY });
+                this.game.camera.shake(1.5, 15.0);
             }
         }
 
@@ -354,6 +359,7 @@ export class Player {
                 this.dodgeCooldownTimer = this.dodgeCooldown;
                 this._dodgeWasOnCooldown = true;
                 this.game.sounds.play('dodge', { volume: 0.4, x: this.worldX, y: this.worldY });
+                this.game.camera.shake(0.9, 12.0);
             }
             if (input.isKeyJustPressed('KeyD')) {
                 const perpAngle = this.angle + Math.PI / 2;
@@ -364,6 +370,7 @@ export class Player {
                 this.dodgeCooldownTimer = this.dodgeCooldown;
                 this._dodgeWasOnCooldown = true;
                 this.game.sounds.play('dodge', { volume: 0.4, x: this.worldX, y: this.worldY });
+                this.game.camera.shake(0.9, 12.0);
             }
         }
 
@@ -425,6 +432,7 @@ export class Player {
                 this.shieldBroken = true;
                 this.shielding = false;
                 this.game.sounds.play('shield_break', { volume: 0.6, x: this.worldX, y: this.worldY });
+                this.game.camera.shake(3.0, 8.0);
             }
         } else {
             this.shieldEnergy = Math.min(this.maxShieldEnergy, this.shieldEnergy + (this.shieldRechargeRate * this.shieldRegenMult) * dt);

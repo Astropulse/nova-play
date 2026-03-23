@@ -113,9 +113,33 @@ export class PlayingState {
         };
     }
 
+    _triggerShakeAt(x, y, intensity, minPassDist = 1200, maxDist = 4000) {
+        const dx = x - this.player.worldX;
+        const dy = y - this.player.worldY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        
+        if (dist >= maxDist) return;
+        
+        let finalIntensity = intensity;
+        if (dist > minPassDist) {
+            const attenuation = 1.0 - ((dist - minPassDist) / (maxDist - minPassDist));
+            finalIntensity *= attenuation;
+        }
+        
+        if (finalIntensity > 0.1) {
+            this.camera.shake(finalIntensity);
+        }
+    }
+
     enter() {
         document.body.classList.add('playing');
         this.game.sounds.startMusic();
+        this.game.camera = this.camera;
+    }
+
+    exit() {
+        document.body.classList.remove('playing');
+        this.game.camera = null;
     }
 
     _spawnInitialShops() {
@@ -700,9 +724,12 @@ export class PlayingState {
                         proj.alive = false;
                         if (ev.hit(proj.damage)) {
                             this._onEntityDestroyed(ev);
-                        } else if (ev.state === CTHULHU_STATE.DESTRUCTIBLE) {
-                            for (let i = 0; i < 2; i++) {
-                                this.rubble.push(new Rubble(this.game, proj.worldX, proj.worldY));
+                        } else {
+                            this._triggerShakeAt(proj.worldX, proj.worldY, 0.6);
+                            if (ev.state === CTHULHU_STATE.DESTRUCTIBLE) {
+                                for (let i = 0; i < 2; i++) {
+                                    this.rubble.push(new Rubble(this.game, proj.worldX, proj.worldY));
+                                }
                             }
                         }
                         if (this.player.hasExplosivesUnit || proj.isRocket) {
@@ -723,6 +750,8 @@ export class PlayingState {
                         this.game.sounds.play('hit', { volume: 0.4, x: proj.worldX, y: proj.worldY });
                         if (ast.hit(proj.damage)) {
                             this._onEntityDestroyed(ast);
+                        } else {
+                            this._triggerShakeAt(proj.worldX, proj.worldY, 0.4);
                         }
                         if (this.player.hasExplosivesUnit || proj.isRocket) {
                             this._spawnExplosion(proj.worldX, proj.worldY, proj.damage * 0.5);
@@ -742,6 +771,8 @@ export class PlayingState {
                         this.game.sounds.play('hit', { volume: 0.4, x: proj.worldX, y: proj.worldY });
                         if (en.hit(proj.damage)) {
                             this._onEntityDestroyed(en);
+                        } else {
+                            this._triggerShakeAt(proj.worldX, proj.worldY, 0.5);
                         }
                         if (this.player.hasExplosivesUnit || proj.isRocket) {
                             this._spawnExplosion(proj.worldX, proj.worldY, proj.damage * 0.5);
@@ -848,6 +879,7 @@ export class PlayingState {
     }
 
     _onEntityDestroyed(entity) {
+        this._triggerShakeAt(entity.worldX, entity.worldY, entity instanceof Asteroid ? 1.5 : 1.8);
         this.game.sounds.play(entity instanceof Asteroid ? 'asteroid_break' : 'ship_explode', { volume: 0.4, x: entity.worldX, y: entity.worldY });
         // Track stats
         if (entity instanceof Asteroid) {
@@ -874,10 +906,16 @@ export class PlayingState {
                 this.player.shieldEnergy = 0;
                 this.player.shieldBroken = true;
                 this.player.shielding = false;
+                this.camera.shake(3.0, 8.0); // Big impact for shield break
+                this.game.sounds.play('shield_break', { volume: 0.7, x: this.player.worldX, y: this.player.worldY });
+            } else {
+                this.camera.shake(0.4, 15.0); // Subtle hit feedback
+                this.game.sounds.play('asteroid_break', { volume: 0.3, x: this.player.worldX, y: this.player.worldY }); // Shield hit sound
             }
-            this.game.sounds.play('asteroid_break', { volume: 0.3, x: this.player.worldX, y: this.player.worldY }); // Shield hit sound
         } else {
             this.player.health -= amount;
+            // Increased with damage slightly, but with diminishing returns (sqrt)
+            this.camera.shake(Math.sqrt(amount) * 1.2, 15.0);
             this.game.sounds.play('ship_explode', { volume: 0.5, x: this.player.worldX, y: this.player.worldY });
 
             if (this.player.health <= 0) {
@@ -945,6 +983,8 @@ export class PlayingState {
 
         if (data.player) {
             await this.player.deserialize(data.player);
+            // Snap camera to player immediately on load to prevent starting at origin
+            this.camera.snapTo(this.player);
         }
 
         const { UPGRADES } = await import('../data/upgrades.js');
@@ -1046,6 +1086,7 @@ export class PlayingState {
             color: 'rgba(255, 165, 0, 0.8)', // Orange
             damage: damage // Potentially for area damage
         });
+        this._triggerShakeAt(x, y, 2.0);
     }
 
     draw(ctx) {
@@ -2416,6 +2457,12 @@ export class PlayingState {
     }
 
     _handlePrimaryWeaponFire() {
+        if (this.player.hasRailgun && this.player.isFiring) {
+            this.camera.shake(1.8, 12.0);
+        }
+        if (this.player.hasEnergyBlaster && this.player.isFiring) {
+            this.camera.shake(1.0, 15.0);
+        }
         const p = this.player;
         const noseOffset = 36;
 
@@ -2625,6 +2672,7 @@ export class PlayingState {
             timer: 0.3, // Explosion visuals last 0.3s
             maxTimer: 0.3
         });
+        this._triggerShakeAt(x, y, 2.5);
 
         // Explosion area of effect
         const radius = 64;

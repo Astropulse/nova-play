@@ -16,7 +16,7 @@ export class CargoShipEvent {
 
         this.state = CARGO_SHIP_STATE.OPENED;
         this.angle = Math.random() * Math.PI * 2;
-        
+
         // Visuals
         this.img = game.assets.get('cargo_ship');
 
@@ -40,11 +40,11 @@ export class CargoShipEvent {
             if (dist < 1200 * this.game.worldScale) {
                 this.spawnedInitialScrap = true;
                 this.revealed = true; // Reveal on radar when close
-                
+
                 // Queue 50-80 scrap to be spawned gradually
                 const scrapCount = 50 + Math.floor(Math.random() * 31);
                 this._scrapQueue = scrapCount;
-                
+
                 this.game.sounds.play('asteroid_break', { volume: 0.6, x: this.worldX, y: this.worldY });
             }
         }
@@ -54,13 +54,13 @@ export class CargoShipEvent {
             const numToSpawn = Math.min(this._scrapQueue, 5);
             for (let i = 0; i < numToSpawn; i++) {
                 const angle = Math.random() * Math.PI * 2;
-                const spawnDist = Math.random() * this.radius * 3;
+                const spawnDist = Math.random() * this.radius * 1.5;
                 const sx = this.worldX + Math.cos(angle) * spawnDist;
                 const sy = this.worldY + Math.sin(angle) * spawnDist;
-                
+
                 let type = 'small';
                 if (Math.random() > 0.85) type = 'big';
-                
+
                 this.pendingSpawns.push(new Scrap(this.game, sx, sy, type));
             }
             this._scrapQueue -= numToSpawn;
@@ -103,13 +103,13 @@ export class CargoShipEvent {
         if (!this.alive || !this.img) return;
 
         const screen = camera.worldToScreen(this.worldX, this.worldY, this.game.width, this.game.height);
-        
+
         ctx.save();
         ctx.translate(Math.floor(screen.x), Math.floor(screen.y));
         ctx.rotate(this.angle);
         const w = this.img.width * this.game.worldScale * this.scale;
         const h = this.img.height * this.game.worldScale * this.scale;
-        
+
         ctx.drawImage(this.img, -Math.floor(w / 2), -Math.floor(h / 2), w, h);
         ctx.restore();
     }
