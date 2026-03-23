@@ -476,7 +476,7 @@ export class PlayingState {
                 }
             }
         }
-        this.camera.follow(this.player);
+        this.camera.update(dt, this.player);
 
         // Shop interaction check
         const nearShop = this.shops.find(s => {
@@ -1089,10 +1089,9 @@ export class PlayingState {
             const centerX = this.game.width / 2;
             const centerY = this.game.height / 2;
             for (const d of this.shipDebris) {
-                const sx = centerX + (d.worldX - this.player.worldX) * this.game.worldScale;
-                const sy = centerY + (d.worldY - this.player.worldY) * this.game.worldScale;
+                const screen = this.camera.worldToScreen(d.worldX, d.worldY, this.game.width, this.game.height);
                 ctx.save();
-                ctx.translate(Math.floor(sx), Math.floor(sy));
+                ctx.translate(Math.floor(screen.x), Math.floor(screen.y));
                 ctx.rotate(d.rotation);
                 const w = d.img.width * this.game.worldScale;
                 const h = d.img.height * this.game.worldScale;
@@ -1106,7 +1105,7 @@ export class PlayingState {
             return;
         }
 
-        this.player.draw(ctx);
+        this.player.draw(ctx, this.camera);
 
         if (this.canInteractShop && !this.isShopOpen) {
             this._drawInteractPrompt(ctx);
@@ -2570,17 +2569,16 @@ export class PlayingState {
         if (p.isRailgunTargeting) {
             const img = game.assets.get('blue_laser_beam_targeting');
             if (img) {
+                const screen = this.camera.worldToScreen(p.worldX, p.worldY, game.width, game.height);
                 const noseOffset = 36 * game.worldScale;
-                const centerX = game.width / 2;
-                const centerY = game.height / 2;
 
                 if (p.hasMultishotGuns) {
                     const perpAngle = p.angle + Math.PI / 2;
                     const offset = 15 * game.worldScale;
-                    this._drawTiledLine(ctx, img, p.angle, 0.4, centerX + Math.cos(p.angle) * noseOffset + Math.cos(perpAngle) * offset, centerY + Math.sin(p.angle) * noseOffset + Math.sin(perpAngle) * offset);
-                    this._drawTiledLine(ctx, img, p.angle, 0.4, centerX + Math.cos(p.angle) * noseOffset - Math.cos(perpAngle) * offset, centerY + Math.sin(p.angle) * noseOffset - Math.sin(perpAngle) * offset);
+                    this._drawTiledLine(ctx, img, p.angle, 0.4, screen.x + Math.cos(p.angle) * noseOffset + Math.cos(perpAngle) * offset, screen.y + Math.sin(p.angle) * noseOffset + Math.sin(perpAngle) * offset);
+                    this._drawTiledLine(ctx, img, p.angle, 0.4, screen.x + Math.cos(p.angle) * noseOffset - Math.cos(perpAngle) * offset, screen.y + Math.sin(p.angle) * noseOffset - Math.sin(perpAngle) * offset);
                 } else {
-                    this._drawTiledLine(ctx, img, p.angle, 0.4, centerX + Math.cos(p.angle) * noseOffset, centerY + Math.sin(p.angle) * noseOffset);
+                    this._drawTiledLine(ctx, img, p.angle, 0.4, screen.x + Math.cos(p.angle) * noseOffset, screen.y + Math.sin(p.angle) * noseOffset);
                 }
             }
         }
@@ -2593,9 +2591,8 @@ export class PlayingState {
                 const centerX = game.width / 2;
                 const centerY = game.height / 2;
                 for (const beam of this.activeBeams) {
-                    const screenX = centerX + (beam.x - p.worldX) * game.worldScale;
-                    const screenY = centerY + (beam.y - p.worldY) * game.worldScale;
-                    this._drawTiledLine(ctx, img, beam.angle, beam.timer / 0.15, screenX, screenY);
+                    const screen = this.camera.worldToScreen(beam.x, beam.y, game.width, game.height);
+                    this._drawTiledLine(ctx, img, beam.angle, beam.timer / 0.15, screen.x, screen.y);
                 }
             }
         }
@@ -2666,10 +2663,7 @@ export class PlayingState {
         const baseSize = 64;
 
         ctx.save();
-        // Since we are still in world-adjusted canvas coordinates before the final ctx.restore in draw()
-        // we can translate properly. If the context is world-space, we just draw at their worldXY.
-        const centerX = this.game.width / 2;
-        const centerY = this.game.height / 2;
+        // Use camera projection for explosions
 
         for (const exp of this.explosions) {
             const progress = 1.0 - (exp.timer / exp.maxTimer);
@@ -2679,10 +2673,10 @@ export class PlayingState {
             ctx.globalAlpha = 1.0; // GIF contains its own alpha typically, or we can fade it slightly
             const size = baseSize * this.game.worldScale;
 
-            // In draw(), context is already translated so worldX/worldY maps correctly:
-            // screenX = centerX + (worldX - player.worldX)
-            const sx = centerX + (exp.worldX - this.player.worldX) * this.game.worldScale;
-            const sy = centerY + (exp.worldY - this.player.worldY) * this.game.worldScale;
+            // screen coordinates via camera
+            const screen = this.camera.worldToScreen(exp.worldX, exp.worldY, this.game.width, this.game.height);
+            const sx = screen.x;
+            const sy = screen.y;
 
             ctx.drawImage(img, sx - size / 2, sy - size / 2, size, size);
         }

@@ -596,9 +596,9 @@ export class Player {
         this.trailHistory = this.trailHistory.filter(t => t.life > 0);
     }
 
-    draw(ctx) {
-        const centerX = this.game.width / 2;
-        const centerY = this.game.height / 2;
+    draw(ctx, camera) {
+        if (!camera) return;
+        const screen = camera.worldToScreen(this.worldX, this.worldY, this.game.width, this.game.height);
 
         // --- Ghost Trail ---
         if (this.hasAncientCurse && this.trailHistory.length > 0) {
@@ -610,8 +610,7 @@ export class Player {
                 const alpha = t.life * 0.15 * (1 - i / this.maxTrailLength);
                 if (alpha <= 0) continue;
 
-                const relX = (t.x - this.worldX);
-                const relY = (t.y - this.worldY);
+                const tScreen = camera.worldToScreen(t.x, t.y, this.game.width, this.game.height);
 
                 const w = t.img.width * this.game.worldScale;
                 const h = t.img.height * this.game.worldScale;
@@ -624,7 +623,7 @@ export class Player {
                 }
 
                 ctx.save();
-                ctx.translate(Math.floor(centerX + relX), Math.floor(centerY + relY));
+                ctx.translate(Math.floor(tScreen.x), Math.floor(tScreen.y));
                 ctx.rotate(t.angle + Math.PI / 2);
                 ctx.globalAlpha = alpha;
                 ctx.drawImage(greenImg, -Math.floor(w / 2), -Math.floor(h / 2), w, h);
@@ -645,7 +644,7 @@ export class Player {
         const h = img.height * this.game.worldScale;
 
         ctx.save();
-        ctx.translate(Math.floor(centerX), Math.floor(centerY));
+        ctx.translate(Math.floor(screen.x), Math.floor(screen.y));
         ctx.rotate(this.angle + Math.PI / 2);
 
         // Blinking if invulnerable
@@ -684,7 +683,7 @@ export class Player {
             const sh = this.shieldImg.height * this.game.worldScale;
             ctx.save();
             ctx.globalAlpha = 0.3; // 70% transparent
-            ctx.translate(Math.floor(centerX), Math.floor(centerY));
+            ctx.translate(Math.floor(screen.x), Math.floor(screen.y));
             ctx.rotate(this.angle + Math.PI / 2);
             ctx.drawImage(this.shieldImg, -Math.floor(sw / 2), -Math.floor(sh / 2), sw, sh);
             ctx.restore();

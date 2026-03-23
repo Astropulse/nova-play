@@ -22,8 +22,16 @@ export class HUD {
         const ch = this.game.height;
         const margin = this.game.hudScale * 4;
 
+        // HUD Displacement — lag behind camera
+        // Displacement is in world units, convert to pixels and scale for HUD
+        const lagX = (this.game.currentState.camera.displacementX || 0) * this.game.worldScale * 0.075;
+        const lagY = (this.game.currentState.camera.displacementY || 0) * this.game.worldScale * 0.075;
+        
+        ctx.save();
+        ctx.translate(Math.floor(lagX), Math.floor(lagY));
+
         // Health bar — lower left
-        // Bar fill region: source pixels 27–118 (91px wide fill area)
+        // ... (existing code remains but translated)
         const hbW = this.healthBarEmpty.width * this.game.hudScale;
         const hbH = this.healthBarEmpty.height * this.game.hudScale;
         const hbX = margin;
@@ -99,6 +107,8 @@ export class HUD {
             ctx.textAlign = 'left';
             ctx.fillText(`NEXT WAVE: ${mins}:${secs}`, margin, this.game.hudScale * 10);
         }
+
+        ctx.restore();
     }
 
     _drawRadar(ctx, cw, ch, margin) {

@@ -4,16 +4,32 @@
 export class Camera {
     constructor(game) {
         this.game = game;
-        this.x = 0; // world-space center X (game units)
-        this.y = 0; // world-space center Y (game units)
+        this.x = 0;
+        this.y = 0;
+        this.vx = 0;
+        this.vy = 0;
     }
 
-    follow(target) {
-        this.x = target.worldX;
-        this.y = target.worldY;
+    update(dt, target) {
+        if (dt > 0.1) dt = 0.1;
+
+        const targetVx = target.vx || 0;
+        const targetVy = target.vy || 0;
+
+        // Stiff velocity matching — camera lerps toward player's velocity
+        const stiffness = 22.0;
+        const lf = 1.0 - Math.exp(-stiffness * dt);
+        this.vx += (targetVx - this.vx) * lf;
+        this.vy += (targetVy - this.vy) * lf;
+
+        // Move camera at its velocity
+        this.x += this.vx * dt;
+        this.y += this.vy * dt;
+
+        this.displacementX = this.x - target.worldX;
+        this.displacementY = this.y - target.worldY;
     }
 
-    // Convert world coords (game units) to screen coords (pixels)
     worldToScreen(wx, wy, canvasW, canvasH) {
         return {
             x: (wx - this.x) * this.game.worldScale + canvasW / 2,
@@ -21,7 +37,6 @@ export class Camera {
         };
     }
 
-    // Convert screen coords (pixels) to world coords (game units)
     screenToWorld(sx, sy, canvasW, canvasH) {
         return {
             x: (sx - canvasW / 2) / this.game.worldScale + this.x,
