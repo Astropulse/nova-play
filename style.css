@@ -39,3 +39,16 @@ canvas {
 body.playing canvas {
     cursor: crosshair;
 }
+
+#recordingIndicator {
+    display: none;
+    position: fixed;
+    top: 60px;
+    left: 20px;
+    color: #ff3333;
+    font-family: 'Astro4x', sans-serif;
+    font-size: 24px;
+    text-shadow: 2px 2px 0 #000;
+    pointer-events: none;
+    z-index: 9999;
+}

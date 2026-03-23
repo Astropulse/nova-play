@@ -8,7 +8,8 @@ const AI_STATE = {
     ATTACK: 'attack',     // Point and fire
     BREAK: 'break',       // Short turn to reposition
     REVERSAL: 'reversal', // Hard loop back when chased
-    RECOVERY: 'recovery'  // Boost away after collision
+    RECOVERY: 'recovery', // Boost away after collision
+    REPOSITION: 'reposition' // Back off to standoff distance
 };
 
 const RADIUS_CACHE = {};
@@ -106,6 +107,9 @@ export class Enemy {
         this.pendingProjectiles = [];
         this.externalVx = 0;
         this.externalVy = 0;
+
+        // Attack Pass Cap
+        this.maxAttackPasses = 2 + Math.floor(Math.random() * 2); // 2-3 dive passes before backing off
     }
 
     _applyUpgrades() {
@@ -174,7 +178,7 @@ export class Enemy {
         let currentMaxSpeed = this.baseSpeed;
         if (this.state === AI_STATE.RECOVERY) {
             currentMaxSpeed = this.baseSpeed * 2.5; // Emergency boost
-        } else if (this.state === AI_STATE.BREAK) {
+        } else if (this.state === AI_STATE.BREAK || this.state === AI_STATE.REPOSITION) {
             currentMaxSpeed = this.baseSpeed * 1.3; // Retreat fast
         } else if (this.state === AI_STATE.ATTACK && this.attackPassCount === 0) {
             // First engagement: slow down to shoot normally
@@ -274,13 +278,27 @@ export class Enemy {
                 break;
 
             case AI_STATE.ATTACK:
-                // First pass: use smaller break range (they're moving slower)
-                // Subsequent passes: use full breakRange (they're diving fast)
-                const effectiveBreakRange = this.attackPassCount === 0 ? 200 * this.game.worldScale : this.breakRange;
-                if (dist < effectiveBreakRange) {
-                    this._startVeerOff(angleToPlayer);
-                } else if (dist > this.attackRange + 200 * this.game.worldScale) {
-                    // Overshot or player moved — go back to pursuit
+                // Stay in attack until burst is done OR we get very close
+                const minBreakDist = 140 * this.game.worldScale;
+                const burstDone = this.burstShotsLeft <= 0;
+                const tooClose = dist < minBreakDist;
+
+                const breakThreshold = burstDone ? (this.breakRange * 0.7) : minBreakDist;
+
+                if (dist < breakThreshold || tooClose) {
+                    if (this.attackPassCount >= this.maxAttackPasses) {
+                        this._startReposition(angleToPlayer);
+                    } else {
+                        this._startVeerOff(angleToPlayer);
+                    }
+                } else if (dist > this.attackRange + 400 * this.game.worldScale) {
+                    this.state = AI_STATE.PURSUIT;
+                }
+                break;
+
+            case AI_STATE.REPOSITION:
+                if (this.stateTimer <= 0 || dist > 600 * this.game.worldScale) {
+                    this.attackPassCount = 0; // Reset counter after backing off
                     this.state = AI_STATE.PURSUIT;
                 }
                 break;
@@ -313,11 +331,21 @@ export class Enemy {
     _startVeerOff(angleToPlayer) {
         this.attackPassCount++;
         this.state = AI_STATE.BREAK;
-        this.stateTimer = 1.2 + Math.random() * 0.8; // Retreat duration before charging again
-        // Veer sharply to the side (perpendicular) to avoid hitting the player
+        this.stateTimer = 0.8 + Math.random() * 1.0;
+
+        // Standard Veer: reposition to the side
         const side = Math.random() > 0.5 ? 1 : -1;
-        const veerAngle = angleToPlayer + (Math.PI / 2) * side + (Math.random() - 0.5) * 0.4;
+        const veerAngle = angleToPlayer + (Math.PI / 1.8) * side + (Math.random() - 0.5) * 0.5;
         this.targetAngleOverride = veerAngle;
+    }
+
+    _startReposition(angleToPlayer) {
+        this.state = AI_STATE.REPOSITION;
+        this.stateTimer = 2.5 + Math.random() * 1.5; // Longer standoff period
+
+        // Face away from player to move to standoff distance
+        const awayAngle = angleToPlayer + Math.PI + (Math.random() - 0.5) * 1.0;
+        this.targetAngleOverride = awayAngle;
     }
 
     _getTargetAngle(angleToPlayer, dist) {
@@ -325,9 +353,10 @@ export class Enemy {
             case AI_STATE.PURSUIT:
             case AI_STATE.ATTACK:
             case AI_STATE.REVERSAL:
-                return angleToPlayer; // Always charge straight at the player
+                return angleToPlayer;
             case AI_STATE.BREAK:
             case AI_STATE.RECOVERY:
+            case AI_STATE.REPOSITION:
                 return this.targetAngleOverride;
             default:
                 return angleToPlayer;
