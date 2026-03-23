@@ -22,7 +22,7 @@ export class Shop {
         this._generateInventory();
 
         // Interaction radius
-        this.interactRange = 150 * game.worldScale;
+        this.interactRange = game.unit(150);
 
         // Permanent upgrade stock per shop
         this.permUpgrades = {

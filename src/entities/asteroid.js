@@ -283,8 +283,8 @@ export class Scrap {
         this.rotSpeed = (Math.random() - 0.5) * 3;
 
         this.value = type === 'big' ? 5 : 1;
-        this.magnetRange = 150 * this.game.worldScale;
-        this.collectRange = 20 * this.game.worldScale;
+        this.magnetRange = this.game.unit(150);
+        this.collectRange = this.game.unit(20);
 
         this.lifetime = 120; // 2 minutes
         this.maxLifetime = this.lifetime;
@@ -300,13 +300,13 @@ export class Scrap {
         if (dist < activeMagnetRange) {
             // Magnetize to player
             const angle = Math.atan2(dy, dx);
-            const force = (1 - dist / activeMagnetRange) * 800 * this.game.worldScale;
+            const force = (1 - dist / activeMagnetRange) * this.game.unit(800);
             this.vx += Math.cos(angle) * force * dt;
             this.vy += Math.sin(angle) * force * dt;
 
             // Speed cap when magnetized to prevent orbiting too crazily
             const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
-            const maxSpeed = 600 * this.game.worldScale;
+            const maxSpeed = this.game.unit(600);
             if (speed > maxSpeed) {
                 this.vx = (this.vx / speed) * maxSpeed;
                 this.vy = (this.vy / speed) * maxSpeed;
@@ -384,8 +384,8 @@ export class ItemPickup {
         this.rotation = Math.random() * Math.PI * 2;
         this.rotSpeed = (Math.random() - 0.5) * 2;
 
-        this.magnetRange = 200 * this.game.worldScale;
-        this.collectRange = 30 * this.game.worldScale;
+        this.magnetRange = this.game.unit(200);
+        this.collectRange = this.game.unit(30);
     }
 
     update(dt, playerX, playerY, magnetMult = 1.0) {
@@ -397,12 +397,12 @@ export class ItemPickup {
 
         if (dist < activeMagnetRange) {
             const angle = Math.atan2(dy, dx);
-            const force = (1 - dist / activeMagnetRange) * 1000 * this.game.worldScale;
+            const force = (1 - dist / activeMagnetRange) * this.game.unit(1000);
             this.vx += Math.cos(angle) * force * dt;
             this.vy += Math.sin(angle) * force * dt;
 
             const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
-            const maxSpeed = 700 * this.game.worldScale;
+            const maxSpeed = this.game.unit(700);
             if (speed > maxSpeed) {
                 this.vx = (this.vx / speed) * maxSpeed;
                 this.vy = (this.vy / speed) * maxSpeed;
@@ -491,7 +491,7 @@ export class Asteroid {
         this.rotSpeed = (Math.random() - 0.5) * 1.5;
 
         // Despawn if very far from player
-        this.despawnDist = 9000;
+        this.despawnDist = game.unit(4500);
     }
 
     update(dt) {
@@ -680,9 +680,10 @@ export class AsteroidSpawner {
 
         this.distanceAccumulator += distMoved;
 
-        // Check if player has moved 50 units
-        if (this.distanceAccumulator >= 150) {
-            this.distanceAccumulator -= 150;
+        // Check if player has moved enough units (scaled)
+        const spawnThreshold = this.game.unit(60);
+        if (this.distanceAccumulator >= spawnThreshold) {
+            this.distanceAccumulator -= spawnThreshold;
 
             // Normal asteroid spawn
             const spawnChance = Math.random();
@@ -701,7 +702,7 @@ export class AsteroidSpawner {
                 const halfH = this.game.height / 2;
 
                 // Big asteroids spawn much further out
-                const margin = size === 'big' ? 2000 : 1600;
+                const margin = size === 'big' ? this.game.unit(1000) : this.game.unit(800);
 
                 // Bias spawn toward direction of travel (70% forward, 30% any edge)
                 const moveAngle = Math.atan2(playerVy, playerVx);
@@ -763,14 +764,14 @@ export class AsteroidSpawner {
                         const moveAngle = Math.atan2(playerVy, playerVx);
                         const spread = (Math.random() - 0.5) * Math.PI * 0.5;
                         const beltCenterAngle = moveAngle + spread;
-                        const dist = Math.max(this.game.width, this.game.height) / 2 + 2000; // Increased distance for belts
+                        const dist = Math.max(this.game.width, this.game.height) / 2 + this.game.unit(1000);
 
                         const beltCx = playerWorldX + Math.cos(beltCenterAngle) * dist;
                         const beltCy = playerWorldY + Math.sin(beltCenterAngle) * dist;
 
                         const arcStartAngle = Math.random() * Math.PI * 2;
                         const arcExtent = (Math.random() * 0.5 + 0.3) * Math.PI; // 0.3 to 0.8 PI
-                        const beltRadius = 400 + Math.random() * 800; // Curved radius
+                        const beltRadius = this.game.unit(200 + Math.random() * 400);
                         const beltRotation = Math.random() * Math.PI * 2;
 
                         for (let i = 0; i < numAsteroids; i++) {
@@ -778,8 +779,8 @@ export class AsteroidSpawner {
                             const angle = arcStartAngle + t * arcExtent;
 
                             // Add some random wobble so it's not perfectly uniform
-                            const wobbleX = (Math.random() - 0.5) * 200;
-                            const wobbleY = (Math.random() - 0.5) * 200;
+                            const wobbleX = (Math.random() - 0.5) * this.game.unit(100);
+                            const wobbleY = (Math.random() - 0.5) * this.game.unit(100);
 
                             const ax = beltCx + Math.cos(angle + beltRotation) * beltRadius + wobbleX;
                             const ay = beltCy + Math.sin(angle + beltRotation) * beltRadius + wobbleY;

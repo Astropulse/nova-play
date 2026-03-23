@@ -16,7 +16,7 @@ const RADIUS_CACHE = {};
 
 class CollisionScanner {
     static getRadius(img, game) {
-        if (!img) return 20 * (game ? game.worldScale : 1);
+        if (!img) return game ? game.unit(20) : 20;
         const src = img.src;
         if (RADIUS_CACHE[src]) return RADIUS_CACHE[src];
 
@@ -74,7 +74,7 @@ export class Enemy {
         // Stats - Scale with difficulty
         const speedScale = 1 + (difficultyScale - 1) * 0.15;
         const turnScale = 1 + (difficultyScale - 1) * 0.1;
-        this.baseSpeed = (500 + Math.random() * 80) * speedScale;
+        this.baseSpeed = game.unit((500 + Math.random() * 80) * speedScale);
         this.turnSpeed = (6.5 + Math.random() * 1.0) * turnScale;
         this.health = Math.ceil(2 + 1.5 * difficultyScale);
         this._nativeRadius = CollisionScanner.getRadius(this.img, this.game);
@@ -88,9 +88,9 @@ export class Enemy {
         this.freezeTimer = 0;
 
         // Ranges
-        this.attackRange = 500 * game.worldScale;
-        this.breakRange = 450 * game.worldScale; // Veer off distance — needs to be large enough to turn in time
-        this.reversalTriggerDist = 350 * game.worldScale;
+        this.attackRange = game.unit(500);
+        this.breakRange = game.unit(450); // Veer off distance — needs to be large enough to turn in time
+        this.reversalTriggerDist = game.unit(350);
 
         // Attack pass: fire a burst during charge, then veer off
         this.attackPassCount = 0;     // 0 = first approach (normal), 1+ = dive attacks
@@ -184,8 +184,8 @@ export class Enemy {
             // First engagement: slow down to shoot normally
             const closeFactor = Math.max(0.3, Math.min(0.6, dist / this.attackRange));
             currentMaxSpeed = this.baseSpeed * closeFactor;
-        } else if (dist > 1500 * this.game.worldScale) {
-            const boostFactor = Math.min(3.0, 1.0 + (dist - 1500 * this.game.worldScale) / (2000 * this.game.worldScale));
+        } else if (dist > this.game.unit(1500)) {
+            const boostFactor = Math.min(3.0, 1.0 + (dist - this.game.unit(1500)) / (this.game.unit(2000)));
             currentMaxSpeed *= boostFactor;
         }
         // ATTACK pass 1+: full base speed dive
@@ -279,7 +279,7 @@ export class Enemy {
 
             case AI_STATE.ATTACK:
                 // Stay in attack until burst is done OR we get very close
-                const minBreakDist = 140 * this.game.worldScale;
+                const minBreakDist = this.game.unit(140);
                 const burstDone = this.burstShotsLeft <= 0;
                 const tooClose = dist < minBreakDist;
 
@@ -291,13 +291,13 @@ export class Enemy {
                     } else {
                         this._startVeerOff(angleToPlayer);
                     }
-                } else if (dist > this.attackRange + 400 * this.game.worldScale) {
+                } else if (dist > this.attackRange + this.game.unit(400)) {
                     this.state = AI_STATE.PURSUIT;
                 }
                 break;
 
             case AI_STATE.REPOSITION:
-                if (this.stateTimer <= 0 || dist > 600 * this.game.worldScale) {
+                if (this.stateTimer <= 0 || dist > this.game.unit(600)) {
                     this.attackPassCount = 0; // Reset counter after backing off
                     this.state = AI_STATE.PURSUIT;
                 }
@@ -365,7 +365,7 @@ export class Enemy {
 
     _avoidObstacles(baseTarget, asteroids, projectiles, enemies) {
         let finalTarget = baseTarget;
-        const scanDist = 160 * this.game.worldScale;
+        const scanDist = this.game.unit(160);
 
         // Avoid Asteroids
         for (const ast of asteroids) {
@@ -388,7 +388,7 @@ export class Enemy {
         }
 
         // Avoid Other Enemies
-        const enemyAvoidDist = 120 * this.game.worldScale;
+        const enemyAvoidDist = this.game.unit(120);
         for (const other of enemies) {
             if (other === this || !other.alive) continue;
             const edx = other.worldX - this.worldX;
@@ -418,7 +418,7 @@ export class Enemy {
                     Math.sqrt(Math.pow(this.game.currentState.player.worldX - this.worldX, 2) + Math.pow(this.game.currentState.player.worldY - this.worldY, 2)) :
                     Infinity;
 
-                if (pdist < 400 * this.game.worldScale && playerDist > 450 * this.game.worldScale) {
+                if (pdist < this.game.unit(400) && playerDist > this.game.unit(450)) {
                     const pvx = p.vx;
                     const pvy = p.vy;
                     const pSpeed = Math.sqrt(pvx * pvx + pvy * pvy);
@@ -439,8 +439,8 @@ export class Enemy {
     shoot() {
         if (this.upgradeType === 'kamikaze') return;
 
-        const laserSpeed = 1900;
-        const noseOffset = 30 * this.game.worldScale;
+        const laserSpeed = this.game.unit(950);
+        const noseOffset = this.game.unit(30);
         const px = this.worldX + Math.cos(this.angle) * noseOffset;
         const py = this.worldY + Math.sin(this.angle) * noseOffset;
         let damage = (1 + (this.difficultyScale - 1) * 0.5) * this.damageMult;
@@ -473,7 +473,7 @@ export class Enemy {
     _fireBeam(startX, startY, damage) {
         const dirX = Math.cos(this.angle);
         const dirY = Math.sin(this.angle);
-        const length = 2000 * this.game.worldScale;
+        const length = this.game.unit(2000);
 
         // Visual
         this.activeBeams.push({
@@ -700,7 +700,7 @@ export class EnemySpawner {
 
                 const angle = Math.random() * Math.PI * 2;
                 // Spawn further out so they arrive staggered (1800-2400)
-                const dist = 1800 + Math.random() * 600;
+                const dist = this.game.unit(1800 + Math.random() * 600);
                 const en = new Enemy(this.game, playerX + Math.cos(angle) * dist, playerY + Math.sin(angle) * dist, this.waveSpawnScale);
                 Enemy.rollUpgrade(en, player);
                 spawned.push(en);
@@ -732,7 +732,7 @@ export class EnemySpawner {
                 this.burstSpawnTimer = 3 + Math.random() * 3;
 
                 const angle = Math.random() * Math.PI * 2;
-                const dist = 1400 + Math.random() * 600;
+                const dist = this.game.unit(1400 + Math.random() * 600);
                 const en = new Enemy(this.game, playerX + Math.cos(angle) * dist, playerY + Math.sin(angle) * dist, difficultyScale);
                 Enemy.rollUpgrade(en, player);
                 spawned.push(en);
@@ -775,7 +775,7 @@ export class KamikazeEnemy extends Enemy {
 
         // Custom stats for kamikaze
         const speedScale = 1 + (difficultyScale - 1) * 0.15;
-        this.baseSpeed = (1000 + Math.random() * 100) * speedScale;
+        this.baseSpeed = game.unit((1000 + Math.random() * 100) * speedScale);
         this.turnSpeed = 7.0 + Math.random() * 1.0;
         // Moderate health, slightly tougher than standard enemies but not sponges
         this.health = Math.ceil(3 + 1.5 * difficultyScale);
@@ -838,7 +838,7 @@ export class CthulhuEnemy extends Enemy {
 
         // Custom stats for cthulhu enemies (similar to kamikaze)
         const speedScale = 1 + (difficultyScale - 1) * 0.15;
-        this.baseSpeed = (1000 + Math.random() * 100) * speedScale;
+        this.baseSpeed = game.unit((1000 + Math.random() * 100) * speedScale);
         this.turnSpeed = 7.0 + Math.random() * 1.0;
         this.health = Math.ceil(3 + 1.5 * difficultyScale);
 

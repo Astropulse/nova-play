@@ -7,6 +7,9 @@ import { DevConsole } from '../ui/devConsole.js';
 // Scale defaults
 const DEFAULT_SCALE = 3;
 
+// Reference worldScale (the scale at which all gameplay values were tuned — 1440p)
+const REF_SCALE = 2;
+
 export class Game {
     constructor(canvas) {
         this.canvas = canvas;
@@ -71,6 +74,12 @@ export class Game {
 
     get width() { return window.innerWidth; }
     get height() { return window.innerHeight; }
+
+    // Convert a base game-unit value to screen pixels.
+    // At REF_SCALE (1440p, worldScale=2) this returns the value unchanged.
+    unit(baseVal) {
+        return baseVal * (this.worldScale);
+    }
 
     async init() {
         await this.assets.loadAll(this._getAssetManifest());

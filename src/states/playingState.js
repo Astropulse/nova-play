@@ -129,7 +129,7 @@ export class PlayingState {
     _spawnEvents() {
         // Spawn Cthulhu very far away
         const angle = Math.random() * Math.PI * 2;
-        const dist = (20000 + Math.random() * 10000) * this.game.worldScale;
+        const dist = this.game.unit(20000 + Math.random() * 10000);
         const cx = Math.cos(angle) * dist;
         const cy = Math.sin(angle) * dist;
 
@@ -138,7 +138,7 @@ export class PlayingState {
 
         // Spawn Cargo Ship Event
         const cargoAngle = Math.random() * Math.PI * 2;
-        const cargoDist = (3000 + Math.random() * 3000) * this.game.worldScale;
+        const cargoDist = this.game.unit(3000 + Math.random() * 3000);
         const csx = Math.cos(cargoAngle) * cargoDist;
         const csy = Math.sin(cargoAngle) * cargoDist;
 
@@ -148,19 +148,19 @@ export class PlayingState {
         // Spawn Fractured Station Event
         // Station 1: Randomized distance for discovery
         const f1Angle = Math.random() * Math.PI * 2;
-        const f1Dist = (4000 + Math.random() * 2000) * this.game.worldScale;
+        const f1Dist = this.game.unit(4000 + Math.random() * 2000);
         const f1x = Math.cos(f1Angle) * f1Dist;
         const f1y = Math.sin(f1Angle) * f1Dist;
 
         // Station 2: Medium distance
         const f2Angle = Math.random() * Math.PI * 2;
-        const f2Dist = (6000 + Math.random() * 2000) * this.game.worldScale;
+        const f2Dist = this.game.unit(6000 + Math.random() * 2000);
         const f2x = Math.cos(f2Angle) * f2Dist;
         const f2y = Math.sin(f2Angle) * f2Dist;
 
         // Station 3: Far away
         const f3Angle = Math.random() * Math.PI * 2;
-        const f3Dist = (15000 + Math.random() * 5000) * this.game.worldScale;
+        const f3Dist = this.game.unit(15000 + Math.random() * 5000);
         const f3x = Math.cos(f3Angle) * f3Dist;
         const f3y = Math.sin(f3Angle) * f3Dist;
 
@@ -172,7 +172,7 @@ export class PlayingState {
 
         // Spawn Knowledge Event (Extreme distance)
         const kAngle = Math.random() * Math.PI * 2;
-        const kDist = (30000 + Math.random() * 15000) * this.game.worldScale;
+        const kDist = this.game.unit(30000 + Math.random() * 15000);
         const kx = Math.cos(kAngle) * kDist;
         const ky = Math.sin(kAngle) * kDist;
         this.events.push(new KnowledgeEvent(this.game, kx, ky));
@@ -182,7 +182,7 @@ export class PlayingState {
         const numAsteroids = 5 + Math.floor(Math.random() * 6); // Reduced from 10-21 down to 5-10
         for (let i = 0; i < numAsteroids; i++) {
             const angle = Math.random() * Math.PI * 2;
-            const dist = (400 + Math.random() * 1600) * this.game.worldScale;
+            const dist = this.game.unit(400 + Math.random() * 1600);
             // Player starts near 0,0, but using their actual pos is safest
             const ax = this.player.worldX + Math.cos(angle) * dist;
             const ay = this.player.worldY + Math.sin(angle) * dist;
@@ -276,7 +276,7 @@ export class PlayingState {
                 const edx = ev.worldX - this.player.worldX;
                 const edy = ev.worldY - this.player.worldY;
                 const dist = Math.sqrt(edx * edx + edy * edy);
-                if (dist < 5000 * this.game.worldScale) {
+                if (dist < this.game.unit(5000)) {
                     isEventActive = true;
                 }
             }
@@ -312,7 +312,7 @@ export class PlayingState {
             this.player.rocketsTimer = (this.player.rocketsTimer || 0) - dt;
             if (this.player.rocketsTimer <= 0) {
                 let target = null;
-                let minDist = 1500 * this.game.worldScale;
+                let minDist = this.game.unit(1500);
 
                 for (const en of this.enemies) {
                     if (!en.alive) continue;
@@ -376,7 +376,7 @@ export class PlayingState {
                 const turretCone = 50 * (Math.PI / 180);
 
                 let target = null;
-                let minDist = 800 * this.game.worldScale;
+                let minDist = this.game.unit(800);
 
                 // Check Enemies
                 for (const en of this.enemies) {
@@ -436,7 +436,7 @@ export class PlayingState {
                 }
 
                 if (target) {
-                    const noseOffset = 20 * this.game.worldScale;
+                    const noseOffset = this.game.unit(20);
                     const px = this.player.worldX + Math.cos(turretAngle) * noseOffset;
                     const py = this.player.worldY + Math.sin(turretAngle) * noseOffset;
 
@@ -465,7 +465,7 @@ export class PlayingState {
                     const edx = en.worldX - this.player.worldX;
                     const edy = en.worldY - this.player.worldY;
                     const edist = Math.sqrt(edx * edx + edy * edy);
-                    if (edist < 150 * this.game.worldScale) {
+                    if (edist < this.game.unit(150)) {
                         en.freeze(3.0);
                         triggered = true;
                     }
@@ -616,7 +616,7 @@ export class PlayingState {
             // Despawn if way too far
             const dxArr = e.worldX - this.player.worldX;
             const dyArr = e.worldY - this.player.worldY;
-            if (Math.sqrt(dxArr * dxArr + dyArr * dyArr) > 7000) {
+            if (Math.sqrt(dxArr * dxArr + dyArr * dyArr) > this.game.unit(3500)) {
                 e.alive = false;
             }
         }
@@ -1031,7 +1031,7 @@ export class PlayingState {
         this.projectiles = [];
         this.enemies = [];
         this.rubble = [];
-        
+
         // Reset camera
         this.camera.follow(this.player);
     }
@@ -1041,7 +1041,7 @@ export class PlayingState {
         this.explosions.push({
             worldX: x,
             worldY: y,
-            radius: 50 * this.game.worldScale,
+            radius: this.game.unit(50),
             timer: 0.3, // Duration of the explosion effect
             color: 'rgba(255, 165, 0, 0.8)', // Orange
             damage: damage // Potentially for area damage
@@ -1183,7 +1183,7 @@ export class PlayingState {
     _drawShopIndicators(ctx) {
         const cw = this.game.width;
         const ch = this.game.height;
-        const margin = 30 * this.game.worldScale;
+        const margin = this.game.unit(30);
 
         for (const shop of this.shops) {
             if (!shop.revealed) continue;
@@ -1240,7 +1240,7 @@ export class PlayingState {
     _drawEventIndicators(ctx) {
         const cw = this.game.width;
         const ch = this.game.height;
-        const margin = 30 * this.game.worldScale;
+        const margin = this.game.unit(30);
 
         for (const ev of this.events) {
             if (!ev.revealed || ev.isFinished) continue; // Keep marker until destroyed or finished (scrap spawned)
@@ -1755,8 +1755,8 @@ export class PlayingState {
                         this.game.sounds.play('click', 0.3);
                     } else {
                         const worldMouse = this.camera.screenToWorld(mouse.x, mouse.y, this.game.width, this.game.height);
-                        const dropOffset = (Math.random() - 0.5) * 20 * this.game.worldScale;
-                        const dropOffset2 = (Math.random() - 0.5) * 20 * this.game.worldScale;
+                        const dropOffset = (Math.random() - 0.5) * this.game.unit(20);
+                        const dropOffset2 = (Math.random() - 0.5) * this.game.unit(20);
                         this.itemPickups.push(new ItemPickup(this.game, worldMouse.x + dropOffset, worldMouse.y + dropOffset2, this.draggedItem.item));
                         this._onInventoryChanged();
                         this.game.sounds.play('click', 0.5);
@@ -1959,8 +1959,8 @@ export class PlayingState {
                 } else {
                     // Drop into space
                     const worldMouse = this.camera.screenToWorld(mouse.x, mouse.y, this.game.width, this.game.height);
-                    const dropOffset = (Math.random() - 0.5) * 20 * this.game.worldScale;
-                    const dropOffset2 = (Math.random() - 0.5) * 20 * this.game.worldScale;
+                    const dropOffset = (Math.random() - 0.5) * this.game.unit(20);
+                    const dropOffset2 = (Math.random() - 0.5) * this.game.unit(20);
                     this.itemPickups.push(new ItemPickup(this.game, worldMouse.x + dropOffset, worldMouse.y + dropOffset2, this.draggedItem.item));
                     this._onInventoryChanged();
                     this.game.sounds.play('click', 0.5);
@@ -2132,7 +2132,7 @@ export class PlayingState {
         // Random direction
         const angle = Math.random() * Math.PI * 2;
         // 15,000 pixels away
-        const dist = 15000 * this.game.worldScale;
+        const dist = this.game.unit(15000);
 
         const sx = this.player.worldX + Math.cos(angle) * dist;
         const sy = this.player.worldY + Math.sin(angle) * dist;
@@ -2177,7 +2177,7 @@ export class PlayingState {
     _drawEnemyIndicators(ctx) {
         const cw = this.game.width;
         const ch = this.game.height;
-        const margin = 20 * this.game.worldScale;
+        const margin = this.game.unit(20);
 
         for (const en of this.enemies) {
             const screen = this.camera.worldToScreen(en.worldX, en.worldY, cw, ch);
@@ -2218,7 +2218,7 @@ export class PlayingState {
     _drawAsteroidWarnings(ctx) {
         const cw = this.game.width;
         const ch = this.game.height;
-        const margin = 20 * this.game.worldScale;
+        const margin = this.game.unit(20);
 
         for (const ast of this.asteroids) {
             if (!ast.alive) continue;
@@ -2418,13 +2418,13 @@ export class PlayingState {
 
     _handlePrimaryWeaponFire() {
         const p = this.player;
-        const noseOffset = 36 * this.game.worldScale;
+        const noseOffset = this.game.unit(36);
 
         // Determine firing origins
         const origins = [];
         if (p.hasMultishotGuns) {
             const perpAngle = p.angle + Math.PI / 2;
-            const offset = 15 * this.game.worldScale;
+            const offset = this.game.unit(15);
             origins.push({
                 x: p.worldX + Math.cos(p.angle) * noseOffset + Math.cos(perpAngle) * offset,
                 y: p.worldY + Math.sin(p.angle) * noseOffset + Math.sin(perpAngle) * offset
@@ -2440,7 +2440,7 @@ export class PlayingState {
             });
         }
 
-        const beamLength = 4000 * this.game.worldScale;
+        const beamLength = this.game.unit(4000);
         let damageMult = (p.hasRepeater ? 0.5 : 1.0) * (p.hasLaserOverride ? 1.3 : 1.0);
         if (p.hasMultishotGuns) damageMult *= 0.7; // 30% reduction
 
@@ -2570,13 +2570,13 @@ export class PlayingState {
         if (p.isRailgunTargeting) {
             const img = game.assets.get('blue_laser_beam_targeting');
             if (img) {
-                const noseOffset = 36 * game.worldScale;
+                const noseOffset = game.unit(36);
                 const centerX = game.width / 2;
                 const centerY = game.height / 2;
 
                 if (p.hasMultishotGuns) {
                     const perpAngle = p.angle + Math.PI / 2;
-                    const offset = 15 * game.worldScale;
+                    const offset = game.unit(15);
                     this._drawTiledLine(ctx, img, p.angle, 0.4, centerX + Math.cos(p.angle) * noseOffset + Math.cos(perpAngle) * offset, centerY + Math.sin(p.angle) * noseOffset + Math.sin(perpAngle) * offset);
                     this._drawTiledLine(ctx, img, p.angle, 0.4, centerX + Math.cos(p.angle) * noseOffset - Math.cos(perpAngle) * offset, centerY + Math.sin(p.angle) * noseOffset - Math.sin(perpAngle) * offset);
                 } else {
@@ -2630,7 +2630,7 @@ export class PlayingState {
         });
 
         // Explosion area of effect
-        const radius = 64 * this.game.worldScale;
+        const radius = this.game.unit(64);
 
         // Damage nearby enemies
         for (const en of this.enemies) {
@@ -2663,7 +2663,7 @@ export class PlayingState {
         const frames = this.game.assets.get('blue_laser_explosion');
         if (!frames || !frames.length) return;
 
-        const baseSize = 64 * this.game.worldScale;
+        const baseSize = this.game.unit(64);
 
         ctx.save();
         // Since we are still in world-adjusted canvas coordinates before the final ctx.restore in draw()
