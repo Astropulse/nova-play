@@ -775,7 +775,7 @@ export class KamikazeEnemy extends Enemy {
 
         // Custom stats for kamikaze
         const speedScale = 1 + (difficultyScale - 1) * 0.15;
-        this.baseSpeed = (1000 + Math.random() * 100) * speedScale;
+        this.baseSpeed = (500 + Math.random() * 50) * speedScale;
         this.turnSpeed = 7.0 + Math.random() * 1.0;
         // Moderate health, slightly tougher than standard enemies but not sponges
         this.health = Math.ceil(3 + 1.5 * difficultyScale);
@@ -838,7 +838,7 @@ export class CthulhuEnemy extends Enemy {
 
         // Custom stats for cthulhu enemies (similar to kamikaze)
         const speedScale = 1 + (difficultyScale - 1) * 0.15;
-        this.baseSpeed = (1000 + Math.random() * 100) * speedScale;
+        this.baseSpeed = (500 + Math.random() * 50) * speedScale;
         this.turnSpeed = 7.0 + Math.random() * 1.0;
         this.health = Math.ceil(3 + 1.5 * difficultyScale);
 
