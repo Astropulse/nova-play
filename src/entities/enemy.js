@@ -74,7 +74,7 @@ export class Enemy {
         // Stats - Scale with difficulty
         const speedScale = 1 + (difficultyScale - 1) * 0.15;
         const turnScale = 1 + (difficultyScale - 1) * 0.1;
-        this.baseSpeed = (500 + Math.random() * 80) * speedScale;
+        this.baseSpeed = (320 + Math.random() * 80) * speedScale;
         this.turnSpeed = (6.5 + Math.random() * 1.0) * turnScale;
         this.health = Math.ceil(2 + 1.5 * difficultyScale);
         this._nativeRadius = CollisionScanner.getRadius(this.img, this.game);

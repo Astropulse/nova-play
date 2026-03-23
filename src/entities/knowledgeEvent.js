@@ -37,6 +37,9 @@ export class KnowledgeEvent {
         this.innerRadius = 150; // Trigger radius for boss
         this.bossRadius = 150; // Current expanding radius
         this.targetBossRadius = 800;
+        this.voidRadius = 150;
+        this.targetVoidRadius = 2000; // Expansion to blot out star background
+        this.voidAlpha = 0;
 
         // Interaction flags
         this.acceptsItems = true;
@@ -79,6 +82,7 @@ export class KnowledgeEvent {
             const lerp = 1 - Math.pow(0.1, dt);
             this.eyeX += (0 - this.eyeX) * lerp;
             this.eyeY += (0 - this.eyeY) * lerp;
+            this.voidAlpha = Math.max(0, this.voidAlpha - 0.4 * dt);
 
             // Handle death explosion sequence
             if (this.state === KNOWLEDGE_STATE.DEFEATED && this.explosionCount < 5) {
@@ -164,10 +168,16 @@ export class KnowledgeEvent {
         // Boss fight mechanics
         if (this.state === KNOWLEDGE_STATE.BOSS) {
             const diff = this.game.currentState.difficultyScale || 1.0;
+            this.voidAlpha = 1.0; // Solid during expansion
 
             // Expand circle
             if (this.bossRadius < this.targetBossRadius) {
                 this.bossRadius = Math.min(this.targetBossRadius, this.bossRadius + 300 * dt);
+            }
+            if (this.voidRadius < this.targetVoidRadius) {
+                const progress = (this.voidRadius - 150) / (this.targetVoidRadius - 150);
+                const speed = 150 + 3500 * Math.pow(progress, 1.5); // Starts slow, ramps up rapidly
+                this.voidRadius = Math.min(this.targetVoidRadius, this.voidRadius + speed * dt);
             }
 
             // Attacks
@@ -423,6 +433,10 @@ export class KnowledgeEvent {
         this.isTargeting = false;
         this.state = KNOWLEDGE_STATE.NEAR;
         this.bossRadius = this.innerRadius;
+        this.voidRadius = this.innerRadius;
+        // Don't snap voidAlpha to 0, let it fade out if possible?
+        // Actually, if we are resetting because they left, a quick fade or snap is fine.
+        // Let's allow it to fade out in the main update loop by not doing anything here.
         this.game.sounds.restoreMusic();
     }
 
@@ -502,16 +516,49 @@ export class KnowledgeEvent {
         const screen = camera.worldToScreen(this.worldX, this.worldY, this.game.width, this.game.height);
 
         // Draw black circle during boss fight
+        // Draw void circle (expansion and soft fade)
+        if (this.voidAlpha > 0) {
+            ctx.save();
+            const r = this.voidRadius * this.game.worldScale;
+
+            // Fast Path: If void is large enough to cover the screen diagonal, just fill a rect.
+            // This is significantly faster than drawing a massive arc/gradient.
+            const screenDiag = Math.sqrt(this.game.width * this.game.width + this.game.height * this.game.height);
+
+            if (r > screenDiag * 1.2) {
+                ctx.fillStyle = `rgba(0, 0, 0, ${this.voidAlpha})`;
+                ctx.fillRect(0, 0, this.game.width, this.game.height);
+            } else {
+                if (this.voidRadius < this.targetVoidRadius) {
+                    // Use radial gradient while expanding (soft edge)
+                    const blurPixels = 10 * this.game.worldScale;
+                    const stop = Math.max(0, 1 - blurPixels / r);
+                    const grad = ctx.createRadialGradient(screen.x, screen.y, 0, screen.x, screen.y, r);
+                    grad.addColorStop(0, `rgba(0, 0, 0, ${this.voidAlpha})`);
+                    grad.addColorStop(stop, `rgba(0, 0, 0, ${this.voidAlpha})`);
+                    grad.addColorStop(1, `rgba(0, 0, 0, 0)`);
+                    ctx.fillStyle = grad;
+                } else {
+                    // Solid black once fully expanded (much faster for GPU)
+                    ctx.fillStyle = `rgba(0, 0, 0, ${this.voidAlpha})`;
+                }
+
+                ctx.beginPath();
+                ctx.arc(screen.x, screen.y, r, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            ctx.restore();
+        }
+
         if (this.state === KNOWLEDGE_STATE.BOSS) {
             ctx.save();
+            // Draw arena ring
             ctx.beginPath();
-            ctx.arc(screen.x, screen.y, this.bossRadius, 0, Math.PI * 2);
+            ctx.arc(screen.x, screen.y, this.bossRadius * this.game.worldScale, 0, Math.PI * 2);
             ctx.strokeStyle = '#ff0000';
-            ctx.lineWidth = 4;
+            ctx.lineWidth = 4 * this.game.worldScale;
             ctx.stroke();
-            ctx.globalAlpha = 0.2;
-            ctx.fillStyle = '#000000';
-            ctx.fill();
+
             ctx.restore();
         }
 
@@ -552,14 +599,6 @@ export class KnowledgeEvent {
 
         // --- Boss VFX ---
         if (this.state === KNOWLEDGE_STATE.BOSS) {
-            // Draw Arena Circle
-            ctx.beginPath();
-            ctx.arc(screen.x, screen.y, this.bossRadius * this.game.worldScale, 0, Math.PI * 2);
-            ctx.strokeStyle = 'rgba(255, 0, 0, 0.3)';
-            ctx.lineWidth = 4 * this.game.worldScale;
-            ctx.setLineDash([10 * this.game.worldScale, 10 * this.game.worldScale]);
-            ctx.stroke();
-            ctx.setLineDash([]); // Reset dash
 
             // Draw Targeting Beam
             if (this.isTargeting) {

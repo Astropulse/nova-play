@@ -133,7 +133,7 @@ export class HUD {
             const cx = Math.floor((rw / 2) / uiScale) * uiScale;
             const cy = Math.floor((rh / 2) / uiScale) * uiScale;
 
-            const radarRange = 1800;
+            const radarRange = 2000;
             const radarSize = (rw / 2) - (2 * uiScale);
 
             const drawDot = (entities, color, size = 1) => {

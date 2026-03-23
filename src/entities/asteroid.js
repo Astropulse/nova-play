@@ -681,7 +681,7 @@ export class AsteroidSpawner {
         this.distanceAccumulator += distMoved;
 
         // Check if player has moved enough units (scaled)
-        const spawnThreshold = 60;
+        const spawnThreshold = 75;
         if (this.distanceAccumulator >= spawnThreshold) {
             this.distanceAccumulator -= spawnThreshold;
 
