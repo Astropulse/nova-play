@@ -30,14 +30,6 @@ export class Game {
         this.currentState = null;
         this.lastTime = 0;
         this.running = false;
-
-        // Recording State
-        this.isRecording = false;
-        this.recordTimer = 0;
-        this.maxRecordTime = 5.0;
-        this.mediaRecorder = null;
-        this.recordedChunks = [];
-        this.isEncoding = false;
     }
 
     resize() {
@@ -217,24 +209,6 @@ export class Game {
         }
         this._devPressedPrev = devPressed;
 
-        // Screenshot/GIF Hotkey: P
-        if (this.input.isKeyJustPressed('KeyP') && !this.devConsole.active) {
-            this.takeScreenshot();
-        }
-
-        if (this.isEncoding) {
-            // Game is effectively paused during final blob creation
-            this.ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
-            this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-            this.ctx.fillStyle = '#ffffff';
-            this.ctx.font = `${6 * this.uiScale}px Astro5x`;
-            this.ctx.textAlign = 'center';
-            this.ctx.textBaseline = 'middle';
-            this.ctx.fillText('SAVING CLIP (PLEASE WAIT)...', this.canvas.width / 2, this.canvas.height / 2);
-            requestAnimationFrame((t) => this.loop(t));
-            return;
-        }
-
         this.sounds.update(dt);
 
         if (this.devConsole.active) {
@@ -256,26 +230,6 @@ export class Game {
 
         this.devConsole.draw(this.ctx);
 
-        // Handle Recording Timer
-        if (this.isRecording) {
-            this.recordTimer += dt;
-
-            // Update DOM indicator
-            const indicator = document.getElementById('recordingIndicator');
-            const timer = document.getElementById('recordingTimer');
-            if (indicator && timer) {
-                indicator.style.display = 'block';
-                timer.innerText = Math.max(0, this.maxRecordTime - this.recordTimer).toFixed(1);
-            }
-
-            if (this.recordTimer >= this.maxRecordTime) {
-                this.stopRecording();
-            }
-        } else {
-            const indicator = document.getElementById('recordingIndicator');
-            if (indicator) indicator.style.display = 'none';
-        }
-
         requestAnimationFrame((t) => this.loop(t));
     }
 
@@ -284,80 +238,6 @@ export class Game {
         const img = this.assets.get(key);
         if (!img) return;
         ctx.drawImage(img, Math.floor(x), Math.floor(y), img.width * scale, img.height * scale);
-    }
-
-    takeScreenshot() {
-        if (this.isRecording || this.isEncoding) return;
-        this.startRecording();
-    }
-
-    startRecording() {
-        if (this.isRecording || this.isEncoding) return;
-
-        this.recordedChunks = [];
-        const stream = this.canvas.captureStream(30);
-
-        // Try to find a supported mime type
-        const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
-            ? 'video/webm;codecs=vp9'
-            : 'video/webm';
-
-        this.mediaRecorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 5000000 });
-
-        this.mediaRecorder.ondataavailable = (e) => {
-            if (e.data.size > 0) this.recordedChunks.push(e.data);
-        };
-
-        this.mediaRecorder.onstop = async () => {
-            this.isRecording = false;
-
-            // Pause immediately to protect the player
-            const wasPaused = this.currentState && this.currentState.paused;
-            if (this.currentState) this.currentState.paused = true;
-
-            // Wait 2 seconds before starting the "saving" phase
-            // This gives the player time to release any keys ('P', movement, etc.)
-            this.isEncoding = true;
-
-            setTimeout(async () => {
-                try {
-                    const blob = new Blob(this.recordedChunks, { type: 'video/webm' });
-                    const url = URL.createObjectURL(blob);
-
-                    const link = document.createElement('a');
-                    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-                    link.download = `nova_clip_${timestamp}.webm`;
-                    link.href = url;
-                    link.click();
-
-                    console.log('Video saved:', link.download);
-
-                    // Keep the "SAVING" overlay visible for a bit longer
-                    setTimeout(() => {
-                        URL.revokeObjectURL(url);
-                        this.isEncoding = false;
-                        // Game stays paused as per previous user request
-                    }, 1000);
-                } catch (err) {
-                    console.error('Failed to save video:', err);
-                    this.isEncoding = false;
-                }
-            }, 2000);
-        };
-
-        this.recordTimer = 0;
-        this.isRecording = true;
-        this.mediaRecorder.start();
-        console.log('Video recording started...');
-    }
-
-    _captureFrame() {
-        // No longer needed
-    }
-
-    async stopRecording() {
-        if (!this.isRecording || !this.mediaRecorder) return;
-        this.mediaRecorder.stop();
     }
 
     // Draw a sprite centered at (cx, cy) in screen pixels
