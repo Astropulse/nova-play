@@ -30,8 +30,8 @@ export class FracturedStationEvent {
             game.assets.get('fractured_station_2')
         ];
 
-        this.detectionDist = this.game.unit(1200);
-        this.spawnDist = this.game.unit(300);
+        this.detectionDist = 1200;
+        this.spawnDist = 300;
         this.radius = 0; // COSMETIC ONLY - NO COLLISION
 
         this.activeEnemies = [];
@@ -166,7 +166,7 @@ export class FracturedStationEvent {
 
             case FRACTURED_STATION_STATE.BELT_SUB3:
                 // End event when reaching the final station
-                if (dist < this.game.unit(300)) {
+                if (dist < 300) {
                     this.state = FRACTURED_STATION_STATE.FINISHED;
                     this.revealed = false; // Hide marker
                     this.game.sounds.restoreMusic();
@@ -180,7 +180,7 @@ export class FracturedStationEvent {
         for (let i = 0; i < count; i++) {
             const angle = Math.random() * Math.PI * 2;
             // Spawn further out so they arrive staggered (1800-2400) like standard waves
-            const dist = this.game.unit(1800 + Math.random() * 600);
+            const dist = 1800 + Math.random() * 600;
             const ex = playerX + Math.cos(angle) * dist;
             const ey = playerY + Math.sin(angle) * dist;
 
@@ -202,7 +202,7 @@ export class FracturedStationEvent {
         const count = 80 + Math.floor(Math.random() * 20);
         for (let i = 0; i < count; i++) {
             const angle = Math.random() * Math.PI * 2;
-            const dist = this.game.unit(400 + Math.random() * 1200);
+            const dist = 400 + Math.random() * 1200;
             const ax = x + Math.cos(angle) * dist;
             const ay = y + Math.sin(angle) * dist;
 

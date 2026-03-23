@@ -52,9 +52,9 @@ export class Projectile {
         ctx.restore();
     }
 
-    // Collision radius (world pixels)
+    // Collision radius (game units)
     get radius() {
-        if (!this.img) return 4 * this.game.worldScale;
-        return this.img.width * this.game.worldScale * 0.4;
+        if (!this.img) return 4;
+        return this.img.width * 0.4;
     }
 }

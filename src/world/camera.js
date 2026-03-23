@@ -1,9 +1,11 @@
-// Camera tracks the player's world position (in screen pixels).
+// Camera tracks the player's world position in abstract game units.
 // The player is always rendered at screen center.
+// worldScale is applied here to convert game units → screen pixels.
 export class Camera {
-    constructor() {
-        this.x = 0; // world-space center X (screen pixels)
-        this.y = 0; // world-space center Y (screen pixels)
+    constructor(game) {
+        this.game = game;
+        this.x = 0; // world-space center X (game units)
+        this.y = 0; // world-space center Y (game units)
     }
 
     follow(target) {
@@ -11,19 +13,19 @@ export class Camera {
         this.y = target.worldY;
     }
 
-    // Convert world coords to screen coords
+    // Convert world coords (game units) to screen coords (pixels)
     worldToScreen(wx, wy, canvasW, canvasH) {
         return {
-            x: wx - this.x + canvasW / 2,
-            y: wy - this.y + canvasH / 2
+            x: (wx - this.x) * this.game.worldScale + canvasW / 2,
+            y: (wy - this.y) * this.game.worldScale + canvasH / 2
         };
     }
 
-    // Convert screen coords to world coords
+    // Convert screen coords (pixels) to world coords (game units)
     screenToWorld(sx, sy, canvasW, canvasH) {
         return {
-            x: sx + this.x - canvasW / 2,
-            y: sy + this.y - canvasH / 2
+            x: (sx - canvasW / 2) / this.game.worldScale + this.x,
+            y: (sy - canvasH / 2) / this.game.worldScale + this.y
         };
     }
 }

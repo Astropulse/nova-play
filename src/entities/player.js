@@ -14,12 +14,12 @@ export class Player {
         this.vx = 0;
         this.vy = 0;
         this.angle = -Math.PI / 2; // facing up
-        this.baseSpeed = game.unit(shipData.speed * 120);
+        this.baseSpeed = shipData.speed * 120;
         this.acceleration = this.baseSpeed * 3;
         this.friction = 0.96;
 
         // Boost — short powerful burst
-        this.boostPower = game.unit(6000);
+        this.boostPower = 6000;
         this.boostDuration = 0.4;
         this.boostCooldown = 2.0;
 
@@ -69,7 +69,7 @@ export class Player {
         this._boostWasOnCooldown = false;
 
         // Dodge — lateral dash (A/D)
-        this.dodgePower = game.unit(2500);
+        this.dodgePower = 2500;
         this.dodgeCooldown = 0.6;
         this.dodgeCooldownTimer = 0;
         this.canDodge = shipData.special === 'dodge'; // Overridden by hasAncientCurse dynamically below
@@ -97,7 +97,7 @@ export class Player {
         // Shooting
         this.shootCooldown = 0.2;
         this.shootTimer = 0;
-        this.projectileSpeed = game.unit(1800);
+        this.projectileSpeed = 1800;
         this.pendingProjectiles = []; // collected each frame by playingState
         this.hasRailgun = false;
         this.hasEnergyBlaster = false;
@@ -167,7 +167,7 @@ export class Player {
             const dx = en.worldX - this.worldX;
             const dy = en.worldY - this.worldY;
             const dist = Math.sqrt(dx * dx + dy * dy);
-            if (dist < this.game.unit(1500)) {
+            if (dist < 1500) {
                 const angleToEn = Math.atan2(dy, dx);
                 let diff = angleToEn - this.angle;
                 while (diff > Math.PI) diff -= Math.PI * 2;
@@ -396,7 +396,7 @@ export class Player {
         this.worldY += this.vy * dt;
 
         // --- Thruster sound (speed-based overlapping) ---
-        if (this.thrusting && currentSpeed > this.game.unit(50)) {
+        if (this.thrusting && currentSpeed > 50) {
             this.thrustSoundTimer -= dt;
             if (this.thrustSoundTimer <= 0) {
                 const speedRatio = Math.min(1, currentSpeed / this.baseSpeed);
@@ -472,7 +472,7 @@ export class Player {
             }
         } else {
             if ((input.isMouseDown(0) || input.isKeyDown('KeyI')) && this.shootTimer <= 0) {
-                const noseOffset = this.game.unit(30);
+                const noseOffset = 30;
                 const px = this.worldX + Math.cos(this.angle) * noseOffset;
                 const py = this.worldY + Math.sin(this.angle) * noseOffset;
 
@@ -488,7 +488,7 @@ export class Player {
                 const origins = [];
                 if (this.hasMultishotGuns) {
                     const perpAngle = this.angle + Math.PI / 2;
-                    const offset = this.game.unit(15);
+                    const offset = 15;
                     origins.push({
                         px: px + Math.cos(perpAngle) * offset,
                         py: py + Math.sin(perpAngle) * offset
@@ -715,7 +715,7 @@ export class Player {
                 }
             }
         }
-        this._cachedRadius = Math.sqrt(maxDistSq) * this.game.worldScale;
+        this._cachedRadius = Math.sqrt(maxDistSq);
         return this._cachedRadius;
     }
 
@@ -750,8 +750,8 @@ export class Player {
         const ry = lx * Math.sin(angle) + ly * Math.cos(angle);
 
         // Map to pixel coords (center is width/2, height/2)
-        const px = Math.floor(rx / this.game.worldScale + mask.width / 2);
-        const py = Math.floor(ry / this.game.worldScale + mask.height / 2);
+        const px = Math.floor(rx + mask.width / 2);
+        const py = Math.floor(ry + mask.height / 2);
 
         if (px < 0 || py < 0 || px >= mask.width || py >= mask.height) return false;
 

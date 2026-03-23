@@ -33,10 +33,10 @@ export class KnowledgeEvent {
         this.eyeTimer = 0;
 
         // Hitbox/Circle properties
-        this.radius = this.game.unit(100);
-        this.innerRadius = this.game.unit(150); // Trigger radius for boss
-        this.bossRadius = this.game.unit(150); // Current expanding radius
-        this.targetBossRadius = this.game.unit(800);
+        this.radius = 100;
+        this.innerRadius = 150; // Trigger radius for boss
+        this.bossRadius = 150; // Current expanding radius
+        this.targetBossRadius = 800;
 
         // Interaction flags
         this.acceptsItems = true;
@@ -86,8 +86,8 @@ export class KnowledgeEvent {
                 if (this.defeatTimer <= 0) {
                     this.explosionCount++;
                     this.defeatTimer = 0.2 + Math.random() * 0.3; // Slower spacing for 5 explosions
-                    const offX = (Math.random() - 0.5) * this.game.unit(300);
-                    const offY = (Math.random() - 0.5) * this.game.unit(300);
+                    const offX = (Math.random() - 0.5) * 300;
+                    const offY = (Math.random() - 0.5) * 300;
                     const sound = Math.random() > 0.3 ? 'ship_explode' : 'asteroid_break';
                     this.game.sounds.play(sound, { volume: 0.7 + Math.random() * 0.3, x: this.worldX + offX, y: this.worldY + offY });
 
@@ -97,7 +97,7 @@ export class KnowledgeEvent {
                         const size = Math.random() > 0.6 ? 'big' : 'small';
                         const s = new Scrap(this.game, this.worldX, this.worldY, size);
                         const angle = Math.random() * Math.PI * 2;
-                        const speed = this.game.unit(100 + Math.random() * 300);
+                        const speed = 100 + Math.random() * 300;
                         s.vx = Math.cos(angle) * speed;
                         s.vy = Math.sin(angle) * speed;
                         this.pendingSpawns.push(s);
@@ -115,13 +115,13 @@ export class KnowledgeEvent {
         const dist = Math.sqrt(dx * dx + dy * dy);
 
         // Discovery logic (Signal indicator)
-        if (!this.revealed && dist < this.game.unit(3500)) {
+        if (!this.revealed && dist < 3500) {
             this.revealed = true;
         }
 
         // State changes
         if (this.state === KNOWLEDGE_STATE.DORMANT) {
-            if (dist < this.game.unit(1200)) {
+            if (dist < 1200) {
                 this.state = KNOWLEDGE_STATE.NEAR;
                 this.game.sounds.playSpecificMusic('Lidless Above the Void');
             }
@@ -132,7 +132,7 @@ export class KnowledgeEvent {
         const isTrackingPlayer = (this.state !== KNOWLEDGE_STATE.DEFEATED && this.acceptsItems && this.acceptsEnemies);
         if (isTrackingPlayer) {
             this.eyeAngle = Math.atan2(dy, dx);
-            const displacement = 20 * Math.min(1, dist / this.game.unit(600));
+            const displacement = 20 * Math.min(1, dist / 600);
             this.eyeX = Math.cos(this.eyeAngle) * displacement;
             this.eyeY = Math.sin(this.eyeAngle) * displacement;
         } else if (this.state !== KNOWLEDGE_STATE.DEFEATED) {
@@ -167,7 +167,7 @@ export class KnowledgeEvent {
 
             // Expand circle
             if (this.bossRadius < this.targetBossRadius) {
-                this.bossRadius = Math.min(this.targetBossRadius, this.bossRadius + this.game.unit(300) * dt);
+                this.bossRadius = Math.min(this.targetBossRadius, this.bossRadius + 300 * dt);
             }
 
             // Attacks
@@ -204,15 +204,15 @@ export class KnowledgeEvent {
             }
 
             // If player leaves boss radius, reset (using target radius so it doesn't reset while expanding)
-            if (dist > this.targetBossRadius + this.game.unit(400)) {
+            if (dist > this.targetBossRadius + 400) {
                 this._resetBoss();
             }
         }
     }
 
     _handleSuction(dt, player) {
-        const suctionRadius = this.game.unit(600);
-        const consumeRadius = this.game.unit(15);
+        const suctionRadius = 600;
+        const consumeRadius = 15;
 
         // 1. Items
         if (this.acceptsItems && this.game.currentState.itemPickups) {
@@ -287,7 +287,7 @@ export class KnowledgeEvent {
             const player = this.game.currentState.player;
             if (player) {
                 const angle = Math.atan2(player.worldY - this.worldY, player.worldX - this.worldX);
-                const speed = this.game.unit(300);
+                const speed = 300;
                 reward.vx = Math.cos(angle) * speed;
                 reward.vy = Math.sin(angle) * speed;
             }
@@ -314,7 +314,7 @@ export class KnowledgeEvent {
             const player = this.game.currentState.player;
             if (player) {
                 const angle = Math.atan2(player.worldY - this.worldY, player.worldX - this.worldX);
-                const speed = this.game.unit(400);
+                const speed = 400;
                 reward.vx = Math.cos(angle) * speed;
                 reward.vy = Math.sin(angle) * speed;
             }
@@ -336,7 +336,7 @@ export class KnowledgeEvent {
         const damage = (1 + (diff - 1) * 0.5);
         for (let i = 0; i < count; i++) {
             const angle = (i / count) * Math.PI * 2 + (Math.random() * 0.2);
-            const speed = this.game.unit(500 + (diff * 30));
+            const speed = 500 + (diff * 30);
             const proj = new Projectile(this.game, this.worldX, this.worldY, angle, speed, 'red_laser_ball_big', this, damage, 4.0);
             this.game.currentState.projectiles.push(proj);
         }
@@ -347,7 +347,7 @@ export class KnowledgeEvent {
         const count = Math.floor(12 + (diff * 4));
         const damage = (1 + (diff - 1) * 0.5);
         const baseAngle = Math.random() * Math.PI * 2;
-        const speed = this.game.unit(400 + (diff * 20));
+        const speed = 400 + (diff * 20);
         const angularVelocity = 1.0 + Math.random() * 1.0; // Variable radius: 1.5 was current (small), 0.5 is large spiral
 
         for (let i = 0; i < count; i++) {
@@ -377,7 +377,7 @@ export class KnowledgeEvent {
 
         for (let i = 0; i < count; i++) {
             const angle = (waveAngle - arc / 2) + (i / (count - 1)) * arc;
-            const speed = this.game.unit(600 + (diff * 20));
+            const speed = 600 + (diff * 20);
             const proj = new Projectile(this.game, this.worldX, this.worldY, angle, speed, 'red_laser_ball_big', this, damage, 4.0);
             this.game.currentState.projectiles.push(proj);
         }
@@ -387,7 +387,7 @@ export class KnowledgeEvent {
     _fireHitscanBeam(player, diff) {
         const angle = this.targetingAngle;
         const damage = (1 + (diff - 1) * 0.5) * 2.5;
-        const length = this.game.unit(12000);
+        const length = 12000;
 
         this.activeBeams.push({
             x: this.worldX,
@@ -467,7 +467,7 @@ export class KnowledgeEvent {
             const pickup = new ItemPickup(this.game, this.worldX, this.worldY, up);
             // Random velocity 100-400
             const angle = Math.random() * Math.PI * 2;
-            const speed = this.game.unit(30 + Math.random() * 200);
+            const speed = 30 + Math.random() * 200;
             pickup.vx = Math.cos(angle) * speed;
             pickup.vy = Math.sin(angle) * speed;
             spawns.push(pickup);
@@ -528,7 +528,7 @@ export class KnowledgeEvent {
                     ctx.globalAlpha = 0.7;
                     ctx.globalCompositeOperation = 'screen';
                 }
-                ctx.translate(screen.x + this.eyeX, screen.y + this.eyeY);
+                ctx.translate(screen.x + this.eyeX * this.game.worldScale, screen.y + this.eyeY * this.game.worldScale);
                 ctx.drawImage(frame, -ew / 2, -eh / 2, ew, eh);
                 ctx.restore();
             }
@@ -554,7 +554,7 @@ export class KnowledgeEvent {
         if (this.state === KNOWLEDGE_STATE.BOSS) {
             // Draw Arena Circle
             ctx.beginPath();
-            ctx.arc(screen.x, screen.y, this.bossRadius, 0, Math.PI * 2);
+            ctx.arc(screen.x, screen.y, this.bossRadius * this.game.worldScale, 0, Math.PI * 2);
             ctx.strokeStyle = 'rgba(255, 0, 0, 0.3)';
             ctx.lineWidth = 4 * this.game.worldScale;
             ctx.setLineDash([10 * this.game.worldScale, 10 * this.game.worldScale]);
