@@ -19,6 +19,7 @@ export class DevConsole {
             'locate': (args) => this._cmdLocate(args),
             'save': () => this._cmdSave(),
             'load': () => this._cmdLoad(),
+            'record': (args) => this._cmdRecord(args),
             'help': () => this._cmdHelp()
         };
 
@@ -201,9 +202,14 @@ export class DevConsole {
     _cmdLoad() {
         SaveManager.load(this.game);
     }
+    
+    _cmdRecord(args) {
+        this.game.recordingEnabled = !this.game.recordingEnabled;
+        console.log(`Recording feature ${this.game.recordingEnabled ? 'ENABLED' : 'DISABLED'}`);
+    }
 
     _cmdHelp() {
-        console.log("Available commands: time, spawn, stat, wave, scrap, locate, save, load, help");
+        console.log("Available commands: time, spawn, stat, wave, scrap, locate, save, load, record, help");
     }
 
     draw(ctx) {

@@ -1450,11 +1450,11 @@ export class PlayingState {
         if (this.draggedItem) {
             const { item, offsetX, offsetY } = this.draggedItem;
             const mouse = this.game.getMousePos();
-            const img = this.game.assets.get(item.assetKey);
+            const frame = this.game.getAnimationFrame(item.assetKey);
             const w = item.width * slotSize;
             const h = item.height * slotSize;
 
-            ctx.drawImage(img, mouse.x - offsetX, mouse.y - offsetY, w, h);
+            ctx.drawImage(frame, mouse.x - offsetX, mouse.y - offsetY, w, h);
 
             // Cost indicator if from shop
             if (this.draggedItem.originInventory === shopInv) {
@@ -1538,8 +1538,8 @@ export class PlayingState {
             if (this.draggedItem && this.draggedItem.entry === entry) continue;
 
             const { item, x, y } = entry;
-            const img = this.game.assets.get(item.assetKey);
-            if (!img) continue;
+            const frame = this.game.getAnimationFrame(item.assetKey);
+            if (!frame) continue;
 
             const ix = startX + x * slotSize;
             const iy = startY + y * slotSize;
@@ -1551,7 +1551,7 @@ export class PlayingState {
             ctx.fillStyle = overlayColor;
             ctx.fillRect(ix + 2, iy + 2, w - 4, h - 4); // Inset to keep grid lines clear
 
-            ctx.drawImage(img, ix, iy, w, h);
+            ctx.drawImage(frame, ix, iy, w, h);
         }
     }
 
@@ -2349,11 +2349,11 @@ export class PlayingState {
         if (this.draggedItem) {
             const { item, offsetX, offsetY } = this.draggedItem;
             const mouse = this.game.getMousePos();
-            const img = this.game.assets.get(item.assetKey);
+            const frame = this.game.getAnimationFrame(item.assetKey);
             const w = item.width * slotSize;
             const h = item.height * slotSize;
 
-            ctx.drawImage(img, mouse.x - offsetX, mouse.y - offsetY, w, h);
+            ctx.drawImage(frame, mouse.x - offsetX, mouse.y - offsetY, w, h);
         }
 
         // Resume hint

@@ -430,10 +430,13 @@ export class ItemPickup {
     }
 
     draw(ctx, camera) {
-        if (!this.alive || !this.img) return;
+        if (!this.alive) return;
+        const frame = this.game.getAnimationFrame(this.assetKey);
+        if (!frame) return;
+
         const screen = camera.worldToScreen(this.worldX, this.worldY, this.game.width, this.game.height);
-        const w = this.img.width * this.game.worldScale;
-        const h = this.img.height * this.game.worldScale;
+        const w = (frame.width || 16) * this.game.worldScale;
+        const h = (frame.height || 16) * this.game.worldScale;
 
         if (screen.x + w < -50 || screen.x - w > this.game.width + 50 ||
             screen.y + h < -50 || screen.y - h > this.game.height + 50) return;
@@ -444,7 +447,7 @@ export class ItemPickup {
 
         // Items are slightly larger in the world than their UI versions
         const renderScale = 1.2;
-        ctx.drawImage(this.img, -Math.floor(w * renderScale / 2), -Math.floor(h * renderScale / 2), w * renderScale, h * renderScale);
+        ctx.drawImage(frame, -Math.floor(w * renderScale / 2), -Math.floor(h * renderScale / 2), w * renderScale, h * renderScale);
 
         // Subtle glow or highlight? 
         ctx.beginPath();

@@ -30,6 +30,7 @@ export class Game {
 
         // Recording State
         this.isRecording = false;
+        this.recordingEnabled = false;
         this.recordTimer = 0;
         this.maxRecordTime = 5.0;
         this.mediaRecorder = null;
@@ -285,7 +286,7 @@ export class Game {
     }
 
     takeScreenshot() {
-        if (this.isRecording || this.isEncoding) return;
+        if (!this.recordingEnabled || this.isRecording || this.isEncoding) return;
         this.startRecording();
     }
 
@@ -536,9 +537,6 @@ export class Game {
             'knowledge': 'Assets/Events/knowledge.png',
             'radar_frame': 'Assets/UI/radar_frame.png',
             'radar_frame_back': 'Assets/UI/radar_frame_back.png',
-            'obedience_1x1': 'Assets/Upgrades/obedience_1x1.png',
-            'sacrifice_1x2': 'Assets/Upgrades/sacrifice_1x2.png',
-            'knowledge_1x1': 'Assets/Upgrades/knowledge_1x1.png',
             'pulse_jet_2x1': 'Assets/Upgrades/pulse_jet_2x1.png',
             'shield_booster_1x1': 'Assets/Upgrades/shield_booster_1x1.png',
             'targeting_module_2x2': 'Assets/Upgrades/targeting_module_2x2.png',
@@ -548,7 +546,6 @@ export class Game {
             'high_density_capacitor_1x2': 'Assets/Upgrades/high_density_capacitor_1x2.png',
             'energy_cell_1x2': 'Assets/Upgrades/energy_cell_1x2.png',
             'explosives_unit_3x2': 'Assets/Upgrades/explosives_unit_3x2.png',
-            'ancient_curse_2x2': 'Assets/Upgrades/ancient_curse_2x2.png',
             'boost_drive_2x1': 'Assets/Upgrades/boost_drive_2x1.png',
             // Events
             'cthulhu': 'Assets/Events/cthulhu.png',
@@ -675,6 +672,33 @@ export class Game {
             'looper_flying': 'Assets/Ships/Looper/looper_flying.gif',
             'cthulhu_wake': 'Assets/Events/cthulhu_wake.gif',
             'knowledge_eye': 'Assets/Events/knowledge_eye.gif',
+            'obedience_1x1': 'Assets/Upgrades/obedience_1x1.gif',
+            'sacrifice_1x2': 'Assets/Upgrades/sacrifice_1x2.gif',
+            'knowledge_1x1': 'Assets/Upgrades/knowledge_1x1.gif',
+            'ancient_curse_2x2': 'Assets/Upgrades/ancient_curse_2x2.gif',
         };
+    }
+
+    /**
+     * Gets the current frame for an asset (handle both static and GIF).
+     * @param {string} key Asset key.
+     * @returns {HTMLImageElement|HTMLCanvasElement|null} Current frame image/canvas.
+     */
+    getAnimationFrame(key) {
+        const asset = this.assets.get(key);
+        if (!asset) return null;
+
+        if (Array.isArray(asset)) {
+            // It's a GIF frame array. Calculate frame based on time.
+            const totalDelay = asset.reduce((sum, frame) => sum + frame.delay, 0);
+            let timeMs = performance.now() % totalDelay;
+            for (const frame of asset) {
+                if (timeMs < frame.delay) return frame.canvas;
+                timeMs -= frame.delay;
+            }
+            return asset[asset.length - 1].canvas;
+        }
+
+        return asset;
     }
 }
