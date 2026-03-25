@@ -31,7 +31,7 @@ export class CthulhuEvent {
 
         // Scaling (Big boss)
         this.scale = 1.0;
-        this.radius = (this.stillImg ? Math.max(this.stillImg.width, this.stillImg.height) / 2 : 128) * this.game.worldScale * this.scale;
+        this.radius = (this.stillImg ? Math.max(this.stillImg.width, this.stillImg.height) / 2 : 128) * this.scale;
 
         // Combat/Wave State
         this.wave = 0;
@@ -56,7 +56,7 @@ export class CthulhuEvent {
         if (!this.revealed) {
             const dx = this.worldX - player.worldX;
             const dy = this.worldY - player.worldY;
-            if (Math.sqrt(dx * dx + dy * dy) < 2500 * this.game.worldScale) {
+            if (Math.sqrt(dx * dx + dy * dy) < 2500) {
                 this.revealed = true;
                 this.game.sounds.play('select', { volume: 0.8, x: this.worldX, y: this.worldY }); // Little ping sound for discovery
             }

@@ -22,7 +22,7 @@ export class CargoShipEvent {
 
         // Scaling
         this.scale = 1.0;
-        this.radius = (this.img ? Math.max(this.img.width, this.img.height) / 2 : 128) * this.game.worldScale * this.scale;
+        this.radius = (this.img ? Math.max(this.img.width, this.img.height) / 2 : 128) * this.scale;
 
         this.pendingSpawns = [];
         this.spawnedInitialScrap = false;
@@ -37,7 +37,7 @@ export class CargoShipEvent {
 
         if (!this.spawnedInitialScrap) {
             // Trigger when player gets within 1200 world units
-            if (dist < 1200 * this.game.worldScale) {
+            if (dist < 1200) {
                 this.spawnedInitialScrap = true;
                 this.revealed = true; // Reveal on radar when close
 
@@ -67,7 +67,7 @@ export class CargoShipEvent {
         }
 
         // Remove tracker once very close
-        if (this.revealed && dist < 200 * this.game.worldScale) {
+        if (this.revealed && dist < 200) {
             this.revealed = false;
         }
     }
