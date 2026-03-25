@@ -14,9 +14,9 @@ export class Player {
         this.vx = 0;
         this.vy = 0;
         this.angle = -Math.PI / 2; // facing up
-        this.baseSpeed = shipData.speed * 120;
+        this.baseSpeed = shipData.speed * 100;
         this.acceleration = this.baseSpeed * 3;
-        this.friction = 0.96;
+        this.friction = 0.97;
 
         // Boost — short powerful burst
         this.boostPower = 6000;
@@ -60,6 +60,10 @@ export class Player {
         this.hasSacrifice = false;
         this.hasRadar = false;
         this.obedienceMult = 1.0;
+        this.momentumSpeedMult = 0.5;
+        this.momentumMaxSpeedMult = 2 * (0.97 / 0.99);
+        this.momentumBoostMult = 0.5;
+        this.momentumDodgeMult = 0.5;
 
         this.boostTimer = 0;
         this.boostCooldownTimer = 0;
@@ -328,7 +332,7 @@ export class Player {
                 this.boostCooldownTimer = this.boostCooldown * this.boostCooldownMult;
                 this.boostIntensity = 1;
                 this._boostWasOnCooldown = true;
-                const power = this.boostPower * this.boostRangeMult * this.boostSpeedMult;
+                const power = this.boostPower * this.boostRangeMult * this.boostSpeedMult * this.momentumBoostMult;
                 this.vx += Math.cos(this.angle) * power;
                 this.vy += Math.sin(this.angle) * power;
                 this.game.sounds.play('boost', { volume: 0.5, x: this.worldX, y: this.worldY });
@@ -352,8 +356,9 @@ export class Player {
         if (this.canDodge && !this.hasAncientCurse && this.dodgeCooldownTimer <= 0) {
             if (input.isKeyJustPressed('KeyA')) {
                 const perpAngle = this.angle - Math.PI / 2;
-                this.vx += Math.cos(perpAngle) * this.dodgePower;
-                this.vy += Math.sin(perpAngle) * this.dodgePower;
+                const power = this.dodgePower * this.momentumDodgeMult;
+                this.vx += Math.cos(perpAngle) * power;
+                this.vy += Math.sin(perpAngle) * power;
                 this.isDodging = true;
                 this.dodgeTimer = this.dodgeDuration;
                 this.dodgeCooldownTimer = this.dodgeCooldown;
@@ -363,8 +368,9 @@ export class Player {
             }
             if (input.isKeyJustPressed('KeyD')) {
                 const perpAngle = this.angle + Math.PI / 2;
-                this.vx += Math.cos(perpAngle) * this.dodgePower;
-                this.vy += Math.sin(perpAngle) * this.dodgePower;
+                const power = this.dodgePower * this.momentumDodgeMult;
+                this.vx += Math.cos(perpAngle) * power;
+                this.vy += Math.sin(perpAngle) * power;
                 this.isDodging = true;
                 this.dodgeTimer = this.dodgeDuration;
                 this.dodgeCooldownTimer = this.dodgeCooldown;
@@ -384,7 +390,7 @@ export class Player {
         this.vx += accelX * dt;
         this.vy += accelY * dt;
 
-        let maxSpeed = this.baseSpeed * this.pulseJetMult * this.mechanicalEngineSpeedMult;
+        let maxSpeed = this.baseSpeed * this.pulseJetMult * this.mechanicalEngineSpeedMult * this.momentumMaxSpeedMult;
         const currentSpeed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
         if (!this.isBoosting && !this.isDodging && currentSpeed > maxSpeed) {
             const decay = Math.max(maxSpeed / currentSpeed, 1 - dt * 5);

@@ -117,15 +117,15 @@ export class PlayingState {
         const dx = x - this.player.worldX;
         const dy = y - this.player.worldY;
         const dist = Math.sqrt(dx * dx + dy * dy);
-        
+
         if (dist >= maxDist) return;
-        
+
         let finalIntensity = intensity;
         if (dist > minPassDist) {
             const attenuation = 1.0 - ((dist - minPassDist) / (maxDist - minPassDist));
             finalIntensity *= attenuation;
         }
-        
+
         if (finalIntensity > 0.1) {
             this.camera.shake(finalIntensity);
         }
@@ -2054,6 +2054,11 @@ export class PlayingState {
         p.hasExplosivesUnit = false;
         p.hasAncientCurse = false;
         p.hasBoostDrive = false;
+        p.friction = 0.97;
+        p.momentumSpeedMult = 1.0;
+        p.momentumMaxSpeedMult = 1.0;
+        p.momentumBoostMult = 1.0;
+        p.momentumDodgeMult = 1.0;
 
         // Knowledge Event Upgrades
         p.hasSacrifice = false;
@@ -2115,6 +2120,13 @@ export class PlayingState {
             if (item.id === 'rockets') this.hasRockets = true;
             if (item.id === 'ancient_curse') p.hasAncientCurse = true;
             if (item.id === 'boost_drive') p.hasBoostDrive = true;
+            if (item.id === 'momentum_module') {
+                p.momentumSpeedMult = 0.5;
+                p.momentumMaxSpeedMult = 2 * (0.97 / 0.99);
+                p.momentumBoostMult = 0.5;
+                p.momentumDodgeMult = 0.5;
+                p.friction = 0.99;
+            }
 
             // Knowledge Upgrades
             if (item.id === 'obedience') p.obedienceMult = 1.2;
@@ -2149,7 +2161,7 @@ export class PlayingState {
         p.updateMaxShield(0); // This uses obedienceMult internally now
 
         // Update base speed and acceleration
-        p.baseSpeed = p.shipData.speed * 120 * p.obedienceMult;
+        p.baseSpeed = p.shipData.speed * 100 * p.obedienceMult * p.momentumSpeedMult;
         p.acceleration = p.baseSpeed * 3;
 
         if (healAcquisition) {

@@ -263,7 +263,7 @@ export const UPGRADES = [
         width: 2,
         height: 1,
         cost: 50,
-        rarity: 'rare'
+        rarity: 'epic'
     },
     {
         id: 'advanced_locator',
@@ -325,6 +325,16 @@ export const UPGRADES = [
         height: 1,
         cost: 0,
         rarity: 'unique'
+    },
+    {
+        id: 'momentum_module',
+        name: 'Momentum Module',
+        description: 'Reduces friction, allowing the ship to drift',
+        assetKey: 'momentum_module_1x1',
+        width: 1,
+        height: 1,
+        cost: 45,
+        rarity: 'uncommon'
     }
 ];
 

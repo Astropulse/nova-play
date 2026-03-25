@@ -547,6 +547,7 @@ export class Game {
             'energy_cell_1x2': 'Assets/Upgrades/energy_cell_1x2.png',
             'explosives_unit_3x2': 'Assets/Upgrades/explosives_unit_3x2.png',
             'boost_drive_2x1': 'Assets/Upgrades/boost_drive_2x1.png',
+            'momentum_module_1x1': 'Assets/Upgrades/momentum_module_1x1.png',
             // Events
             'cthulhu': 'Assets/Events/cthulhu.png',
             'cargo_ship': 'Assets/Events/cargo_ship.png',
