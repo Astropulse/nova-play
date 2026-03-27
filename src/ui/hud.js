@@ -103,13 +103,14 @@ export class HUD {
             const mins = Math.floor(waveTimer / 60);
             const secs = Math.floor(waveTimer % 60).toString().padStart(2, '0');
             ctx.fillStyle = '#ff4444';
-            ctx.font = `${10 * this.game.hudScale}px Astro5x`;
+            ctx.font = `${8 * this.game.hudScale}px Astro4x`;
             ctx.textAlign = 'left';
             ctx.fillText(`NEXT WAVE: ${mins}:${secs}`, margin, this.game.hudScale * 10);
         }
 
         ctx.restore();
     }
+
 
     _drawRadar(ctx, cw, ch, margin) {
         if (!this.player.hasRadar) return;

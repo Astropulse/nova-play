@@ -217,7 +217,7 @@ export class FracturedStationEvent {
     }
 
     get isActive() {
-        return this.state !== FRACTURED_STATION_STATE.FINISHED;
+        return this.state !== FRACTURED_STATION_STATE.WAIT_SUB1 && this.state !== FRACTURED_STATION_STATE.FINISHED;
     }
 
     getSpawnOnDeath() {

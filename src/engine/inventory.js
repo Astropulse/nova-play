@@ -130,16 +130,21 @@ export class Inventory {
     }
 
     async deserialize(data) {
-        this.clear();
         this.cols = data.cols;
         this.rows = data.rows;
-        
+        this.clear();
+
         const { UPGRADES } = await import('../data/upgrades.js');
         for (const itemData of data.items) {
             const upgrade = UPGRADES.find(u => u.id === itemData.id);
             if (upgrade) {
                 this.addItem(upgrade, itemData.x, itemData.y);
             }
+        }
+
+        // Only recalculate stats if this is the player inventory
+        if (this.isPlayerInventory && this.playingState) {
+            this.playingState._onInventoryChanged();
         }
     }
 }

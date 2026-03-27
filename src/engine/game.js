@@ -31,6 +31,7 @@ export class Game {
         // Recording State
         this.isRecording = false;
         this.recordingEnabled = false;
+        this.showHealth = false;
         this.recordTimer = 0;
         this.maxRecordTime = 5.0;
         this.mediaRecorder = null;
@@ -577,6 +578,8 @@ export class Game {
             'star_8': 'Assets/Space/star_8.png',
             'star_9': 'Assets/Space/star_9.png',
             'star_10': 'Assets/Space/star_10.png',
+            // Bosses
+            'starcore': 'Assets/Ships/Bosses/Starcore/starcore.png',
             // Shield overlay
             'shield': 'Assets/Ships/shield.png',
             // Asteroids
@@ -666,6 +669,7 @@ export class Game {
 
     _getGifManifest() {
         return {
+            'fire_explosion': 'Assets/VFX/fire_explosion.gif',
             'blue_laser_explosion': 'Assets/VFX/blue_laser_explosion.gif',
             'cruiser_flying': 'Assets/Ships/Cruiser/cruiser_flying.gif',
             'bruiser_flying': 'Assets/Ships/Bruiser/bruiser_flying.gif',

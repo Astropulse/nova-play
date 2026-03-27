@@ -2,6 +2,7 @@
 import { Projectile } from './projectile.js';
 import { Scrap, Rubble, ItemPickup, ProceduralDebris, VoronoiSlicer } from './asteroid.js';
 import { UPGRADES } from '../data/upgrades.js';
+import { Starcore } from './starcore.js';
 
 const AI_STATE = {
     PURSUIT: 'pursuit',   // Move toward player
@@ -752,6 +753,21 @@ export class EnemySpawner {
 
     spawnWave(playerX, playerY, difficultyScale = 1.0) {
         this.waveNumber++;
+
+        // Boss wave every 4 waves
+        if (this.waveNumber % 4 === 0) {
+            this.waveQueue = 0;
+            this.waveSpawnTimer = 0;
+            this.waveDelay = 0.5;
+            this.waveSpawnScale = difficultyScale;
+
+            // Spawn boss at a distance
+            const angle = Math.random() * Math.PI * 2;
+            const dist = 1600;
+            const boss = new Starcore(this.game, playerX + Math.cos(angle) * dist, playerY + Math.sin(angle) * dist, difficultyScale);
+            return [boss];
+        }
+
         // First wave: max 3 enemies. Later waves grow with difficulty.
         let count;
         if (this.waveNumber === 1) {
@@ -766,6 +782,33 @@ export class EnemySpawner {
         this.waveSpawnScale = difficultyScale;
         // Return empty — enemies will be spawned via update() over time
         return [];
+    }
+
+    serialize() {
+        return {
+            phase: this.phase,
+            phaseTimer: this.phaseTimer,
+            burstQueue: this.burstQueue,
+            burstSpawnTimer: this.burstSpawnTimer,
+            waveQueue: this.waveQueue,
+            waveSpawnTimer: this.waveSpawnTimer,
+            waveDelay: this.waveDelay,
+            waveSpawnScale: this.waveSpawnScale,
+            waveNumber: this.waveNumber
+        };
+    }
+
+    deserialize(data) {
+        if (!data) return;
+        this.phase = data.phase;
+        this.phaseTimer = data.phaseTimer;
+        this.burstQueue = data.burstQueue;
+        this.burstSpawnTimer = data.burstSpawnTimer;
+        this.waveQueue = data.waveQueue;
+        this.waveSpawnTimer = data.waveSpawnTimer;
+        this.waveDelay = data.waveDelay;
+        this.waveSpawnScale = data.waveSpawnScale;
+        this.waveNumber = data.waveNumber;
     }
 }
 

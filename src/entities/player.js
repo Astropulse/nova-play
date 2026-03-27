@@ -87,6 +87,7 @@ export class Player {
         this.thrusting = false;
         this.health = shipData.health;
         this.maxHealth = shipData.health;
+        this.alive = true;
         this.scrap = 0;
 
         // Shield — proper asset, breaks when depleted

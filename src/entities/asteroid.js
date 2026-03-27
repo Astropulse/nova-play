@@ -64,6 +64,7 @@ function getCachedRadius(img, key) {
 export class VoronoiSlicer {
     static slice(img, numPieces) {
         if (!img || !img.width) return [];
+        numPieces = Math.floor(numPieces);
         const w = img.width;
         const h = img.height;
 
@@ -132,6 +133,8 @@ export class VoronoiSlicer {
             fragCanvas.width = sw;
             fragCanvas.height = sh;
             const fragCtx = fragCanvas.getContext('2d');
+            if (!fragCtx) continue;
+            
             const fragData = fragCtx.createImageData(sw, sh);
 
             for (const p of s.pixels) {
@@ -209,7 +212,7 @@ export class Rubble {
 
 // ProceduralDebris — similar to Rubble but uses a passed-in canvas/image (used for ship breakup)
 export class ProceduralDebris {
-    constructor(game, worldX, worldY, img, vx, vy, rotation, spin) {
+    constructor(game, worldX, worldY, img, vx, vy, rotation, spin, lifetime = null) {
         this.game = game;
         this.worldX = worldX;
         this.worldY = worldY;
@@ -219,7 +222,7 @@ export class ProceduralDebris {
         this.rotation = rotation;
         this.spin = spin;
         this.alive = true;
-        this.lifetime = 0.4 + Math.random() * 0.4;
+        this.lifetime = lifetime !== null ? lifetime : (0.4 + Math.random() * 0.4);
         this.maxLifetime = this.lifetime;
     }
 
@@ -367,6 +370,10 @@ export class Scrap {
  */
 export class ItemPickup {
     constructor(game, worldX, worldY, item) {
+        if (!item) {
+            console.warn('ItemPickup created with undefined item at', worldX, worldY);
+            return;
+        }
         this.game = game;
         this.worldX = worldX;
         this.worldY = worldY;

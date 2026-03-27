@@ -68,6 +68,7 @@ export class PlayingState {
 
         // Scaling Difficulty & Waves
         this.totalGameTime = 0;
+        this.trueTotalTime = 0; // Persistent game time
         this.waveTimer = 120; // 2 minutes
         this.difficultyScale = 1.0;
         this.flashTimer = 0;
@@ -236,6 +237,11 @@ export class PlayingState {
     }
 
     update(dt) {
+        // Increment true total time only if not paused, not in shop, and not dead
+        if (!this.paused && !this.isShopOpen && !this.isDead) {
+            this.trueTotalTime += dt;
+        }
+
         // --- Death sequence ---
         if (this.isDead) {
             if (this.showDeathScreen) {
@@ -588,8 +594,11 @@ export class PlayingState {
             this.difficultyScale = timeScale + upgradeBonus;
 
             // Wave timer: fixed 2-minute interval
-            this.waveTimer -= dt;
-            this.postWaveTimer += dt;
+            const bossAlive = this.enemies.some(e => e.isBoss && e.alive);
+            if (!bossAlive) {
+                this.waveTimer -= dt;
+                this.postWaveTimer += dt;
+            }
 
             // --- Music System Logic ---
             // 1. Pre-wave combat trigger (6s before)
@@ -640,7 +649,7 @@ export class PlayingState {
             // Despawn if way too far
             const dxArr = e.worldX - this.player.worldX;
             const dyArr = e.worldY - this.player.worldY;
-            if (Math.sqrt(dxArr * dxArr + dyArr * dyArr) > 3500) {
+            if (Math.sqrt(dxArr * dxArr + dyArr * dyArr) > 3500 && !e.isBoss) {
                 e.alive = false;
             }
         }
@@ -712,8 +721,30 @@ export class PlayingState {
         // --- Collision: Projectiles vs Everything ---
         for (const proj of this.projectiles) {
             if (!proj.alive) continue;
-
-            // Player projectiles vs Enemies/Asteroids
+ 
+            // vs Asteroids (All Projectiles)
+            for (const ast of this.asteroids) {
+                if (!ast.alive) continue;
+                const dx = proj.worldX - ast.worldX;
+                const dy = proj.worldY - ast.worldY;
+                if (Math.sqrt(dx * dx + dy * dy) < proj.radius + ast.radius) {
+                    proj.alive = false;
+                    this.game.sounds.play('hit', { volume: 0.4, x: proj.worldX, y: proj.worldY });
+                    if (ast.hit(proj.damage)) {
+                        this._onEntityDestroyed(ast);
+                    } else {
+                        this._triggerShakeAt(proj.worldX, proj.worldY, 0.4);
+                    }
+                    // Player-only Explosives Unit vs Shared Rockets
+                    if ((proj.owner === this.player && this.player.hasExplosivesUnit) || proj.isRocket) {
+                        this._spawnExplosion(proj.worldX, proj.worldY, proj.damage * 0.5);
+                    }
+                    break;
+                }
+            }
+            if (!proj.alive) continue;
+ 
+            // Player projectiles vs Enemies/Events
             if (proj.owner === this.player) {
                 // vs Events
                 for (const ev of this.events) {
@@ -726,32 +757,12 @@ export class PlayingState {
                             this._onEntityDestroyed(ev);
                         } else {
                             this._triggerShakeAt(proj.worldX, proj.worldY, 0.6);
-                            if (ev.state === CTHULHU_STATE.DESTRUCTIBLE) {
-                                for (let i = 0; i < 2; i++) {
+                            // Specialized logic for Cthulhu rubble spawn
+                            if (ev.state === 4) { // 4 = DESTRUCTIBLE
+                                for (let j = 0; j < 2; j++) {
                                     this.rubble.push(new Rubble(this.game, proj.worldX, proj.worldY));
                                 }
                             }
-                        }
-                        if (this.player.hasExplosivesUnit || proj.isRocket) {
-                            this._spawnExplosion(proj.worldX, proj.worldY, proj.damage * 0.5);
-                        }
-                        break;
-                    }
-                }
-                if (!proj.alive) continue;
-
-                // vs Asteroids
-                for (const ast of this.asteroids) {
-                    if (!ast.alive) continue;
-                    const dx = proj.worldX - ast.worldX;
-                    const dy = proj.worldY - ast.worldY;
-                    if (Math.sqrt(dx * dx + dy * dy) < proj.radius + ast.radius) {
-                        proj.alive = false;
-                        this.game.sounds.play('hit', { volume: 0.4, x: proj.worldX, y: proj.worldY });
-                        if (ast.hit(proj.damage)) {
-                            this._onEntityDestroyed(ast);
-                        } else {
-                            this._triggerShakeAt(proj.worldX, proj.worldY, 0.4);
                         }
                         if (this.player.hasExplosivesUnit || proj.isRocket) {
                             this._spawnExplosion(proj.worldX, proj.worldY, proj.damage * 0.5);
@@ -857,7 +868,9 @@ export class PlayingState {
                 const dy = en.worldY - ast.worldY;
                 const dist = Math.sqrt(dx * dx + dy * dy);
                 if (dist < en.radius + ast.radius) {
-                    en.hit(1); // Asteroid impact damage
+                    // Bosses take nearly no damage from asteroids (0.1 damage per hit)
+                    const damage = en.isBoss ? 0.1 : 1;
+                    en.hit(damage); 
                     if (ast.hit(1)) {
                         this._onEntityDestroyed(ast);
                     }
@@ -881,6 +894,18 @@ export class PlayingState {
     _onEntityDestroyed(entity) {
         this._triggerShakeAt(entity.worldX, entity.worldY, entity instanceof Asteroid ? 1.5 : 1.8);
         this.game.sounds.play(entity instanceof Asteroid ? 'asteroid_break' : 'ship_explode', { volume: 0.4, x: entity.worldX, y: entity.worldY });
+        
+        // Boss Music: Return to previous music state when all bosses are dead
+        if (entity.isBoss) {
+            const otherBosses = this.enemies.some(e => e.isBoss && e.alive && e !== entity);
+            if (!otherBosses) {
+                if (this.musicCombatTriggered) {
+                    this.game.sounds.setTargetState(MUSIC_STATE.COMBAT, true);
+                } else {
+                    this.game.sounds.restoreMusic();
+                }
+            }
+        }
         // Track stats
         if (entity instanceof Asteroid) {
             this.stats.asteroidsDestroyed++;
@@ -950,10 +975,17 @@ export class PlayingState {
     serialize() {
         return {
             totalGameTime: this.totalGameTime,
+            trueTotalTime: this.trueTotalTime,
             difficultyScale: this.difficultyScale,
             stats: { ...this.stats },
             waveTimer: this.waveTimer,
             shipId: this.shipData.id,
+            enemySpawner: this.enemySpawner.serialize(),
+            musicState: {
+                musicCombatTriggered: this.musicCombatTriggered,
+                postWaveTimer: this.postWaveTimer,
+                quietTimer: this.quietTimer
+            },
             player: this.player.serialize(),
             events: this.events.map(ev => ({
                 type: ev.constructor.name,
@@ -977,12 +1009,28 @@ export class PlayingState {
 
     async deserialize(data) {
         this.totalGameTime = data.totalGameTime;
+        this.trueTotalTime = data.trueTotalTime || 0;
         this.difficultyScale = data.difficultyScale;
         this.stats = { ...data.stats };
         this.waveTimer = data.waveTimer;
 
+        if (data.enemySpawner) {
+            this.enemySpawner.deserialize(data.enemySpawner);
+        }
+
+        if (data.musicState) {
+            this.musicCombatTriggered = data.musicState.musicCombatTriggered;
+            this.postWaveTimer = data.musicState.postWaveTimer;
+            this.quietTimer = data.musicState.quietTimer;
+        }
+
         if (data.player) {
             await this.player.deserialize(data.player);
+            // Ensure inventory knows it belongs to the player and this state
+            if (this.player.inventory) {
+                this.player.inventory.isPlayerInventory = true;
+                this.player.inventory.playingState = this;
+            }
             // Snap camera to player immediately on load to prevent starting at origin
             this.camera.snapTo(this.player);
         }
@@ -1074,6 +1122,9 @@ export class PlayingState {
 
         // Reset camera
         this.camera.follow(this.player);
+
+        // Recalculate all stats and multipliers based on loaded inventory
+        this._onInventoryChanged(true);
     }
 
     _spawnExplosion(x, y, damage) {
@@ -1157,8 +1208,14 @@ export class PlayingState {
 
         this.hud.draw(ctx);
 
+        // --- Total Game Timer ---
+        this._drawTotalGameTimer(ctx);
+
         // --- Off-screen Enemy Indicators ---
         this._drawEnemyIndicators(ctx);
+
+        // --- Health Indicators (Dev Command) ---
+        this._drawHealthIndicators(ctx);
 
         // --- Off-screen Asteroid Warnings ---
         if (this.player.hasWarningSystem) {
@@ -1206,6 +1263,43 @@ export class PlayingState {
         }
     }
 
+    _drawHealthIndicators(ctx) {
+        if (!this.game.showHealth) return;
+
+        ctx.save();
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        const uiScale = this.game.hudScale;
+        ctx.font = `${Math.floor(6 * uiScale)}px Astro4x`;
+        ctx.fillStyle = '#44ddff'; // Bright blue
+
+        const drawHP = (entities) => {
+            if (!entities) return;
+            for (const e of entities) {
+                const hp = e.health !== undefined ? e.health : e.hp;
+                if (!e.alive || hp === undefined) continue;
+                const screen = this.camera.worldToScreen(e.worldX, e.worldY, this.game.width, this.game.height);
+                // Only draw if on screen
+                if (screen.x < -100 || screen.x > this.game.width + 100 || screen.y < -100 || screen.y > this.game.height + 100) continue;
+                
+                const offset = (e.radius || 20) * this.game.worldScale + 5 * uiScale;
+                ctx.fillText(Math.ceil(hp).toString(), Math.floor(screen.x), Math.floor(screen.y - offset));
+            }
+        };
+
+        drawHP(this.enemies);
+        drawHP(this.asteroids);
+        drawHP(this.events);
+        
+        // Player
+        const p = this.player;
+        const pScreen = this.camera.worldToScreen(p.worldX, p.worldY, this.game.width, this.game.height);
+        const pOffset = (p.radius || 20) * this.game.worldScale + 5 * uiScale;
+        ctx.fillText(Math.ceil(p.health || 0).toString(), Math.floor(pScreen.x), Math.floor(pScreen.y - pOffset));
+
+        ctx.restore();
+    }
+
     triggerFlash(color = '#ff0000', duration = 0.8, alpha = 0.35) {
         this.flashColor = color;
         this.flashTimer = duration;
@@ -1215,9 +1309,19 @@ export class PlayingState {
     _triggerWave() {
         this.stats.wavesCleared++;
         const waveEnemies = this.enemySpawner.spawnWave(this.player.worldX, this.player.worldY, this.difficultyScale);
+        
+        // Check if a boss was spawned
+        const boss = waveEnemies.find(e => e.isBoss);
+        if (boss) {
+            this.triggerFlash('#ffffff', 1.2, 0.5); // Dramatic white flash for boss arrival
+            this.game.sounds.playSpecificMusic('Starcore Showdown');
+            this.game.camera.shake(1.5);
+        } else {
+            this.triggerFlash('#ff0000', 0.8, 0.35); // Standard red wave flash
+            this.game.sounds.play('ship_explode', 0.6); // Use explosion sound for wave impact
+        }
+
         this.enemies.push(...waveEnemies);
-        this.triggerFlash('#ff0000', 0.8, 0.35); // Standard red wave flash
-        this.game.sounds.play('ship_explode', 0.6); // Use explosion sound for wave impact
     }
 
     _drawShopIndicators(ctx) {
@@ -1492,6 +1596,24 @@ export class PlayingState {
                 this._drawTooltip(ctx, hoveredEntry.item, mouse);
             }
         }
+    }
+
+    _drawTotalGameTimer(ctx) {
+        const cw = this.game.width;
+        const hudScale = this.game.hudScale;
+        
+        ctx.save();
+        ctx.fillStyle = '#888888'; // Grey
+        ctx.font = `${8 * hudScale}px Astro4x`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+
+        const minutes = Math.floor(this.trueTotalTime / 60);
+        const seconds = Math.floor(this.trueTotalTime % 60);
+        const timeStr = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+        
+        ctx.fillText(timeStr, cw / 2, 10 * hudScale);
+        ctx.restore();
     }
 
     _wrapText(ctx, text, maxWidth) {
@@ -2747,6 +2869,7 @@ export class PlayingState {
 
     _triggerDeath() {
         this.isDead = true;
+        this.player.alive = false;
         this.deathTimer = 0;
         this.game.sounds.stopMusic();
         this.game.sounds.play('ship_explode', 0.8);
@@ -2866,8 +2989,8 @@ export class PlayingState {
         ctx.textAlign = 'center';
         ctx.fillText('GAME OVER', cw / 2, Math.floor(uiScale * 30));
 
-        const minutes = Math.floor(this.totalGameTime / 60);
-        const seconds = Math.floor(this.totalGameTime % 60);
+        const minutes = Math.floor(this.trueTotalTime / 60);
+        const seconds = Math.floor(this.trueTotalTime % 60);
         const timeStr = `${minutes}:${seconds.toString().padStart(2, '0')}`;
 
         // Stats

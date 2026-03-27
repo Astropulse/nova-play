@@ -20,6 +20,8 @@ export class DevConsole {
             'save': () => this._cmdSave(),
             'load': () => this._cmdLoad(),
             'record': (args) => this._cmdRecord(args),
+            'boss': (args) => this._cmdBoss(args),
+            'hp': () => this._cmdHP(),
             'help': () => this._cmdHelp()
         };
 
@@ -203,13 +205,41 @@ export class DevConsole {
         SaveManager.load(this.game);
     }
     
+    _cmdBoss(args) {
+        if (args.length < 1) return;
+        const bossId = args[0].toLowerCase();
+        const state = this.game.currentState;
+        if (state && state.player) {
+            if (bossId === 'starcore') {
+                import('../entities/starcore.js').then(({ Starcore }) => {
+                    const angle = Math.random() * Math.PI * 2;
+                    const dist = 1200;
+                    const boss = new Starcore(
+                        this.game, 
+                        state.player.worldX + Math.cos(angle) * dist, 
+                        state.player.worldY + Math.sin(angle) * dist, 
+                        state.difficultyScale
+                    );
+                    state.enemies.push(boss);
+                    state.triggerFlash('#ffffff', 1.2, 0.5);
+                    this.game.sounds.playSpecificMusic('Starcore Showdown');
+                });
+            }
+        }
+    }
+
+    _cmdHP() {
+        this.game.showHealth = !this.game.showHealth;
+        console.log(`Health indicators ${this.game.showHealth ? 'ENABLED' : 'DISABLED'}`);
+    }
+    
     _cmdRecord(args) {
         this.game.recordingEnabled = !this.game.recordingEnabled;
         console.log(`Recording feature ${this.game.recordingEnabled ? 'ENABLED' : 'DISABLED'}`);
     }
 
     _cmdHelp() {
-        console.log("Available commands: time, spawn, stat, wave, scrap, locate, save, load, record, help");
+        console.log("Available commands: time, spawn, stat, wave, scrap, locate, save, load, record, boss, hp, help");
     }
 
     draw(ctx) {

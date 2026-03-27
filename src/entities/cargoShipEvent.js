@@ -37,7 +37,7 @@ export class CargoShipEvent {
 
         if (!this.spawnedInitialScrap) {
             // Trigger when player gets within 1200 world units
-            if (dist < 1200) {
+            if (dist < 900) {
                 this.spawnedInitialScrap = true;
                 this.revealed = true; // Reveal on radar when close
 

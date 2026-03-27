@@ -19,6 +19,7 @@ export class Projectile {
         
         this.isRocket = false;
         this.target = null;
+        this.turnRate = 4.0;
     }
 
     update(dt) {
@@ -27,7 +28,7 @@ export class Projectile {
             let diff = desiredAngle - this.angle;
             while (diff > Math.PI) diff -= Math.PI * 2;
             while (diff < -Math.PI) diff += Math.PI * 2;
-            this.angle += diff * Math.min(1, 4.0 * dt);
+            this.angle += diff * Math.min(1, this.turnRate * dt);
             const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
             this.vx = Math.cos(this.angle) * speed;
             this.vy = Math.sin(this.angle) * speed;
