@@ -680,6 +680,7 @@ export class EnemySpawner {
         this.waveDelay = 0;         // Delay before the FIRST enemy of a wave spawns
         this.waveSpawnScale = 1.0;  // Difficulty at time wave was triggered
         this.waveNumber = 0;        // Tracks which wave we're on
+        this.lastBossType = null;
     }
 
     update(dt, playerX, playerY, difficultyScale = 1.0) {
@@ -766,9 +767,15 @@ export class EnemySpawner {
             const angle = Math.random() * Math.PI * 2;
             const dist = 1600;
             
-            // Randomly choose between available bosses
+            // Randomly choose between available bosses, excluding the last one
             const bosses = [Starcore, AsteroidCrusher];
-            const BossClass = bosses[Math.floor(Math.random() * bosses.length)];
+            const availableBosses = bosses.filter(b => b.name !== this.lastBossType);
+            
+            // Final fallback if all filtered (shouldn't happen with 2+ bosses)
+            const pool = availableBosses.length > 0 ? availableBosses : bosses;
+            const BossClass = pool[Math.floor(Math.random() * pool.length)];
+            
+            this.lastBossType = BossClass.name;
             const boss = new BossClass(this.game, playerX + Math.cos(angle) * dist, playerY + Math.sin(angle) * dist, difficultyScale);
             
             return [boss];
@@ -800,7 +807,8 @@ export class EnemySpawner {
             waveSpawnTimer: this.waveSpawnTimer,
             waveDelay: this.waveDelay,
             waveSpawnScale: this.waveSpawnScale,
-            waveNumber: this.waveNumber
+            waveNumber: this.waveNumber,
+            lastBossType: this.lastBossType
         };
     }
 
@@ -815,6 +823,7 @@ export class EnemySpawner {
         this.waveDelay = data.waveDelay;
         this.waveSpawnScale = data.waveSpawnScale;
         this.waveNumber = data.waveNumber;
+        this.lastBossType = data.lastBossType || null;
     }
 }
 

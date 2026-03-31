@@ -8,7 +8,7 @@ export class Starcore extends Boss {
         super(game, worldX, worldY, difficultyScale);
         this.spriteKey = 'starcore';
         this.radius = 120;
-        this.health = 35 * this.curvedDifficultyScale;
+        this.health = 40 * this.difficultyScale;
         this.maxHealth = this.health;
 
         this.shootTimer = 2.0;
