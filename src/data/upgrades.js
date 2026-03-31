@@ -335,6 +335,16 @@ export const UPGRADES = [
         height: 1,
         cost: 45,
         rarity: 'uncommon'
+    },
+    {
+        id: 'sensor_accelerator',
+        name: 'Sensor Accelerator',
+        description: 'Increases field of view by 10%',
+        assetKey: 'sensor_accelerator_1x1',
+        width: 1,
+        height: 1,
+        cost: 40,
+        rarity: 'common'
     }
 ];
 

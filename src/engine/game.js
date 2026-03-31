@@ -11,6 +11,7 @@ export class Game {
 
         // Dynamic scaling
         this.worldScale = 2; // In-game world
+        this.worldScaleModifier = 1.0;
         this.uiScale = 3;    // Menus / Pause
         this.hudScale = 4;   // HUD overlays
 
@@ -61,7 +62,7 @@ export class Game {
         if (nearestWorldInt > 0 && Math.abs(rawWorldScale - nearestWorldInt) / nearestWorldInt <= 0.15) {
             rawWorldScale = nearestWorldInt;
         }
-        this.worldScale = Math.max(0.1, rawWorldScale);
+        this.worldScale = Math.max(0.1, rawWorldScale * this.worldScaleModifier);
 
         // UI and HUD scales should be strictly integers based on height
         this.uiScale = Math.max(1, Math.round(3 * heightRatio));
@@ -549,6 +550,7 @@ export class Game {
             'explosives_unit_3x2': 'Assets/Upgrades/explosives_unit_3x2.png',
             'boost_drive_2x1': 'Assets/Upgrades/boost_drive_2x1.png',
             'momentum_module_1x1': 'Assets/Upgrades/momentum_module_1x1.png',
+            'sensor_accelerator_1x1': 'Assets/Upgrades/sensor_accelerator_1x1.png',
             // Events
             'cthulhu': 'Assets/Events/cthulhu.png',
             'cargo_ship': 'Assets/Events/cargo_ship.png',

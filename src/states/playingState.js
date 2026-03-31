@@ -58,6 +58,11 @@ export class PlayingState {
 
         // Player Inventory instance
         this.player.inventory = new Inventory(this.inventoryCols, this.inventoryRows);
+        this.player.inventory.isPlayerInventory = true;
+        this.player.inventory.playingState = this;
+
+        // Ensure initial stats are synced (e.g. if ship starts with items)
+        this._onInventoryChanged();
 
         // Shop UI state
         this.activeShop = null;
@@ -721,7 +726,7 @@ export class PlayingState {
         // --- Collision: Projectiles vs Everything ---
         for (const proj of this.projectiles) {
             if (!proj.alive) continue;
- 
+
             // vs Asteroids (All Projectiles)
             for (const ast of this.asteroids) {
                 if (!ast.alive) continue;
@@ -743,7 +748,7 @@ export class PlayingState {
                 }
             }
             if (!proj.alive) continue;
- 
+
             // Player projectiles vs Enemies/Events
             if (proj.owner === this.player) {
                 // vs Events
@@ -870,7 +875,7 @@ export class PlayingState {
                 if (dist < en.radius + ast.radius) {
                     // Bosses take nearly no damage from asteroids (0.1 damage per hit)
                     const damage = en.isBoss ? 0.1 : 1;
-                    en.hit(damage); 
+                    en.hit(damage);
                     if (ast.hit(1)) {
                         this._onEntityDestroyed(ast);
                     }
@@ -894,7 +899,7 @@ export class PlayingState {
     _onEntityDestroyed(entity) {
         this._triggerShakeAt(entity.worldX, entity.worldY, entity instanceof Asteroid ? 1.5 : 1.8);
         this.game.sounds.play(entity instanceof Asteroid ? 'asteroid_break' : 'ship_explode', { volume: 0.4, x: entity.worldX, y: entity.worldY });
-        
+
         // Boss Music: Return to previous music state when all bosses are dead
         if (entity.isBoss) {
             const otherBosses = this.enemies.some(e => e.isBoss && e.alive && e !== entity);
@@ -1025,12 +1030,12 @@ export class PlayingState {
         }
 
         if (data.player) {
-            await this.player.deserialize(data.player);
             // Ensure inventory knows it belongs to the player and this state
             if (this.player.inventory) {
                 this.player.inventory.isPlayerInventory = true;
                 this.player.inventory.playingState = this;
             }
+            await this.player.deserialize(data.player);
             // Snap camera to player immediately on load to prevent starting at origin
             this.camera.snapTo(this.player);
         }
@@ -1281,7 +1286,7 @@ export class PlayingState {
                 const screen = this.camera.worldToScreen(e.worldX, e.worldY, this.game.width, this.game.height);
                 // Only draw if on screen
                 if (screen.x < -100 || screen.x > this.game.width + 100 || screen.y < -100 || screen.y > this.game.height + 100) continue;
-                
+
                 const offset = (e.radius || 20) * this.game.worldScale + 5 * uiScale;
                 ctx.fillText(Math.ceil(hp).toString(), Math.floor(screen.x), Math.floor(screen.y - offset));
             }
@@ -1290,7 +1295,7 @@ export class PlayingState {
         drawHP(this.enemies);
         drawHP(this.asteroids);
         drawHP(this.events);
-        
+
         // Player
         const p = this.player;
         const pScreen = this.camera.worldToScreen(p.worldX, p.worldY, this.game.width, this.game.height);
@@ -1309,7 +1314,7 @@ export class PlayingState {
     _triggerWave() {
         this.stats.wavesCleared++;
         const waveEnemies = this.enemySpawner.spawnWave(this.player.worldX, this.player.worldY, this.difficultyScale);
-        
+
         // Check if a boss was spawned
         const boss = waveEnemies.find(e => e.isBoss);
         if (boss) {
@@ -1601,7 +1606,7 @@ export class PlayingState {
     _drawTotalGameTimer(ctx) {
         const cw = this.game.width;
         const hudScale = this.game.hudScale;
-        
+
         ctx.save();
         ctx.fillStyle = '#888888'; // Grey
         ctx.font = `${8 * hudScale}px Astro4x`;
@@ -1611,7 +1616,7 @@ export class PlayingState {
         const minutes = Math.floor(this.trueTotalTime / 60);
         const seconds = Math.floor(this.trueTotalTime % 60);
         const timeStr = `${minutes}:${seconds.toString().padStart(2, '0')}`;
-        
+
         ctx.fillText(timeStr, cw / 2, 10 * hudScale);
         ctx.restore();
     }
@@ -2202,6 +2207,7 @@ export class PlayingState {
         let blinkEngines = 0;
         let repeaters = 0;
 
+        let fovMult = 1.0;
         for (const entry of p.inventory.items) {
             const item = entry.item;
 
@@ -2249,12 +2255,19 @@ export class PlayingState {
                 p.momentumDodgeMult = 0.5;
                 p.friction = 0.99;
             }
+            if (item.id === 'sensor_accelerator') {
+                fovMult *= 1.1; // 10% increase in FOV
+            }
 
             // Knowledge Upgrades
             if (item.id === 'obedience') p.obedienceMult = 1.2;
             if (item.id === 'sacrifice') p.hasSacrifice = true;
             if (item.id === 'knowledge') p.hasRadar = true;
         }
+
+        // Apply FOV change
+        this.game.worldScaleModifier = 1.0 / fovMult;
+        this.game.resize();
 
         if (repeaters > 0) {
             let rMult = 0.5;
