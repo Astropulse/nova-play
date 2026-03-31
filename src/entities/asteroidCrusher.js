@@ -11,7 +11,7 @@ export class AsteroidCrusher extends Boss {
 
         this.baseSpeed = 400; // Slow moving tank
         this.turnSpeed = 7.0;
-        this.attackRange = 1000;
+        this.attackRange = 800;
 
         this.missileTimer = 4.0;
         this.laserTimer = 2.5;
@@ -63,7 +63,7 @@ export class AsteroidCrusher extends Boss {
         }
 
         // Proximity Avoidance: Phase-dependent (Closer in P1, distant in P2)
-        const avoidDist = (this.phase === BOSS_PHASE.ATTACK2) ? 450 : 300;
+        const avoidDist = (this.phase === BOSS_PHASE.ATTACK2) ? 380 : 250;
         if (dist < avoidDist && this.state !== BOSS_STATE.REPOSITION) {
             this.state = BOSS_STATE.REPOSITION;
             this.stateTimer = 1.2;
@@ -81,7 +81,7 @@ export class AsteroidCrusher extends Boss {
         }
 
         if (this.state === BOSS_STATE.IDLE) {
-            this.targetAngle = this._getPredictedAngle(player, 1000) + this._getAvoidanceSteering();
+            this.targetAngle = this._getPredictedAngle(player, 800) + this._getAvoidanceSteering();
             if (this.stateTimer <= 0) {
                 this._selectNextAction(dist, angleToPlayer);
             }
@@ -157,7 +157,7 @@ export class AsteroidCrusher extends Boss {
 
             // Quadratic acceleration: starting with a kick, then picking up massive speed
             const v0 = 200;
-            const vMax = (launch.maxSpeed || 1500) * this.curvedDifficultyScale;
+            const vMax = (launch.maxSpeed || 1200) * this.curvedDifficultyScale;
             const speed = v0 + (vMax - v0) * (t * t);
 
             ast.vx = launch.dirX * speed;
@@ -204,8 +204,8 @@ export class AsteroidCrusher extends Boss {
 
     _selectNextAction(dist, angleToPlayer) {
         const roll = Math.random();
-        // Reposition at 600 (P2) or 450 (P1)
-        const repoThreshold = (this.phase === BOSS_PHASE.ATTACK2) ? 600 : 450;
+        // Reposition at 600 (P2) or 400 (P1)
+        const repoThreshold = (this.phase === BOSS_PHASE.ATTACK2) ? 500 : 400;
 
         if (roll < 0.4 || dist < repoThreshold) {
             // Reposition sideways
@@ -239,11 +239,11 @@ export class AsteroidCrusher extends Boss {
 
         const proj = new Projectile(
             this.game, px, py, fireAngle,
-            550, 'red_laser_ball', this, 0.4 * this.curvedDifficultyScale, 8.0
+            550, 'red_laser_ball', this, 0.3 * this.curvedDifficultyScale, 8.0
         );
         proj.isRocket = true;
         proj.target = player;
-        proj.turnRate = 3.0;
+        proj.turnRate = 2.5;
 
         this.activeMissiles.push({ proj, timer: 1.2 });
         this.pendingProjectiles.push(proj);
@@ -257,7 +257,7 @@ export class AsteroidCrusher extends Boss {
 
         const proj = new Projectile(
             this.game, px, py, this.angle,
-            750, 'red_laser_ball_big', this, 2.0 * this.curvedDifficultyScale, 7.0
+            750, 'red_laser_ball_big', this, 1.5 * this.curvedDifficultyScale, 6.0
         );
         this.pendingProjectiles.push(proj);
         this.game.sounds.play('railgun_shoot', { volume: 0.6, x: this.worldX, y: this.worldY });
@@ -395,6 +395,18 @@ export class AsteroidCrusher extends Boss {
             this.game.sounds.play('boost', { volume: 0.8, x: this.worldX, y: this.worldY });
             this.shieldLaunchTimer = 2.0;
         }
+    }
+
+    _triggerDeathSequence() {
+        super._triggerDeathSequence();
+
+        // Stop all active missiles from seeking when the boss dies
+        for (const m of this.activeMissiles) {
+            if (m.proj.alive) {
+                m.proj.target = null;
+            }
+        }
+        this.activeMissiles = [];
     }
 
     hit(damage) {
