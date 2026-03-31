@@ -582,6 +582,7 @@ export class Game {
             'star_10': 'Assets/Space/star_10.png',
             // Bosses
             'starcore': 'Assets/Ships/Bosses/Starcore/starcore.png',
+            'asteroid_crusher': 'Assets/Ships/Bosses/Asteroid_Crusher/asteroid_crusher.png',
             // Shield overlay
             'shield': 'Assets/Ships/shield.png',
             // Asteroids

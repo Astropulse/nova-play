@@ -3,6 +3,7 @@ import { Projectile } from './projectile.js';
 import { Scrap, Rubble, ItemPickup, ProceduralDebris, VoronoiSlicer } from './asteroid.js';
 import { UPGRADES } from '../data/upgrades.js';
 import { Starcore } from './starcore.js';
+import { AsteroidCrusher } from './asteroidCrusher.js';
 
 const AI_STATE = {
     PURSUIT: 'pursuit',   // Move toward player
@@ -764,7 +765,12 @@ export class EnemySpawner {
             // Spawn boss at a distance
             const angle = Math.random() * Math.PI * 2;
             const dist = 1600;
-            const boss = new Starcore(this.game, playerX + Math.cos(angle) * dist, playerY + Math.sin(angle) * dist, difficultyScale);
+            
+            // Randomly choose between available bosses
+            const bosses = [Starcore, AsteroidCrusher];
+            const BossClass = bosses[Math.floor(Math.random() * bosses.length)];
+            const boss = new BossClass(this.game, playerX + Math.cos(angle) * dist, playerY + Math.sin(angle) * dist, difficultyScale);
+            
             return [boss];
         }
 

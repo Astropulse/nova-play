@@ -1,5 +1,5 @@
 import { Projectile } from './projectile.js';
-import { Scrap, VoronoiSlicer, ProceduralDebris } from './asteroid.js';
+import { Scrap, VoronoiSlicer, ProceduralDebris, ItemPickup, Asteroid } from './asteroid.js';
 import { UPGRADES } from '../data/upgrades.js';
 
 export const BOSS_PHASE = {
@@ -15,6 +15,14 @@ export const BOSS_STATE = {
     ATTACKING: 'attacking',
     DYING: 'dying'
 };
+
+export class BossWreck {
+    constructor(worldX, worldY) {
+        this.worldX = worldX;
+        this.worldY = worldY;
+        this.isFinished = false;
+    }
+}
 
 export class Boss {
     constructor(game, worldX, worldY, difficultyScale = 1.0) {
@@ -139,6 +147,11 @@ export class Boss {
             // Ensure only one death trigger
             if (this.game.currentState && this.game.currentState._onEntityDestroyed) {
                 this.game.currentState._onEntityDestroyed(this);
+                
+                // Drop a wreck marker for the radar
+                if (this.game.currentState.bossWrecks) {
+                    this.game.currentState.bossWrecks.push(new BossWreck(this.worldX, this.worldY));
+                }
             }
         }
     }
@@ -348,17 +361,49 @@ export class Boss {
             }
         }
 
-        // Add extra loot spread around
-        for (let i = 0; i < 7 + Math.random() * 3; i++) {
+        // Add extra loot spread around (Reduced scrap as requested)
+        for (let i = 0; i < 3 + Math.random() * 2; i++) {
             const angle = Math.random() * Math.PI * 2;
             const dist = Math.random() * 100;
             spawns.push(new Scrap(this.game, this.worldX + Math.cos(angle) * dist, this.worldY + Math.sin(angle) * dist, 'big'));
         }
-        for (let i = 0; i < 8 + Math.random() * 10; i++) {
+        for (let i = 0; i < 4 + Math.random() * 4; i++) {
             const angle = Math.random() * Math.PI * 2;
             const dist = Math.random() * 80;
-            // More scrap instead of rubble since it's a ship
             spawns.push(new Scrap(this.game, this.worldX + Math.cos(angle) * dist, this.worldY + Math.sin(angle) * dist, 'small'));
+        }
+
+        // --- Special Boss Loot ---
+        // 1. Small Batteries (1-2)
+        const batteryCount = 1 + (Math.random() < 0.5 ? 1 : 0);
+        const batteryData = UPGRADES.find(u => u.id === 'small_battery');
+        if (batteryData) {
+            for (let i = 0; i < batteryCount; i++) {
+                const angle = Math.random() * Math.PI * 2;
+                const dist = 30 + Math.random() * 40;
+                spawns.push(new ItemPickup(this.game, this.worldX + Math.cos(angle) * dist, this.worldY + Math.sin(angle) * dist, batteryData));
+            }
+        }
+
+        // 2. Advanced Locator (20% chance)
+        if (Math.random() < 0.20) {
+            const locatorData = UPGRADES.find(u => u.id === 'advanced_locator');
+            if (locatorData) {
+                const angle = Math.random() * Math.PI * 2;
+                const dist = 40 + Math.random() * 30;
+                spawns.push(new ItemPickup(this.game, this.worldX + Math.cos(angle) * dist, this.worldY + Math.sin(angle) * dist, locatorData));
+            }
+        }
+
+        // 3. Common Upgrade (10% chance)
+        if (Math.random() < 0.10) {
+            const commonUpgrades = UPGRADES.filter(u => u.rarity === 'common' && !u.consumable);
+            if (commonUpgrades.length > 0) {
+                const randomUpgrade = commonUpgrades[Math.floor(Math.random() * commonUpgrades.length)];
+                const angle = Math.random() * Math.PI * 2;
+                const dist = 50 + Math.random() * 20;
+                spawns.push(new ItemPickup(this.game, this.worldX + Math.cos(angle) * dist, this.worldY + Math.sin(angle) * dist, randomUpgrade));
+            }
         }
 
         return spawns;

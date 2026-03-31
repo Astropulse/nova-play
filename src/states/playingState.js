@@ -13,8 +13,11 @@ import { CargoShipEvent, CARGO_SHIP_STATE } from '../entities/cargoShipEvent.js'
 import { FracturedStationEvent } from '../entities/fracturedStationEvent.js';
 import { KnowledgeEvent, KNOWLEDGE_STATE } from '../entities/knowledgeEvent.js';
 import { Projectile } from '../entities/projectile.js';
+import { Starcore } from '../entities/starcore.js';
+import { AsteroidCrusher } from '../entities/asteroidCrusher.js';
 import { MenuState } from './menuState.js';
 import { MUSIC_STATE } from '../engine/soundManager.js';
+import { BOSS_STATE } from '../entities/boss.js';
 
 export class PlayingState {
     constructor(game, shipData) {
@@ -117,6 +120,8 @@ export class PlayingState {
             yes: { x: 0, y: 0, w: 0, h: 0, hovered: false },
             no: { x: 0, y: 0, w: 0, h: 0, hovered: false }
         };
+        this.bossDeathImmunityTimer = 0;
+        this.bossWrecks = [];
     }
 
     _triggerShakeAt(x, y, intensity, minPassDist = 1200, maxDist = 4000) {
@@ -637,6 +642,24 @@ export class PlayingState {
             // Spawn enemies
             const newEnemies = this.enemySpawner.update(dt, this.player.worldX, this.player.worldY, this.difficultyScale);
             this.enemies.push(...newEnemies);
+
+            // Boss death immunity: while any boss is dying, and for 2 seconds after
+            const isBossDying = this.enemies.some(e => e.isBoss && e.state === BOSS_STATE.DYING);
+            if (isBossDying) {
+                this.bossDeathImmunityTimer = 2.0; 
+            } else if (this.bossDeathImmunityTimer > 0) {
+                this.bossDeathImmunityTimer -= dt;
+            }
+
+            // Boss wreckage tracking - clean up when player is close
+            for (const wreck of this.bossWrecks) {
+                const dx = wreck.worldX - this.player.worldX;
+                const dy = wreck.worldY - this.player.worldY;
+                if (dx * dx + dy * dy < 200 * 200) {
+                    wreck.isFinished = true;
+                }
+            }
+            this.bossWrecks = this.bossWrecks.filter(w => !w.isFinished);
         }
 
         if (this.flashTimer > 0) {
@@ -874,8 +897,13 @@ export class PlayingState {
                 const dist = Math.sqrt(dx * dx + dy * dy);
                 if (dist < en.radius + ast.radius) {
                     // Bosses take nearly no damage from asteroids (0.1 damage per hit)
-                    const damage = en.isBoss ? 0.1 : 1;
+                    // AsteroidCrusher takes NO damage from asteroids
+                    const damage = (en instanceof AsteroidCrusher) ? 0 : (en.isBoss ? 0.1 : 1);
                     en.hit(damage);
+                    
+                    // Don't break if tractored by THIS enemy OR recently released by a crusher
+                    if (ast.tractoredBy === en || (en instanceof AsteroidCrusher && ast.tractorCooldown > 0)) continue;
+
                     if (ast.hit(1)) {
                         this._onEntityDestroyed(ast);
                     }
@@ -927,8 +955,7 @@ export class PlayingState {
     }
 
     _damagePlayer(amount) {
-        if (this.player.invulnTimer > 0) return;
-        if (this.isDead) return;
+        if (this.player.invulnTimer > 0 || this.isDead || this.bossDeathImmunityTimer > 0) return;
 
         if (this.player.shielding) {
             this.player.shieldEnergy -= amount * 5;
@@ -1232,6 +1259,7 @@ export class PlayingState {
 
         // --- Event Indicators ---
         this._drawEventIndicators(ctx);
+        this._drawBossWreckIndicators(ctx);
 
         if (this.isShopOpen) {
             this._drawShopOverlay(ctx);
@@ -1438,6 +1466,51 @@ export class PlayingState {
             ctx.font = `${5 * this.game.uiScale}px Astro4x`;
             ctx.textAlign = 'center';
             ctx.fillText('SIGNAL', ix, iy - 12 * this.game.uiScale);
+        }
+    }
+
+    _drawBossWreckIndicators(ctx) {
+        if (this.bossWrecks.length === 0) return;
+        const cw = this.game.width;
+        const ch = this.game.height;
+        const margin = 30 * this.game.worldScale;
+
+        for (const wreck of this.bossWrecks) {
+            const screen = this.camera.worldToScreen(wreck.worldX, wreck.worldY, cw, ch);
+            if (screen.x >= 0 && screen.x <= cw && screen.y >= 0 && screen.y <= ch) continue;
+
+            const dx = wreck.worldX - this.player.worldX;
+            const dy = wreck.worldY - this.player.worldY;
+            const angle = Math.atan2(dy, dx);
+
+            const cx = cw / 2;
+            const cy = ch / 2;
+            let ix, iy;
+            const slope = dy / dx;
+            if (Math.abs(dx) * (ch / 2 - margin) > Math.abs(dy) * (cw / 2 - margin)) {
+                ix = (dx > 0) ? cw - margin : margin;
+                iy = ch / 2 + (ix - cw / 2) * slope;
+            } else {
+                iy = (dy > 0) ? ch - margin : margin;
+                ix = cw / 2 + (iy - ch / 2) / slope;
+            }
+
+            ctx.save();
+            ctx.translate(ix, iy);
+            ctx.rotate(angle);
+            ctx.fillStyle = '#ff44ff'; // Purple/Magenta for wreckage
+            ctx.beginPath();
+            ctx.moveTo(10 * this.game.uiScale, 0);
+            ctx.lineTo(-5 * this.game.uiScale, -8 * this.game.uiScale);
+            ctx.lineTo(-5 * this.game.uiScale, 8 * this.game.uiScale);
+            ctx.closePath();
+            ctx.fill();
+            ctx.restore();
+
+            ctx.fillStyle = '#ff44ff';
+            ctx.font = `${5 * this.game.uiScale}px Astro4x`;
+            ctx.textAlign = 'center';
+            ctx.fillText('WRECKAGE', ix, iy - 12 * this.game.uiScale);
         }
     }
 

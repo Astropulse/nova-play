@@ -67,7 +67,7 @@ export class DevConsole {
 
     _handleKeydown(e) {
         if (!this.active) return;
-        
+
         if (e.key === 'Enter') {
             this._executeCommand();
             e.preventDefault();
@@ -204,7 +204,7 @@ export class DevConsole {
     _cmdLoad() {
         SaveManager.load(this.game);
     }
-    
+
     _cmdBoss(args) {
         if (args.length < 1) return;
         const bossId = args[0].toLowerCase();
@@ -215,14 +215,28 @@ export class DevConsole {
                     const angle = Math.random() * Math.PI * 2;
                     const dist = 1200;
                     const boss = new Starcore(
-                        this.game, 
-                        state.player.worldX + Math.cos(angle) * dist, 
-                        state.player.worldY + Math.sin(angle) * dist, 
+                        this.game,
+                        state.player.worldX + Math.cos(angle) * dist,
+                        state.player.worldY + Math.sin(angle) * dist,
                         state.difficultyScale
                     );
                     state.enemies.push(boss);
                     state.triggerFlash('#ffffff', 1.2, 0.5);
                     this.game.sounds.playSpecificMusic('Starcore Showdown');
+                });
+            } else if (bossId === 'asteroid_crusher' || bossId === 'crusher') {
+                import('../entities/asteroidCrusher.js').then(({ AsteroidCrusher }) => {
+                    const angle = Math.random() * Math.PI * 2;
+                    const dist = 1200;
+                    const boss = new AsteroidCrusher(
+                        this.game,
+                        state.player.worldX + Math.cos(angle) * dist,
+                        state.player.worldY + Math.sin(angle) * dist,
+                        state.difficultyScale
+                    );
+                    state.enemies.push(boss);
+                    state.triggerFlash('#ffffff', 1.2, 0.5);
+                    this.game.sounds.playSpecificMusic('Asteroid Crusher');
                 });
             }
         }
@@ -232,7 +246,7 @@ export class DevConsole {
         this.game.showHealth = !this.game.showHealth;
         console.log(`Health indicators ${this.game.showHealth ? 'ENABLED' : 'DISABLED'}`);
     }
-    
+
     _cmdRecord(args) {
         this.game.recordingEnabled = !this.game.recordingEnabled;
         console.log(`Recording feature ${this.game.recordingEnabled ? 'ENABLED' : 'DISABLED'}`);
@@ -263,7 +277,7 @@ export class DevConsole {
 
         let text = '> ' + this.inputBuffer;
         if (this.showCursor) text += '_';
-        
+
         ctx.fillText(text, 20, ch - h / 2);
     }
 }

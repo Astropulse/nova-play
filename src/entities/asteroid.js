@@ -499,15 +499,18 @@ export class Asteroid {
         // Slow rotation
         this.rotation = Math.random() * Math.PI * 2;
         this.rotSpeed = (Math.random() - 0.5) * 1.5;
+        this.highlightRed = false;
 
         // Despawn if very far from player
         this.despawnDist = 4500;
+        this.tractorCooldown = 0;
     }
 
     update(dt) {
         this.worldX += this.vx * dt;
         this.worldY += this.vy * dt;
         this.rotation += this.rotSpeed * dt;
+        if (this.tractorCooldown > 0) this.tractorCooldown -= dt;
     }
 
     serialize() {
@@ -651,6 +654,12 @@ export class Asteroid {
         ctx.save();
         ctx.translate(Math.floor(screen.x), Math.floor(screen.y));
         ctx.rotate(this.rotation);
+
+        if (this.highlightRed) {
+            ctx.shadowBlur = 15 * this.game.worldScale;
+            ctx.shadowColor = '#ff4444';
+        }
+
         ctx.drawImage(this.img, -Math.floor(w / 2), -Math.floor(h / 2), w, h);
         ctx.restore();
     }
