@@ -26,21 +26,21 @@ export class Shop {
 
         // Permanent upgrade stock per shop
         this.permUpgrades = {
-            health:    { stock: 2 },
-            shield:    { stock: 2 },
-            damage:    { stock: 2 },
+            health: { stock: 2 },
+            shield: { stock: 2 },
+            damage: { stock: 2 },
             inventory: { stock: 1 }
         };
     }
 
     _generateInventory() {
-        // At least 3 random upgrades + 1 map = 4 total minimum
-        // Up to 5 random upgrades + 1 map = 6 total maximum
-        const count = 3 + Math.floor(Math.random() * 3);
+        // At least 4 random upgrades + 1 map = 5 total minimum
+        // Up to 7 random upgrades + 1 map = 8 total maximum
+        const count = 4 + Math.floor(Math.random() * 4);
 
         // Filter upgrades that can actually fit in 6x4, excluding the map from random rolls
         const possibleUpgrades = UPGRADES.filter(u =>
-            u.id !== 'shop_map' && 
+            u.id !== 'shop_map' &&
             u.rarity !== 'unique' &&
             (u.width <= this.inventory.cols && u.height <= this.inventory.rows)
         );
@@ -57,7 +57,7 @@ export class Shop {
             // Filter pool to avoid duplicates
             const pool = possibleUpgrades.filter(u => !selected.includes(u));
             if (pool.length === 0) break;
-            
+
             selected.push(this._rollUpgrade(pool));
         }
 

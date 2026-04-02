@@ -339,7 +339,7 @@ export const UPGRADES = [
     {
         id: 'sensor_accelerator',
         name: 'Sensor Accelerator',
-        description: 'Increases field of view by 10%',
+        description: 'Increases field of view by 15%',
         assetKey: 'sensor_accelerator_1x1',
         width: 1,
         height: 1,

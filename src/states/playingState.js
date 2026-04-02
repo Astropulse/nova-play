@@ -646,7 +646,7 @@ export class PlayingState {
             // Boss death immunity: while any boss is dying, and for 2 seconds after
             const isBossDying = this.enemies.some(e => e.isBoss && e.state === BOSS_STATE.DYING);
             if (isBossDying) {
-                this.bossDeathImmunityTimer = 2.0; 
+                this.bossDeathImmunityTimer = 2.0;
             } else if (this.bossDeathImmunityTimer > 0) {
                 this.bossDeathImmunityTimer -= dt;
             }
@@ -900,7 +900,7 @@ export class PlayingState {
                     // AsteroidCrusher takes NO damage from asteroids
                     const damage = (en instanceof AsteroidCrusher) ? 0 : (en.isBoss ? 0.1 : 1);
                     en.hit(damage);
-                    
+
                     // Don't break if tractored by THIS enemy OR recently released by a crusher
                     if (ast.tractoredBy === en || (en instanceof AsteroidCrusher && ast.tractorCooldown > 0)) continue;
 
@@ -2329,7 +2329,7 @@ export class PlayingState {
                 p.friction = 0.99;
             }
             if (item.id === 'sensor_accelerator') {
-                fovMult *= 1.1; // 10% increase in FOV
+                fovMult *= 1.15; // 15% increase in FOV
             }
 
             // Knowledge Upgrades

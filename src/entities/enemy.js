@@ -766,18 +766,18 @@ export class EnemySpawner {
             // Spawn boss at a distance
             const angle = Math.random() * Math.PI * 2;
             const dist = 1600;
-            
+
             // Randomly choose between available bosses, excluding the last one
             const bosses = [Starcore, AsteroidCrusher];
             const availableBosses = bosses.filter(b => b.name !== this.lastBossType);
-            
+
             // Final fallback if all filtered (shouldn't happen with 2+ bosses)
             const pool = availableBosses.length > 0 ? availableBosses : bosses;
             const BossClass = pool[Math.floor(Math.random() * pool.length)];
-            
+
             this.lastBossType = BossClass.name;
             const boss = new BossClass(this.game, playerX + Math.cos(angle) * dist, playerY + Math.sin(angle) * dist, difficultyScale);
-            
+
             return [boss];
         }
 
@@ -896,7 +896,7 @@ export class CthulhuEnemy extends Enemy {
 
         // Custom stats for cthulhu enemies (similar to kamikaze)
         const speedScale = 1 + (difficultyScale - 1) * 0.15;
-        this.baseSpeed = (500 + Math.random() * 50) * speedScale;
+        this.baseSpeed = (800 + Math.random() * 100) * speedScale;
         this.turnSpeed = 7.0 + Math.random() * 1.0;
         this.health = Math.ceil(3 + 1.5 * difficultyScale);
 
