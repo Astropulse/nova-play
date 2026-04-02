@@ -354,7 +354,7 @@ export const UPGRADES = [
         width: 2,
         height: 2,
         cost: 100,
-        rarity: 'rare'
+        rarity: 'epic'
     },
     {
         id: 'shield_capacitor',
