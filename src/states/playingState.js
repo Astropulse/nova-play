@@ -2256,7 +2256,7 @@ export class PlayingState {
         p.hasAncientCurse = false;
         p.hasBoostDrive = false;
         p.naniteRegen = 0;
-        p.hasShieldCapacitor = false;
+        p.shieldCapacitorCount = 0;
         p.asteroidSpawnMult = 1.0;
         p.friction = 0.97;
         p.momentumSpeedMult = 1.0;
@@ -2335,9 +2335,9 @@ export class PlayingState {
             if (item.id === 'sensor_accelerator') {
                 fovMult *= 1.15; // 15% increase in FOV
             }
-            if (item.id === 'nanite_tank') p.naniteRegen = 0.15;
-            if (item.id === 'shield_capacitor') p.hasShieldCapacitor = true;
-            if (item.id === 'asteroid_accumulator') p.asteroidSpawnMult = 1.5;
+            if (item.id === 'nanite_tank') p.naniteRegen += 0.06;
+            if (item.id === 'shield_capacitor') p.shieldCapacitorCount += 1;
+            if (item.id === 'asteroid_accumulator') p.asteroidSpawnMult += 0.5;
 
             // Knowledge Upgrades
             if (item.id === 'obedience') p.obedienceMult = 1.2;

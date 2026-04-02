@@ -527,8 +527,8 @@ export class Enemy {
         let damage = 2;
 
         // --- Shield Capacitor Impact Damage ---
-        if (player.shielding && player.hasShieldCapacitor) {
-            damage = 6.0; // High damage for shield impacts
+        if (player.shielding && player.shieldCapacitorCount > 0) {
+            damage = 2.0 + (player.shieldCapacitorCount * 4.0); // 6.0 for one, 10.0 for two, etc.
         }
 
         this.hit(damage);

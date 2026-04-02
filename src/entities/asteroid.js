@@ -538,7 +538,7 @@ export class Asteroid {
 
     onCollision(player) {
         // --- Shield Capacitor Impact Damage ---
-        if (player.shielding && player.hasShieldCapacitor) {
+        if (player.shielding && player.shieldCapacitorCount > 0) {
             this.hit(50.0); // Massive damage to asteroids
         }
     }

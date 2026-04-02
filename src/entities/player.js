@@ -56,7 +56,7 @@ export class Player {
         this.hasAncientCurse = false;
         this.hasBoostDrive = false;
         this.naniteRegen = 0;
-        this.hasShieldCapacitor = false;
+        this.shieldCapacitorCount = 0;
         this.asteroidSpawnMult = 1.0;
 
         // Knowledge Event Upgrades
