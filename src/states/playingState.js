@@ -573,7 +573,7 @@ export class PlayingState {
             // Spawn asteroids
             const newAsteroids = this.asteroidSpawner.update(
                 dt, this.player.worldX, this.player.worldY,
-                this.player.vx, this.player.vy
+                this.player.vx, this.player.vy, this.player.asteroidSpawnMult
             );
             this.asteroids.push(...newAsteroids);
 
@@ -853,6 +853,7 @@ export class PlayingState {
             const dy = this.player.worldY - ast.worldY;
             const dist = Math.sqrt(dx * dx + dy * dy);
             if (dist < this.player.radius + ast.radius) {
+                ast.onCollision(this.player);
                 this._damagePlayer(ast.damage);
                 ast.alive = false;
                 this._onEntityDestroyed(ast);
@@ -868,7 +869,7 @@ export class PlayingState {
             const dist = Math.sqrt(dx * dx + dy * dy);
             if (dist < this.player.radius + en.radius) {
                 this._damagePlayer(2); // Ramming hurts!
-                en.onCollision(this.player.worldX, this.player.worldY);
+                en.onCollision(this.player);
                 if (!en.alive) this._onEntityDestroyed(en);
                 this._applyKnockback(dx, dy, dist, 300);
             }
@@ -2254,6 +2255,9 @@ export class PlayingState {
         p.hasExplosivesUnit = false;
         p.hasAncientCurse = false;
         p.hasBoostDrive = false;
+        p.naniteRegen = 0;
+        p.hasShieldCapacitor = false;
+        p.asteroidSpawnMult = 1.0;
         p.friction = 0.97;
         p.momentumSpeedMult = 1.0;
         p.momentumMaxSpeedMult = 1.0;
@@ -2331,6 +2335,9 @@ export class PlayingState {
             if (item.id === 'sensor_accelerator') {
                 fovMult *= 1.15; // 15% increase in FOV
             }
+            if (item.id === 'nanite_tank') p.naniteRegen = 0.15;
+            if (item.id === 'shield_capacitor') p.hasShieldCapacitor = true;
+            if (item.id === 'asteroid_accumulator') p.asteroidSpawnMult = 1.5;
 
             // Knowledge Upgrades
             if (item.id === 'obedience') p.obedienceMult = 1.2;

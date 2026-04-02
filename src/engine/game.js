@@ -551,6 +551,9 @@ export class Game {
             'boost_drive_2x1': 'Assets/Upgrades/boost_drive_2x1.png',
             'momentum_module_1x1': 'Assets/Upgrades/momentum_module_1x1.png',
             'sensor_accelerator_1x1': 'Assets/Upgrades/sensor_accelerator_1x1.png',
+            'nanite_tank_2x2': 'Assets/Upgrades/nanite_tank_2x2.png',
+            'shield_capacitor_1x2': 'Assets/Upgrades/shield_capacitor_1x2.png',
+            'asteroid_accumulator_2x2': 'Assets/Upgrades/asteroid_accumulator_2x2.png',
             // Events
             'cthulhu': 'Assets/Events/cthulhu.png',
             'cargo_ship': 'Assets/Events/cargo_ship.png',

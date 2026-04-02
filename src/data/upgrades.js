@@ -329,7 +329,7 @@ export const UPGRADES = [
     {
         id: 'momentum_module',
         name: 'Momentum Module',
-        description: 'Reduces friction, allowing the ship to drift',
+        description: 'Reduces friction, allowing the ship to drift.',
         assetKey: 'momentum_module_1x1',
         width: 1,
         height: 1,
@@ -339,12 +339,42 @@ export const UPGRADES = [
     {
         id: 'sensor_accelerator',
         name: 'Sensor Accelerator',
-        description: 'Increases field of view by 15%',
+        description: 'Increases field of view by 15%.',
         assetKey: 'sensor_accelerator_1x1',
         width: 1,
         height: 1,
         cost: 40,
         rarity: 'common'
+    },
+    {
+        id: 'nanite_tank',
+        name: 'Nanite Tank',
+        description: 'Slowly regenerates ship health.',
+        assetKey: 'nanite_tank_2x2',
+        width: 2,
+        height: 2,
+        cost: 100,
+        rarity: 'rare'
+    },
+    {
+        id: 'shield_capacitor',
+        name: 'Shield Capacitor',
+        description: 'Increases damage dealt to enemies on shield impact.',
+        assetKey: 'shield_capacitor_1x2',
+        width: 1,
+        height: 2,
+        cost: 60,
+        rarity: 'rare'
+    },
+    {
+        id: 'asteroid_accumulator',
+        name: 'Asteroid Accumulator',
+        description: 'Increases the frequency of asteroids.',
+        assetKey: 'asteroid_accumulator_2x2',
+        width: 2,
+        height: 2,
+        cost: 80,
+        rarity: 'rare'
     }
 ];
 

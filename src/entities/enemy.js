@@ -523,16 +523,23 @@ export class Enemy {
         this.vy = 0;
     }
 
-    onCollision(playerX, playerY) {
-        this.hit(1);
+    onCollision(player) {
+        let damage = 2;
+
+        // --- Shield Capacitor Impact Damage ---
+        if (player.shielding && player.hasShieldCapacitor) {
+            damage = 6.0; // High damage for shield impacts
+        }
+
+        this.hit(damage);
         if (!this.alive) return;
 
         this.state = AI_STATE.RECOVERY;
-        this.stateTimer = 1.0;
-        this.invulnTimer = 1.0;
+        this.stateTimer = 0.6;
+        this.invulnTimer = 0.6;
 
         // Steer away from player
-        const angleAway = Math.atan2(this.worldY - playerY, this.worldX - playerX);
+        const angleAway = Math.atan2(this.worldY - player.worldY, this.worldX - player.worldX);
         this.targetAngleOverride = angleAway + (Math.random() - 0.5) * 0.5;
         this.game.sounds.play('boost', { volume: 0.3, x: this.worldX, y: this.worldY });
     }

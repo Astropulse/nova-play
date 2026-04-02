@@ -134,7 +134,7 @@ export class VoronoiSlicer {
             fragCanvas.height = sh;
             const fragCtx = fragCanvas.getContext('2d');
             if (!fragCtx) continue;
-            
+
             const fragData = fragCtx.createImageData(sw, sh);
 
             for (const p of s.pixels) {
@@ -536,6 +536,13 @@ export class Asteroid {
         return false;
     }
 
+    onCollision(player) {
+        // --- Shield Capacitor Impact Damage ---
+        if (player.shielding && player.hasShieldCapacitor) {
+            this.hit(50.0); // Massive damage to asteroids
+        }
+    }
+
     _generateProceduralDebris() {
         if (!this.img || !this.img.width) return [];
 
@@ -681,7 +688,7 @@ export class AsteroidSpawner {
         this.lastPlayerY = null;
     }
 
-    update(dt, playerWorldX, playerWorldY, playerVx, playerVy) {
+    update(dt, playerWorldX, playerWorldY, playerVx, playerVy, spawnMult = 1.0) {
         const spawned = [];
 
         if (this.lastPlayerX === null || this.lastPlayerY === null) {
@@ -706,7 +713,7 @@ export class AsteroidSpawner {
 
             // Normal asteroid spawn
             const spawnChance = Math.random();
-            if (spawnChance < 0.1) {
+            if (spawnChance < 0.1 * spawnMult) {
                 // Chance to spawn one normal asteroid when the 150 unit threshold is met
 
                 // Pick size

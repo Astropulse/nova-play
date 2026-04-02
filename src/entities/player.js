@@ -55,6 +55,9 @@ export class Player {
         this.hasExplosivesUnit = false;
         this.hasAncientCurse = false;
         this.hasBoostDrive = false;
+        this.naniteRegen = 0;
+        this.hasShieldCapacitor = false;
+        this.asteroidSpawnMult = 1.0;
 
         // Knowledge Event Upgrades
         this.hasSacrifice = false;
@@ -609,6 +612,11 @@ export class Player {
             this.trailHistory[i].life -= dt * 6; // Fast fade but enough to see the length
         }
         this.trailHistory = this.trailHistory.filter(t => t.life > 0);
+        
+        // --- Nanite Tank Regeneration ---
+        if (this.naniteRegen > 0 && this.health < this.maxHealth) {
+            this.health = Math.min(this.maxHealth, this.health + this.naniteRegen * dt);
+        }
     }
 
     draw(ctx, camera) {
