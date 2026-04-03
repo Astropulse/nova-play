@@ -1361,7 +1361,7 @@ export class PlayingState {
     _drawShopIndicators(ctx) {
         const cw = this.game.width;
         const ch = this.game.height;
-        const margin = 30 * this.game.worldScale;
+        const margin = 20 * this.game.uiScale;
 
         for (const shop of this.shops) {
             if (!shop.revealed) continue;
@@ -1418,7 +1418,7 @@ export class PlayingState {
     _drawEventIndicators(ctx) {
         const cw = this.game.width;
         const ch = this.game.height;
-        const margin = 30 * this.game.worldScale;
+        const margin = 20 * this.game.uiScale;
 
         for (const ev of this.events) {
             if (!ev.revealed || ev.isFinished) continue; // Keep marker until destroyed or finished (scrap spawned)
@@ -1474,7 +1474,7 @@ export class PlayingState {
         if (this.bossWrecks.length === 0) return;
         const cw = this.game.width;
         const ch = this.game.height;
-        const margin = 30 * this.game.worldScale;
+        const margin = 20 * this.game.uiScale;
 
         for (const wreck of this.bossWrecks) {
             const screen = this.camera.worldToScreen(wreck.worldX, wreck.worldY, cw, ch);
@@ -2333,7 +2333,7 @@ export class PlayingState {
                 p.friction = 0.99;
             }
             if (item.id === 'sensor_accelerator') {
-                fovMult *= 1.15; // 15% increase in FOV
+                fovMult *= 1.1; // 10% increase in FOV
             }
             if (item.id === 'nanite_tank') p.naniteRegen += 0.06;
             if (item.id === 'shield_capacitor') p.shieldCapacitorCount += 1;
@@ -2444,7 +2444,7 @@ export class PlayingState {
     _drawEnemyIndicators(ctx) {
         const cw = this.game.width;
         const ch = this.game.height;
-        const margin = 20 * this.game.worldScale;
+        const margin = 15 * this.game.uiScale;
 
         for (const en of this.enemies) {
             const screen = this.camera.worldToScreen(en.worldX, en.worldY, cw, ch);
@@ -2485,7 +2485,7 @@ export class PlayingState {
     _drawAsteroidWarnings(ctx) {
         const cw = this.game.width;
         const ch = this.game.height;
-        const margin = 20 * this.game.worldScale;
+        const margin = 15 * this.game.uiScale;
 
         for (const ast of this.asteroids) {
             if (!ast.alive) continue;

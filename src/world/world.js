@@ -137,9 +137,10 @@ export class World {
 
         // Draw starfield layers (back to front via order)
         for (const layer of this.layers) {
-            const offsetX = camera.x * layer.parallax;
-            const offsetY = camera.y * layer.parallax;
-            const rs = layer.regionSize;
+            const worldScale = this.game.worldScale;
+            const scaledRS = layer.regionSize * worldScale;
+            const offsetX = camera.x * layer.parallax * worldScale;
+            const offsetY = camera.y * layer.parallax * worldScale;
 
             const svx = -vx * layer.parallax * streakFactor * boostIntensity;
             const svy = -vy * layer.parallax * streakFactor * boostIntensity;
@@ -153,18 +154,19 @@ export class World {
             for (const star of layer.stars) {
                 const img = star.img;
                 if (!img) continue;
-                const w = img.width * this.game.worldScale;
-                const h = img.height * this.game.worldScale;
+                const w = img.width * worldScale;
+                const h = img.height * worldScale;
 
-                let sx = ((star.x - offsetX) % rs + rs) % rs;
-                let sy = ((star.y - offsetY) % rs + rs) % rs;
+                // Center the origin of the starfield at (cw/2, ch/2)
+                let sx = (((star.x * worldScale - offsetX + cw / 2) % scaledRS) + scaledRS) % scaledRS;
+                let sy = (((star.y * worldScale - offsetY + ch / 2) % scaledRS) + scaledRS) % scaledRS;
 
                 // Pulsing effect
                 const pulseAlpha = star.pulseAmount * Math.sin(worldTime * star.twinkleSpeed + star.twinkleOffset);
                 this.layerCtx.globalAlpha = Math.max(0.1, Math.min(1.0, layer.alpha + pulseAlpha));
 
-                for (let wy = sy - rs; wy < ch + h; wy += rs) {
-                    for (let wx = sx - rs; wx < cw + w; wx += rs) {
+                for (let wy = sy - scaledRS; wy < ch + h; wy += scaledRS) {
+                    for (let wx = sx - scaledRS; wx < cw + w; wx += scaledRS) {
                         if (wx + w < 0 || wx > cw || wy + h < 0 || wy > ch) continue;
 
                         if (star.rotation === 0) {

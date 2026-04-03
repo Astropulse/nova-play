@@ -36,7 +36,7 @@ export class Shop {
     _generateInventory() {
         // At least 4 random upgrades + 1 map = 5 total minimum
         // Up to 7 random upgrades + 1 map = 8 total maximum
-        const count = 4 + Math.floor(Math.random() * 4);
+        const count = 3 + Math.floor(Math.random() * 4);
 
         // Filter upgrades that can actually fit in 6x4, excluding the map from random rolls
         const possibleUpgrades = UPGRADES.filter(u =>
