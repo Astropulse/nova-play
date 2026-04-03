@@ -40,6 +40,10 @@ body.playing canvas {
     cursor: crosshair;
 }
 
+body.recording canvas {
+    cursor: none !important;
+}
+
 #recordingIndicator {
     display: none;
     position: fixed;

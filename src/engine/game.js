@@ -262,6 +262,7 @@ export class Game {
         }
 
         this.devConsole.draw(this.ctx);
+        this._drawCrosshair(this.ctx);
 
         // Handle Recording Timer
         if (this.isRecording) {
@@ -317,6 +318,7 @@ export class Game {
 
         this.mediaRecorder.onstop = async () => {
             this.isRecording = false;
+            document.body.classList.remove('recording');
 
             // Pause immediately to protect the player
             const wasPaused = this.currentState && this.currentState.paused;
@@ -354,6 +356,7 @@ export class Game {
 
         this.recordTimer = 0;
         this.isRecording = true;
+        document.body.classList.add('recording');
         this.mediaRecorder.start();
         console.log('Video recording started...');
     }
@@ -438,6 +441,42 @@ export class Game {
                 ctx.strokeRect(sx + 0.5, sy + 0.5, segW - gap - 1, h - 1);
             }
         }
+    }
+
+    _drawCrosshair(ctx) {
+        if (!this.isRecording || this.isEncoding) return;
+
+        const mouse = this.getMousePos();
+        const x = Math.floor(mouse.x);
+        const y = Math.floor(mouse.y);
+        const l = 7; // line length
+        const g = 3; // gap from center
+
+        ctx.save();
+        
+        // 1px black outline (3px wide strips)
+        ctx.fillStyle = '#000000';
+        // Left
+        ctx.fillRect(x - l - g - 1, y - 1, l + 2, 3);
+        // Right
+        ctx.fillRect(x + g - 1, y - 1, l + 2, 3);
+        // Top
+        ctx.fillRect(x - 1, y - l - g - 1, 3, l + 2);
+        // Bottom
+        ctx.fillRect(x - 1, y + g - 1, 3, l + 2);
+
+        // 1px white lines
+        ctx.fillStyle = '#ffffff';
+        // Left
+        ctx.fillRect(x - l - g, y, l, 1);
+        // Right
+        ctx.fillRect(x + g, y, l, 1);
+        // Top
+        ctx.fillRect(x, y - l - g, 1, l);
+        // Bottom
+        ctx.fillRect(x, y + g, 1, l);
+
+        ctx.restore();
     }
 
     spriteSize(key, scale = this.uiScale) {
