@@ -291,6 +291,7 @@ export class Scrap {
 
         this.lifetime = 120; // 2 minutes
         this.maxLifetime = this.lifetime;
+        this.suckTimer = 0;
     }
 
     update(dt, playerX, playerY, magnetMult = 1.0) {
@@ -301,20 +302,30 @@ export class Scrap {
         const activeMagnetRange = this.magnetRange * magnetMult;
 
         if (dist < activeMagnetRange) {
+            this.suckTimer += dt;
+            const dtFactor = dt * 60;
+            const suckFactor = 1.0 + this.suckTimer * 0.8; // Faster growth
+
             // Magnetize to player
             const angle = Math.atan2(dy, dx);
-            const force = (1 - dist / activeMagnetRange) * 800;
+            const force = (1 - dist / activeMagnetRange) * 1500 * suckFactor;
             this.vx += Math.cos(angle) * force * dt;
             this.vy += Math.sin(angle) * force * dt;
 
-            // Speed cap when magnetized to prevent orbiting too crazily
+            // Steering: Pivot velocity vector toward player to kill orbiting
+            const steerWeight = Math.min(0.95, (0.2 + this.suckTimer * 1.2) * dtFactor);
             const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
-            const maxSpeed = 600;
-            if (speed > maxSpeed) {
-                this.vx = (this.vx / speed) * maxSpeed;
-                this.vy = (this.vy / speed) * maxSpeed;
-            }
+            const targetVx = Math.cos(angle) * speed;
+            const targetVy = Math.sin(angle) * speed;
+            this.vx = this.vx * (1 - steerWeight) + targetVx * steerWeight;
+            this.vy = this.vy * (1 - steerWeight) + targetVy * steerWeight;
+
+            // Minimal damping while magnetized
+            const damping = Math.max(0.95, 1.0 - (0.005 * dtFactor));
+            this.vx *= damping;
+            this.vy *= damping;
         } else {
+            this.suckTimer = 0;
             // Normal drift with light friction
             this.vx *= 0.99;
             this.vy *= 0.99;
@@ -393,6 +404,7 @@ export class ItemPickup {
 
         this.magnetRange = 200;
         this.collectRange = 30;
+        this.suckTimer = 0;
     }
 
     update(dt, playerX, playerY, magnetMult = 1.0) {
@@ -403,18 +415,29 @@ export class ItemPickup {
         const activeMagnetRange = this.magnetRange * magnetMult;
 
         if (dist < activeMagnetRange) {
+            this.suckTimer += dt;
+            const dtFactor = dt * 60;
+            const suckFactor = 1.0 + this.suckTimer * 0.8;
+
             const angle = Math.atan2(dy, dx);
-            const force = (1 - dist / activeMagnetRange) * 1000;
+            const force = (1 - dist / activeMagnetRange) * 1800 * suckFactor;
             this.vx += Math.cos(angle) * force * dt;
             this.vy += Math.sin(angle) * force * dt;
 
+            // Steering Logic
+            const steerWeight = Math.min(0.95, (0.2 + this.suckTimer * 1.5) * dtFactor);
             const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
-            const maxSpeed = 700;
-            if (speed > maxSpeed) {
-                this.vx = (this.vx / speed) * maxSpeed;
-                this.vy = (this.vy / speed) * maxSpeed;
-            }
+            const targetVx = Math.cos(angle) * speed;
+            const targetVy = Math.sin(angle) * speed;
+            this.vx = this.vx * (1 - steerWeight) + targetVx * steerWeight;
+            this.vy = this.vy * (1 - steerWeight) + targetVy * steerWeight;
+
+            // Damping logic
+            const damping = Math.max(0.95, 1.0 - (0.005 * dtFactor));
+            this.vx *= damping;
+            this.vy *= damping;
         } else {
+            this.suckTimer = 0;
             this.vx *= 0.98;
             this.vy *= 0.98;
         }

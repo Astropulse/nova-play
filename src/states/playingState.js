@@ -281,6 +281,14 @@ export class PlayingState {
             return;
         }
 
+        // Shop interaction check (moved up for input handling priority)
+        const nearShop = this.shops.find(s => {
+            const dx = s.worldX - this.player.worldX;
+            const dy = s.worldY - this.player.worldY;
+            return Math.sqrt(dx * dx + dy * dy) < s.interactRange;
+        });
+        this.canInteractShop = !!nearShop;
+
         if (this.game.input.isKeyJustPressed('Escape')) {
             if (this.paused) {
                 // About to unpause, return dragged item
@@ -292,6 +300,28 @@ export class PlayingState {
             }
             this.paused = !this.paused;
             this.game.sounds.play('click', 0.5);
+        }
+
+        if (this.game.input.isKeyJustPressed('KeyE')) {
+            if (nearShop) {
+                // Prioritize shop interaction
+                this.activeShop = nearShop;
+                this.isShopOpen = true;
+                this.paused = true;
+                this.game.sounds.play('click', 0.5);
+            } else {
+                // Otherwise toggle pause
+                if (this.paused) {
+                    // About to unpause, return dragged item
+                    if (this.draggedItem) {
+                        this.draggedItem.originInventory.addItem(this.draggedItem.item, this.draggedItem.x, this.draggedItem.y);
+                        this._onInventoryChanged();
+                        this.draggedItem = null;
+                    }
+                }
+                this.paused = !this.paused;
+                this.game.sounds.play('click', 0.5);
+            }
         }
 
         if (this.paused) {
@@ -518,19 +548,7 @@ export class PlayingState {
         }
         this.camera.update(dt, this.player);
 
-        // Shop interaction check
-        const nearShop = this.shops.find(s => {
-            const dx = s.worldX - this.player.worldX;
-            const dy = s.worldY - this.player.worldY;
-            return Math.sqrt(dx * dx + dy * dy) < s.interactRange;
-        });
-        this.canInteractShop = !!nearShop;
-
-        if (this.game.input.isKeyJustPressed('KeyE') && nearShop) {
-            this.activeShop = nearShop;
-            this.isShopOpen = true;
-            this.paused = true;
-        }
+        // Shop interaction check (already calculated above for input priority)
 
         // Collect projectiles from player
         if (this.player.pendingProjectiles.length > 0) {
@@ -2473,8 +2491,8 @@ export class PlayingState {
                 ix = cw / 2 + (iy - ch / 2) / slope;
             }
 
-            // Draw red "!" indicator
-            ctx.fillStyle = '#ff2222';
+            // Draw "!" indicator (bosses are purple, regular enemies red)
+            ctx.fillStyle = en.isBoss ? '#ff44ff' : '#ff2222';
             ctx.font = `${12 * this.game.uiScale}px Astro5x`;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
