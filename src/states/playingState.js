@@ -7,7 +7,7 @@ import { Asteroid, AsteroidSpawner, Rubble, Scrap, ItemPickup, ProceduralDebris 
 import { EnemySpawner, Enemy, HostileEncounter } from '../entities/enemy.js';
 import { Shop } from '../entities/shop.js';
 import { Inventory } from '../engine/inventory.js';
-import { UPGRADES } from '../data/upgrades.js';
+import { UPGRADES, RARITY_COLORS } from '../data/upgrades.js';
 import { CthulhuEvent, CTHULHU_STATE } from '../entities/cthulhuEvent.js';
 import { CargoShipEvent, CARGO_SHIP_STATE } from '../entities/cargoShipEvent.js';
 import { FracturedStationEvent } from '../entities/fracturedStationEvent.js';
@@ -301,7 +301,7 @@ export class PlayingState {
                 } else if (!enc.shouldStay) {
                     enc.depart();
                 }
-                
+
                 // Clear the stay flag for next time it's approached
                 enc.shouldStay = false;
                 this.activeEncounterDialog = null;
@@ -1873,9 +1873,12 @@ export class PlayingState {
             const h = item.height * slotSize;
 
             // Draw rarity overlay
-            const overlayColor = rarityColors[item.rarity] || 'rgba(0, 0, 0, 0)';
-            ctx.fillStyle = overlayColor;
+            const baseColor = RARITY_COLORS[item.rarity] || '#ffffff';
+            const alphaMap = { common: 0.15, uncommon: 0.2, rare: 0.25, epic: 0.25, legendary: 0.3, unique: 0.3 };
+            ctx.globalAlpha = alphaMap[item.rarity] || 0.2;
+            ctx.fillStyle = baseColor;
             ctx.fillRect(ix + 2, iy + 2, w - 4, h - 4); // Inset to keep grid lines clear
+            ctx.globalAlpha = 1.0;
 
             ctx.drawImage(frame, ix, iy, w, h);
         }
@@ -1885,50 +1888,73 @@ export class PlayingState {
         const cw = this.game.width;
         const ch = this.game.height;
         const uiScale = this.game.uiScale;
+
         const pad = 8 * uiScale;
+        const fontSize = Math.floor(5 * uiScale);
+        const titleFontSize = Math.floor(6 * uiScale);
+        ctx.font = `${fontSize}px Astro4x`;
+
+        // Calculate dimensions
+        const name = item.name.toUpperCase();
+        const rarity = (item.rarity || 'common').toUpperCase();
+        const desc = item.description || '';
+
+        const maxWidth = 120 * uiScale;
+        const descLines = this._wrapText(ctx, desc, maxWidth);
+
+        const headerW = Math.max(ctx.measureText(name).width * 1.2, ctx.measureText(rarity).width);
+        const tw = Math.max(headerW, descLines.reduce((max, l) => Math.max(max, ctx.measureText(l).width), 0)) + pad * 2;
+        const th = (descLines.length + 3) * fontSize * 1.5 + pad * 2;
+
+        let tx = mouse.x + 10;
+        let ty = mouse.y + 10;
+        if (tx + tw > cw) tx = mouse.x - tw - 10;
+        if (ty + th > ch) ty = mouse.y - th - 10;
 
         ctx.save();
-        ctx.font = `${8 * uiScale}px Astro5x`;
-        const nameWidth = ctx.measureText(item.name).width;
-        ctx.font = `${6 * uiScale}px Astro4x`;
-        const descLines = this._wrapText(ctx, item.description, 120 * uiScale);
-        const descWidth = Math.max(...descLines.map(l => ctx.measureText(l).width));
-        const costWidth = ctx.measureText(`COST: ${item.cost}`).width;
 
-        const tipW = Math.max(nameWidth, descWidth, costWidth) + pad * 2;
-        const tipH = (8 + 4 + 6 * descLines.length + 8) * uiScale + pad * 2;
-
-        let tx = mouse.x + 16;
-        let ty = mouse.y + 16;
-        if (tx + tipW > cw) tx = mouse.x - tipW - 8;
-        if (ty + tipH > ch) ty = mouse.y - tipH - 8;
-
-        // Shadow
-        ctx.fillStyle = 'rgba(0,0,0,0.5)';
-        ctx.fillRect(tx + 4, ty + 4, tipW, tipH);
-
-        // Background
-        ctx.fillStyle = '#112233';
+        // Frame
+        ctx.fillStyle = 'rgba(25, 45, 80, 0.99)';
         ctx.strokeStyle = '#44ddff';
-        ctx.lineWidth = 2;
-        ctx.fillRect(tx, ty, tipW, tipH);
-        ctx.strokeRect(tx, ty, tipW, tipH);
+        ctx.lineWidth = 1.5;
+        ctx.fillRect(tx, ty, tw, th);
+        ctx.strokeRect(tx, ty, tw, th);
 
-        // Content
+        let cy = ty + pad;
+
+        // Name
+        ctx.font = `${titleFontSize}px Astro5x`;
+        ctx.fillStyle = '#ffffff';
         ctx.textAlign = 'left';
         ctx.textBaseline = 'top';
-        ctx.fillStyle = '#44ddff';
-        ctx.font = `${8 * uiScale}px Astro5x`;
-        ctx.fillText(item.name, tx + pad, ty + pad);
+        ctx.fillText(name, tx + pad, cy);
+        cy += titleFontSize * 1.5;
 
-        ctx.fillStyle = '#ffffff';
-        ctx.font = `${6 * uiScale}px Astro4x`;
-        descLines.forEach((line, i) => {
-            ctx.fillText(line, tx + pad, ty + pad + 12 * uiScale + i * 8 * uiScale);
-        });
+        // Rarity
+        ctx.font = `${fontSize}px Astro4x`;
+        ctx.fillStyle = RARITY_COLORS[item.rarity] || '#ffffff';
+        ctx.fillText(rarity, tx + pad, cy);
+        cy += fontSize * 2;
 
-        ctx.fillStyle = '#ffff44';
-        ctx.fillText(`COST: ${item.cost}`, tx + pad, ty + pad + 12 * uiScale + descLines.length * 8 * uiScale + 4 * uiScale);
+        // Divider
+        ctx.strokeStyle = '#335577';
+        ctx.beginPath();
+        ctx.moveTo(tx + pad, cy - fontSize * 0.5);
+        ctx.lineTo(tx + tw - pad, cy - fontSize * 0.5);
+        ctx.stroke();
+
+        // Description
+        ctx.fillStyle = '#ccddee';
+        for (const line of descLines) {
+            ctx.fillText(line, tx + pad, cy);
+            cy += fontSize * 1.4;
+        }
+
+        if (item.cost) {
+            cy += fontSize * 0.5;
+            ctx.fillStyle = '#ffff44';
+            ctx.fillText(`BASE VALUE: ${item.cost} SCRAP`, tx + pad, cy);
+        }
 
         ctx.restore();
     }
@@ -2579,12 +2605,12 @@ export class PlayingState {
         shop.revealed = true;
         this.shops.push(shop);
         this.revealedShops.push(shop);
-        
+
         if (this.revealedShops.length > 3) {
             const oldShop = this.revealedShops.shift();
             // oldShop.revealed = false; // We can leave it revealed but just stop tracking it as one of the 3 latest if needed, but it seems HUD handles all shops with shop.revealed. We'll stick to however the original dev setup it.
         }
-        
+
         this.stats.shopsUnlocked++;
         return true;
     }
@@ -2686,7 +2712,7 @@ export class PlayingState {
             ctx.lineTo(-5 * this.game.uiScale, 8 * this.game.uiScale);
             ctx.closePath();
             ctx.fill();
-            
+
             ctx.restore();
 
             // Draw text label

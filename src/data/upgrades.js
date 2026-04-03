@@ -386,3 +386,12 @@ export const RARITY_WEIGHTS = {
     legendary: 1,
     unique: 0
 };
+
+export const RARITY_COLORS = {
+    common: '#00ff00',
+    uncommon: '#0078ff',
+    rare: '#b400ff',
+    epic: '#ff0000',
+    legendary: '#ffff00',
+    unique: '#ffffff'
+};

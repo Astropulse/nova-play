@@ -146,7 +146,13 @@ function substitute(template, vars) {
         }
         // Default: show name for objects, number for numbers
         if (typeof val === 'object') {
-            return val.item ? val.item.name : (val.name || match);
+            const name = val.item ? val.item.name : (val.name || match);
+            const id = val.item ? val.item.id : val.id;
+            // If it's an upgrade (has an id), append it with a marker for the UI to parse
+            if (id && !val.displayName) { // val.displayName check to avoid tagging events that shouldn't have tooltips
+                return `${name}#${id}`;
+            }
+            return name;
         }
         return String(val);
     });

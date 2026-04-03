@@ -3,7 +3,10 @@
  *
  * Color tags: [scrap], [upgrade], [cost], [good], [warn]
  * Typewriter: ~2 seconds for full text, type sfx every 2 chars.
+ * Tooltip: Shows upgrade properties on hover.
  */
+
+import { UPGRADES, RARITY_COLORS } from '../data/upgrades.js';
 
 const TAG_COLORS = {
     scrap:   '#ffff44',
@@ -50,23 +53,41 @@ export class EncounterDialog {
 
         // Layout cache
         this._layoutDirty = true;
+        this.upgradeHitboxes = [];
+        this.hoveredUpgrade = null;
     }
 
     _parse(text) {
-        if (!text) return [{ text: '', color: null }];
+        if (!text) return [{ text: '', color: null, meta: null }];
         const segments = [];
         let pos = 0;
         const regex = /\[(\w+)\](.*?)\[\/\1\]/g;
         let match;
         while ((match = regex.exec(text)) !== null) {
             if (match.index > pos) {
-                segments.push({ text: text.slice(pos, match.index), color: null });
+                segments.push({ text: text.slice(pos, match.index), color: null, meta: null });
             }
-            segments.push({ text: match[2], color: TAG_COLORS[match[1]] || null });
+
+            const tag = match[1];
+            let content = match[2];
+            let meta = null;
+
+            if (tag === 'upgrade' && content.includes('#')) {
+                const parts = content.split('#');
+                content = parts[0];
+                meta = parts[1];
+            }
+
+            segments.push({
+                text: content,
+                color: TAG_COLORS[tag] || null,
+                tag: tag,
+                meta: meta
+            });
             pos = match.index + match[0].length;
         }
         if (pos < text.length) {
-            segments.push({ text: text.slice(pos), color: null });
+            segments.push({ text: text.slice(pos), color: null, meta: null });
         }
         return segments;
     }
@@ -158,6 +179,19 @@ export class EncounterDialog {
                 break;
             }
         }
+
+        // Hover identification
+        this.hoveredUpgrade = null;
+        if (this.upgradeHitboxes.length > 0) {
+            const mouse = this.game.getMousePos();
+            for (const h of this.upgradeHitboxes) {
+                if (mouse.x >= h.x && mouse.x <= h.x + h.w &&
+                    mouse.y >= h.y && mouse.y <= h.y + h.h) {
+                    this.hoveredUpgrade = UPGRADES.find(u => u.id === h.id);
+                    break;
+                }
+            }
+        }
     }
 
     _selectOption(index) {
@@ -209,6 +243,8 @@ export class EncounterDialog {
         // Dim background
         ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
         ctx.fillRect(0, 0, cw, ch);
+
+        this.upgradeHitboxes = []; // Reset hitboxes for this frame
 
         // Panel dimensions
         const panelW = Math.min(cw * 0.6, 160 * uiScale);
@@ -331,11 +367,23 @@ export class EncounterDialog {
                 const optSegs = this._parse(this.options[i].label);
                 let ox = panelX + pad + prefixW;
                 for (const seg of optSegs) {
+                    const textW = ctx.measureText(seg.text).width;
+                    if (seg.meta) {
+                        this.upgradeHitboxes.push({
+                            x: ox, y: optY, w: textW, h: optH,
+                            id: seg.meta
+                        });
+                    }
                     ctx.fillStyle = seg.color || (inBounds ? '#ffffff' : '#88aabb');
                     ctx.fillText(seg.text, ox, optY);
-                    ox += ctx.measureText(seg.text).width;
+                    ox += textW;
                 }
             }
+        }
+
+        // Draw tooltip
+        if (this.hoveredUpgrade) {
+            this._drawUpgradeTooltip(ctx, this.hoveredUpgrade);
         }
 
         ctx.restore();
@@ -388,20 +436,12 @@ export class EncounterDialog {
     }
 
     _drawWrappedText(ctx, lines, x, y, lineHeight, maxChars) {
-        // Draw using original segments with character count limit
         let totalDrawn = 0;
-        const segments = (this.state === DIALOG_STATE.TYPING_RESPONSE && this.responseSegments)
-            ? (lines === this._wrapSegments(ctx, this.responseSegments, 1000) ? this.responseSegments : this.segments)
-            : this.segments;
-
-        // Simple approach: render each line from flattened plain text,
-        // applying segment colors based on character position
         const allSegments = (this.responseSegments && totalDrawn === 0 &&
             lines.length > 0 && this.responseSegments.map(s => s.text).join('').includes(lines[0]))
             ? this.responseSegments : this.segments;
 
-        // Build a character-color map
-        const colorMap = this._buildColorMap(allSegments);
+        const { colorMap, metaMap } = this._buildMaps(allSegments);
 
         let charIdx = 0;
         for (let li = 0; li < lines.length; li++) {
@@ -409,24 +449,31 @@ export class EncounterDialog {
             let curX = x;
             const ly = y + li * lineHeight;
 
-            // Render word by word to maintain spacing but char by char for color
             let wordStart = 0;
             for (let ci = 0; ci <= line.length; ci++) {
                 const isEnd = ci === line.length;
                 const isSpace = !isEnd && line[ci] === ' ';
 
                 if (isSpace || isEnd) {
-                    // Render the word
-                    const word = line.slice(wordStart, ci + (isSpace ? 0 : 0));
+                    const word = line.slice(wordStart, ci);
                     if (word.length > 0 && charIdx < maxChars) {
                         const visibleLen = Math.min(word.length, maxChars - charIdx);
                         const visible = word.slice(0, visibleLen);
 
-                        // Get color from map at this position
                         const color = charIdx < colorMap.length ? colorMap[charIdx] : null;
+                        const meta = charIdx < metaMap.length ? metaMap[charIdx] : null;
+
+                        const textW = ctx.measureText(visible).width;
+                        if (meta && charIdx < maxChars) {
+                            this.upgradeHitboxes.push({
+                                x: curX, y: ly, w: textW, h: lineHeight,
+                                id: meta
+                            });
+                        }
+
                         ctx.fillStyle = color || '#ccddee';
                         ctx.fillText(visible, curX, ly);
-                        curX += ctx.measureText(visible).width;
+                        curX += textW;
                         charIdx += visibleLen;
                     }
                     if (isSpace && charIdx < maxChars) {
@@ -436,20 +483,99 @@ export class EncounterDialog {
                     wordStart = ci + 1;
                 }
             }
-            if (li < lines.length - 1) {
-                // Account for the space that was removed by word wrapping
-                charIdx++;
-            }
+            if (li < lines.length - 1) charIdx++;
         }
     }
 
-    _buildColorMap(segments) {
-        const map = [];
+    _buildMaps(segments) {
+        const colorMap = [];
+        const metaMap = [];
         for (const seg of segments) {
             for (let i = 0; i < seg.text.length; i++) {
-                map.push(seg.color);
+                colorMap.push(seg.color);
+                metaMap.push(seg.meta);
             }
         }
-        return map;
+        return { colorMap, metaMap };
+    }
+
+    _drawUpgradeTooltip(ctx, upg) {
+        const mouse = this.game.getMousePos();
+        const uiScale = this.game.uiScale;
+
+        const pad = 8 * uiScale;
+        const fontSize = Math.floor(5 * uiScale);
+        const titleFontSize = Math.floor(6 * uiScale);
+        ctx.font = `${fontSize}px Astro4x`;
+
+        // Calculate dimensions
+        const name = upg.name.toUpperCase();
+        const rarity = upg.rarity.toUpperCase();
+        const desc = upg.description;
+
+        const maxWidth = 120 * uiScale;
+        const descLines = [];
+        const words = desc.split(' ');
+        let curLine = '';
+        for (const w of words) {
+            const test = curLine ? curLine + ' ' + w : w;
+            if (ctx.measureText(test).width > maxWidth) {
+                descLines.push(curLine);
+                curLine = w;
+            } else {
+                curLine = test;
+            }
+        }
+        if (curLine) descLines.push(curLine);
+
+        const headerW = Math.max(ctx.measureText(name).width * 1.2, ctx.measureText(rarity).width);
+        const tw = Math.max(headerW, descLines.reduce((max, l) => Math.max(max, ctx.measureText(l).width), 0)) + pad * 2;
+        const th = (descLines.length + 3) * fontSize * 1.5 + pad * 2;
+
+        let tx = mouse.x + 10;
+        let ty = mouse.y + 10;
+        if (tx + tw > this.game.width) tx = mouse.x - tw - 10;
+        if (ty + th > this.game.height) ty = mouse.y - th - 10;
+
+        // Frame
+        ctx.fillStyle = 'rgba(5, 10, 20, 0.95)';
+        ctx.strokeStyle = '#334455';
+        ctx.lineWidth = 1;
+        ctx.fillRect(tx, ty, tw, th);
+        ctx.strokeRect(tx, ty, tw, th);
+
+        let cy = ty + pad;
+
+        // Name
+        ctx.font = `${titleFontSize}px Astro5x`;
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(name, tx + pad, cy);
+        cy += titleFontSize * 1.5;
+
+        // Rarity
+        ctx.font = `${fontSize}px Astro4x`;
+        ctx.fillStyle = RARITY_COLORS[upg.rarity] || '#ffffff';
+        ctx.fillText(rarity, tx + pad, cy);
+        cy += fontSize * 2;
+
+        // Divider
+        ctx.strokeStyle = '#223344';
+        ctx.beginPath();
+        ctx.moveTo(tx + pad, cy - fontSize * 0.5);
+        ctx.lineTo(tx + tw - pad, cy - fontSize * 0.5);
+        ctx.stroke();
+
+        // Description
+        ctx.fillStyle = '#ccddee';
+        for (const line of descLines) {
+            ctx.fillText(line, tx + pad, cy);
+            cy += fontSize * 1.4;
+        }
+
+        if (upg.cost) {
+            cy += fontSize * 0.5;
+            ctx.fillStyle = '#ffff44';
+            ctx.fillText(`BASE VALUE: ${upg.cost} SCRAP`, tx + pad, cy);
+        }
     }
 }
