@@ -26,6 +26,7 @@ export class Starcore extends Boss {
 
         this.gunBurstQueue = 0;
         this.gunBurstTimer = 0;
+        this.musicKey = 'Starcore Showdown';
 
         this._lastPhase = this.phase;
     }

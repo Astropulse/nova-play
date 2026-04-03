@@ -1467,7 +1467,8 @@ export class PlayingState {
         const boss = waveEnemies.find(e => e.isBoss);
         if (boss) {
             this.triggerFlash('#ffffff', 1.2, 0.5); // Dramatic white flash for boss arrival
-            this.game.sounds.playSpecificMusic('Starcore Showdown');
+            const mKey = boss.musicKey || 'Starcore Showdown';
+            this.game.sounds.playSpecificMusic(mKey);
             this.game.camera.shake(1.5);
         } else {
             this.triggerFlash('#ff0000', 0.8, 0.35); // Standard red wave flash
@@ -2598,12 +2599,10 @@ export class PlayingState {
 
     _openEncounterDialog(encounter) {
         encounter.startInteraction();
-        // Regenerate dialog fresh in case player state changed since spawn
-        const dialog = generateEncounterDialog(encounter.encounterType, this.player, this);
-        encounter.dialogData = dialog;
 
+        // Use the dialog that was generated when the encounter spawned
         this.activeEncounterDialog = new EncounterDialog(
-            this.game, encounter, dialog, this.player, this
+            this.game, encounter, encounter.dialogData, this.player, this
         );
         this.isEncounterOpen = true;
         this.paused = true;

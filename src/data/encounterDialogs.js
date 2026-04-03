@@ -71,8 +71,8 @@ export const DIALOG_SCENARIOS = [
         condition: 'player_has_rare_item',
         vars: {
             targetItem: { type: 'random_rare_item' },
-            offer: { type: 'item_cost_mult', item: 'targetItem', mult: 3 },
-            negotiate: { type: 'item_cost_mult', item: 'targetItem', mult: 4 }
+            offer: { type: 'item_cost_mult', item: 'targetItem', mult: 2 },
+            negotiate: { type: 'item_cost_mult', item: 'targetItem', mult: 3 }
         },
         message: "My scanners picked up a [upgrade]{targetItem}[/upgrade] in your cargo. I'll pay [scrap]{offer} scrap[/scrap] for it.",
         options: [
@@ -89,7 +89,7 @@ export const DIALOG_SCENARIOS = [
                 response: "You drive a hard bargain."
             },
             { label: "Decline", response: "No worries. Safe travels." },
-            { label: "[warn]Board their ship[/warn]", actions: ['convert_hostile'], response: "You'll regret this!" }
+            { label: "[warn]Attack them[/warn]", actions: ['convert_hostile'], response: "You'll regret this!" }
         ]
     },
 
@@ -139,6 +139,22 @@ export const DIALOG_SCENARIOS = [
         ]
     },
 
+    {
+        type: 'cargo_trader',
+        id: 'cargo_expansion',
+        condition: 'always',
+        vars: { cost: 100 },
+        message: "Your cargo hold looks a bit cramped. We can rip out some bulkheads and permanently [good]expand your inventory capacity[/good] by 1 column for [cost]{cost} scrap[/cost].",
+        options: [
+            {
+                label: "Expand cargo ([cost]-{cost} scrap[/cost])",
+                actions: ['remove_scrap:cost', 'add_perm_capacity:1', 'recalc'],
+                response: "All done. Enjoy the extra space."
+            },
+            { label: "I have enough space", response: "Suit yourself. Running out of room hurts a pilot." }
+        ]
+    },
+
     // ──────────────────────────────────────────────────────────────
     //  ENGINEER
     // ──────────────────────────────────────────────────────────────
@@ -170,12 +186,12 @@ export const DIALOG_SCENARIOS = [
         type: 'engineer',
         id: 'shield_calibrate',
         condition: 'always',
-        vars: { cost: 70 },
-        message: "I can recalibrate your shields — [good]+10 max shield energy[/good]. [cost]{cost} scrap[/cost].",
+        vars: { cost: 55 },
+        message: "I can recalibrate your shields — [good]+20 max shield energy[/good]. [cost]{cost} scrap[/cost].",
         options: [
             {
                 label: "Accept ([cost]-{cost} scrap[/cost])",
-                actions: ['remove_scrap:cost', 'add_perm_shield:10', 'recalc'],
+                actions: ['remove_scrap:cost', 'add_perm_shield:20', 'recalc'],
                 response: "Shields recalibrated."
             },
             { label: "Decline", response: "Your call." }
@@ -191,7 +207,7 @@ export const DIALOG_SCENARIOS = [
         options: [
             {
                 label: "Accept ([cost]-{cost} scrap[/cost])",
-                actions: ['remove_scrap:cost', 'add_perm_damage:0.5'],
+                actions: ['remove_scrap:cost', 'add_perm_damage:2'],
                 response: "Weapons overhauled. Hitting harder now."
             },
             { label: "Decline", response: "Come back anytime." }
@@ -206,7 +222,7 @@ export const DIALOG_SCENARIOS = [
         type: 'civilian',
         id: 'grateful_survivor',
         condition: 'always',
-        vars: { gift: { type: 'random_int', min: 15, max: 40 } },
+        vars: { gift: { type: 'random_int', min: 5, max: 40 } },
         message: "A friendly face! Take some spare scrap — [scrap]{gift} scrap[/scrap]. You need it more than us.",
         options: [
             {
@@ -290,20 +306,17 @@ export const DIALOG_SCENARIOS = [
 
     {
         type: 'colony',
-        id: 'bulk_trade',
+        id: 'medical_facilities',
         condition: 'always',
-        vars: {
-            cost: 30,
-            reward: { type: 'random_int', min: 80, max: 120 }
-        },
-        message: "We produce surplus materials. Trade [scrap]{reward} scrap[/scrap] worth of raw materials for [cost]{cost} scrap[/cost] in fuel.",
+        vars: { cost: 35 },
+        message: "We maintain extensive medical and repair bays aboard the colony vessel. We can completely restore your ship's hull for [cost]{cost} scrap[/cost].",
         options: [
             {
-                label: "Trade ([cost]-{cost}[/cost], [scrap]+{reward}[/scrap])",
-                actions: ['remove_scrap:cost', 'add_scrap:reward'],
-                response: "Fair trade."
+                label: "Commence Repairs ([cost]-{cost} scrap[/cost])",
+                actions: ['remove_scrap:cost', 'heal:1.0'],
+                response: "Hull integrity fully restored. Take care out there."
             },
-            { label: "Decline", response: "Maybe next time." }
+            { label: "No thanks", response: "Very well. Have a safe journey." }
         ]
     },
 
@@ -325,21 +338,6 @@ export const DIALOG_SCENARIOS = [
             },
             { label: "No thanks", response: "Your loss." },
             { label: "[warn]Take the data[/warn]", actions: ['convert_hostile'], response: "Bad move, pilot!" }
-        ]
-    },
-
-    {
-        type: 'explorer',
-        id: 'danger_report',
-        condition: 'always',
-        vars: { gift: { type: 'random_int', min: 10, max: 20 } },
-        message: "Strange readings in this sector. Be careful. Here, [scrap]{gift} scrap[/scrap] from my last expedition.",
-        options: [
-            {
-                label: "Thanks ([scrap]+{gift} scrap[/scrap])",
-                actions: ['add_scrap:gift'],
-                response: "Stay sharp."
-            }
         ]
     },
 
@@ -370,7 +368,7 @@ export const DIALOG_SCENARIOS = [
         condition: 'always',
         vars: {
             upgrade: { type: 'random_upgrade', rarities: ['common'] },
-            cost: { type: 'item_cost_mult', item: 'upgrade', mult: 0.5 }
+            cost: { type: 'item_cost_mult', item: 'upgrade', mult: 0.6 }
         },
         message: "Got a [upgrade]{upgrade}[/upgrade]. Bit scratched up but works. Only [cost]{cost} scrap[/cost].",
         options: [
@@ -473,6 +471,22 @@ export const DIALOG_SCENARIOS = [
                 label: "No thanks",
                 response: "Probably for the best."
             }
+        ]
+    },
+
+    {
+        type: 'law_enforcement',
+        id: 'training_exercise',
+        condition: 'always',
+        vars: { reward: 80 },
+        message: "Patrol unit. We're running combat drills to keep our edge. Care for a [good]training duel[/good]? We'll grant a bounty of [scrap]{reward} scrap[/scrap] to any pilot who can best us in a fair fight.",
+        options: [
+            {
+                label: "Accept challenge",
+                actions: ['convert_hostile', 'add_scrap:reward'],
+                response: "Shields up, pilot! Let's see what you've got."
+            },
+            { label: "Decline challenge", response: "We'll keep our drills internal. Stay safe out there." }
         ]
     },
 

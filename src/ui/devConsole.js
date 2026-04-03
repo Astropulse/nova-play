@@ -223,7 +223,7 @@ export class DevConsole {
                     );
                     state.enemies.push(boss);
                     state.triggerFlash('#ffffff', 1.2, 0.5);
-                    this.game.sounds.playSpecificMusic('Starcore Showdown');
+                    this.game.sounds.playSpecificMusic(boss.musicKey || 'Starcore Showdown');
                 });
             } else if (bossId === 'asteroid_crusher' || bossId === 'crusher') {
                 import('../entities/asteroidCrusher.js').then(({ AsteroidCrusher }) => {
@@ -237,7 +237,7 @@ export class DevConsole {
                     );
                     state.enemies.push(boss);
                     state.triggerFlash('#ffffff', 1.2, 0.5);
-                    this.game.sounds.playSpecificMusic('Asteroid Crusher');
+                    this.game.sounds.playSpecificMusic(boss.musicKey || 'Asteroid Crusher');
                 });
             }
         }

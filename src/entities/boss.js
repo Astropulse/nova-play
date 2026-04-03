@@ -39,6 +39,7 @@ export class Boss {
         this.phaseTimer = 2.0; // Intro duration
         this.state = BOSS_STATE.IDLE;
         this.stateTimer = 0;
+        this.musicKey = null;
 
         this.health = 150 * difficultyScale;
         this.maxHealth = this.health;
@@ -147,7 +148,7 @@ export class Boss {
             // Ensure only one death trigger
             if (this.game.currentState && this.game.currentState._onEntityDestroyed) {
                 this.game.currentState._onEntityDestroyed(this);
-                
+
                 // Drop a wreck marker for the radar
                 if (this.game.currentState.bossWrecks) {
                     this.game.currentState.bossWrecks.push(new BossWreck(this.worldX, this.worldY));

@@ -635,7 +635,7 @@ export class Enemy {
                 ctx.rotate(this.angle);
                 const tileW = targetImg.width * this.game.worldScale;
                 const tileH = targetImg.height * this.game.worldScale;
-                for (let i = 0; i < 30; i++) {
+                for (let i = 0; i < 180; i++) {
                     ctx.drawImage(targetImg, i * tileW, -tileH / 2, tileW, tileH);
                 }
                 ctx.restore();
@@ -653,7 +653,7 @@ export class Enemy {
                     ctx.rotate(beam.angle);
                     const tileW = beamImg.width * this.game.worldScale;
                     const tileH = beamImg.height * this.game.worldScale;
-                    for (let i = 0; i < 40; i++) {
+                    for (let i = 0; i < 240; i++) {
                         ctx.drawImage(beamImg, i * tileW, -tileH / 2, tileW, tileH);
                     }
                     ctx.restore();
@@ -702,7 +702,7 @@ export class EnemySpawner {
         const bosses = [Starcore, AsteroidCrusher];
         const BossClass = bosses[Math.floor(Math.random() * bosses.length)];
         this.lastBossType = BossClass.name;
-        
+
         const angle = Math.random() * Math.PI * 2;
         const dist = 1600;
         return [new BossClass(this.game, playerX + Math.cos(angle) * dist, playerY + Math.sin(angle) * dist, difficultyScale)];
@@ -1022,9 +1022,9 @@ export class HostileEncounter extends Enemy {
         // Cycle through all upgraded weapons
         this.weaponCycle = this.weaponCycle || 0;
         this.upgradeType = this.selectedUpgrades[this.weaponCycle % this.selectedUpgrades.length];
-        
+
         super.shoot();
-        
+
         // Advance cycle for the next shot
         this.weaponCycle++;
     }
@@ -1036,7 +1036,7 @@ export class HostileEncounter extends Enemy {
         }
         super.update(dt, player, asteroids, projectiles, enemies);
     }
-    
+
     _updateDying(dt) {
         if (!this.alive) return;
         this.deathTimer -= dt;
@@ -1066,7 +1066,7 @@ export class HostileEncounter extends Enemy {
             this.alive = false;
             // Play one final big boom
             this.game.sounds.play('ship_explode', { volume: 1.0, x: this.worldX, y: this.worldY });
-            
+
             this._grantAbstractRewards();
 
             if (this.game.currentState && this.game.currentState._onEntityDestroyed) {
@@ -1080,14 +1080,14 @@ export class HostileEncounter extends Enemy {
         const state = this.game.currentState;
         if (!state || !state.player) return;
 
-        const abstractActions = ['reveal_shop', 'reveal_event', 'reveal_event_2', 'heal', 'add_perm_health'];
-        
+        const abstractActions = ['reveal_shop', 'reveal_event', 'reveal_event_2', 'heal', 'add_perm_health', 'add_scrap'];
+
         for (const opt of this.rawScenario.options) {
             if (opt.actions) {
                 for (const act of opt.actions) {
                     const colonIdx = act.indexOf(':');
                     const type = colonIdx >= 0 ? act.slice(0, colonIdx) : act;
-                    
+
                     if (abstractActions.includes(type)) {
                         switch (type) {
                             case 'reveal_shop':
@@ -1108,6 +1108,10 @@ export class HostileEncounter extends Enemy {
                             case 'add_perm_health':
                                 state.player.permHealthBonus++;
                                 break;
+                            case 'add_scrap':
+                                const scrapAmount = parseInt(act.split(':')[1]) || 0;
+                                state.player.scrap += scrapAmount;
+                                break;
                         }
                     }
                 }
@@ -1117,9 +1121,9 @@ export class HostileEncounter extends Enemy {
 
     _triggerDeathSequence() {
         this.isDying = true;
-        this.vx *= 0.1; 
+        this.vx *= 0.1;
         this.vy *= 0.1;
-        
+
         const img = this.game.assets.get(this.spriteKey);
         if (!img) {
             this.alive = false;
@@ -1154,7 +1158,7 @@ export class HostileEncounter extends Enemy {
             const fireFrames = this.game.assets.get('fire_explosion');
             if (!fireFrames) return;
             const screen = camera.worldToScreen(this.worldX, this.worldY, this.game.width, this.game.height);
-            
+
             ctx.save();
             ctx.translate(Math.floor(screen.x), Math.floor(screen.y));
             ctx.rotate(this.angle + Math.PI / 2);
@@ -1179,7 +1183,7 @@ export class HostileEncounter extends Enemy {
     getSpawnOnDeath() {
         const spawns = [];
         const img = this.game.assets.get(this.spriteKey);
-        
+
         if (img && VoronoiSlicer) {
             const fragments = VoronoiSlicer.slice(img, 20 + Math.floor(Math.random() * 15));
             for (const frag of fragments) {
@@ -1191,7 +1195,7 @@ export class HostileEncounter extends Enemy {
 
                 const outAngle = Math.atan2(frag.offsetY, frag.offsetX) + rotAngle;
                 const spread = 20 + Math.random() * 80;
-                
+
                 spawns.push(new ProceduralDebris(
                     this.game, wx, wy, frag.canvas,
                     Math.cos(outAngle) * spread, Math.sin(outAngle) * spread,
@@ -1201,10 +1205,10 @@ export class HostileEncounter extends Enemy {
         }
 
         const scrapCount = 8 + Math.floor(Math.random() * 5);
-        for(let i = 0; i < scrapCount; i++) {
+        for (let i = 0; i < scrapCount; i++) {
             const outAngle = Math.random() * Math.PI * 2;
             const dist = Math.random() * 60;
-            spawns.push(new Scrap(this.game, this.worldX + Math.cos(outAngle)*dist, this.worldY + Math.sin(outAngle)*dist, Math.random() > 0.4 ? 'big' : 'small'));
+            spawns.push(new Scrap(this.game, this.worldX + Math.cos(outAngle) * dist, this.worldY + Math.sin(outAngle) * dist, Math.random() > 0.4 ? 'big' : 'small'));
         }
 
         for (const [key, val] of Object.entries(this.encounterVars)) {

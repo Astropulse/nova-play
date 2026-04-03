@@ -438,6 +438,7 @@ export class EncounterDialog {
             }
             if (li < lines.length - 1) {
                 // Account for the space that was removed by word wrapping
+                charIdx++;
             }
         }
     }

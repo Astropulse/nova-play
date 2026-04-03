@@ -40,6 +40,7 @@ export class AsteroidCrusher extends Boss {
         this.shieldAsteroids = [];
         this.shieldRotation = 0;
         this.shieldLaunchTimer = 3.0;
+        this.musicKey = 'Asteroid Crusher';
 
         this._lastPhase = this.phase;
     }

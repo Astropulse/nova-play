@@ -163,6 +163,12 @@ function executeActions(actions, vars, player, state, encounter) {
             return isNaN(num) ? paramStr : num;
         };
 
+        // If this option converts the ship to a hostile enemy, skip rewards here.
+        // They will be granted by HostileEncounter._grantAbstractRewards() on death.
+        const isConverting = actions.includes('convert_hostile');
+        const abstractActions = ['add_scrap', 'add_perm_health', 'heal']; // Match HostileEncounter._grantAbstractRewards
+        if (isConverting && abstractActions.includes(type)) continue;
+
         switch (type) {
             case 'remove_item': {
                 const entry = vars[paramStr];
@@ -202,6 +208,11 @@ function executeActions(actions, vars, player, state, encounter) {
             case 'add_perm_damage': {
                 const amt = resolveParam();
                 player.permDamageBonus += amt;
+                break;
+            }
+            case 'add_perm_capacity': {
+                const amt = resolveParam();
+                player.inventory.resize(player.inventory.cols + amt, player.inventory.rows);
                 break;
             }
             case 'encounter_speed': {
@@ -269,11 +280,13 @@ function executeActions(actions, vars, player, state, encounter) {
             case 'spawn_boss': {
                 if (state.enemySpawner) {
                     const bossArr = state.enemySpawner.forceBoss(player.worldX, player.worldY, state.difficultyScale);
+                    const boss = bossArr.find(e => e.isBoss);
                     state.enemies.push(...bossArr);
                     // Dramatic reveal
                     state.triggerFlash('#ffffff', 1.2, 0.5);
                     if (state.game.sounds.playSpecificMusic) {
-                        state.game.sounds.playSpecificMusic('Starcore Showdown');
+                        const mKey = (boss && boss.musicKey) ? boss.musicKey : 'Starcore Showdown';
+                        state.game.sounds.playSpecificMusic(mKey);
                     }
                     if (state.game.camera) {
                         state.game.camera.shake(1.5);
