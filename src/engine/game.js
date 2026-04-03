@@ -145,6 +145,12 @@ export class Game {
                 'Assets/Sounds/Effects/railgun_shoot_2.wav',
                 'Assets/Sounds/Effects/railgun_shoot_3.wav',
                 'Assets/Sounds/Effects/railgun_shoot_4.wav',
+            ]),
+            this.sounds.register('type', [
+                'Assets/Sounds/Effects/type_1.wav',
+                'Assets/Sounds/Effects/type_2.wav',
+                'Assets/Sounds/Effects/type_3.wav',
+                'Assets/Sounds/Effects/type_4.wav',
             ])
         ]);
 
@@ -559,6 +565,30 @@ export class Game {
             'fractured_station_0': 'Assets/Events/fractured_station_0.png',
             'fractured_station_1': 'Assets/Events/fractured_station_1.png',
             'fractured_station_2': 'Assets/Events/fractured_station_2.png',
+            // Encounter Ships
+            'encounter_cargo_trader_1': 'Assets/Ships/Encounter/cargo_trader_1.png',
+            'encounter_cargo_trader_2': 'Assets/Ships/Encounter/cargo_trader_2.png',
+            'encounter_civilian_1': 'Assets/Ships/Encounter/civilian_1.png',
+            'encounter_civilian_2': 'Assets/Ships/Encounter/civilian_2.png',
+            'encounter_civilian_3': 'Assets/Ships/Encounter/civilian_3.png',
+            'encounter_colony_1': 'Assets/Ships/Encounter/colony_1.png',
+            'encounter_colony_2': 'Assets/Ships/Encounter/colony_2.png',
+            'encounter_colony_3': 'Assets/Ships/Encounter/colony_3.png',
+            'encounter_engineer_1': 'Assets/Ships/Encounter/engineer_1.png',
+            'encounter_engineer_2': 'Assets/Ships/Encounter/engineer_2.png',
+            'encounter_engineer_3': 'Assets/Ships/Encounter/engineer_3.png',
+            'encounter_engineer_4': 'Assets/Ships/Encounter/engineer_4.png',
+            'encounter_explorer_1': 'Assets/Ships/Encounter/explorer_1.png',
+            'encounter_explorer_2': 'Assets/Ships/Encounter/explorer_2.png',
+            'encounter_junker_1': 'Assets/Ships/Encounter/junker_1.png',
+            'encounter_junker_2': 'Assets/Ships/Encounter/junker_2.png',
+            'encounter_law_enforcement_1': 'Assets/Ships/Encounter/law_enforcement_1.png',
+            'encounter_law_enforcement_2': 'Assets/Ships/Encounter/law_enforcement_2.png',
+            'encounter_black_market_1': 'Assets/Ships/Encounter/black_market_1.png',
+            'encounter_black_market_2': 'Assets/Ships/Encounter/black_market_2.png',
+            'encounter_black_market_3': 'Assets/Ships/Encounter/black_market_3.png',
+            'encounter_tuner_1': 'Assets/Ships/Encounter/tuner_1.png',
+            'encounter_tuner_2': 'Assets/Ships/Encounter/tuner_2.png',
             // Space backgrounds
             'starfield_0': 'Assets/Space/starfield_0.png',
             'starfield_1': 'Assets/Space/starfield_1.png',

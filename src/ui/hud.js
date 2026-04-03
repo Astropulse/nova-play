@@ -210,6 +210,7 @@ export class HUD {
                 drawDot(state.shops, '#44aaff', 1);
                 drawDot(state.events, '#ffcc00', 1);
                 drawDot(state.enemies, '#ff4444', 1);
+                drawDot(state.encounters, '#44ffaa', 1);
             }
 
             this.radarCtx.restore();

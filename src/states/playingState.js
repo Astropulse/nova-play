@@ -4,7 +4,7 @@ import { Camera } from '../world/camera.js';
 import { Player } from '../entities/player.js';
 import { HUD } from '../ui/hud.js';
 import { Asteroid, AsteroidSpawner, Rubble, Scrap, ItemPickup, ProceduralDebris } from '../entities/asteroid.js';
-import { EnemySpawner } from '../entities/enemy.js';
+import { EnemySpawner, Enemy, HostileEncounter } from '../entities/enemy.js';
 import { Shop } from '../entities/shop.js';
 import { Inventory } from '../engine/inventory.js';
 import { UPGRADES } from '../data/upgrades.js';
@@ -18,6 +18,9 @@ import { AsteroidCrusher } from '../entities/asteroidCrusher.js';
 import { MenuState } from './menuState.js';
 import { MUSIC_STATE } from '../engine/soundManager.js';
 import { BOSS_STATE } from '../entities/boss.js';
+import { EncounterShip, ENC_STATE } from '../entities/encounter.js';
+import { rollEncounterType, generateEncounterDialog } from '../data/encounters.js';
+import { EncounterDialog } from '../ui/encounterDialog.js';
 
 export class PlayingState {
     constructor(game, shipData) {
@@ -41,6 +44,16 @@ export class PlayingState {
         this.activeBeams = []; // specific fx
         this.explosions = []; // area fx
         this.events = [];
+        // Encounter system
+        this.encounters = [];
+        this.encounterSpawnTimer = 60 + Math.random() * 10; // First encounter around ~1 minute
+        this.isEncounterOpen = false;
+        this.activeEncounterDialog = null;
+        this.canInteractEncounter = false;
+        this.playerDistanceTraveled = 0;
+        this._lastPlayerX = 0;
+        this._lastPlayerY = 0;
+        this.encounterBonuses = { speedMult: 1.0, fireRateMult: 1.0, turnMult: 1.0 };
 
         this.particles = [];
 
@@ -248,7 +261,7 @@ export class PlayingState {
 
     update(dt) {
         // Increment true total time only if not paused, not in shop, and not dead
-        if (!this.paused && !this.isShopOpen && !this.isDead) {
+        if (!this.paused && !this.isShopOpen && !this.isEncounterOpen && !this.isDead) {
             this.trueTotalTime += dt;
         }
 
@@ -276,6 +289,26 @@ export class PlayingState {
             return;
         }
 
+        // --- Encounter Dialog ---
+        if (this.isEncounterOpen && this.activeEncounterDialog) {
+            this.activeEncounterDialog.update(dt);
+            if (this.activeEncounterDialog.closed) {
+                const enc = this.activeEncounterDialog.encounter;
+                this.isEncounterOpen = false;
+                this.paused = false;
+                if (enc.shouldConvertHostile) {
+                    this._convertEncounterToEnemy(enc);
+                } else if (!enc.shouldStay) {
+                    enc.depart();
+                }
+                
+                // Clear the stay flag for next time it's approached
+                enc.shouldStay = false;
+                this.activeEncounterDialog = null;
+            }
+            return;
+        }
+
         if (this.isShopOpen) {
             this._updateShopUI(dt);
             return;
@@ -288,6 +321,15 @@ export class PlayingState {
             return Math.sqrt(dx * dx + dy * dy) < s.interactRange;
         });
         this.canInteractShop = !!nearShop;
+
+        // Encounter interaction check
+        const nearEncounter = this.encounters.find(enc => {
+            if (enc.state === ENC_STATE.DEPARTING || enc.state === ENC_STATE.HOSTILE) return false;
+            const dx = enc.worldX - this.player.worldX;
+            const dy = enc.worldY - this.player.worldY;
+            return Math.sqrt(dx * dx + dy * dy) < enc.interactRange;
+        });
+        this.canInteractEncounter = !!nearEncounter;
 
         if (this.game.input.isKeyJustPressed('Escape')) {
             if (this.paused) {
@@ -303,8 +345,11 @@ export class PlayingState {
         }
 
         if (this.game.input.isKeyJustPressed('KeyE')) {
-            if (nearShop) {
-                // Prioritize shop interaction
+            if (nearEncounter) {
+                // Prioritize encounter interaction
+                this._openEncounterDialog(nearEncounter);
+            } else if (nearShop) {
+                // Shop interaction
                 this.activeShop = nearShop;
                 this.isShopOpen = true;
                 this.paused = true;
@@ -941,6 +986,46 @@ export class PlayingState {
         this.scrapEntities = this.scrapEntities.filter(s => s.alive);
         this.itemPickups = this.itemPickups.filter(it => it.alive);
         this.events = this.events.filter(ev => ev.alive);
+        this.encounters = this.encounters.filter(enc => enc.alive);
+
+        // --- Encounter Spawning ---
+        // Track player distance traveled
+        const travelDx = this.player.worldX - this._lastPlayerX;
+        const travelDy = this.player.worldY - this._lastPlayerY;
+        this.playerDistanceTraveled += Math.sqrt(travelDx * travelDx + travelDy * travelDy);
+        this._lastPlayerX = this.player.worldX;
+        this._lastPlayerY = this.player.worldY;
+
+        // Update existing encounters
+        for (const enc of this.encounters) {
+            enc.update(dt, this.player);
+        }
+
+        // Spawn timer — scales with exploration, must have NO combatants visibly attacking
+        const bossAlive = this.enemies.some(e => e.isBoss && e.alive);
+        const enemiesOnScreen = this.enemies.some(e => {
+            if (!e.alive) return false;
+            const screen = this.camera.worldToScreen(e.worldX, e.worldY, this.game.width, this.game.height);
+            const margin = 100 * this.game.worldScale;
+            return (screen.x >= -margin && screen.x <= this.game.width + margin && screen.y >= -margin && screen.y <= this.game.height + margin);
+        });
+
+        if (!bossAlive && !isEventActive && !enemiesOnScreen && this.encounters.length === 0) {
+            this.encounterSpawnTimer -= dt;
+            if (this.encounterSpawnTimer <= 0) {
+                this._spawnEncounter();
+                // Frequency scales with exploration: more travel/events/shops = shorter wait
+                const explorationFactor = Math.min(4.0,
+                    1.0 + (this.playerDistanceTraveled / 15000) * 0.3
+                    + (this.stats.eventsDiscovered * 0.2)
+                    + (this.stats.shopsUnlocked * 0.15)
+                );
+                const baseWait = 140; // ~2.3 minutes base
+                const minWait = 45;   // 45 seconds minimum
+                const wait = Math.max(minWait, baseWait / explorationFactor + (Math.random() - 0.5) * 40);
+                this.encounterSpawnTimer = wait;
+            }
+        }
     }
 
     _onEntityDestroyed(entity) {
@@ -1054,7 +1139,9 @@ export class PlayingState {
             itemPickups: this.itemPickups.map(i => i.serialize()),
             scrapEntities: this.scrapEntities.map(s => s.serialize()),
             asteroids: this.asteroids.map(a => a.serialize()),
-            shops: this.shops.map(s => s.serialize())
+            shops: this.shops.map(s => s.serialize()),
+            encounterBonuses: { ...this.encounterBonuses },
+            playerDistanceTraveled: this.playerDistanceTraveled
         };
     }
 
@@ -1170,6 +1257,11 @@ export class PlayingState {
         this.projectiles = [];
         this.enemies = [];
         this.rubble = [];
+        this.encounters = [];
+
+        // Restore encounter bonuses
+        if (data.encounterBonuses) this.encounterBonuses = { ...data.encounterBonuses };
+        if (data.playerDistanceTraveled) this.playerDistanceTraveled = data.playerDistanceTraveled;
 
         // Reset camera
         this.camera.follow(this.player);
@@ -1218,6 +1310,10 @@ export class PlayingState {
             e.draw(ctx, this.camera);
         }
 
+        for (const enc of this.encounters) {
+            enc.draw(ctx, this.camera);
+        }
+
         for (const p of this.projectiles) {
             p.draw(ctx, this.camera);
         }
@@ -1250,7 +1346,7 @@ export class PlayingState {
 
         this.player.draw(ctx, this.camera);
 
-        if (this.canInteractShop && !this.isShopOpen) {
+        if ((this.canInteractShop || this.canInteractEncounter) && !this.isShopOpen && !this.isEncounterOpen) {
             this._drawInteractPrompt(ctx);
         }
 
@@ -1280,7 +1376,12 @@ export class PlayingState {
         this._drawEventIndicators(ctx);
         this._drawBossWreckIndicators(ctx);
 
-        if (this.isShopOpen) {
+        // --- Encounter Indicators ---
+        this._drawEncounterIndicators(ctx);
+
+        if (this.isEncounterOpen && this.activeEncounterDialog) {
+            this.activeEncounterDialog.draw(ctx);
+        } else if (this.isShopOpen) {
             this._drawShopOverlay(ctx);
         } else if (this.paused) {
             this._drawPauseOverlay(ctx);
@@ -2382,6 +2483,9 @@ export class PlayingState {
         }
 
         // Apply calculated multipliers to player
+        // Apply encounter bonuses before assigning to player
+        fireRateMult *= this.encounterBonuses.fireRateMult;
+
         p.boostCooldownMult = boostCooldownMult;
         p.boostRangeMult = boostRangeMult;
         p.shieldDrainMult = shieldDrainMult;
@@ -2394,7 +2498,7 @@ export class PlayingState {
         p.updateMaxShield(0); // This uses obedienceMult internally now
 
         // Update base speed and acceleration
-        p.baseSpeed = p.shipData.speed * 100 * p.obedienceMult * p.momentumSpeedMult;
+        p.baseSpeed = p.shipData.speed * 100 * p.obedienceMult * p.momentumSpeedMult * this.encounterBonuses.speedMult;
         p.acceleration = p.baseSpeed * 3;
 
         if (healAcquisition) {
@@ -2457,6 +2561,139 @@ export class PlayingState {
             return true;
         }
         return false;
+    }
+
+    spawnDistantShop() {
+        const angle = Math.random() * Math.PI * 2;
+        const dist = 6000 + Math.random() * 4000;
+        const wx = this.player.worldX + Math.cos(angle) * dist;
+        const wy = this.player.worldY + Math.sin(angle) * dist;
+
+        const shop = new Shop(this.game, wx, wy);
+        shop.revealed = true;
+        this.shops.push(shop);
+        this.revealedShops.push(shop);
+        
+        if (this.revealedShops.length > 3) {
+            const oldShop = this.revealedShops.shift();
+            // oldShop.revealed = false; // We can leave it revealed but just stop tracking it as one of the 3 latest if needed, but it seems HUD handles all shops with shop.revealed. We'll stick to however the original dev setup it.
+        }
+        
+        this.stats.shopsUnlocked++;
+        return true;
+    }
+
+    _spawnEncounter(specificType) {
+        const type = specificType || rollEncounterType();
+        const angle = Math.random() * Math.PI * 2;
+        const dist = 2000 + Math.random() * 500;
+        const wx = this.player.worldX + Math.cos(angle) * dist;
+        const wy = this.player.worldY + Math.sin(angle) * dist;
+
+        const encounter = new EncounterShip(this.game, wx, wy, type);
+        const dialog = generateEncounterDialog(type, this.player, this);
+        encounter.dialogData = dialog;
+        this.encounters.push(encounter);
+    }
+
+    _openEncounterDialog(encounter) {
+        encounter.startInteraction();
+        // Regenerate dialog fresh in case player state changed since spawn
+        const dialog = generateEncounterDialog(encounter.encounterType, this.player, this);
+        encounter.dialogData = dialog;
+
+        this.activeEncounterDialog = new EncounterDialog(
+            this.game, encounter, dialog, this.player, this
+        );
+        this.isEncounterOpen = true;
+        this.paused = true;
+        this.game.sounds.play('click', 0.5);
+    }
+
+    _convertEncounterToEnemy(encounter) {
+        const en = new HostileEncounter(this.game, encounter.worldX, encounter.worldY, this.difficultyScale, encounter.dialogData);
+
+        // Override sprite and compute correct radii for the encounter ship
+        en.initEncounterData(encounter.img, encounter.assetKey);
+
+        // Super-charged stats - 6x health, much faster, shoots much faster
+        en.health = Math.ceil(en.health * 6);
+        en.maxHealth = en.health;
+        en.speedMult = 1.5;
+        en.fireRateMult = 1.8;
+        en.isUpgraded = true;
+
+        // They get ALL weapon types natively, which they will cycle through
+        en.selectedUpgrades = ['bigBall', 'beam', 'multishot'];
+        en.weaponCycle = 0;
+
+        this.enemies.push(en);
+        encounter.alive = false;
+    }
+
+    _drawEncounterIndicators(ctx) {
+        const cw = this.game.width;
+        const ch = this.game.height;
+        const margin = 20 * this.game.uiScale;
+
+        for (const enc of this.encounters) {
+            if (!enc.alive || enc.state === ENC_STATE.HOSTILE) continue;
+
+            const screen = this.camera.worldToScreen(enc.worldX, enc.worldY, cw, ch);
+
+            // If on screen, skip edge indicator
+            if (screen.x >= 0 && screen.x <= cw && screen.y >= 0 && screen.y <= ch) continue;
+
+            const dx = enc.worldX - this.player.worldX;
+            const dy = enc.worldY - this.player.worldY;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist > Math.max(cw, ch) * 3) continue;
+
+            const angle = Math.atan2(dy, dx);
+            const cx = cw / 2;
+            const cy = ch / 2;
+            let ix = cx + Math.cos(angle) * (cw / 2 - margin);
+            let iy = cy + Math.sin(angle) * (ch / 2 - margin);
+
+            // Re-calculate based on actual screen bounds for better edge sticking
+            const slope = dy / dx;
+            if (Math.abs(dx) * (ch / 2 - margin) > Math.abs(dy) * (cw / 2 - margin)) {
+                // Hits left or right
+                ix = (dx > 0) ? cw - margin : margin;
+                iy = ch / 2 + (ix - cw / 2) * slope;
+            } else {
+                // Hits top or bottom
+                iy = (dy > 0) ? ch - margin : margin;
+                ix = cw / 2 + (iy - ch / 2) / slope;
+            }
+
+            // Draw arrow
+            ctx.save();
+            ctx.translate(ix, iy);
+            ctx.rotate(angle);
+
+            ctx.fillStyle = enc.indicatorColor || '#44ffaa';
+            ctx.beginPath();
+            ctx.moveTo(10 * this.game.uiScale, 0);
+            ctx.lineTo(-5 * this.game.uiScale, -8 * this.game.uiScale);
+            ctx.lineTo(-5 * this.game.uiScale, 8 * this.game.uiScale);
+            ctx.closePath();
+            ctx.fill();
+            
+            ctx.restore();
+
+            // Draw text label
+            ctx.save();
+            ctx.font = `${6 * this.game.uiScale}px Astro4x`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle = enc.indicatorColor || '#44ffaa';
+            let ty = iy;
+            if (iy < ch / 2) ty += 15 * this.game.uiScale;
+            else ty -= 15 * this.game.uiScale;
+            ctx.fillText(enc.displayName.toUpperCase(), ix, ty);
+            ctx.restore();
+        }
     }
 
     _drawEnemyIndicators(ctx) {

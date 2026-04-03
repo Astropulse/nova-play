@@ -688,9 +688,34 @@ export class EnemySpawner {
         this.waveSpawnScale = 1.0;  // Difficulty at time wave was triggered
         this.waveNumber = 0;        // Tracks which wave we're on
         this.lastBossType = null;
+
+        this.spawnRateMult = 1.0;
+        this.spawnRateTimer = 0;
     }
 
-    update(dt, playerX, playerY, difficultyScale = 1.0) {
+    applySpawnMultiplier(mult, duration) {
+        this.spawnRateMult = mult;
+        this.spawnRateTimer = duration;
+    }
+
+    forceBoss(playerX, playerY, difficultyScale) {
+        const bosses = [Starcore, AsteroidCrusher];
+        const BossClass = bosses[Math.floor(Math.random() * bosses.length)];
+        this.lastBossType = BossClass.name;
+        
+        const angle = Math.random() * Math.PI * 2;
+        const dist = 1600;
+        return [new BossClass(this.game, playerX + Math.cos(angle) * dist, playerY + Math.sin(angle) * dist, difficultyScale)];
+    }
+
+    update(rawDt, playerX, playerY, difficultyScale = 1.0) {
+        let dt = rawDt;
+        if (this.spawnRateTimer > 0) {
+            this.spawnRateTimer -= rawDt;
+            dt = rawDt * this.spawnRateMult;
+            if (this.spawnRateTimer <= 0) this.spawnRateMult = 1.0;
+        }
+
         const spawned = [];
         const player = this.game.currentState.player;
 
@@ -948,5 +973,246 @@ export class CthulhuEnemy extends Enemy {
         const h = this.img.height * this.game.worldScale;
         ctx.drawImage(this.img, -Math.floor(w / 2), -Math.floor(h / 2), w, h);
         ctx.restore();
+    }
+}
+
+export class HostileEncounter extends Enemy {
+    constructor(game, worldX, worldY, difficultyScale, encounterDialogData) {
+        super(game, worldX, worldY, difficultyScale);
+        this.encounterVars = encounterDialogData ? (encounterDialogData.vars || {}) : {};
+        this.rawScenario = encounterDialogData ? encounterDialogData.rawScenario : null;
+        this.isDying = false;
+        this.deathTimer = 0;
+        this.deathExplosions = null;
+        this.isHostileEncounter = true;
+    }
+
+    initEncounterData(img, spriteKey) {
+        this.img = img;
+        this.spriteKey = spriteKey;
+        if (CollisionScanner && this.img) {
+            this._nativeRadius = CollisionScanner.getRadius(this.img, this.game);
+            this.radius = this._nativeRadius * 0.95;
+        }
+
+        const radiusScale = this.radius / 30.0;
+        const scaleDist = Math.max(1.0, radiusScale * 0.8);
+
+        this.attackRange = 500 * scaleDist;
+        this.breakRange = 450 * scaleDist;
+        this.reversalTriggerDist = 350 * scaleDist;
+    }
+
+    hit(damage) {
+        if (this.invulnTimer > 0 || this.isDying) return false;
+        this.health -= damage;
+        if (this.health <= 0) {
+            this._triggerDeathSequence();
+            return false;
+        }
+        return false;
+    }
+
+    shoot() {
+        if (!this.selectedUpgrades || this.selectedUpgrades.length === 0) {
+            super.shoot();
+            return;
+        }
+
+        // Cycle through all upgraded weapons
+        this.weaponCycle = this.weaponCycle || 0;
+        this.upgradeType = this.selectedUpgrades[this.weaponCycle % this.selectedUpgrades.length];
+        
+        super.shoot();
+        
+        // Advance cycle for the next shot
+        this.weaponCycle++;
+    }
+
+    update(dt, player, asteroids, projectiles, enemies) {
+        if (this.isDying) {
+            this._updateDying(dt);
+            return;
+        }
+        super.update(dt, player, asteroids, projectiles, enemies);
+    }
+    
+    _updateDying(dt) {
+        if (!this.alive) return;
+        this.deathTimer -= dt;
+
+        if (this.deathExplosions) {
+            for (const ex of this.deathExplosions) {
+                if (!ex.fired) {
+                    ex.delay -= dt;
+                    if (ex.delay <= 0) {
+                        ex.fired = true;
+                        this.game.sounds.play('ship_explode', {
+                            volume: 0.6,
+                            x: this.worldX + ex.lx * this.game.worldScale,
+                            y: this.worldY + ex.ly * this.game.worldScale
+                        });
+                        this.game.camera.shake(2.0);
+                    }
+                } else if (!ex.finished) {
+                    ex.animTimer += dt * 1000;
+                    if (ex.animTimer >= ex.totalDuration) ex.finished = true;
+                }
+            }
+        }
+
+        if (this.deathTimer <= 0) {
+            this.game.camera.shake(6.0);
+            this.alive = false;
+            // Play one final big boom
+            this.game.sounds.play('ship_explode', { volume: 1.0, x: this.worldX, y: this.worldY });
+            
+            this._grantAbstractRewards();
+
+            if (this.game.currentState && this.game.currentState._onEntityDestroyed) {
+                this.game.currentState._onEntityDestroyed(this);
+            }
+        }
+    }
+
+    _grantAbstractRewards() {
+        if (!this.rawScenario || !this.rawScenario.options) return;
+        const state = this.game.currentState;
+        if (!state || !state.player) return;
+
+        const abstractActions = ['reveal_shop', 'reveal_event', 'reveal_event_2', 'heal', 'add_perm_health'];
+        
+        for (const opt of this.rawScenario.options) {
+            if (opt.actions) {
+                for (const act of opt.actions) {
+                    const colonIdx = act.indexOf(':');
+                    const type = colonIdx >= 0 ? act.slice(0, colonIdx) : act;
+                    
+                    if (abstractActions.includes(type)) {
+                        switch (type) {
+                            case 'reveal_shop':
+                                state.spawnDistantShop();
+                                break;
+                            case 'reveal_event':
+                                const events1 = state.events.filter(ev => !ev.revealed && !ev.isFinished);
+                                if (events1.length > 0) events1[0].revealed = true;
+                                break;
+                            case 'reveal_event_2':
+                                const events2 = state.events.filter(ev => !ev.revealed && !ev.isFinished);
+                                if (events2.length > 0) events2[0].revealed = true;
+                                if (events2.length > 1) events2[1].revealed = true;
+                                break;
+                            case 'heal':
+                                state.player.heal(0.3);
+                                break;
+                            case 'add_perm_health':
+                                state.player.permHealthBonus++;
+                                break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    _triggerDeathSequence() {
+        this.isDying = true;
+        this.vx *= 0.1; 
+        this.vy *= 0.1;
+        
+        const img = this.game.assets.get(this.spriteKey);
+        if (!img) {
+            this.alive = false;
+            return;
+        }
+
+        const fireFrames = this.game.assets.get('fire_explosion');
+        const totalExplosionDuration = fireFrames ? fireFrames.reduce((sum, f) => sum + f.delay, 0) : 500;
+
+        this.deathExplosions = [];
+        const baseStaggers = [0, 0.3, 0.6, 0.9, 1.2];
+
+        for (let i = 0; i < baseStaggers.length; i++) {
+            this.deathExplosions.push({
+                lx: (Math.random() - 0.5) * img.width * 0.8,
+                ly: (Math.random() - 0.5) * img.height * 0.8,
+                delay: baseStaggers[i],
+                fired: false,
+                finished: false,
+                animTimer: 0,
+                totalDuration: totalExplosionDuration,
+                scale: 0.8 + Math.random() * 0.6
+            });
+        }
+        this.deathTimer = baseStaggers[baseStaggers.length - 1] + 0.4;
+    }
+
+    draw(ctx, camera) {
+        super.draw(ctx, camera);
+
+        if (this.isDying && this.deathExplosions) {
+            const fireFrames = this.game.assets.get('fire_explosion');
+            if (!fireFrames) return;
+            const screen = camera.worldToScreen(this.worldX, this.worldY, this.game.width, this.game.height);
+            
+            ctx.save();
+            ctx.translate(Math.floor(screen.x), Math.floor(screen.y));
+            ctx.rotate(this.angle + Math.PI / 2);
+
+            for (const ex of this.deathExplosions) {
+                if (ex.fired && !ex.finished) {
+                    let frameImg = fireFrames[0].canvas;
+                    let elapsed = ex.animTimer;
+                    for (const f of fireFrames) {
+                        if (elapsed < f.delay) { frameImg = f.canvas; break; }
+                        elapsed -= f.delay;
+                    }
+                    const ew = frameImg.width * this.game.worldScale * ex.scale;
+                    const eh = frameImg.height * this.game.worldScale * ex.scale;
+                    ctx.drawImage(frameImg, ex.lx * this.game.worldScale - ew / 2, ex.ly * this.game.worldScale - eh / 2, ew, eh);
+                }
+            }
+            ctx.restore();
+        }
+    }
+
+    getSpawnOnDeath() {
+        const spawns = [];
+        const img = this.game.assets.get(this.spriteKey);
+        
+        if (img && VoronoiSlicer) {
+            const fragments = VoronoiSlicer.slice(img, 20 + Math.floor(Math.random() * 15));
+            for (const frag of fragments) {
+                const rotAngle = this.angle + Math.PI / 2;
+                const cosA = Math.cos(rotAngle);
+                const sinA = Math.sin(rotAngle);
+                const wx = this.worldX + (frag.offsetX * cosA - frag.offsetY * sinA);
+                const wy = this.worldY + (frag.offsetX * sinA + frag.offsetY * cosA);
+
+                const outAngle = Math.atan2(frag.offsetY, frag.offsetX) + rotAngle;
+                const spread = 20 + Math.random() * 80;
+                
+                spawns.push(new ProceduralDebris(
+                    this.game, wx, wy, frag.canvas,
+                    Math.cos(outAngle) * spread, Math.sin(outAngle) * spread,
+                    rotAngle, (Math.random() - 0.5) * 4, 3 + Math.random() * 2
+                ));
+            }
+        }
+
+        const scrapCount = 8 + Math.floor(Math.random() * 5);
+        for(let i = 0; i < scrapCount; i++) {
+            const outAngle = Math.random() * Math.PI * 2;
+            const dist = Math.random() * 60;
+            spawns.push(new Scrap(this.game, this.worldX + Math.cos(outAngle)*dist, this.worldY + Math.sin(outAngle)*dist, Math.random() > 0.4 ? 'big' : 'small'));
+        }
+
+        for (const [key, val] of Object.entries(this.encounterVars)) {
+            if (val && typeof val === 'object' && val.id && val.name && val.cost) {
+                spawns.push(new ItemPickup(this.game, this.worldX, this.worldY, val));
+            }
+        }
+
+        return spawns;
     }
 }

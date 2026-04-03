@@ -22,6 +22,7 @@ export class DevConsole {
             'record': (args) => this._cmdRecord(args),
             'boss': (args) => this._cmdBoss(args),
             'hp': () => this._cmdHP(),
+            'encounter': (args) => this._cmdEncounter(args),
             'help': () => this._cmdHelp()
         };
 
@@ -252,8 +253,24 @@ export class DevConsole {
         console.log(`Recording feature ${this.game.recordingEnabled ? 'ENABLED' : 'DISABLED'}`);
     }
 
+    _cmdEncounter(args) {
+        const state = this.game.currentState;
+        if (!state || !state._spawnEncounter) {
+            console.log('Not in playing state');
+            return;
+        }
+        const type = args.length > 0 ? args.join('_') : null;
+        const validTypes = ['cargo_trader', 'civilian', 'colony', 'engineer', 'explorer', 'junker', 'law_enforcement', 'black_market', 'tuner'];
+        if (type && !validTypes.includes(type)) {
+            console.log(`Unknown type. Valid: ${validTypes.join(', ')}`);
+            return;
+        }
+        state._spawnEncounter(type);
+        console.log(`Spawned encounter: ${type || 'random'}`);
+    }
+
     _cmdHelp() {
-        console.log("Available commands: time, spawn, stat, wave, scrap, locate, save, load, record, boss, hp, help");
+        console.log("Available commands: time, spawn, stat, wave, scrap, locate, save, load, record, boss, hp, encounter, help");
     }
 
     draw(ctx) {
