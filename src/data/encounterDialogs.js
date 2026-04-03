@@ -82,7 +82,7 @@ export const DIALOG_SCENARIOS = [
                 response: "Pleasure doing business."
             },
             {
-                label: "Counter-offer ([scrap]{negotiate} scrap[/scrap])",
+                label: "Counter-offer ([scrap]-{negotiate} scrap[/scrap])",
                 negotiate: { chance: 0.5, price: 'negotiate', fallbackPrice: 'offer' },
                 actions: ['remove_item:targetItem', 'add_scrap:negotiate', 'recalc'],
                 fallbackActions: ['remove_item:targetItem', 'add_scrap:offer', 'recalc'],
@@ -110,7 +110,7 @@ export const DIALOG_SCENARIOS = [
                 response: "Good choice."
             },
             {
-                label: "Haggle ([cost]{negotiate} scrap[/cost])",
+                label: "Haggle ([cost]-{negotiate} scrap[/cost])",
                 negotiate: { chance: 0.45, price: 'negotiate', fallbackPrice: 'cost' },
                 actions: ['remove_scrap:negotiate', 'add_upgrade:upgrade', 'recalc'],
                 fallbackActions: ['remove_scrap:cost', 'add_upgrade:upgrade', 'recalc'],
@@ -172,7 +172,7 @@ export const DIALOG_SCENARIOS = [
                 response: "Hull reinforced. Much tougher now."
             },
             {
-                label: "Negotiate ([cost]{negotiate} scrap[/cost])",
+                label: "Negotiate ([cost]-{negotiate} scrap[/cost])",
                 negotiate: { chance: 0.5, price: 'negotiate', fallbackPrice: 'cost' },
                 actions: ['remove_scrap:negotiate', 'add_perm_health:5', 'recalc'],
                 fallbackActions: ['remove_scrap:cost', 'add_perm_health:5', 'recalc'],
@@ -211,6 +211,44 @@ export const DIALOG_SCENARIOS = [
                 response: "Weapons overhauled. Hitting harder now."
             },
             { label: "Decline", response: "Come back anytime." }
+        ]
+    },
+
+    {
+        type: 'engineer',
+        id: 'weapon_specialist',
+        condition: 'always',
+        vars: {
+            upgrade: { type: 'random_upgrade', ids: ['railgun', 'repeater', 'rockets', 'energy_blaster'] },
+            cost: { type: 'item_cost_mult', item: 'upgrade', mult: 1.1 }
+        },
+        message: "I've been tinkering with a [upgrade]{upgrade}[/upgrade]. It's a complex piece of tech, but I can install it for [cost]{cost} scrap[/cost].",
+        options: [
+            {
+                label: "Buy and Install ([cost]-{cost} scrap[/cost])",
+                actions: ['remove_scrap:cost', 'add_upgrade:upgrade', 'recalc'],
+                response: "System installed. Watch the heat signature on that one."
+            },
+            { label: "Too expensive", response: "Quality tech isn't cheap." }
+        ]
+    },
+
+    {
+        type: 'engineer',
+        id: 'weapon_exchange',
+        condition: 'player_has_any_item',
+        vars: {
+            targetItem: { type: 'random_any_item' },
+            upgrade: { type: 'random_upgrade', ids: ['railgun', 'repeater', 'rockets', 'energy_blaster'] }
+        },
+        message: "That [upgrade]{targetItem}[/upgrade] you're carrying... I could use it for parts. Trade it for this [upgrade]{upgrade}[/upgrade] I just finished calibrating?",
+        options: [
+            {
+                label: "Trade ([upgrade]-{targetItem}[/upgrade], [upgrade]+{upgrade}[/upgrade])",
+                actions: ['remove_item:targetItem', 'add_upgrade:upgrade', 'recalc'],
+                response: "This'll make a fine donor unit."
+            },
+            { label: "I'll keep my gear", response: "Fair enough. It's a solid piece of kit." }
         ]
     },
 
@@ -343,18 +381,36 @@ export const DIALOG_SCENARIOS = [
 
     {
         type: 'explorer',
-        id: 'trade_for_data',
-        condition: 'has_unrevealed_events_2',
-        vars: { targetItem: { type: 'random_any_item' } },
-        message: "I'll trade coordinates to [warn]two signal sources[/warn] for your [upgrade]{targetItem}[/upgrade].",
+        id: 'stellar_mapping',
+        condition: 'has_unrevealed_events',
+        vars: {
+            targetEvent: { type: 'random_unrevealed_event' },
+            cost: { type: 'random_int', min: 45, max: 65 }
+        },
+        message: "I've been charting this sector for months. I've located a [good]{targetEvent.displayName}[/good] nearby. For [cost]{cost} scrap[/cost], I can upload its precise coordinates to your nav-computer.",
         options: [
             {
-                label: "Accept trade",
-                actions: ['remove_item:targetItem', 'reveal_event_2', 'recalc'],
-                response: "Two sets of coordinates sent."
+                label: "Sync coordinates ([cost]-{cost} scrap[/cost])",
+                actions: ['remove_scrap:cost', 'reveal_event_specific:targetEvent'],
+                response: "{targetEvent.displayName} confirmed. Be careful out there."
             },
-            { label: "Decline", response: "Fair enough." },
-            { label: "[warn]Take it by force[/warn]", actions: ['convert_hostile'], response: "You just made an enemy!" }
+            { label: "No thanks", response: "Suit yourself. Space is big." }
+        ]
+    },
+
+    {
+        type: 'explorer',
+        id: 'experimental_pulse',
+        condition: 'always',
+        vars: { reward: { type: 'random_int', min: 45, max: 75 } },
+        message: "I'm studying the local radiation and its effects on hull alloys. If you let me run a [warn]high-energy structural scan[/warn] on your ship, I can pay you [scrap]{reward} scrap[/scrap]. It might stress your systems, though.",
+        options: [
+            {
+                label: "Accept scan ([scrap]+{reward} scrap[/scrap], [warn]-15% Hull[/warn])",
+                actions: ['add_scrap:reward', 'heal:-0.15'],
+                response: "Data collection complete. Repairs recommended."
+            },
+            { label: "Decline", response: "Safety first, I suppose." }
         ]
     },
 
@@ -388,7 +444,7 @@ export const DIALOG_SCENARIOS = [
         condition: 'player_has_any_item',
         vars: {
             targetItem: { type: 'random_any_item' },
-            offer: { type: 'item_cost_mult', item: 'targetItem', mult: 0.4 }
+            offer: { type: 'item_cost_mult', item: 'targetItem', mult: 0.9 }
         },
         message: "That [upgrade]{targetItem}[/upgrade] — I'll take it for [scrap]{offer} scrap[/scrap]. Quick deal.",
         options: [
@@ -409,7 +465,7 @@ export const DIALOG_SCENARIOS = [
             upgrade: { type: 'random_upgrade', rarities: ['uncommon'] },
             cost: { type: 'item_cost_mult', item: 'upgrade', mult: 0.7 }
         },
-        message: "Found a [upgrade]{upgrade}[/upgrade] in some wreckage. [cost]{cost} scrap[/cost].",
+        message: "Found a [upgrade]{upgrade}[/upgrade] in some wreckage. I'll give it to you for [cost]{cost} scrap[/cost].",
         options: [
             {
                 label: "Buy ([cost]-{cost} scrap[/cost])",
@@ -589,7 +645,7 @@ export const DIALOG_SCENARIOS = [
                 actions: ['remove_scrap:cost', 'encounter_speed:1.1', 'recalc'],
                 response: "Thrusters recalibrated."
             },
-            { label: "Not now", response: "Come back anytime." }
+            { label: "Not now", response: "We'll swing back sooner or later." }
         ]
     },
 

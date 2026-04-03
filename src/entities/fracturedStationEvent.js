@@ -32,6 +32,7 @@ export class FracturedStationEvent {
 
         this.detectionDist = 1200;
         this.spawnDist = 300;
+        this.displayName = "Fractured Station";
         this.radius = 0; // COSMETIC ONLY - NO COLLISION
 
         this.activeEnemies = [];

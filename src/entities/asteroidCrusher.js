@@ -6,7 +6,7 @@ export class AsteroidCrusher extends Boss {
         super(game, worldX, worldY, difficultyScale);
         this.spriteKey = 'asteroid_crusher';
         this.radius = 120;
-        this.health = 80 * this.difficultyScale;
+        this.health = 65 * this.difficultyScale;
         this.maxHealth = this.health;
 
         this.baseSpeed = 400; // Slow moving tank
@@ -414,9 +414,7 @@ export class AsteroidCrusher extends Boss {
         return super.hit(damage);
     }
 
-    draw(ctx, camera) {
-        super.draw(ctx, camera);
-
+    drawUnder(ctx, camera) {
         // Draw tractor beam
         if (this.tractorState === 'pulling' || this.tractorState === 'holding') {
             if (this.tractoredAsteroid && this.tractoredAsteroid.alive) {
@@ -491,6 +489,10 @@ export class AsteroidCrusher extends Boss {
             ctx.stroke();
             ctx.restore();
         }
+    }
+
+    draw(ctx, camera) {
+        super.draw(ctx, camera);
     }
 
     _getPredictedTarget(player, projSpeed) {

@@ -34,6 +34,7 @@ export class KnowledgeEvent {
 
         // Hitbox/Circle properties
         this.radius = 100;
+        this.displayName = "Strange Galaxy";
         this.innerRadius = 150; // Trigger radius for boss
         this.bossRadius = 150; // Current expanding radius
         this.targetBossRadius = 800;

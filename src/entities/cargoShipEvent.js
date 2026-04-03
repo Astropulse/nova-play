@@ -22,6 +22,7 @@ export class CargoShipEvent {
 
         // Scaling
         this.scale = 1.0;
+        this.displayName = "Abandoned Cargo Ship";
         this.radius = (this.img ? Math.max(this.img.width, this.img.height) / 2 : 128) * this.scale;
 
         this.pendingSpawns = [];

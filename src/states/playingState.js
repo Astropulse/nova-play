@@ -1302,6 +1302,11 @@ export class PlayingState {
             it.draw(ctx, this.camera);
         }
 
+        // Draw thing that should be underneath entities (e.g. boss beams, shadows)
+        for (const e of this.enemies) {
+            if (e.drawUnder) e.drawUnder(ctx, this.camera);
+        }
+
         for (const a of this.asteroids) {
             a.draw(ctx, this.camera);
         }
@@ -2595,6 +2600,9 @@ export class PlayingState {
         const dialog = generateEncounterDialog(type, this.player, this);
         encounter.dialogData = dialog;
         this.encounters.push(encounter);
+
+        // Notify player via sound
+        this.game.sounds.play('boost', 0.8);
     }
 
     _openEncounterDialog(encounter) {

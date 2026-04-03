@@ -95,10 +95,19 @@ function resolveVars(varDefs, player, state) {
                 break;
             }
             case 'random_upgrade': {
-                const pool = UPGRADES.filter(u =>
-                    def.rarities.includes(u.rarity) && !u.consumable);
+                const pool = UPGRADES.filter(u => {
+                    const rarityMatch = !def.rarities || def.rarities.includes(u.rarity);
+                    const idMatch = !def.ids || def.ids.includes(u.id);
+                    return rarityMatch && idMatch && !u.consumable;
+                });
                 if (pool.length === 0) return null;
                 resolved[key] = pick(pool);
+                break;
+            }
+            case 'random_unrevealed_event': {
+                const events = state.events.filter(ev => !ev.revealed && !ev.isFinished);
+                if (events.length === 0) return null;
+                resolved[key] = pick(events);
                 break;
             }
             case 'item_cost_mult': {
@@ -241,6 +250,13 @@ function executeActions(actions, vars, player, state, encounter) {
                 if (events.length > 1) events[1].revealed = true;
                 break;
             }
+            case 'reveal_event_specific': {
+                const event = vars[paramStr];
+                if (event) {
+                    event.revealed = true;
+                }
+                break;
+            }
             case 'reveal_shop': {
                 state.spawnDistantShop();
                 break;
@@ -326,12 +342,28 @@ function buildDialog(scenario, vars, player, state) {
                         return { message: resp, close: true };
                     } else {
                         const fbPrice = opt.negotiate.fallbackPrice;
-                        const fbPriceVal = vars[fbPrice];
+                        let fbPriceVal = vars[fbPrice];
+                        const negPrice = vars[opt.negotiate.price];
+
+                        // Punishment: if failed to get a better deal, the firm price is worse.
+                        const wasBuying = negPrice < fbPriceVal;
+                        if (wasBuying) {
+                            // Buying: player tried lower cost -> price increases
+                            fbPriceVal = Math.floor(fbPriceVal * 1.25);
+                        } else if (negPrice > fbPriceVal) {
+                            // Selling: player tried higher offer -> offer decreases
+                            fbPriceVal = Math.floor(fbPriceVal * 0.8);
+                        }
+                        vars[fbPrice] = fbPriceVal; // Update stored var for the action execution
+
+                        const symbol = wasBuying ? "-" : "+";
+                        const tag = wasBuying ? "cost" : "scrap";
+
                         return {
-                            message: `Price is firm at [scrap]${fbPriceVal}[/scrap] scrap.`,
+                            message: `You're wasting my time. The price is now firm at [scrap]${fbPriceVal}[/scrap] scrap.`,
                             options: [
                                 {
-                                    label: `Accept ([cost]-${fbPriceVal} scrap[/cost])`,
+                                    label: `Accept ([${tag}]${symbol}${fbPriceVal} scrap[/${tag}])`,
                                     action: (p2, s2, enc2) => {
                                         const r = executeActions(opt.fallbackActions || opt.actions, vars, p2, s2, enc2);
                                         if (r === 'not_enough_scrap') return { message: "Not enough scrap.", close: true };

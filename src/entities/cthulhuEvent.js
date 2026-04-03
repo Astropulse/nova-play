@@ -31,6 +31,7 @@ export class CthulhuEvent {
 
         // Scaling (Big boss)
         this.scale = 1.0;
+        this.displayName = "Frozen God";
         this.radius = (this.stillImg ? Math.max(this.stillImg.width, this.stillImg.height) / 2 : 128) * this.scale;
 
         // Combat/Wave State
