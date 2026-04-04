@@ -1,5 +1,7 @@
 import { SHIPS } from '../data/ships.js';
 import { PlayingState } from './playingState.js';
+import { TutorialState } from './tutorialState.js';
+
 // Scaling is now dynamic via game properties
 
 export class MenuState {
@@ -11,6 +13,8 @@ export class MenuState {
         this.leftArrowBtn = { x: 0, y: 0, w: 0, h: 0, hovered: false };
         this.rightArrowBtn = { x: 0, y: 0, w: 0, h: 0, hovered: false };
         this.startBtn = { x: 0, y: 0, w: 0, h: 0, hovered: false };
+        this.tutorialBtn = { x: 0, y: 0, w: 0, h: 0, hovered: false };
+
         this.musicDecBtn = { x: 0, y: 0, w: 0, h: 0, hovered: false };
         this.musicIncBtn = { x: 0, y: 0, w: 0, h: 0, hovered: false };
         this.sfxDecBtn = { x: 0, y: 0, w: 0, h: 0, hovered: false };
@@ -18,7 +22,8 @@ export class MenuState {
         this.wordmarkBtn = { x: 0, y: 0, w: 0, h: 0, hovered: false };
 
         // Track last hover state for click sound
-        this.lastHovered = { left: false, right: false, start: false, mDec: false, mInc: false, sDec: false, sInc: false };
+        this.lastHovered = { left: false, right: false, start: false, tutorial: false, mDec: false, mInc: false, sDec: false, sInc: false };
+
 
         // Star animation for background
         this.stars = [];
@@ -53,8 +58,9 @@ export class MenuState {
                 this.game.sounds.play('select', 1.0);
             } else if (this._isInside(mouse, this.rightArrowBtn)) {
                 this.game.sounds.play('select', 1.0);
-            } else if (this._isInside(mouse, this.startBtn)) {
+            } else if (this._isInside(mouse, this.startBtn) || this._isInside(mouse, this.tutorialBtn)) {
                 this.game.sounds.play('select', 1.0);
+
             } else if (this._isInside(mouse, this.musicDecBtn) || this._isInside(mouse, this.musicIncBtn) ||
                 this._isInside(mouse, this.sfxDecBtn) || this._isInside(mouse, this.sfxIncBtn) ||
                 this._isInside(mouse, this.wordmarkBtn)) {
@@ -83,6 +89,8 @@ export class MenuState {
         this.leftArrowBtn.hovered = this._isInside(mouse, this.leftArrowBtn);
         this.rightArrowBtn.hovered = this._isInside(mouse, this.rightArrowBtn);
         this.startBtn.hovered = this._isInside(mouse, this.startBtn);
+        this.tutorialBtn.hovered = this._isInside(mouse, this.tutorialBtn);
+
         this.musicDecBtn.hovered = this._isInside(mouse, this.musicDecBtn);
         this.musicIncBtn.hovered = this._isInside(mouse, this.musicIncBtn);
         this.sfxDecBtn.hovered = this._isInside(mouse, this.sfxDecBtn);
@@ -99,6 +107,10 @@ export class MenuState {
         if (this.startBtn.hovered && !this.lastHovered.start) {
             this.game.sounds.play('click', 1.0);
         }
+        if (this.tutorialBtn.hovered && !this.lastHovered.tutorial) {
+            this.game.sounds.play('click', 1.0);
+        }
+
         if (this.musicDecBtn.hovered && !this.lastHovered.mDec) this.game.sounds.play('click', 0.5);
         if (this.musicIncBtn.hovered && !this.lastHovered.mInc) this.game.sounds.play('click', 0.5);
         if (this.sfxDecBtn.hovered && !this.lastHovered.sDec) this.game.sounds.play('click', 0.5);
@@ -107,6 +119,8 @@ export class MenuState {
         this.lastHovered.left = this.leftArrowBtn.hovered;
         this.lastHovered.right = this.rightArrowBtn.hovered;
         this.lastHovered.start = this.startBtn.hovered;
+        this.lastHovered.tutorial = this.tutorialBtn.hovered;
+
         this.lastHovered.mDec = this.musicDecBtn.hovered;
         this.lastHovered.mInc = this.musicIncBtn.hovered;
         this.lastHovered.sDec = this.sfxDecBtn.hovered;
@@ -125,6 +139,11 @@ export class MenuState {
                 this.game.input.consumeMouseButton(0);
                 this.game.setState(new PlayingState(this.game, SHIPS[this.selectedShipIndex]));
             }
+            if (this.tutorialBtn.hovered) {
+                this.game.input.consumeMouseButton(0);
+                this.game.setState(new TutorialState(this.game));
+            }
+
             if (this.musicDecBtn.hovered) {
                 this.game.sounds.setMusicVolume(this.game.sounds.musicVolume - 0.1);
             }
@@ -170,6 +189,8 @@ export class MenuState {
         const leftSize = game.spriteSize('left_arrow_off', game.uiScale);
         const rightSize = game.spriteSize('right_arrow_off', game.uiScale);
         const startSize = game.spriteSize('start_flight_off', game.uiScale);
+        const tutorialSize = game.spriteSize('tutorial_off', game.uiScale);
+
 
         const statsGap = Math.floor(game.uiScale * 6);
         const barWidth = Math.floor(game.uiScale * 30);
@@ -187,10 +208,16 @@ export class MenuState {
         this.rightArrowBtn.h = rightSize.h;
         this.rightArrowBtn.y = this.leftArrowBtn.y;
 
+        this.tutorialBtn.x = Math.floor(cx - tutorialSize.w / 2);
+        this.tutorialBtn.w = tutorialSize.w;
+        this.tutorialBtn.h = tutorialSize.h;
+        this.tutorialBtn.y = Math.floor(ch - tutorialSize.h - game.uiScale * 12);
+
         this.startBtn.x = Math.floor(cx - startSize.w / 2);
         this.startBtn.w = startSize.w;
         this.startBtn.h = startSize.h;
-        this.startBtn.y = Math.floor(ch - startSize.h - game.uiScale * 12);
+        this.startBtn.y = Math.floor(this.tutorialBtn.y - startSize.h - game.uiScale * 4);
+
 
         // Volume Controls Layout (Bottom Right)
         const margin = Math.floor(game.uiScale * 8);
@@ -317,6 +344,8 @@ export class MenuState {
         }
 
         game.drawSprite(ctx, this.startBtn.hovered ? 'start_flight_on' : 'start_flight_off', this.startBtn.x, this.startBtn.y, game.uiScale);
+        game.drawSprite(ctx, this.tutorialBtn.hovered ? 'tutorial_on' : 'tutorial_off', this.tutorialBtn.x, this.tutorialBtn.y, game.uiScale);
+
 
         // "Made with" Wordmark (Top Left)
         const marginTL = Math.floor(game.uiScale * 12);
