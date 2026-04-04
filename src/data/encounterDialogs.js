@@ -203,7 +203,7 @@ export const DIALOG_SCENARIOS = [
         id: 'weapon_overhaul',
         condition: 'always',
         vars: { cost: 100 },
-        message: "Your weapons need an overhaul. [cost]{cost} scrap[/cost] for a [good]permanent damage boost[/good].",
+        message: "Your weapons need an overhaul. [cost]{cost} scrap[/cost] for a [good]permanent +2 damage boost[/good].",
         options: [
             {
                 label: "Accept ([cost]-{cost} scrap[/cost])",

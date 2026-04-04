@@ -281,7 +281,7 @@ export class Enemy {
 
             case AI_STATE.ATTACK:
                 // Stay in attack until burst is done OR we get very close
-                const minBreakDist = 140;
+                const minBreakDist = 200;
                 const burstDone = this.burstShotsLeft <= 0;
                 const tooClose = dist < minBreakDist;
 

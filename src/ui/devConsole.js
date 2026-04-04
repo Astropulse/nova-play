@@ -276,6 +276,8 @@ export class DevConsole {
     draw(ctx) {
         if (!this.active) return;
 
+        ctx.save();
+
         const cw = this.game.width;
         const ch = this.game.height;
         const h = 40 * this.game.uiScale;
@@ -296,5 +298,7 @@ export class DevConsole {
         if (this.showCursor) text += '_';
 
         ctx.fillText(text, 20, ch - h / 2);
+
+        ctx.restore();
     }
 }

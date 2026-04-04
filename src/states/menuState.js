@@ -231,6 +231,9 @@ export class MenuState {
     }
 
     draw(ctx) {
+        ctx.save();
+        ctx.textBaseline = 'alphabetic';
+
         const game = this.game;
         const cw = game.width;
         const ch = game.height;
@@ -325,6 +328,8 @@ export class MenuState {
 
         this._drawControls(ctx);
         this._drawVolumeControls(ctx);
+
+        ctx.restore();
     }
 
 

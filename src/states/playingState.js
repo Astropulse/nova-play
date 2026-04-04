@@ -1284,6 +1284,7 @@ export class PlayingState {
     }
 
     draw(ctx) {
+        ctx.textBaseline = 'alphabetic';
         // Draw main scene normally (clean clear)
         this.world.draw(ctx, this.camera, this.player, this.totalGameTime);
         for (const r of this.rubble) {

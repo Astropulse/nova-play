@@ -233,6 +233,7 @@ export class Game {
 
         if (this.isEncoding) {
             // Game is effectively paused during final blob creation
+            this.ctx.save();
             this.ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
             this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
             this.ctx.fillStyle = '#ffffff';
@@ -240,6 +241,7 @@ export class Game {
             this.ctx.textAlign = 'center';
             this.ctx.textBaseline = 'middle';
             this.ctx.fillText('SAVING CLIP (PLEASE WAIT)...', this.canvas.width / 2, this.canvas.height / 2);
+            this.ctx.restore();
             requestAnimationFrame((t) => this.loop(t));
             return;
         }

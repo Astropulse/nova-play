@@ -16,7 +16,6 @@ export class HUD {
     }
 
     draw(ctx) {
-        ctx.textBaseline = 'alphabetic';
         const p = this.player;
         const cw = this.game.width;
         const ch = this.game.height;
@@ -28,6 +27,7 @@ export class HUD {
         const lagY = (this.game.currentState.camera.displacementY || 0) * this.game.worldScale * 0.075;
         
         ctx.save();
+        ctx.textBaseline = 'alphabetic';
         ctx.translate(Math.floor(lagX), Math.floor(lagY));
 
         // Health bar — lower left
