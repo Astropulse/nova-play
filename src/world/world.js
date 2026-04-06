@@ -24,9 +24,13 @@ export class World {
         // Rare space objects
         this.rareImages = [
             game.assets.get('big_star'),
-            game.assets.get('nebula'),
             game.assets.get('galaxy'),
+            game.assets.get('nebula_0'),
+            game.assets.get('nebula_1'),
+            game.assets.get('nebula_2'),
+            game.assets.get('nebula_3'),
         ];
+        this.blackHoleImage = game.assets.get('black_hole');
 
         // Individual stars to mix into fields
         this.singleStars = [];
@@ -90,17 +94,30 @@ export class World {
                 // Determine how many rare objects in this layer
                 const rareCount = (rng() < 0.3) ? 8 : 3;
                 for (let r = 0; r < rareCount; r++) {
-                    const imgIdx = Math.floor(rng() * this.rareImages.length);
-                    const img = this.rareImages[imgIdx];
+                    let img;
+                    let isSolid = false;
+
+                    // Black holes are very rare (approx 2% of rare slots)
+                    if (rng() < 0.02 && this.blackHoleImage) {
+                        img = this.blackHoleImage;
+                        isSolid = true;
+                    } else {
+                        const imgIdx = Math.floor(rng() * this.rareImages.length);
+                        img = this.rareImages[imgIdx];
+                    }
+
+                    if (!img) continue;
+
                     stars.push({
                         img,
                         x: rng() * regionSize,
                         y: rng() * regionSize,
                         rotation: Math.floor(rng() * 4) * (Math.PI / 2),
                         isRare: true,
+                        isSolid,
                         twinkleSpeed: rng() * 0.8 + 0.2,
                         twinkleOffset: rng() * Math.PI * 2,
-                        pulseAmount: 0.05 // Rare large objects pulse very slowly/subtly
+                        pulseAmount: isSolid ? 0.02 : 0.05 // Black holes pulse even less
                     });
                 }
             }
@@ -149,11 +166,19 @@ export class World {
             this.layerCtx.clearRect(0, 0, cw, ch);
             this.layerCtx.save();
             this.layerCtx.globalAlpha = layer.alpha;
-            this.layerCtx.globalCompositeOperation = 'screen';
+            let currentGCO = 'screen';
+            this.layerCtx.globalCompositeOperation = currentGCO;
 
             for (const star of layer.stars) {
                 const img = star.img;
                 if (!img) continue;
+
+                const targetGCO = star.isSolid ? 'source-over' : 'screen';
+                if (currentGCO !== targetGCO) {
+                    this.layerCtx.globalCompositeOperation = targetGCO;
+                    currentGCO = targetGCO;
+                }
+
                 const w = img.width * worldScale;
                 const h = img.height * worldScale;
 

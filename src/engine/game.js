@@ -11,7 +11,7 @@ export class Game {
 
         // Dynamic scaling
         this.worldScale = 2; // In-game world
-        this.worldScaleModifier = 1.0;
+        this.worldScaleModifier = 0.8333333333333334; // 20% larger FOV (1 / 1.2)
         this.uiScale = 3;    // Menus / Pause
         this.hudScale = 4;   // HUD overlays
 
@@ -456,7 +456,7 @@ export class Game {
         const g = 3; // gap from center
 
         ctx.save();
-        
+
         // 1px black outline (3px wide strips)
         ctx.fillStyle = '#000000';
         // Left
@@ -651,7 +651,11 @@ export class Game {
             'starfield_6': 'Assets/Space/starfield_6.png',
             'starfield_7': 'Assets/Space/starfield_7.png',
             'big_star': 'Assets/Space/big_star.png',
-            'nebula': 'Assets/Space/nebula.png',
+            'nebula_0': 'Assets/Space/nebula_0.png',
+            'nebula_1': 'Assets/Space/nebula_1.png',
+            'nebula_2': 'Assets/Space/nebula_2.png',
+            'nebula_3': 'Assets/Space/nebula_3.png',
+            'black_hole': 'Assets/Space/black_hole.png',
             'galaxy': 'Assets/Space/galaxy.png',
             'star_0': 'Assets/Space/star_0.png',
             'star_1': 'Assets/Space/star_1.png',

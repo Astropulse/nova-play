@@ -2436,7 +2436,7 @@ export class PlayingState {
         let blinkEngines = 0;
         let repeaters = 0;
 
-        let fovMult = 1.0;
+        let fovMult = 1.2; // 20% larger base FOV
         for (const entry of p.inventory.items) {
             const item = entry.item;
 
