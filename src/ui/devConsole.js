@@ -26,7 +26,12 @@ export class DevConsole {
             'help': () => this._cmdHelp()
         };
 
-        window.addEventListener('keydown', (e) => this._handleKeydown(e));
+        this._keydownListener = (e) => this._handleKeydown(e);
+        window.addEventListener('keydown', this._keydownListener);
+    }
+
+    destroy() {
+        window.removeEventListener('keydown', this._keydownListener);
     }
 
     toggle() {

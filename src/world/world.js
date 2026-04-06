@@ -10,238 +10,176 @@ function mulberry32(seed) {
     };
 }
 
-// Parallax starfield — scatters random starfield sprites plus rare space objects
+// Parallax starfield — pre-renders stars into tileable canvases for high performance
 export class World {
     constructor(game) {
         this.game = game;
+        this.tileSize = 2048; // Standard tile size for baking (safe for VRAM)
 
-        // Collect all starfield images
+        // Assets
         this.starImages = [];
-        for (let i = 0; i <= 7; i++) {
-            this.starImages.push(game.assets.get(`starfield_${i}`));
-        }
+        for (let i = 0; i <= 7; i++) this.starImages.push(game.assets.get(`starfield_${i}`));
 
-        // Rare space objects
         this.rareImages = [
-            game.assets.get('big_star'),
-            game.assets.get('galaxy'),
-            game.assets.get('nebula_0'),
-            game.assets.get('nebula_1'),
-            game.assets.get('nebula_2'),
-            game.assets.get('nebula_3'),
+            game.assets.get('big_star'), game.assets.get('galaxy'),
+            game.assets.get('nebula_0'), game.assets.get('nebula_1'),
+            game.assets.get('nebula_2'), game.assets.get('nebula_3'),
         ];
         this.blackHoleImage = game.assets.get('black_hole');
-
-        // Individual stars to mix into fields
         this.singleStars = [];
         for (let i = 0; i <= 10; i++) {
             const img = game.assets.get(`star_${i}`);
             if (img) this.singleStars.push(img);
         }
 
-        // Build parallax layers
         this.layers = [];
-        const allImages = [0, 1, 2, 3, 4, 5, 6, 7];
+        this._initLayers();
+    }
+
+    _initLayers() {
         const layerConfigs = [
-            { parallax: 0.02, count: 320, alpha: 0.25, singleStarCount: 100 },   // very far, very dim
-            { parallax: 0.05, count: 140, alpha: 0.35, singleStarCount: 160 },
-            { parallax: 0.10, count: 120, alpha: 0.45, singleStarCount: 200 },
-            { parallax: 0.18, count: 100, alpha: 0.60, singleStarCount: 120 },
-            { parallax: 0.28, count: 80, alpha: 0.75, singleStarCount: 80 },
-            { parallax: 0.40, count: 60, alpha: 0.90, singleStarCount: 40 },
-            { parallax: 0.55, count: 40, alpha: 1.0, singleStarCount: 30 },    // closest, full brightness
+            { parallax: 0.02, count: 80, alpha: 0.25, singleStarCount: 40 },   // very far
+            { parallax: 0.05, count: 50, alpha: 0.35, singleStarCount: 50 },
+            { parallax: 0.10, count: 40, alpha: 0.45, singleStarCount: 60 },
+            { parallax: 0.18, count: 30, alpha: 0.60, singleStarCount: 40 },
+            { parallax: 0.28, count: 20, alpha: 0.75, singleStarCount: 20 },
+            { parallax: 0.40, count: 15, alpha: 0.90, singleStarCount: 10 },
+            { parallax: 0.55, count: 10, alpha: 1.0, singleStarCount: 5 },    // closest
         ];
 
+        const virtualSize = 2048; // Logical wrap window
         const rng = mulberry32(42);
 
-        let lIdx = 0;
-        for (const config of layerConfigs) {
+        layerConfigs.forEach((config, idx) => {
             const stars = [];
-            const regionSize = 7000;
 
-            // Starfield clusters
-            for (let i = 0; i < config.count; i++) {
-                const imgIdx = Math.floor(rng() * allImages.length);
-                const img = this.starImages[imgIdx];
+            // Randomly distribute individual star entities
+            for (let i = 0; i < config.count + config.singleStarCount; i++) {
+                const isCluster = i < config.count;
+                const assetList = isCluster ? this.starImages : this.singleStars;
                 stars.push({
-                    img,
-                    x: rng() * regionSize,
-                    y: rng() * regionSize,
+                    x: rng() * virtualSize,
+                    y: rng() * virtualSize,
+                    spriteIdx: Math.floor(rng() * assetList.length),
+                    isCluster: isCluster,
+                    type: 'star',
+                    blend: 'lighter',
                     rotation: Math.floor(rng() * 4) * (Math.PI / 2),
-                    twinkleSpeed: rng() * 1.5 + 0.5,
-                    twinkleOffset: rng() * Math.PI * 2,
-                    pulseAmount: 0.1 // Starfields pulse subtly
+                    alphaBoost: 0.8 + rng() * 0.4
                 });
             }
 
-            // Individual stars to break up patterns
-            for (let i = 0; i < config.singleStarCount; i++) {
-                const imgIdx = Math.floor(rng() * this.singleStars.length);
-                const img = this.singleStars[imgIdx];
-                stars.push({
-                    img,
-                    x: rng() * regionSize,
-                    y: rng() * regionSize,
-                    rotation: Math.floor(rng() * 4) * (Math.PI / 2),
-                    twinkleSpeed: rng() * 2 + 1,
-                    twinkleOffset: rng() * Math.PI * 2,
-                    pulseAmount: 0.3 // Individual stars pulse more
-                });
-            }
-
-            // Rare objects in layers 1 to 4 (inclusive)
-            if (lIdx >= 1 && lIdx <= 4) {
-                // Determine how many rare objects in this layer
-                const rareCount = (rng() < 0.3) ? 8 : 3;
+            // Rare objects in middle layers
+            if (idx >= 1 && idx <= 4) {
+                const rareCount = (rng() < 0.3) ? 2 : 1;
                 for (let r = 0; r < rareCount; r++) {
-                    let img;
-                    let isSolid = false;
-
-                    // Black holes are very rare (approx 2% of rare slots)
+                    let imgAsset;
+                    let blend = 'screen';
                     if (rng() < 0.02 && this.blackHoleImage) {
-                        img = this.blackHoleImage;
-                        isSolid = true;
+                        imgAsset = this.blackHoleImage;
+                        blend = 'source-over';
                     } else {
-                        const imgIdx = Math.floor(rng() * this.rareImages.length);
-                        img = this.rareImages[imgIdx];
+                        imgAsset = this.rareImages[Math.floor(rng() * this.rareImages.length)];
                     }
 
-                    if (!img) continue;
-
-                    stars.push({
-                        img,
-                        x: rng() * regionSize,
-                        y: rng() * regionSize,
-                        rotation: Math.floor(rng() * 4) * (Math.PI / 2),
-                        isRare: true,
-                        isSolid,
-                        twinkleSpeed: rng() * 0.8 + 0.2,
-                        twinkleOffset: rng() * Math.PI * 2,
-                        pulseAmount: isSolid ? 0.02 : 0.05 // Black holes pulse even less
-                    });
+                    if (imgAsset) {
+                        stars.push({
+                            x: rng() * virtualSize,
+                            y: rng() * virtualSize,
+                            asset: imgAsset, // Store asset directly for rare items
+                            type: 'rare',
+                            blend: blend,
+                            rotation: Math.floor(rng() * 4) * (Math.PI / 2),
+                            alphaBoost: 1.0
+                        });
+                    }
                 }
             }
 
             this.layers.push({
                 parallax: config.parallax,
                 alpha: config.alpha,
-                stars,
-                regionSize,
+                stars: stars
             });
-            lIdx++;
-        }
-
+        });
     }
 
     draw(ctx, camera, player, worldTime = 0) {
-        const cw = this.game.width;
-        const ch = this.game.height;
-        if (!this.layerCanvas) {
-            this.layerCanvas = document.createElement('canvas');
-            this.layerCtx = this.layerCanvas.getContext('2d');
-        }
-        if (this.layerCanvas.width !== cw || this.layerCanvas.height !== ch) {
-            this.layerCanvas.width = cw;
-            this.layerCanvas.height = ch;
-            this.layerCtx.imageSmoothingEnabled = false;
-        }
-
+        const cw = ctx.canvas.width;
+        const ch = ctx.canvas.height;
+        const worldScale = this.game.worldScale;
         const boostIntensity = player ? player.boostIntensity : 0;
-        const vx = player ? player.vx : 0;
-        const vy = player ? player.vy : 0;
-        const streakFactor = 0.04;
         const isBoosting = boostIntensity > 0.01;
+        const streakFactor = 0.04;
+        const virtualSize = 2048;
 
-        // Draw starfield layers (back to front via order)
+        // Razor-sharp: No sub-pixel blurring during individual star draw
+        ctx.imageSmoothingEnabled = false;
+        ctx.webkitImageSmoothingEnabled = false;
+        ctx.msImageSmoothingEnabled = false;
+
+        // Draw parallax layers (Back to Front)
         for (const layer of this.layers) {
-            const worldScale = this.game.worldScale;
-            const scaledRS = layer.regionSize * worldScale;
-            const offsetX = camera.x * layer.parallax * worldScale;
-            const offsetY = camera.y * layer.parallax * worldScale;
+            const layerAlpha = layer.alpha * (0.95 + 0.05 * Math.sin(worldTime * (1 + layer.parallax * 2)));
+            const samples = isBoosting ? 8 : 1;
 
-            const svx = -vx * layer.parallax * streakFactor * boostIntensity;
-            const svy = -vy * layer.parallax * streakFactor * boostIntensity;
-
-            // 1. Draw all stars of this layer into an offscreen canvas (CRISP)
-            this.layerCtx.clearRect(0, 0, cw, ch);
-            this.layerCtx.save();
-            this.layerCtx.globalAlpha = layer.alpha;
-            let currentGCO = 'screen';
-            this.layerCtx.globalCompositeOperation = currentGCO;
+            // Streak vectors
+            const svx = player ? -player.vx * layer.parallax * streakFactor * boostIntensity * worldScale : 0;
+            const svy = player ? -player.vy * layer.parallax * streakFactor * boostIntensity * worldScale : 0;
 
             for (const star of layer.stars) {
-                const img = star.img;
-                if (!img) continue;
+                // Calculate wrapped screen position relative to the center of the virtual wrap window
+                let sx = ((star.x - (camera.x * layer.parallax)) % virtualSize);
+                let sy = ((star.y - (camera.y * layer.parallax)) % virtualSize);
 
-                const targetGCO = star.isSolid ? 'source-over' : 'screen';
-                if (currentGCO !== targetGCO) {
-                    this.layerCtx.globalCompositeOperation = targetGCO;
-                    currentGCO = targetGCO;
-                }
+                const halfSize = virtualSize / 2;
+                if (sx < -halfSize) sx += virtualSize;
+                if (sx > halfSize) sx -= virtualSize;
+                if (sy < -halfSize) sy += virtualSize;
+                if (sy > halfSize) sy -= virtualSize;
 
-                const w = img.width * worldScale;
-                const h = img.height * worldScale;
+                const dx = sx * worldScale + (cw / 2);
+                const dy = sy * worldScale + (ch / 2);
 
-                // Center the origin of the starfield at (cw/2, ch/2)
-                let sx = (((star.x * worldScale - offsetX + cw / 2) % scaledRS) + scaledRS) % scaledRS;
-                let sy = (((star.y * worldScale - offsetY + ch / 2) % scaledRS) + scaledRS) % scaledRS;
+                if (dx > -256 && dx < cw + 256 && dy > -256 && dy < ch + 256) {
+                    const imgAsset = star.type === 'star' ?
+                        (star.isCluster ? this.starImages[star.spriteIdx] : this.singleStars[star.spriteIdx]) :
+                        star.asset;
 
-                // Pulsing effect
-                const pulseAlpha = star.pulseAmount * Math.sin(worldTime * star.twinkleSpeed + star.twinkleOffset);
-                this.layerCtx.globalAlpha = Math.max(0.1, Math.min(1.0, layer.alpha + pulseAlpha));
+                    if (!imgAsset) continue;
 
-                for (let wy = sy - scaledRS; wy < ch + h; wy += scaledRS) {
-                    for (let wx = sx - scaledRS; wx < cw + w; wx += scaledRS) {
-                        if (wx + w < 0 || wx > cw || wy + h < 0 || wy > ch) continue;
+                    const img = imgAsset.canvas || imgAsset;
+                    const sw = (imgAsset.width || img.width) * worldScale;
+                    const sh = (imgAsset.height || img.height) * worldScale;
+
+                    ctx.save();
+                    ctx.globalCompositeOperation = star.blend;
+
+                    for (let s = 0; s < samples; s++) {
+                        const t = samples > 1 ? s / (samples - 1) : 0.5;
+                        const weight = samples > 1 ? Math.sin(t * Math.PI) : 1.0;
+                        const offsetMult = s / samples;
+                        // Corrected: Only apply brightness compensation if samples > 1 (boosting)
+                        const boostComp = samples > 1 ? (1.8 / samples) : 1.0;
+                        ctx.globalAlpha = Math.max(0, Math.min(1.0, layerAlpha * star.alphaBoost * weight * boostComp));
+
+                        const finalX = dx + (svx * offsetMult);
+                        const finalY = dy + (svy * offsetMult);
 
                         if (star.rotation === 0) {
-                            this.layerCtx.drawImage(img, Math.floor(wx), Math.floor(wy), w, h);
+                            ctx.drawImage(img, finalX - sw / 2, finalY - sh / 2, sw, sh);
                         } else {
-                            const cx = Math.floor(wx + w / 2);
-                            const cy = Math.floor(wy + h / 2);
-                            this.layerCtx.save();
-                            this.layerCtx.translate(cx, cy);
-                            this.layerCtx.rotate(star.rotation);
-                            this.layerCtx.drawImage(img, -Math.floor(w / 2), -Math.floor(h / 2), w, h);
-                            this.layerCtx.restore();
+                            ctx.save();
+                            ctx.translate(finalX, finalY);
+                            ctx.rotate(star.rotation);
+                            ctx.drawImage(img, -sw / 2, -sh / 2, sw, sh);
+                            ctx.restore();
                         }
                     }
+                    ctx.restore();
                 }
             }
-            this.layerCtx.restore();
-
-            // 2. Composite the baked layer onto the main screen with ADDITIVE blur
-            // This ensures overlapping stars in the layer don't bloom more than intended.
-            // Close, bright stars get a boostFactor so they stay "solid" streaks.
-            // We use sinusoidal weights to "taper" the edges of the trails.
-            const samples = isBoosting ? 8 : 1;
-            ctx.save();
-            ctx.globalCompositeOperation = 'lighter';
-
-            // Boost factor ensures close stars (high layer.alpha) stay bright during the streak
-            const boostFactor = 1 + Math.pow(layer.alpha, 2) * boostIntensity;
-
-            // Calculate weights for sinusoidal tapering
-            let weightSum = 0;
-            const weights = [];
-            for (let s = 0; s < samples; s++) {
-                const t = samples > 1 ? s / (samples - 1) : 0.5;
-                const w = samples > 1 ? Math.sin(t * Math.PI) : 1.0;
-                weights.push(w);
-                weightSum += w;
-            }
-
-            // Normalize alpha so the total energy matches our boostFactor target
-            const baseAlpha = (1 / weightSum) * boostFactor;
-
-            for (let s = 0; s < samples; s++) {
-                const offsetMult = s / samples;
-                ctx.globalAlpha = weights[s] * baseAlpha;
-                ctx.drawImage(this.layerCanvas, svx * offsetMult, svy * offsetMult);
-            }
-            ctx.restore();
         }
-
 
         // Draw Shops
         if (this.game.currentState.shops) {
@@ -251,3 +189,4 @@ export class World {
         }
     }
 }
+

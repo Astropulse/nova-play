@@ -579,8 +579,10 @@ export class KnowledgeEvent {
             const frameEntry = this.eyeGif[this.eyeFrame];
             if (frameEntry) {
                 const frame = frameEntry.canvas || frameEntry;
-                const ew = frame.width * this.game.worldScale;
-                const eh = frame.height * this.game.worldScale;
+                const logicalW = frameEntry.width || frame.width;
+                const logicalH = frameEntry.height || frame.height;
+                const ew = logicalW * this.game.worldScale;
+                const eh = logicalH * this.game.worldScale;
 
                 ctx.save();
                 if (this.state === KNOWLEDGE_STATE.DEFEATED) {
@@ -595,17 +597,20 @@ export class KnowledgeEvent {
 
         // Draw Base PNG
         if (this.baseImg) {
-            const bw = this.baseImg.width * this.game.worldScale;
-            const bh = this.baseImg.height * this.game.worldScale;
+            const canvas = this.baseImg.canvas || this.baseImg;
+            const logicalW = this.baseImg.width || canvas.width;
+            const logicalH = this.baseImg.height || canvas.height;
+            const bw = logicalW * this.game.worldScale;
+            const bh = logicalH * this.game.worldScale;
 
             if (this.state === KNOWLEDGE_STATE.DEFEATED) {
                 ctx.save();
                 ctx.globalAlpha = 0.7;
                 ctx.globalCompositeOperation = 'screen';
-                ctx.drawImage(this.baseImg, screen.x - bw / 2, screen.y - bh / 2, bw, bh);
+                ctx.drawImage(canvas, screen.x - bw / 2, screen.y - bh / 2, bw, bh);
                 ctx.restore();
             } else {
-                ctx.drawImage(this.baseImg, screen.x - bw / 2, screen.y - bh / 2, bw, bh);
+                ctx.drawImage(canvas, screen.x - bw / 2, screen.y - bh / 2, bw, bh);
             }
         }
 
@@ -636,12 +641,15 @@ export class KnowledgeEvent {
         ctx.translate(x, y);
         ctx.rotate(angle);
 
-        const tileW = img.width * this.game.worldScale;
-        const tileH = img.height * this.game.worldScale;
+        const canvas = img.canvas || img;
+        const logicalW = img.width || canvas.width;
+        const logicalH = img.height || canvas.height;
+        const tileW = logicalW * this.game.worldScale;
+        const tileH = logicalH * this.game.worldScale;
         const count = 150; // Tile long enough to cover 12000+ length
 
         for (let i = 0; i < count; i++) {
-            ctx.drawImage(img, i * tileW, -tileH / 2, tileW, tileH);
+            ctx.drawImage(canvas, i * tileW, -tileH / 2, tileW, tileH);
         }
         ctx.restore();
     }

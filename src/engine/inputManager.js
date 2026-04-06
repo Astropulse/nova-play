@@ -20,28 +20,43 @@ export class InputManager {
     }
 
     _bindEvents() {
-        window.addEventListener('keydown', (e) => {
+        this._keydownListener = (e) => {
             this.keysDown.add(e.code);
-        });
-        window.addEventListener('keyup', (e) => {
+        };
+        this._keyupListener = (e) => {
             this.keysDown.delete(e.code);
             this.keysJustReleased.add(e.code);
-        });
-
-        this.canvas.addEventListener('mousemove', (e) => {
+        };
+        this._mousemoveListener = (e) => {
             const rect = this.canvas.getBoundingClientRect();
             this.mouseScreenX = e.clientX - rect.left;
             this.mouseScreenY = e.clientY - rect.top;
-        });
-        this.canvas.addEventListener('mousedown', (e) => {
+        };
+        this._mousedownListener = (e) => {
             this.mouseButtons.add(e.button);
-        });
-        this.canvas.addEventListener('mouseup', (e) => {
+        };
+        this._mouseupListener = (e) => {
             this.mouseButtons.delete(e.button);
-        });
-        this.canvas.addEventListener('contextmenu', (e) => {
+        };
+        this._contextmenuListener = (e) => {
             e.preventDefault();
-        });
+        };
+
+        window.addEventListener('keydown', this._keydownListener);
+        window.addEventListener('keyup', this._keyupListener);
+        this.canvas.addEventListener('mousemove', this._mousemoveListener);
+        this.canvas.addEventListener('mousedown', this._mousedownListener);
+        this.canvas.addEventListener('mouseup', this._mouseupListener);
+        this.canvas.addEventListener('contextmenu', this._contextmenuListener);
+    }
+
+    destroy() {
+        window.removeEventListener('keydown', this._keydownListener);
+        window.removeEventListener('keyup', this._keyupListener);
+        this.canvas.removeEventListener('mousemove', this._mousemoveListener);
+        this.canvas.removeEventListener('mousedown', this._mousedownListener);
+        this.canvas.removeEventListener('mouseup', this._mouseupListener);
+        this.canvas.removeEventListener('contextmenu', this._contextmenuListener);
     }
 
     update() {

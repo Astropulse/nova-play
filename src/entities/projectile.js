@@ -43,13 +43,13 @@ export class Projectile {
     draw(ctx, camera) {
         if (!this.alive || !this.img) return;
         const screen = camera.worldToScreen(this.worldX, this.worldY, this.game.width, this.game.height);
-        const w = this.img.width * this.game.worldScale;
-        const h = this.img.height * this.game.worldScale;
+        const w = (this.img.width || this.img.canvas.width) * this.game.worldScale;
+        const h = (this.img.height || this.img.canvas.height) * this.game.worldScale;
 
         ctx.save();
-        ctx.translate(Math.floor(screen.x), Math.floor(screen.y));
+        ctx.translate(screen.x, screen.y);
         ctx.rotate(this.angle + Math.PI / 2);
-        ctx.drawImage(this.img, -Math.floor(w / 2), -Math.floor(h / 2), w, h);
+        ctx.drawImage(this.img.canvas || this.img, -w / 2, -h / 2, w, h);
         ctx.restore();
     }
 

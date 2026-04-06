@@ -32,11 +32,12 @@ export class HUD {
 
         // Health bar — lower left
         // ... (existing code remains but translated)
-        const hbW = this.healthBarEmpty.width * this.game.hudScale;
-        const hbH = this.healthBarEmpty.height * this.game.hudScale;
+        const hImg = this.healthBarEmpty.canvas || this.healthBarEmpty;
+        const hbW = (this.healthBarEmpty.width || hImg.width) * this.game.hudScale;
+        const hbH = (this.healthBarEmpty.height || hImg.height) * this.game.hudScale;
         const hbX = margin;
         const hbY = ch - hbH - margin;
-        ctx.drawImage(this.healthBarEmpty, hbX, hbY, hbW, hbH);
+        ctx.drawImage(hImg, hbX, hbY, hbW, hbH);
 
         const healthPct = Math.max(0, Math.min(1, p.health / p.maxHealth));
         if (healthPct > 0) {
@@ -46,23 +47,28 @@ export class HUD {
             const srcFillW = Math.floor(fillWidth * healthPct);
             // Draw the fill portion: left dead space + filled region
             const srcClipW = fillStart + srcFillW;
+            const hfImg = this.healthBarFull.canvas || this.healthBarFull;
+            const hfH = this.healthBarFull.height || hfImg.height;
+            const hPrescale = hfImg.width / (this.healthBarFull.width || hfImg.width);
+            
             ctx.drawImage(
-                this.healthBarFull,
-                0, 0, srcClipW, this.healthBarFull.height,
+                hfImg,
+                0, 0, srcClipW * hPrescale, hfH * hPrescale,
                 hbX, hbY, srcClipW * this.game.hudScale, hbH
             );
         }
 
         // Shield bar — above health bar (dimmed when broken)
         // Bar fill region: source pixels 4–75 (71px wide fill area)
-        const sbW = this.shieldBarEmpty.width * this.game.hudScale;
-        const sbH = this.shieldBarEmpty.height * this.game.hudScale;
+        const sImg = this.shieldBarEmpty.canvas || this.shieldBarEmpty;
+        const sbW = (this.shieldBarEmpty.width || sImg.width) * this.game.hudScale;
+        const sbH = (this.shieldBarEmpty.height || sImg.height) * this.game.hudScale;
         const sbX = margin;
         const sbY = hbY - sbH - this.game.hudScale * 2;
 
         if (p.shieldBroken) ctx.globalAlpha = 0.3;
 
-        ctx.drawImage(this.shieldBarEmpty, sbX, sbY, sbW, sbH);
+        ctx.drawImage(sImg, sbX, sbY, sbW, sbH);
 
         const shieldPct = Math.max(0, Math.min(1, p.shieldEnergy / p.maxShieldEnergy));
         if (shieldPct > 0) {
@@ -71,9 +77,13 @@ export class HUD {
             const fillWidth = fillEnd - fillStart;
             const srcFillW = Math.floor(fillWidth * shieldPct);
             const srcClipW = fillStart + srcFillW;
+            const sfImg = this.shieldBarFull.canvas || this.shieldBarFull;
+            const sfH = this.shieldBarFull.height || sfImg.height;
+            const sPrescale = sfImg.width / (this.shieldBarFull.width || sfImg.width);
+
             ctx.drawImage(
-                this.shieldBarFull,
-                0, 0, srcClipW, this.shieldBarFull.height,
+                sfImg,
+                0, 0, srcClipW * sPrescale, sfH * sPrescale,
                 sbX, sbY, srcClipW * this.game.hudScale, sbH
             );
         }
@@ -120,8 +130,8 @@ export class HUD {
         if (!img) return;
 
         const uiScale = this.game.hudScale;
-        const rw = img.width * uiScale;
-        const rh = img.height * uiScale;
+        const rw = (img.width || img.canvas.width) * uiScale;
+        const rh = (img.height || img.canvas.height) * uiScale;
 
         // Position: Bottom Right, snapped to HUD grid
         const rx = Math.floor((cw - rw - margin) / uiScale) * uiScale;
@@ -135,7 +145,7 @@ export class HUD {
                 this.radarCtx.imageSmoothingEnabled = false;
             }
             this.radarCtx.clearRect(0, 0, rw, rh);
-            this.radarCtx.drawImage(backImg, 0, 0, rw, rh);
+            this.radarCtx.drawImage(backImg.canvas || backImg, 0, 0, rw, rh);
 
             // 2. Use source-atop to ONLY draw blips on the solid pixels of the back asset
             this.radarCtx.save();
@@ -220,6 +230,6 @@ export class HUD {
         }
 
         // 3. Draw frame on top
-        ctx.drawImage(img, rx, ry, rw, rh);
+        ctx.drawImage(img.canvas || img, rx, ry, rw, rh);
     }
 }

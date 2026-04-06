@@ -1,9 +1,17 @@
 import { Game } from './engine/game.js';
 
+let game = null;
+
 // Entry point
 window.addEventListener('DOMContentLoaded', async () => {
+    // Cleanup old instance if it exists (e.g. during HMR or manual re-init)
+    if (game) {
+        console.log('Cleaning up previous game instance...');
+        game.destroy();
+    }
+
     const canvas = document.getElementById('gameCanvas');
-    const game = new Game(canvas);
+    game = new Game(canvas);
 
     // Show loading text
     const ctx = canvas.getContext('2d');
@@ -21,4 +29,9 @@ window.addEventListener('DOMContentLoaded', async () => {
         ctx.fillStyle = '#ff4444';
         ctx.fillText('Failed to load assets', canvas.width / 2, canvas.height / 2 + 24);
     }
+});
+
+// Formal cleanup on page unload/reload
+window.addEventListener('beforeunload', () => {
+    if (game) game.destroy();
 });

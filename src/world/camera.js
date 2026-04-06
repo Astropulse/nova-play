@@ -67,7 +67,7 @@ export class Camera {
         // Update Screen Shake
         if (this.shakeIntensity > 0) {
             this.shakeIntensity = Math.max(0, this.shakeIntensity - this.shakeDecay * dt * 3);
-            const scale = 4.5; 
+            const scale = 4.5;
             this.shakeX = (Math.random() - 0.5) * this.shakeIntensity * scale;
             this.shakeY = (Math.random() - 0.5) * this.shakeIntensity * scale;
         } else {

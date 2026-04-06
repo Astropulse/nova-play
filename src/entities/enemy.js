@@ -17,26 +17,29 @@ const AI_STATE = {
 const RADIUS_CACHE = {};
 
 class CollisionScanner {
-    static getRadius(img, game) {
-        if (!img) return game ? 20 : 20;
-        const src = img.src;
-        if (RADIUS_CACHE[src]) return RADIUS_CACHE[src];
+    static getRadius(asset, key) {
+        if (!asset) return 20;
+        if (key && RADIUS_CACHE[key]) return RADIUS_CACHE[key];
+
+        const img = asset.canvas || asset;
+        const aw = asset.width || img.width;
+        const ah = asset.height || img.height;
 
         const canvas = document.createElement('canvas');
-        canvas.width = img.width;
-        canvas.height = img.height;
+        canvas.width = aw;
+        canvas.height = ah;
         const ctx = canvas.getContext('2d');
         ctx.imageSmoothingEnabled = false;
-        ctx.drawImage(img, 0, 0);
+        ctx.drawImage(img, 0, 0, img.width, img.height, 0, 0, aw, ah);
 
-        const data = ctx.getImageData(0, 0, img.width, img.height).data;
-        const cx = img.width / 2;
-        const cy = img.height / 2;
+        const data = ctx.getImageData(0, 0, aw, ah).data;
+        const cx = aw / 2;
+        const cy = ah / 2;
         let maxDistSq = 0;
 
-        for (let y = 0; y < img.height; y++) {
-            for (let x = 0; x < img.width; x++) {
-                if (data[(y * img.width + x) * 4 + 3] > 25) {
+        for (let y = 0; y < ah; y++) {
+            for (let x = 0; x < aw; x++) {
+                if (data[(y * aw + x) * 4 + 3] > 25) {
                     const dx = x - cx;
                     const dy = y - cy;
                     const dSq = dx * dx + dy * dy;
@@ -45,7 +48,7 @@ class CollisionScanner {
             }
         }
         const radius = Math.sqrt(maxDistSq); // Native pixels
-        RADIUS_CACHE[src] = radius;
+        if (key) RADIUS_CACHE[key] = radius;
         return radius;
     }
 }
@@ -79,7 +82,7 @@ export class Enemy {
         this.baseSpeed = (320 + Math.random() * 80) * speedScale;
         this.turnSpeed = (6.5 + Math.random() * 1.0) * turnScale;
         this.health = Math.ceil(2 + 1.5 * difficultyScale);
-        this._nativeRadius = CollisionScanner.getRadius(this.img, this.game);
+        this._nativeRadius = CollisionScanner.getRadius(this.img, this.spriteKey);
         this.radius = this._nativeRadius * 0.95;
 
         // AI - Tactical State Machine
@@ -198,9 +201,10 @@ export class Enemy {
         this.worldX += this.vx * dt;
         this.worldY += this.vy * dt;
 
-        // Dampen external forces
-        this.externalVx *= 0.99;
-        this.externalVy *= 0.99;
+        // Dampen external forces (dt-compensated)
+        const externalFriction = Math.pow(0.99, dt * 60);
+        this.externalVx *= externalFriction;
+        this.externalVy *= externalFriction;
 
         // 6. Combat — shoot only during attack runs
         if (this.state === AI_STATE.ATTACK) {
@@ -557,8 +561,8 @@ export class Enemy {
             const sinA = Math.sin(this.angle + Math.PI / 2);
 
             // Transform local fragment offset to world space
-            const worldOffX = (shard.offsetX * cosA - shard.offsetY * sinA);
-            const worldOffY = (shard.offsetX * sinA + shard.offsetY * cosA);
+            const worldOffX = (shard.lx * cosA - shard.ly * sinA);
+            const worldOffY = (shard.lx * sinA + shard.ly * cosA);
 
             const outAngle = Math.atan2(worldOffY, worldOffX);
             const spread = 60 + Math.random() * 80;
@@ -569,7 +573,7 @@ export class Enemy {
                 this.game,
                 this.worldX + worldOffX,
                 this.worldY + worldOffY,
-                shard.canvas,
+                shard,
                 vx, vy,
                 this.angle + Math.PI / 2,
                 (Math.random() - 0.5) * 8
@@ -610,7 +614,7 @@ export class Enemy {
 
         const screen = camera.worldToScreen(this.worldX, this.worldY, this.game.width, this.game.height);
         ctx.save();
-        ctx.translate(Math.floor(screen.x), Math.floor(screen.y));
+        ctx.translate(screen.x, screen.y);
 
         // Visual distinction for upgraded enemies: Subtle red glow
         if (this.isUpgraded) {
@@ -619,9 +623,9 @@ export class Enemy {
         }
 
         ctx.rotate(this.angle + Math.PI / 2);
-        const w = this.img.width * this.game.worldScale;
-        const h = this.img.height * this.game.worldScale;
-        ctx.drawImage(this.img, -Math.floor(w / 2), -Math.floor(h / 2), w, h);
+        const w = (this.img.width || this.img.canvas.width) * this.game.worldScale;
+        const h = (this.img.height || this.img.canvas.height) * this.game.worldScale;
+        ctx.drawImage(this.img.canvas || this.img, -w / 2, -h / 2, w, h);
 
         ctx.restore();
 
@@ -631,12 +635,12 @@ export class Enemy {
             if (targetImg) {
                 ctx.save();
                 ctx.globalAlpha = 0.5;
-                ctx.translate(Math.floor(screen.x), Math.floor(screen.y));
+                ctx.translate(screen.x, screen.y);
                 ctx.rotate(this.angle);
-                const tileW = targetImg.width * this.game.worldScale;
-                const tileH = targetImg.height * this.game.worldScale;
+                const tileW = (targetImg.width || targetImg.canvas.width) * this.game.worldScale;
+                const tileH = (targetImg.height || targetImg.canvas.height) * this.game.worldScale;
                 for (let i = 0; i < 180; i++) {
-                    ctx.drawImage(targetImg, i * tileW, -tileH / 2, tileW, tileH);
+                    ctx.drawImage(targetImg.canvas || targetImg, i * tileW, -tileH / 2, tileW, tileH);
                 }
                 ctx.restore();
             }
@@ -649,12 +653,12 @@ export class Enemy {
                 for (const beam of this.activeBeams) {
                     ctx.save();
                     ctx.globalAlpha = beam.timer / 0.2;
-                    ctx.translate(Math.floor(screen.x), Math.floor(screen.y));
+                    ctx.translate(screen.x, screen.y);
                     ctx.rotate(beam.angle);
-                    const tileW = beamImg.width * this.game.worldScale;
-                    const tileH = beamImg.height * this.game.worldScale;
+                    const tileW = (beamImg.width || beamImg.canvas.width) * this.game.worldScale;
+                    const tileH = (beamImg.height || beamImg.canvas.height) * this.game.worldScale;
                     for (let i = 0; i < 240; i++) {
-                        ctx.drawImage(beamImg, i * tileW, -tileH / 2, tileW, tileH);
+                        ctx.drawImage(beamImg.canvas || beamImg, i * tileW, -tileH / 2, tileW, tileH);
                     }
                     ctx.restore();
                 }
@@ -907,12 +911,15 @@ export class KamikazeEnemy extends Enemy {
 
         const screen = camera.worldToScreen(this.worldX, this.worldY, this.game.width, this.game.height);
         ctx.save();
-        ctx.translate(Math.floor(screen.x), Math.floor(screen.y));
+        ctx.translate(screen.x, screen.y);
         ctx.rotate(this.angle + Math.PI / 2);
         // Kamikaze are standard sprites
-        const w = this.img.width * this.game.worldScale;
-        const h = this.img.height * this.game.worldScale;
-        ctx.drawImage(this.img, -Math.floor(w / 2), -Math.floor(h / 2), w, h);
+        const canvas = this.img.canvas || this.img;
+        const logicalW = this.img.width || canvas.width;
+        const logicalH = this.img.height || canvas.height;
+        const w = logicalW * this.game.worldScale;
+        const h = logicalH * this.game.worldScale;
+        ctx.drawImage(canvas, -w / 2, -h / 2, w, h);
         ctx.restore();
     }
 }
@@ -967,11 +974,14 @@ export class CthulhuEnemy extends Enemy {
 
         const screen = camera.worldToScreen(this.worldX, this.worldY, this.game.width, this.game.height);
         ctx.save();
-        ctx.translate(Math.floor(screen.x), Math.floor(screen.y));
+        ctx.translate(screen.x, screen.y);
         ctx.rotate(this.angle + Math.PI / 2);
-        const w = this.img.width * this.game.worldScale;
-        const h = this.img.height * this.game.worldScale;
-        ctx.drawImage(this.img, -Math.floor(w / 2), -Math.floor(h / 2), w, h);
+        const canvas = this.img.canvas || this.img;
+        const logicalW = this.img.width || canvas.width;
+        const logicalH = this.img.height || canvas.height;
+        const w = logicalW * this.game.worldScale;
+        const h = logicalH * this.game.worldScale;
+        ctx.drawImage(canvas, -w / 2, -h / 2, w, h);
         ctx.restore();
     }
 }
@@ -1160,7 +1170,7 @@ export class HostileEncounter extends Enemy {
             const screen = camera.worldToScreen(this.worldX, this.worldY, this.game.width, this.game.height);
 
             ctx.save();
-            ctx.translate(Math.floor(screen.x), Math.floor(screen.y));
+            ctx.translate(screen.x, screen.y);
             ctx.rotate(this.angle + Math.PI / 2);
 
             for (const ex of this.deathExplosions) {

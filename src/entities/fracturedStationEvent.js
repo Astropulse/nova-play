@@ -267,11 +267,14 @@ export class FracturedStationEvent {
                 const img = this.images[i];
                 if (img) {
                     ctx.save();
-                    ctx.translate(Math.floor(screen.x), Math.floor(screen.y));
+                    ctx.translate(screen.x, screen.y);
                     ctx.rotate(this.angles[i]);
-                    const w = img.width * this.game.worldScale;
-                    const h = img.height * this.game.worldScale;
-                    ctx.drawImage(img, -Math.floor(w / 2), -Math.floor(h / 2), w, h);
+                    const canvas = img.canvas || img;
+                    const logicalW = img.width || canvas.width;
+                    const logicalH = img.height || canvas.height;
+                    const w = logicalW * this.game.worldScale;
+                    const h = logicalH * this.game.worldScale;
+                    ctx.drawImage(canvas, -w / 2, -h / 2, w, h);
                     ctx.restore();
                 }
             }

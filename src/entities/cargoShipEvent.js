@@ -106,12 +106,15 @@ export class CargoShipEvent {
         const screen = camera.worldToScreen(this.worldX, this.worldY, this.game.width, this.game.height);
 
         ctx.save();
-        ctx.translate(Math.floor(screen.x), Math.floor(screen.y));
+        ctx.translate(screen.x, screen.y);
         ctx.rotate(this.angle);
-        const w = this.img.width * this.game.worldScale * this.scale;
-        const h = this.img.height * this.game.worldScale * this.scale;
+        const canvas = this.img.canvas || this.img;
+        const logicalW = this.img.width || canvas.width;
+        const logicalH = this.img.height || canvas.height;
+        const w = logicalW * this.game.worldScale * this.scale;
+        const h = logicalH * this.game.worldScale * this.scale;
 
-        ctx.drawImage(this.img, -Math.floor(w / 2), -Math.floor(h / 2), w, h);
+        ctx.drawImage(canvas, -w / 2, -h / 2, w, h);
         ctx.restore();
     }
 }

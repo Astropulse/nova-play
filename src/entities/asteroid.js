@@ -22,23 +22,30 @@ for (let i = 0; i <= 11; i++) {
 }
 
 // Compute tight collision radius from an image's opaque pixels
-function computeCollisionRadius(img) {
-    if (!img || !img.width) return 10;
+function computeCollisionRadius(asset, key) {
+    if (!asset) return 10;
+    if (key && _radiusCache.has(key)) return _radiusCache.get(key);
+
+    const img = asset.canvas || asset;
+    const aw = asset.width || img.width;
+    const ah = asset.height || img.height;
+    if (!aw) return 10;
+
     const canvas = document.createElement('canvas');
-    canvas.width = img.width;
-    canvas.height = img.height;
+    canvas.width = aw;
+    canvas.height = ah;
     const ctx = canvas.getContext('2d');
     ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(img, 0, 0);
+    ctx.drawImage(img, 0, 0, img.width, img.height, 0, 0, aw, ah);
 
-    const data = ctx.getImageData(0, 0, img.width, img.height).data;
-    const cx = img.width / 2;
-    const cy = img.height / 2;
+    const data = ctx.getImageData(0, 0, aw, ah).data;
+    const cx = aw / 2;
+    const cy = ah / 2;
     let maxDistSq = 0;
 
-    for (let y = 0; y < img.height; y++) {
-        for (let x = 0; x < img.width; x++) {
-            const alpha = data[(y * img.width + x) * 4 + 3];
+    for (let y = 0; y < ah; y++) {
+        for (let x = 0; x < aw; x++) {
+            const alpha = data[(y * aw + x) * 4 + 3];
             if (alpha > 30) { // opaque enough to count
                 const dx = x - cx;
                 const dy = y - cy;
@@ -48,10 +55,12 @@ function computeCollisionRadius(img) {
         }
     }
 
-    return Math.sqrt(maxDistSq);
+    const radius = Math.sqrt(maxDistSq);
+    if (key) _radiusCache.set(key, radius);
+    return radius;
 }
 
-// Cache for computed collision radii (native pixels, before S scaling)
+// Cache for computed collision radii (native pixels, before scale scaling)
 const _radiusCache = new Map();
 function getCachedRadius(img, key) {
     if (_radiusCache.has(key)) return _radiusCache.get(key);
@@ -60,45 +69,48 @@ function getCachedRadius(img, key) {
     return r;
 }
 
-// Utility to slice a sprite into Voronoi-based shards for "clever" procedural breakup
+/// Utility to slice a sprite into Voronoi-based shards — 'Fast' mode uses logical dimensions for speed
 export class VoronoiSlicer {
-    static slice(img, numPieces) {
-        if (!img || !img.width) return [];
-        numPieces = Math.floor(numPieces);
-        const w = img.width;
-        const h = img.height;
+    static slice(asset, numPieces) {
+        if (!asset) return [];
+        const img = asset.canvas || asset;
 
-        // 1. Get raw pixel data
+        // Use logical dimensions for high-performance scan
+        const lw = asset.width || img.width;
+        const lh = asset.height || img.height;
+        if (!lw) return [];
+        numPieces = Math.floor(numPieces);
+
+        // 1. Get raw pixel data (Scaled to Logical size)
         const canvas = document.createElement('canvas');
-        canvas.width = w;
-        canvas.height = h;
+        canvas.width = lw;
+        canvas.height = lh;
         const ctx = canvas.getContext('2d');
         ctx.imageSmoothingEnabled = false;
-        ctx.drawImage(img, 0, 0);
-        const imgData = ctx.getImageData(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, img.width, img.height, 0, 0, lw, lh);
+        const imgData = ctx.getImageData(0, 0, lw, lh);
         const data = imgData.data;
 
-        // 2. Generate random seeds within the sprite area
-        // We bias them away from the very edges to get better fragments
+        // 2. Generate random seeds within the logical area
         const seeds = [];
         for (let i = 0; i < numPieces; i++) {
             seeds.push({
-                x: Math.floor(w * (0.1 + Math.random() * 0.8)),
-                y: Math.floor(h * (0.1 + Math.random() * 0.8))
+                x: Math.floor(lw * (0.1 + Math.random() * 0.8)),
+                y: Math.floor(lh * (0.1 + Math.random() * 0.8))
             });
         }
 
         // 3. Partition pixels into shards based on nearest seed
         const shardData = Array.from({ length: numPieces }, () => ({
-            minX: w, minY: h, maxX: 0, maxY: 0,
-            pixels: [] // {x, y, r, g, b, a}
+            minX: lw, minY: lh, maxX: 0, maxY: 0,
+            pixels: []
         }));
 
-        for (let y = 0; y < h; y++) {
-            for (let x = 0; x < w; x++) {
-                const idx = (y * w + x) * 4;
+        for (let y = 0; y < lh; y++) {
+            for (let x = 0; x < lw; x++) {
+                const idx = (y * lw + x) * 4;
                 const a = data[idx + 3];
-                if (a < 30) continue; // Skip transparent/near-transparent
+                if (a < 30) continue;
 
                 let minDistSq = Infinity;
                 let nearest = 0;
@@ -125,7 +137,7 @@ export class VoronoiSlicer {
         const fragments = [];
         for (let i = 0; i < numPieces; i++) {
             const s = shardData[i];
-            if (s.pixels.length < 5) continue; // Skip tiny or empty shards
+            if (s.pixels.length < 2) continue;
 
             const sw = (s.maxX - s.minX) + 1;
             const sh = (s.maxY - s.minY) + 1;
@@ -136,26 +148,23 @@ export class VoronoiSlicer {
             if (!fragCtx) continue;
 
             const fragData = fragCtx.createImageData(sw, sh);
-
             for (const p of s.pixels) {
-                const lx = p.x - s.minX;
-                const ly = p.y - s.minY;
-                const fIdx = (ly * sw + lx) * 4;
-                fragData.data[fIdx] = p.r;
-                fragData.data[fIdx + 1] = p.g;
-                fragData.data[fIdx + 2] = p.b;
-                fragData.data[fIdx + 3] = p.a;
+                const px = p.x - s.minX;
+                const py = p.y - s.minY;
+                const idx = (py * sw + px) * 4;
+                fragData.data[idx] = p.r;
+                fragData.data[idx + 1] = p.g;
+                fragData.data[idx + 2] = p.b;
+                fragData.data[idx + 3] = p.a;
             }
             fragCtx.putImageData(fragData, 0, 0);
 
             fragments.push({
                 canvas: fragCanvas,
-                // Center offset relative to original sprite center
-                offsetX: (s.minX + sw / 2 - w / 2),
-                offsetY: (s.minY + sh / 2 - h / 2)
+                lx: (s.minX + sw / 2 - lw / 2),
+                ly: (s.minY + sh / 2 - lh / 2)
             });
         }
-
         return fragments;
     }
 }
@@ -188,8 +197,9 @@ export class Rubble {
         this.worldX += this.vx * dt;
         this.worldY += this.vy * dt;
         this.rotation += this.rotSpeed * dt;
-        this.vx *= 0.97;
-        this.vy *= 0.97;
+        const currentFriction = Math.pow(0.97, dt * 60);
+        this.vx *= currentFriction;
+        this.vy *= currentFriction;
         this.lifetime -= dt;
         if (this.lifetime <= 0) this.alive = false;
     }
@@ -203,9 +213,9 @@ export class Rubble {
         const alpha = Math.max(0, this.lifetime / this.maxLifetime);
         ctx.save();
         ctx.globalAlpha = alpha;
-        ctx.translate(Math.floor(screen.x), Math.floor(screen.y));
+        ctx.translate(screen.x, screen.y);
         ctx.rotate(this.rotation);
-        ctx.drawImage(this.img, -Math.floor(w / 2), -Math.floor(h / 2), w, h);
+        ctx.drawImage(this.img.canvas || this.img, -w / 2, -h / 2, w, h);
         ctx.restore();
     }
 }
@@ -230,8 +240,9 @@ export class ProceduralDebris {
         this.worldX += this.vx * dt;
         this.worldY += this.vy * dt;
         this.rotation += this.spin * dt;
-        this.vx *= 0.99;
-        this.vy *= 0.99;
+        const currentFriction = Math.pow(0.99, dt * 60);
+        this.vx *= currentFriction;
+        this.vy *= currentFriction;
         this.lifetime -= dt;
         if (this.lifetime <= 0) this.alive = false;
     }
@@ -244,15 +255,20 @@ export class ProceduralDebris {
         if (screen.x < -100 || screen.x > this.game.width + 100 ||
             screen.y < -100 || screen.y > this.game.height + 100) return;
 
-        const w = this.img.width * this.game.worldScale;
-        const h = this.img.height * this.game.worldScale;
+        // Logical scale by default now
+        const canvas = this.img.canvas || this.img;
+        const w = canvas.width * this.game.worldScale;
+        const h = canvas.height * this.game.worldScale;
 
         const alpha = Math.max(0, this.lifetime / this.maxLifetime);
         ctx.save();
         ctx.globalAlpha = alpha;
-        ctx.translate(Math.floor(screen.x), Math.floor(screen.y));
+        ctx.translate(screen.x, screen.y);
         ctx.rotate(this.rotation);
-        ctx.drawImage(this.img, -Math.floor(w / 2), -Math.floor(h / 2), w, h);
+
+        // Fast rendering mode: no smoothing during shard draw
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(canvas, -w / 2, -h / 2, w, h);
         ctx.restore();
     }
 }
@@ -320,15 +336,16 @@ export class Scrap {
             this.vx = this.vx * (1 - steerWeight) + targetVx * steerWeight;
             this.vy = this.vy * (1 - steerWeight) + targetVy * steerWeight;
 
-            // Minimal damping while magnetized
-            const damping = Math.max(0.95, 1.0 - (0.005 * dtFactor));
+            // Damping logic (dt-compensated, target 0.95 at dt=1/6)
+            const damping = Math.pow(0.995, dt * 60);
             this.vx *= damping;
             this.vy *= damping;
         } else {
             this.suckTimer = 0;
-            // Normal drift with light friction
-            this.vx *= 0.99;
-            this.vy *= 0.99;
+            // Normal drift with light friction (dt-compensated)
+            const currentFriction = Math.pow(0.99, dt * 60);
+            this.vx *= currentFriction;
+            this.vy *= currentFriction;
         }
 
         this.worldX += this.vx * dt;
@@ -369,9 +386,9 @@ export class Scrap {
 
         ctx.save();
         ctx.globalAlpha = alpha;
-        ctx.translate(Math.floor(screen.x), Math.floor(screen.y));
+        ctx.translate(screen.x, screen.y);
         ctx.rotate(this.rotation);
-        ctx.drawImage(this.img, -Math.floor(w / 2), -Math.floor(h / 2), w, h);
+        ctx.drawImage(this.img.canvas || this.img, -w / 2, -h / 2, w, h);
         ctx.restore();
     }
 }
@@ -433,13 +450,14 @@ export class ItemPickup {
             this.vy = this.vy * (1 - steerWeight) + targetVy * steerWeight;
 
             // Damping logic
-            const damping = Math.max(0.95, 1.0 - (0.005 * dtFactor));
+            const damping = Math.pow(0.95, dt * 60);
             this.vx *= damping;
             this.vy *= damping;
         } else {
             this.suckTimer = 0;
-            this.vx *= 0.98;
-            this.vy *= 0.98;
+            const currentFriction = Math.pow(0.98, dt * 60);
+            this.vx *= currentFriction;
+            this.vy *= currentFriction;
         }
 
         this.worldX += this.vx * dt;
@@ -472,12 +490,12 @@ export class ItemPickup {
             screen.y + h < -50 || screen.y - h > this.game.height + 50) return;
 
         ctx.save();
-        ctx.translate(Math.floor(screen.x), Math.floor(screen.y));
+        ctx.translate(screen.x, screen.y);
         ctx.rotate(this.rotation);
 
         // Items are slightly larger in the world than their UI versions
         const renderScale = 1.2;
-        ctx.drawImage(frame, -Math.floor(w * renderScale / 2), -Math.floor(h * renderScale / 2), w * renderScale, h * renderScale);
+        ctx.drawImage(frame.canvas || frame, -w * renderScale / 2, -h * renderScale / 2, w * renderScale, h * renderScale);
 
         // Subtle glow or highlight? 
         ctx.beginPath();
@@ -585,8 +603,8 @@ export class Asteroid {
             const cosA = Math.cos(this.rotation);
             const sinA = Math.sin(this.rotation);
 
-            const worldOffX = (shard.offsetX * cosA - shard.offsetY * sinA);
-            const worldOffY = (shard.offsetX * sinA + shard.offsetY * cosA);
+            const worldOffX = (shard.lx * cosA - shard.ly * sinA);
+            const worldOffY = (shard.lx * sinA + shard.ly * cosA);
 
             const outAngle = Math.atan2(worldOffY, worldOffX);
             const spread = 30 + Math.random() * 50;
@@ -597,7 +615,7 @@ export class Asteroid {
                 this.game,
                 this.worldX + worldOffX,
                 this.worldY + worldOffY,
-                shard.canvas,
+                shard,
                 vx, vy,
                 this.rotation,
                 (Math.random() - 0.5) * 4
@@ -682,7 +700,7 @@ export class Asteroid {
             screen.y + h < -100 || screen.y - h > this.game.height + 100) return;
 
         ctx.save();
-        ctx.translate(Math.floor(screen.x), Math.floor(screen.y));
+        ctx.translate(screen.x, screen.y);
         ctx.rotate(this.rotation);
 
         if (this.highlightRed) {
@@ -690,7 +708,7 @@ export class Asteroid {
             ctx.shadowColor = '#ff4444';
         }
 
-        ctx.drawImage(this.img, -Math.floor(w / 2), -Math.floor(h / 2), w, h);
+        ctx.drawImage(this.img.canvas || this.img, -w / 2, -h / 2, w, h);
         ctx.restore();
     }
 
@@ -730,14 +748,14 @@ export class AsteroidSpawner {
         this.distanceAccumulator += distMoved;
 
         // Check if player has moved enough units (scaled)
-        const spawnThreshold = 75;
+        const spawnThreshold = 50;
         if (this.distanceAccumulator >= spawnThreshold) {
             this.distanceAccumulator -= spawnThreshold;
 
             // Normal asteroid spawn
             const spawnChance = Math.random();
             if (spawnChance < 0.1 * spawnMult) {
-                // Chance to spawn one normal asteroid when the 150 unit threshold is met
+                // Chance to spawn one normal asteroid
 
                 // Pick size
                 const roll = Math.random();
@@ -751,7 +769,7 @@ export class AsteroidSpawner {
                 const halfH = this.game.height / 2 / this.game.worldScale;
 
                 // Big asteroids spawn much further out
-                const margin = size === 'big' ? 1000 : 800;
+                const margin = size === 'big' ? 800 : 500;
 
                 // Bias spawn toward direction of travel (70% forward, 30% any edge)
                 const moveAngle = Math.atan2(playerVy, playerVx);

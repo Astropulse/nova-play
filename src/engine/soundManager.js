@@ -550,4 +550,26 @@ export class SoundManager {
         gainNode.connect(this.ctx.destination);
         source.start(0);
     }
+
+    destroy() {
+        this.stopMusic();
+        if (this.ctx) {
+            this.ctx.close().catch(err => console.error('Failed to close AudioContext:', err));
+            this.ctx = null;
+        }
+        
+        this.analyser = null;
+        this.dataArray = null;
+        this.prevSpectrum = null;
+        this.energyHistory = { all: [], bass: [], mids: [], highs: [] };
+        this.fluxHistory = [];
+        this.sfxBuffers = {};
+        
+        // Clear references
+        this.explorationTracks.forEach(t => { t.pause(); t.src = ""; });
+        this.combatTracks.forEach(t => { t.pause(); t.src = ""; });
+        Object.values(this.bossTracks).forEach(t => { t.pause(); t.src = ""; });
+        if (this.titleTrack) { this.titleTrack.pause(); this.titleTrack.src = ""; }
+        if (this.gameOverTrack) { this.gameOverTrack.pause(); this.gameOverTrack.src = ""; }
+    }
 }

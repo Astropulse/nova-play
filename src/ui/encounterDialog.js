@@ -293,8 +293,11 @@ export class EncounterDialog {
 
         // Draw ship avatar
         if (this.encounter.img) {
-            const img = this.encounter.img;
-            const aspect = img.width / img.height;
+            const asset = this.encounter.img;
+            const img = asset.canvas || asset;
+            const logicalW = asset.width || img.width;
+            const logicalH = asset.height || img.height;
+            const aspect = logicalW / logicalH;
             let drawW = avatarSize;
             let drawH = avatarSize;
             if (aspect > 1) { drawH = avatarSize / aspect; }

@@ -195,11 +195,16 @@ export class Boss {
         this.vx = 0; // Stop in place for shattering
         this.vy = 0;
 
-        const img = this.game.assets.get(this.spriteKey);
-        if (!img) {
+        const asset = this.game.assets.get(this.spriteKey);
+        if (!asset) {
             this.alive = false;
             return;
         }
+
+        // Handle both static assets and GIF frame arrays
+        const img = asset.canvas || (Array.isArray(asset) ? asset[0].canvas : asset);
+        const width = asset.width || img.width;
+        const height = asset.height || img.height;
 
         const fireFrames = this.game.assets.get('fire_explosion');
         const totalExplosionDuration = fireFrames ? fireFrames.reduce((sum, f) => sum + f.delay, 0) : 500;
@@ -210,23 +215,24 @@ export class Boss {
         // Pacing: single, then burst, then final crescendo
         const baseStaggers = [0, 0.4, 0.7, 0.8, 1.1, 1.2, 1.3, 1.4];
 
-        // Quick scan for solid pixels (sampling)
+        // Quick scan for solid pixels (sampling) — Use logical dimensions (width/height)
         const canvas = document.createElement('canvas');
-        canvas.width = img.width;
-        canvas.height = img.height;
+        canvas.width = width;
+        canvas.height = height;
         const ctx = canvas.getContext('2d');
-        ctx.drawImage(img, 0, 0);
-        const data = ctx.getImageData(0, 0, img.width, img.height).data;
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(img, 0, 0, img.width, img.height, 0, 0, width, height);
+        const data = ctx.getImageData(0, 0, width, height).data;
 
         const solidPoints = [];
         for (let i = 0; i < 300; i++) {
-            const x = Math.floor(Math.random() * img.width);
-            const y = Math.floor(Math.random() * img.height);
-            const alpha = data[(y * img.width + x) * 4 + 3];
+            const x = Math.floor(Math.random() * width);
+            const y = Math.floor(Math.random() * height);
+            const alpha = data[(y * width + x) * 4 + 3];
             if (alpha > 50) {
                 solidPoints.push({
-                    lx: x - img.width / 2,
-                    ly: y - img.height / 2
+                    lx: x - width / 2,
+                    ly: y - height / 2
                 });
             }
         }
@@ -265,14 +271,17 @@ export class Boss {
         if (this.phase === BOSS_PHASE.INTRO && Math.floor(Date.now() / 100) % 2 === 0) return;
 
         const screen = camera.worldToScreen(this.worldX, this.worldY, this.game.width, this.game.height);
-        const img = this.game.assets.get(this.spriteKey);
-        if (!img) return;
+        const asset = this.game.assets.get(this.spriteKey);
+        if (!asset) return;
 
-        const w = img.width * this.game.worldScale;
-        const h = img.height * this.game.worldScale;
+        const img = asset.canvas || (Array.isArray(asset) ? asset[0].canvas : asset);
+        const logicalW = asset.width || img.width;
+        const logicalH = asset.height || img.height;
+        const w = logicalW * this.game.worldScale;
+        const h = logicalH * this.game.worldScale;
 
         ctx.save();
-        ctx.translate(Math.floor(screen.x), Math.floor(screen.y));
+        ctx.translate(screen.x, screen.y);
         ctx.rotate(this.angle + Math.PI / 2);
 
         if (this.phase === BOSS_PHASE.ATTACK2) {
@@ -280,7 +289,7 @@ export class Boss {
             ctx.shadowColor = '#ff3300';
         }
 
-        ctx.drawImage(img, -Math.floor(w / 2), -Math.floor(h / 2), w, h);
+        ctx.drawImage(img, -w / 2, -h / 2, w, h);
 
         // Draw death explosions
         if (this.state === BOSS_STATE.DYING && this.deathExplosions) {
@@ -289,19 +298,20 @@ export class Boss {
                 for (const ex of this.deathExplosions) {
                     if (ex.fired && !ex.finished) {
                         // Find current frame for this specific explosion
-                        let frameImg = fireFrames[0].canvas;
+                        let frameImg = fireFrames[0];
                         let elapsed = ex.animTimer;
                         for (const f of fireFrames) {
                             if (elapsed < f.delay) {
-                                frameImg = f.canvas;
+                                frameImg = f;
                                 break;
                             }
                             elapsed -= f.delay;
                         }
 
-                        const ew = frameImg.width * this.game.worldScale * ex.scale;
-                        const eh = frameImg.height * this.game.worldScale * ex.scale;
-                        ctx.drawImage(frameImg, ex.lx * this.game.worldScale - ew / 2, ex.ly * this.game.worldScale - eh / 2, ew, eh);
+                        // GIF frames from decodeGif already have a logical .width property
+                        const ew = (frameImg.width || frameImg.canvas.width / 4) * this.game.worldScale * ex.scale;
+                        const eh = (frameImg.height || frameImg.canvas.height / 4) * this.game.worldScale * ex.scale;
+                        ctx.drawImage(frameImg.canvas || frameImg, ex.lx * this.game.worldScale - ew / 2, ex.ly * this.game.worldScale - eh / 2, ew, eh);
                     }
                 }
             }
@@ -317,12 +327,15 @@ export class Boss {
         ctx.translate(x, y);
         ctx.rotate(angle);
 
-        const tileW = img.width * this.game.worldScale;
-        const tileH = img.height * this.game.worldScale;
+        const canvas = img.canvas || img;
+        const logicalW = img.width || canvas.width;
+        const logicalH = img.height || canvas.height;
+        const tileW = logicalW * this.game.worldScale;
+        const tileH = logicalH * this.game.worldScale;
         const count = Math.ceil((range * this.game.worldScale) / tileW);
 
         for (let i = 0; i < count; i++) {
-            ctx.drawImage(img, i * tileW, -tileH / 2, tileW, tileH);
+            ctx.drawImage(canvas, i * tileW, -tileH / 2, tileW, tileH);
         }
         ctx.restore();
     }
@@ -331,27 +344,28 @@ export class Boss {
         const spawns = [];
 
         // Shatter effect: use Voronoi seeds to place scrap/rubble
-        const img = this.game.assets.get(this.spriteKey);
-        if (img) {
-            const fragments = VoronoiSlicer.slice(img, Math.floor(80 + Math.random() * 40));
+        const asset = this.game.assets.get(this.spriteKey);
+        if (asset) {
+            // Pass the full asset object (or first frame of a GIF) to VoronoiSlicer to ensure it uses logical dimensions
+            const fragments = VoronoiSlicer.slice(asset, Math.floor(80 + Math.random() * 40));
             for (const frag of fragments) {
                 const rotationAngle = this.angle + Math.PI / 2;
                 const cosA = Math.cos(rotationAngle);
                 const sinA = Math.sin(rotationAngle);
-                const wx = this.worldX + (frag.offsetX * cosA - frag.offsetY * sinA);
-                const wy = this.worldY + (frag.offsetX * sinA + frag.offsetY * cosA);
+                const wx = this.worldX + (frag.lx * cosA - frag.ly * sinA);
+                const wy = this.worldY + (frag.lx * sinA + frag.ly * cosA);
 
                 // Add the actual shard as drifting debris
-                const outAngle = Math.atan2(frag.offsetY, frag.offsetX) + rotationAngle;
+                const outAngle = Math.atan2(frag.ly, frag.lx) + rotationAngle;
                 const spread = 40 + Math.random() * 120;
                 const vx = this.vx * 0.2 + Math.cos(outAngle) * spread;
                 const vy = this.vy * 0.2 + Math.sin(outAngle) * spread;
 
                 spawns.push(new ProceduralDebris(
-                    this.game, wx, wy, frag.canvas,
+                    this.game, wx, wy, frag,
                     vx, vy,
                     this.angle + Math.PI / 2,
-                    (Math.random() - 0.5) * 4,
+                    (Math.random() - 0.5) * 3,
                     4.0 + Math.random() * 2.0 // Floating for 4-6 seconds
                 ));
 

@@ -300,18 +300,18 @@ export class MenuState {
             const key = `starfield_${sf.spriteIdx}`;
             const img = game.assets.get(key);
             if (img) {
-                const w = img.width * game.uiScale;
-                const h = img.height * game.uiScale;
+                const w = (img.width || img.canvas.width) * game.uiScale;
+                const h = (img.height || img.canvas.height) * game.uiScale;
                 const x = sf.x * cw;
                 const y = sf.y * ch;
 
                 if (sf.rotation === 0) {
-                    ctx.drawImage(img, Math.floor(x - w / 2), Math.floor(y - h / 2), w, h);
+                    ctx.drawImage(img.canvas || img, x - w / 2, y - h / 2, w, h);
                 } else {
                     ctx.save();
-                    ctx.translate(Math.floor(x), Math.floor(y));
+                    ctx.translate(x, y);
                     ctx.rotate(sf.rotation);
-                    ctx.drawImage(img, -Math.floor(w / 2), -Math.floor(h / 2), w, h);
+                    ctx.drawImage(img.canvas || img, -w / 2, -h / 2, w, h);
                     ctx.restore();
                 }
             }

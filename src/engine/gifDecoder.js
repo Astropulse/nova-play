@@ -120,14 +120,27 @@ export async function decodeGif(url) {
             }
             compCtx.putImageData(imgData, left, top);
 
-            // Snapshot this frame
+            // Snapshot this frame with 4x prescale
+            const prescale = 4; // Reduced from 8 to 4 for performance
             const frameCanvas = document.createElement('canvas');
-            frameCanvas.width = width;
-            frameCanvas.height = height;
+            frameCanvas.width = width * prescale;
+            frameCanvas.height = height * prescale;
             const frameCtx = frameCanvas.getContext('2d');
+            
+            // Razor sharpness: No smoothing
             frameCtx.imageSmoothingEnabled = false;
-            frameCtx.drawImage(compCanvas, 0, 0);
-            frames.push({ canvas: frameCanvas, delay: gce ? gce.delay : 100 });
+            frameCtx.webkitImageSmoothingEnabled = false;
+            frameCtx.msImageSmoothingEnabled = false;
+            
+            frameCtx.drawImage(compCanvas, 0, 0, width, height, 0, 0, frameCanvas.width, frameCanvas.height);
+            
+            frames.push({
+                canvas: frameCanvas,
+                width: width,
+                height: height,
+                prescale: prescale,
+                delay: gce ? gce.delay : 100
+            });
 
             if (disposal === 3 && prevData) compCtx.putImageData(prevData, 0, 0);
             gce = null;

@@ -221,17 +221,20 @@ export class CthulhuEvent {
 
         let img = this.stillImg;
         if ((this.state === CTHULHU_STATE.WAKING || this.state === CTHULHU_STATE.COMBAT || this.state === CTHULHU_STATE.SLEEPING) && this.wakeAnim) {
-            img = this.wakeAnim[this.frameIndex].canvas || this.wakeAnim[this.frameIndex];
+            img = this.wakeAnim[this.frameIndex];
         }
 
         if (!img) return;
 
         ctx.save();
-        ctx.translate(Math.floor(screen.x), Math.floor(screen.y));
+        ctx.translate(screen.x, screen.y);
         ctx.rotate(this.angle);
-        const w = img.width * this.game.worldScale * this.scale;
-        const h = img.height * this.game.worldScale * this.scale;
-        ctx.drawImage(img, -Math.floor(w / 2), -Math.floor(h / 2), w, h);
+        const canvas = img.canvas || img;
+        const logicalW = img.width || canvas.width;
+        const logicalH = img.height || canvas.height;
+        const w = logicalW * this.game.worldScale * this.scale;
+        const h = logicalH * this.game.worldScale * this.scale;
+        ctx.drawImage(canvas, -w / 2, -h / 2, w, h);
         ctx.restore();
     }
 }

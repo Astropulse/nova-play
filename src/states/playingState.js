@@ -231,17 +231,17 @@ export class PlayingState {
     }
 
     _spawnInitialAsteroids() {
-        const numAsteroids = 5 + Math.floor(Math.random() * 6); // Reduced from 10-21 down to 5-10
+        const numAsteroids = 6 + Math.floor(Math.random() * 8); // Reduced from 18-35 to 6-13
         for (let i = 0; i < numAsteroids; i++) {
             const angle = Math.random() * Math.PI * 2;
-            const dist = 400 + Math.random() * 1600;
+            const dist = 400 + Math.random() * 2500; // Wider initial spread
             // Player starts near 0,0, but using their actual pos is safest
             const ax = this.player.worldX + Math.cos(angle) * dist;
             const ay = this.player.worldY + Math.sin(angle) * dist;
 
             const roll = Math.random();
             let size = 'medium';
-            if (roll < 0.1) size = 'big'; // reduced from 0.15 to 0.05
+            if (roll < 0.05) size = 'big'; // reduced from 0.15 to 0.05
             else if (roll < 0.45) size = 'small';
             else if (roll < 0.60) size = 'tiny';
 
@@ -609,11 +609,15 @@ export class PlayingState {
         this.currentFovMult += (targetFovMult - this.currentFovMult) * dt * fovLerpSpeed;
 
         // Apply scale to engine
+        // Dynamic FOV Scaling — Smoothing with Lerp
         const targetScale = 1.0 / this.currentFovMult;
-        if (Math.abs(this.game.worldScaleModifier - targetScale) > 0.001) {
-            this.game.worldScaleModifier = targetScale;
-            this.game.resize();
-        }
+        const scaleStiffness = 4.0; // Pacing of the zoom (higher = faster)
+
+        this.game.worldScaleModifier += (targetScale - this.game.worldScaleModifier) * (1.0 - Math.exp(-scaleStiffness * dt));
+        // Recalculate scaling without expensive resize()
+        const currentMean = Math.sqrt(this.game.width * this.game.height);
+        const refMean = Math.sqrt(2560 * 1440);
+        this.game.worldScale = Math.max(0.1, (2 * (currentMean / refMean)) * this.game.worldScaleModifier);
 
         // Shop interaction check (already calculated above for input priority)
 
@@ -1358,11 +1362,15 @@ export class PlayingState {
             for (const d of this.shipDebris) {
                 const screen = this.camera.worldToScreen(d.worldX, d.worldY, this.game.width, this.game.height);
                 ctx.save();
-                ctx.translate(Math.floor(screen.x), Math.floor(screen.y));
+                ctx.translate(screen.x, screen.y);
                 ctx.rotate(d.rotation);
-                const w = d.img.width * this.game.worldScale;
-                const h = d.img.height * this.game.worldScale;
-                ctx.drawImage(d.img, -Math.floor(w / 2), -Math.floor(h / 2), w, h);
+
+                const canvas = d.img.canvas || d.img;
+                const prescale = d.img.prescale || 1;
+                const w = (canvas.width / prescale) * this.game.worldScale;
+                const h = (canvas.height / prescale) * this.game.worldScale;
+
+                ctx.drawImage(canvas, -w / 2, -h / 2, w, h);
                 ctx.restore();
             }
 
@@ -1556,10 +1564,13 @@ export class PlayingState {
             ctx.restore();
 
             // Label "SHOP"
+            ctx.save();
             ctx.fillStyle = '#44ddff';
             ctx.font = `${6 * this.game.uiScale}px Astro4x`;
             ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
             ctx.fillText('SHOP', ix, iy - 12 * this.game.uiScale);
+            ctx.restore();
         }
     }
 
@@ -1611,10 +1622,13 @@ export class PlayingState {
             ctx.restore();
 
             // Label "UNKNOWN SIGNAL"
+            ctx.save();
             ctx.fillStyle = '#ffdd44';
             ctx.font = `${5 * this.game.uiScale}px Astro4x`;
             ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
             ctx.fillText('SIGNAL', ix, iy - 12 * this.game.uiScale);
+            ctx.restore();
         }
     }
 
@@ -1656,14 +1670,18 @@ export class PlayingState {
             ctx.fill();
             ctx.restore();
 
+            ctx.save();
             ctx.fillStyle = '#ff44ff';
             ctx.font = `${5 * this.game.uiScale}px Astro4x`;
             ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
             ctx.fillText('WRECKAGE', ix, iy - 12 * this.game.uiScale);
+            ctx.restore();
         }
     }
 
     _drawShopOverlay(ctx) {
+        ctx.save();
         const cw = this.game.width;
         const ch = this.game.height;
         const uiScale = this.game.uiScale;
@@ -1690,6 +1708,7 @@ export class PlayingState {
         ctx.fillStyle = '#44ddff';
         ctx.font = `${8 * uiScale}px Astro5x`;
         ctx.textAlign = 'center';
+        ctx.textBaseline = 'alphabetic';
         ctx.fillText('SPACE STATION SHOP', cw / 2, shopY - uiScale * 10);
 
         // --- Player Layout ---
@@ -1781,7 +1800,8 @@ export class PlayingState {
         if (this.draggedItem) {
             const { item, offsetX, offsetY } = this.draggedItem;
             const mouse = this.game.getMousePos();
-            const frame = this.game.getAnimationFrame(item.assetKey);
+            const frameAsset = this.game.getAnimationFrame(item.assetKey);
+            const frame = frameAsset.canvas || frameAsset;
             const w = item.width * slotSize;
             const h = item.height * slotSize;
 
@@ -1887,7 +1907,8 @@ export class PlayingState {
             if (this.draggedItem && this.draggedItem.entry === entry) continue;
 
             const { item, x, y } = entry;
-            const frame = this.game.getAnimationFrame(item.assetKey);
+            const frameAsset = this.game.getAnimationFrame(item.assetKey);
+            const frame = frameAsset ? (frameAsset.canvas || frameAsset) : null;
             if (!frame) continue;
 
             const ix = startX + x * slotSize;
@@ -2432,7 +2453,7 @@ export class PlayingState {
         p.naniteRegen = 0;
         p.shieldCapacitorCount = 0;
         p.asteroidSpawnMult = 1.0;
-        p.friction = 0.97;
+        p.friction = 0.95;
         p.momentumSpeedMult = 1.0;
         p.momentumMaxSpeedMult = 1.0;
         p.momentumBoostMult = 1.0;
@@ -2500,11 +2521,11 @@ export class PlayingState {
             if (item.id === 'ancient_curse') p.hasAncientCurse = true;
             if (item.id === 'boost_drive') p.hasBoostDrive = true;
             if (item.id === 'momentum_module') {
-                p.momentumSpeedMult = 0.5;
-                p.momentumMaxSpeedMult = 2 * (0.97 / 0.99);
-                p.momentumBoostMult = 0.5;
-                p.momentumDodgeMult = 0.5;
-                p.friction = 0.99;
+                p.momentumSpeedMult = 0.75;
+                p.momentumMaxSpeedMult = 1.5;
+                p.momentumBoostMult = 0.75;
+                p.momentumDodgeMult = 0.75;
+                p.friction = 0.98;
             }
             if (item.id === 'sensor_accelerator') {
                 fovMult *= 1.1; // 10% increase in FOV
@@ -2784,11 +2805,13 @@ export class PlayingState {
             }
 
             // Draw "!" indicator (bosses are purple, regular enemies red)
+            ctx.save();
             ctx.fillStyle = en.isBoss ? '#ff44ff' : '#ff2222';
             ctx.font = `${12 * this.game.uiScale}px Astro5x`;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
             ctx.fillText('!', ix, iy);
+            ctx.restore();
         }
     }
 
@@ -2827,15 +2850,18 @@ export class PlayingState {
             }
 
             // Draw yellow "!" indicator
+            ctx.save();
             ctx.fillStyle = '#ffff44';
             ctx.font = `${12 * this.game.uiScale}px Astro5x`;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
             ctx.fillText('!', ix, iy);
+            ctx.restore();
         }
     }
 
     _drawPauseOverlay(ctx) {
+        ctx.save();
         const cw = this.game.width;
         const ch = this.game.height;
 
@@ -2847,6 +2873,7 @@ export class PlayingState {
         ctx.fillStyle = '#ffffff';
         ctx.font = `${8 * this.game.uiScale}px Astro5x`;
         ctx.textAlign = 'center';
+        ctx.textBaseline = 'alphabetic';
         ctx.fillText('PAUSED', cw / 2, this.game.uiScale * 16);
 
         // --- Inventory using 9-slice panel ---
@@ -2886,11 +2913,13 @@ export class PlayingState {
         if (this.draggedItem) {
             const { item, offsetX, offsetY } = this.draggedItem;
             const mouse = this.game.getMousePos();
-            const frame = this.game.getAnimationFrame(item.assetKey);
-            const w = item.width * slotSize;
-            const h = item.height * slotSize;
-
-            ctx.drawImage(frame, mouse.x - offsetX, mouse.y - offsetY, w, h);
+            const frameAsset = this.game.getAnimationFrame(item.assetKey);
+            const frame = frameAsset ? (frameAsset.canvas || frameAsset) : null;
+            if (frame) {
+                const w = item.width * slotSize;
+                const h = item.height * slotSize;
+                ctx.drawImage(frame, mouse.x - offsetX, mouse.y - offsetY, w, h);
+            }
         }
 
         // Resume hint
@@ -2946,6 +2975,7 @@ export class PlayingState {
             ctx.fillText('NO', nb.x + nb.w / 2, nb.y + nb.h / 2);
             ctx.textBaseline = 'bottom';
         }
+        ctx.restore();
     }
 
     _drawPauseVolumeControls(ctx) {
@@ -2964,33 +2994,37 @@ export class PlayingState {
         const dm = M * this.game.uiScale;       // middle in screen pixels
         const mw = w - dc * 2;  // full middle width to fill
         const mh = h - dc * 2;  // full middle height to fill
+        const canvas = img.canvas || img;
+        const prescale = canvas.width / (img.width || canvas.width);
+        const sC = C * prescale;
+        const sM = M * prescale;
 
         // Top row
-        ctx.drawImage(img, 0, 0, C, C, x, y, dc, dc); // TL
+        ctx.drawImage(canvas, 0, 0, sC, sC, x, y, dc, dc); // TL
         const cols = Math.round(mw / dm);
         for (let i = 0; i < cols; i++) {
-            ctx.drawImage(img, C, 0, M, C, x + dc + i * dm, y, dm, dc); // T-edge
+            ctx.drawImage(canvas, sC, 0, sM, sC, x + dc + i * dm, y, dm, dc); // T-edge
         }
-        ctx.drawImage(img, C + M, 0, C, C, x + dc + mw, y, dc, dc); // TR
+        ctx.drawImage(canvas, sC + sM, 0, sC, sC, x + dc + mw, y, dc, dc); // TR
 
         // Middle row
         const rows = Math.round(mh / dm);
         for (let j = 0; j < rows; j++) {
             const ry = y + dc + j * dm;
-            ctx.drawImage(img, 0, C, C, M, x, ry, dc, dm); // L-edge
+            ctx.drawImage(canvas, 0, sC, sC, sM, x, ry, dc, dm); // L-edge
             for (let i = 0; i < cols; i++) {
-                ctx.drawImage(img, C, C, M, M, x + dc + i * dm, ry, dm, dm); // Center
+                ctx.drawImage(canvas, sC, sC, sM, sM, x + dc + i * dm, ry, dm, dm); // Center
             }
-            ctx.drawImage(img, C + M, C, C, M, x + dc + mw, ry, dc, dm); // R-edge
+            ctx.drawImage(canvas, sC + sM, sC, sC, sM, x + dc + mw, ry, dc, dm); // R-edge
         }
 
         // Bottom row
         const by = y + dc + mh;
-        ctx.drawImage(img, 0, C + M, C, C, x, by, dc, dc); // BL
+        ctx.drawImage(canvas, 0, sC + sM, sC, sC, x, by, dc, dc); // BL
         for (let i = 0; i < cols; i++) {
-            ctx.drawImage(img, C, C + M, M, C, x + dc + i * dm, by, dm, dc); // B-edge
+            ctx.drawImage(canvas, sC, sC + sM, sM, sC, x + dc + i * dm, by, dm, dc); // B-edge
         }
-        ctx.drawImage(img, C + M, C + M, C, C, x + dc + mw, by, dc, dc); // BR
+        ctx.drawImage(canvas, sC + sM, sC + sM, sC, sC, x + dc + mw, by, dc, dc); // BR
     }
 
     _handlePrimaryWeaponFire() {
@@ -3185,8 +3219,9 @@ export class PlayingState {
     _drawTiledLine(ctx, img, angle, alpha, startX, startY) {
         const game = this.game;
 
-        const tileW = img.width * game.worldScale;
-        const tileH = img.height * game.worldScale;
+        const canvas = img.canvas || img;
+        const tileW = (img.width || img.canvas.width) * game.worldScale;
+        const tileH = (img.height || img.canvas.height) * game.worldScale;
         const count = 40; // Enough to go off screen
 
         ctx.save();
@@ -3195,7 +3230,7 @@ export class PlayingState {
         ctx.rotate(angle);
 
         for (let i = 0; i < count; i++) {
-            ctx.drawImage(img, i * tileW, -tileH / 2, tileW, tileH);
+            ctx.drawImage(canvas, i * tileW, -tileH / 2, tileW, tileH);
         }
 
         ctx.restore();
@@ -3311,13 +3346,13 @@ export class PlayingState {
             // Fallback: Voronoi procedural slicing
             const shards = VoronoiSlicer.slice(this.player.img, 16);
             for (const shard of shards) {
-                const outAngle = Math.atan2(shard.offsetY, shard.offsetX) || (Math.random() * Math.PI * 2);
+                const outAngle = Math.atan2(shard.ly, shard.lx) || (Math.random() * Math.PI * 2);
                 const spread = 80 + Math.random() * 160;
 
                 debris.push({
-                    img: shard.canvas,
-                    worldX: this.player.worldX + shard.offsetX,
-                    worldY: this.player.worldY + shard.offsetY,
+                    img: shard,
+                    worldX: this.player.worldX + shard.lx,
+                    worldY: this.player.worldY + shard.ly,
                     vx: this.player.vx * 0.3 + Math.cos(outAngle) * spread,
                     vy: this.player.vy * 0.3 + Math.sin(outAngle) * spread,
                     rotation: this.player.angle + Math.PI / 2,

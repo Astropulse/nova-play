@@ -16,7 +16,8 @@ export class Game {
         this.hudScale = 4;   // HUD overlays
 
         this.resize();
-        window.addEventListener('resize', () => this.resize());
+        this._resizeListener = () => this.resize();
+        window.addEventListener('resize', this._resizeListener);
 
         // Subsystems
         this.assets = new AssetLoader();
@@ -43,7 +44,7 @@ export class Game {
     resize() {
         this.canvas.width = window.innerWidth;
         this.canvas.height = window.innerHeight;
-        this.ctx.imageSmoothingEnabled = false;
+        this.ctx.imageSmoothingEnabled = true;
 
         // Reference resolution 2560x1440 (16:9)
         const refW = 2560;
@@ -58,10 +59,6 @@ export class Game {
         const heightRatio = this.canvas.height / refH;
 
         let rawWorldScale = 2 * meanRatio;
-        const nearestWorldInt = Math.round(rawWorldScale);
-        if (nearestWorldInt > 0 && Math.abs(rawWorldScale - nearestWorldInt) / nearestWorldInt <= 0.15) {
-            rawWorldScale = nearestWorldInt;
-        }
         this.worldScale = Math.max(0.1, rawWorldScale * this.worldScaleModifier);
 
         // UI and HUD scales should be strictly integers based on height
@@ -291,10 +288,13 @@ export class Game {
     }
 
     // Draw a sprite at a given scale at the given position (in screen pixels)
-    drawSprite(ctx, key, x, y, scale = this.uiScale) {
-        const img = this.assets.get(key);
-        if (!img) return;
-        ctx.drawImage(img, Math.floor(x), Math.floor(y), img.width * scale, img.height * scale);
+    drawSprite(ctx, keyOrAsset, x, y, scale = this.uiScale) {
+        const asset = typeof keyOrAsset === 'string' ? this.assets.get(keyOrAsset) : keyOrAsset;
+        if (!asset) return;
+        const img = asset.canvas || asset;
+        const w = (asset.width || img.width) * scale;
+        const h = (asset.height || img.height) * scale;
+        ctx.drawImage(img, x, y, w, h);
     }
 
     takeScreenshot() {
@@ -374,12 +374,13 @@ export class Game {
     }
 
     // Draw a sprite centered at (cx, cy) in screen pixels
-    drawSpriteCentered(ctx, key, cx, cy, scale = this.uiScale) {
-        const img = this.assets.get(key);
-        if (!img) return;
-        const w = img.width * scale;
-        const h = img.height * scale;
-        ctx.drawImage(img, Math.floor(cx - w / 2), Math.floor(cy - h / 2), w, h);
+    drawSpriteCentered(ctx, keyOrAsset, cx, cy, scale = this.uiScale) {
+        const asset = typeof keyOrAsset === 'string' ? this.assets.get(keyOrAsset) : keyOrAsset;
+        if (!asset) return;
+        const img = asset.canvas || asset;
+        const w = (asset.width || img.width) * scale;
+        const h = (asset.height || img.height) * scale;
+        ctx.drawImage(img, cx - w / 2, cy - h / 2, w, h);
     }
 
     // Shared UI Component: Volume Control Row
@@ -482,10 +483,12 @@ export class Game {
         ctx.restore();
     }
 
-    spriteSize(key, scale = this.uiScale) {
-        const img = this.assets.get(key);
-        if (!img) return { w: 0, h: 0 };
-        return { w: img.width * scale, h: img.height * scale };
+    spriteSize(keyOrAsset, scale = 1.0) {
+        const asset = typeof keyOrAsset === 'string' ? this.assets.get(keyOrAsset) : keyOrAsset;
+        if (!asset) return { w: 0, h: 0 };
+        const w = (asset.width || (asset.canvas ? asset.canvas.width : asset.width)) * scale;
+        const h = (asset.height || (asset.canvas ? asset.canvas.height : asset.height)) * scale;
+        return { w, h };
     }
 
     getMousePos() {
@@ -616,6 +619,7 @@ export class Game {
             'fractured_station_0': 'Assets/Events/fractured_station_0.png',
             'fractured_station_1': 'Assets/Events/fractured_station_1.png',
             'fractured_station_2': 'Assets/Events/fractured_station_2.png',
+            'knowledge': 'Assets/Events/knowledge.png',
             // Encounter Ships
             'encounter_cargo_trader_1': 'Assets/Ships/Encounter/cargo_trader_1.png',
             'encounter_cargo_trader_2': 'Assets/Ships/Encounter/cargo_trader_2.png',
@@ -789,12 +793,32 @@ export class Game {
             const totalDelay = asset.reduce((sum, frame) => sum + frame.delay, 0);
             let timeMs = performance.now() % totalDelay;
             for (const frame of asset) {
-                if (timeMs < frame.delay) return frame.canvas;
+                if (timeMs < frame.delay) return frame;
                 timeMs -= frame.delay;
             }
-            return asset[asset.length - 1].canvas;
+            return asset[0];
         }
+        return asset; // Static asset is already { canvas, width, height }
+    }
 
-        return asset;
+    destroy() {
+        this.running = false;
+
+        // Remove global listeners
+        window.removeEventListener('resize', this._resizeListener);
+
+        // Destroy subsystems (explicit nulling helps GC)
+        if (this.assets) { this.assets.destroy(); this.assets = null; }
+        if (this.input) { this.input.destroy(); this.input = null; }
+        if (this.sounds) { this.sounds.destroy(); this.sounds = null; }
+        if (this.devConsole) { this.devConsole.destroy(); this.devConsole = null; }
+
+        // Clear state
+        if (this.currentState && this.currentState.exit) {
+            this.currentState.exit();
+        }
+        this.currentState = null;
+
+        console.log("Game destroyed.");
     }
 }

@@ -16,7 +16,7 @@ export class Player {
         this.angle = -Math.PI / 2; // facing up
         this.baseSpeed = shipData.speed * 100;
         this.acceleration = this.baseSpeed * 3;
-        this.friction = 0.97;
+        this.friction = 0.95;
 
         // Boost — short powerful burst
         this.boostPower = 6000;
@@ -218,8 +218,8 @@ export class Player {
             this.lastMouseX = mouse.x;
             this.lastMouseY = mouse.y;
         } else {
-            // Apply friction only when not accelerating
-            this.rotationVelocity *= this.rotationFriction;
+            // Apply friction only when not accelerating (dt-compensated)
+            this.rotationVelocity *= Math.pow(this.rotationFriction, dt * 60);
             if (Math.abs(this.rotationVelocity) < 0.01) this.rotationVelocity = 0;
         }
 
@@ -402,8 +402,10 @@ export class Player {
             this.vy *= decay;
         }
 
-        this.vx *= this.friction;
-        this.vy *= this.friction;
+        // Applied with dt-compensation
+        const currentFriction = Math.pow(this.friction, dt * 60);
+        this.vx *= currentFriction;
+        this.vy *= currentFriction;
         if (Math.abs(this.vx) < 0.1 && Math.abs(this.vy) < 0.1) {
             this.vx = 0;
             this.vy = 0;
@@ -581,21 +583,14 @@ export class Player {
             if (this.trailTimer <= 0) {
                 this.trailTimer = this.trailInterval;
 
-                // Store current state
-                let trailImg;
-                if (this.thrusting && this.flyingFrames.length > 0) {
-                    trailImg = this.flyingFrames[this.currentFrame].canvas;
-                } else {
-                    trailImg = this.stillImg;
-                }
-
                 // Record state regardless of movement for a solid feel
                 this.trailHistory.unshift({
                     x: this.worldX,
                     y: this.worldY,
                     angle: this.angle,
-                    img: trailImg,
-                    life: 1.0
+                    asset: (this.thrusting && this.flyingFrames.length > 0) ? this.flyingFrames[this.currentFrame] : this.stillImg,
+                    life: 1.0,
+                    seed: Math.random() * Math.PI * 2 // Individual offset for smooth wavy motion
                 });
 
                 if (this.trailHistory.length > this.maxTrailLength) {
@@ -612,7 +607,7 @@ export class Player {
             this.trailHistory[i].life -= dt * 6; // Fast fade but enough to see the length
         }
         this.trailHistory = this.trailHistory.filter(t => t.life > 0);
-        
+
         // --- Nanite Tank Regeneration ---
         if (this.naniteRegen > 0 && this.health < this.maxHealth) {
             this.health = Math.min(this.maxHealth, this.health + this.naniteRegen * dt);
@@ -629,57 +624,60 @@ export class Player {
             ctx.globalCompositeOperation = 'lighter'; // Additive blending for solid feel
             for (let i = 0; i < this.trailHistory.length; i++) {
                 const t = this.trailHistory[i];
-                // Slightly higher alpha for the "core" trail
                 const alpha = t.life * 0.15 * (1 - i / this.maxTrailLength);
                 if (alpha <= 0) continue;
 
                 const tScreen = camera.worldToScreen(t.x, t.y, this.game.width, this.game.height);
 
-                const w = t.img.width * this.game.worldScale;
-                const h = t.img.height * this.game.worldScale;
+                // Exact scale matching the ship, no dynamic scaling or pulse
+                const asset = t.asset;
+                const img = asset.canvas || asset;
+                const w = (asset.width || img.width) * this.game.worldScale;
+                const h = (asset.height || img.height) * this.game.worldScale;
 
                 // Use cached tinted version for performance and consistency
-                let greenImg = this._trailCache.get(t.img);
+                let greenImg = this._trailCache.get(img);
                 if (!greenImg) {
-                    greenImg = this._createGreenGhost(t.img);
-                    this._trailCache.set(t.img, greenImg);
+                    greenImg = this._createGreenGhost(img);
+                    this._trailCache.set(img, greenImg);
                 }
 
                 ctx.save();
-                ctx.translate(Math.floor(tScreen.x), Math.floor(tScreen.y));
+                ctx.translate(tScreen.x, tScreen.y);
                 ctx.rotate(t.angle + Math.PI / 2);
                 ctx.globalAlpha = alpha;
-                ctx.drawImage(greenImg, -Math.floor(w / 2), -Math.floor(h / 2), w, h);
+                ctx.drawImage(greenImg, -w / 2, -h / 2, w, h);
                 ctx.restore();
             }
             ctx.restore();
         }
 
         // Choose sprite
-        let img;
+        let asset;
         if (this.thrusting && this.flyingFrames.length > 0) {
-            img = this.flyingFrames[this.currentFrame].canvas;
+            asset = this.flyingFrames[this.currentFrame];
         } else {
-            img = this.stillImg;
+            asset = this.stillImg;
         }
+        const img = asset.canvas || asset;
 
-        const w = img.width * this.game.worldScale;
-        const h = img.height * this.game.worldScale;
+        const w = (asset.width || img.width) * this.game.worldScale;
+        const h = (asset.height || img.height) * this.game.worldScale;
 
         ctx.save();
-        ctx.translate(Math.floor(screen.x), Math.floor(screen.y));
+        ctx.translate(screen.x, screen.y);
         ctx.rotate(this.angle + Math.PI / 2);
 
         // Blinking if invulnerable
         if (this.invulnTimer > 0) {
-            ctx.drawImage(img, -Math.floor(w / 2), -Math.floor(h / 2), w, h);
+            ctx.drawImage(img.canvas || img, -w / 2, -h / 2, w, h);
             ctx.globalCompositeOperation = 'lighter';
             ctx.globalAlpha = 0.5;
-            ctx.drawImage(img, -Math.floor(w / 2), -Math.floor(h / 2), w, h);
+            ctx.drawImage(img.canvas || img, -w / 2, -h / 2, w, h);
             ctx.globalAlpha = 1;
             ctx.globalCompositeOperation = 'source-over';
         } else {
-            ctx.drawImage(img, -Math.floor(w / 2), -Math.floor(h / 2), w, h);
+            ctx.drawImage(img.canvas || img, -w / 2, -h / 2, w, h);
         }
 
         // Low health red pulse
@@ -693,7 +691,7 @@ export class Player {
         if (flash > 0.01) {
             ctx.globalCompositeOperation = 'lighter';
             ctx.globalAlpha = flash * 0.6;
-            ctx.drawImage(img, -Math.floor(w / 2), -Math.floor(h / 2), w, h);
+            ctx.drawImage(img.canvas || img, -w / 2, -h / 2, w, h);
             ctx.globalAlpha = 1;
             ctx.globalCompositeOperation = 'source-over';
         }
@@ -702,13 +700,13 @@ export class Player {
 
         // Shield visual — proper asset, 70% transparent
         if (this.shielding && this.shieldImg) {
-            const sw = this.shieldImg.width * this.game.worldScale;
-            const sh = this.shieldImg.height * this.game.worldScale;
+            const sw = (this.shieldImg.width || this.shieldImg.canvas.width) * this.game.worldScale;
+            const sh = (this.shieldImg.height || this.shieldImg.canvas.height) * this.game.worldScale;
             ctx.save();
             ctx.globalAlpha = 0.3; // 70% transparent
-            ctx.translate(Math.floor(screen.x), Math.floor(screen.y));
+            ctx.translate(screen.x, screen.y);
             ctx.rotate(this.angle + Math.PI / 2);
-            ctx.drawImage(this.shieldImg, -Math.floor(sw / 2), -Math.floor(sh / 2), sw, sh);
+            ctx.drawImage(this.shieldImg.canvas || this.shieldImg, -sw / 2, -sh / 2, sw, sh);
             ctx.restore();
         }
 
@@ -719,18 +717,28 @@ export class Player {
     // Collision radius computed from sprite's opaque pixels (for broad-phase)
     get radius() {
         if (this._cachedRadius != null) return this._cachedRadius;
-        const img = this.stillImg;
-        const canvas = document.createElement('canvas');
-        canvas.width = img.width;
-        canvas.height = img.height;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(img, 0, 0);
-        const data = ctx.getImageData(0, 0, img.width, img.height).data;
-        const cx = img.width / 2, cy = img.height / 2;
+        const asset = this.stillImg;
+        const canvas = asset.canvas || asset;
+
+        // Logical size for analysis (ensures radius is in world units)
+        const aw = asset.width || canvas.width;
+        const ah = asset.height || canvas.height;
+
+        const offCanvas = document.createElement('canvas');
+        offCanvas.width = aw;
+        offCanvas.height = ah;
+        const ctx = offCanvas.getContext('2d');
+        ctx.imageSmoothingEnabled = false;
+
+        // MUST scale the physical buffer (64x64) down to logical (16x16) to avoid clipping and miscounting
+        ctx.drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 0, aw, ah);
+
+        const data = ctx.getImageData(0, 0, aw, ah).data;
+        const cx = aw / 2, cy = ah / 2;
         let maxDistSq = 0;
-        for (let y = 0; y < img.height; y++) {
-            for (let x = 0; x < img.width; x++) {
-                if (data[(y * img.width + x) * 4 + 3] > 30) {
+        for (let y = 0; y < ah; y++) {
+            for (let x = 0; x < aw; x++) {
+                if (data[(y * aw + x) * 4 + 3] > 30) {
                     const dx = x - cx, dy = y - cy;
                     const d = dx * dx + dy * dy;
                     if (d > maxDistSq) maxDistSq = d;
@@ -740,6 +748,7 @@ export class Player {
         this._cachedRadius = Math.sqrt(maxDistSq);
         return this._cachedRadius;
     }
+
 
     /**
      * Pixel-perfect collision check.
@@ -754,11 +763,11 @@ export class Player {
         if (distSq > r * r) return false;
 
         // 2. Narrow phase: Pixel check
-        const img = this.thrusting && this.flyingFrames.length > 0 ?
+        const asset = (this.thrusting && this.flyingFrames.length > 0) ?
             this.flyingFrames[this.currentFrame] :
-            { canvas: this.stillImg };
+            this.stillImg;
 
-        const mask = this._getPixelMask(img);
+        const mask = this._getPixelMask(asset);
         if (!mask) return true; // Fallback to broad phase if mask fails
 
         // Transform world point to local sprite space
@@ -841,47 +850,54 @@ export class Player {
             this._tintCtx.imageSmoothingEnabled = false;
         }
 
+        const canvas = img.canvas || img;
+        const aw = img.width || canvas.width;
+        const ah = img.height || canvas.height;
+
         // Ensure canvas is large enough for the image (unscaled)
-        if (this._tintCanvas.width < img.width || this._tintCanvas.height < img.height) {
-            this._tintCanvas.width = img.width;
-            this._tintCanvas.height = img.height;
+        if (this._tintCanvas.width < aw || this._tintCanvas.height < ah) {
+            this._tintCanvas.width = aw;
+            this._tintCanvas.height = ah;
         }
 
         const tCtx = this._tintCtx;
         tCtx.clearRect(0, 0, this._tintCanvas.width, this._tintCanvas.height);
 
         // 1. Draw the base image
-        tCtx.drawImage(img, 0, 0);
+        tCtx.drawImage(canvas, 0, 0);
 
         // 2. Overlay the color using source-atop to mask it to the image pixels
         tCtx.globalCompositeOperation = 'source-atop';
         tCtx.fillStyle = color;
-        tCtx.fillRect(0, 0, img.width, img.height);
+        tCtx.fillRect(0, 0, aw, ah);
         tCtx.globalCompositeOperation = 'source-over';
 
         // 3. Draw the resulting tinted image to the main context
-        ctx.drawImage(this._tintCanvas, 0, 0, img.width, img.height, x, y, w, h);
+        ctx.drawImage(this._tintCanvas, 0, 0, aw, ah, x, y, w, h);
     }
 
     _createGreenGhost(img) {
-        const canvas = document.createElement('canvas');
-        canvas.width = img.width;
-        canvas.height = img.height;
-        const tCtx = canvas.getContext('2d');
+        const canvas = img.canvas || img;
+        const aw = img.width || canvas.width;
+        const ah = img.height || canvas.height;
+        const ghostCanvas = document.createElement('canvas');
+        ghostCanvas.width = aw;
+        ghostCanvas.height = ah;
+        const tCtx = ghostCanvas.getContext('2d');
         tCtx.imageSmoothingEnabled = false;
 
-        // Apply a slight blur to help bleed edges together for a "glow" look
-        tCtx.filter = 'blur(2px)';
+        // Apply a large blur for a soft, glowing aurora look
+        tCtx.filter = 'blur(8px)';
 
         // 1. Draw base
-        tCtx.drawImage(img, 0, 0);
+        tCtx.drawImage(canvas, 0, 0);
 
         // 2. Green tint
         tCtx.globalCompositeOperation = 'source-atop';
         tCtx.fillStyle = 'rgba(0, 255, 100, 1)';
-        tCtx.fillRect(0, 0, img.width, img.height);
+        tCtx.fillRect(0, 0, aw, ah);
 
-        return canvas;
+        return ghostCanvas;
     }
 
     serialize() {

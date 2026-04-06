@@ -576,7 +576,7 @@ export const DIALOG_SCENARIOS = [
         options: [
             {
                 label: "Abandoned stations?",
-                response: "Yeah, the crews saw some [scrap]frozen rock[/scrap] pass by, supposedly [bad]drove them all mad[/bad]. Guess we'll keep looking."
+                response: "Yeah, the crews saw some [scrap]frozen rock[/scrap] pass by, supposedly [good]drove them all mad[/good]. Guess we'll keep looking."
             },
             {
                 label: "Ignore.",
@@ -678,7 +678,7 @@ export const DIALOG_SCENARIOS = [
         id: 'enemy_lore',
         condition: 'always',
         vars: {},
-        message: "Hey pilot, if you get [good]far enough away[/good] from them, most [bad]enemies[/bad] will leave you alone. [warn]Not the big ones though[/warn], their engines can spin up too quick.",
+        message: "Hey pilot, if you get [good]far enough away[/good] from them, most [good]enemies[/good] will leave you alone. [warn]Not the big ones though[/warn], their engines can spin up too quick.",
         options: [
             {
                 label: "Thanks for the tip.",
