@@ -320,18 +320,27 @@ export class MenuState {
 
         // Draw Christus Victor constellation if active
         if (this.constellation) {
-            ctx.save();
-            const pulse = Math.sin(this.time * this.constellation.pulseSpeed);
-            ctx.globalAlpha = this.constellation.alpha + pulse * 0.15;
-            ctx.globalCompositeOperation = 'screen';
-            game.drawSpriteCentered(
-                ctx,
-                'christus_victor_constellation',
-                this.constellation.x * cw,
-                this.constellation.y * ch,
-                game.uiScale
-            );
-            ctx.restore();
+            const key = 'christus_victor_constellation';
+            const asset = game.assets.get(key);
+            if (asset) {
+                ctx.save();
+                const pulse = Math.sin(this.time * this.constellation.pulseSpeed);
+                ctx.globalAlpha = this.constellation.alpha + pulse * 0.15;
+                ctx.globalCompositeOperation = 'screen';
+
+                // Razor sharpness for this specific asset without global impact
+                ctx.imageSmoothingEnabled = false;
+
+                const img = asset.canvas || asset;
+                const scale = game.uiScale;
+                const w = Math.round((asset.width || img.width) * scale);
+                const h = Math.round((asset.height || img.height) * scale);
+                const cx = this.constellation.x * cw;
+                const cy = this.constellation.y * ch;
+
+                ctx.drawImage(img, Math.round(cx - w / 2), Math.round(cy - h / 2), w, h);
+                ctx.restore();
+            }
         }
 
         for (const star of this.stars) {
