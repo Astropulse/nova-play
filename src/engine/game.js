@@ -182,6 +182,7 @@ export class Game {
         this.sounds.registerBossMusic('Lidless Above the Void', 'Assets/Sounds/Songs/Boss/Lidless Above the Void.mp3');
         this.sounds.registerBossMusic('Starcore Showdown', 'Assets/Sounds/Songs/Boss/Starcore Showdown.mp3');
         this.sounds.registerBossMusic('The Yellow One', 'Assets/Sounds/Songs/Boss/The Yellow One.mp3');
+        this.sounds.registerBossMusic('King\'s Victory', 'Assets/Sounds/Songs/Boss/King\'s Victory.mp3');
 
         this.sounds.registerTitleMusic('Assets/Sounds/Songs/Title/NOVA.mp3');
         this.sounds.registerGameOverMusic('Assets/Sounds/Songs/Game Over/Sendoff.mp3');
@@ -639,6 +640,7 @@ export class Game {
             'encounter_black_market_3': 'Assets/Ships/Encounter/black_market_3.png',
             'encounter_tuner_1': 'Assets/Ships/Encounter/tuner_1.png',
             'encounter_tuner_2': 'Assets/Ships/Encounter/tuner_2.png',
+            'christus_victor_constellation': 'Assets/Events/christus_victor_constellation.png',
             // Space backgrounds
             'starfield_0': 'Assets/Space/starfield_0.png',
             'starfield_1': 'Assets/Space/starfield_1.png',

@@ -155,6 +155,24 @@ export const DIALOG_SCENARIOS = [
         ]
     },
 
+    {
+        type: 'cargo_trader',
+        id: 'cargo_ship_lore',
+        condition: 'always',
+        vars: {},
+        message: "One of our [scrap]supply ships[/scrap] got attacked in the [good]+/- 6000 radius[/good]. Lost a whole month's worth of cargo.",
+        options: [
+            {
+                label: "That's unfortunate.",
+                response: "Happens in these parts. If you find it, make good use of the [scrap]scrap[/scrap]."
+            },
+            {
+                label: "Ignore.",
+                response: ""
+            }
+        ]
+    },
+
     // ──────────────────────────────────────────────────────────────
     //  ENGINEER
     // ──────────────────────────────────────────────────────────────
@@ -303,6 +321,42 @@ export const DIALOG_SCENARIOS = [
         ]
     },
 
+    {
+        type: 'civilian',
+        id: 'movement_upgrade_lore',
+        condition: 'always',
+        vars: {},
+        message: "Sure would be nice to [good]move side-to-side[/good] huh! Bet there's an [upgrade]upgrade[/upgrade] out there for it.",
+        options: [
+            {
+                label: "Know where I can find one?",
+                response: "Who me? Nah but c'mon someone has to have found a way to do it."
+            },
+            {
+                label: "Ignore.",
+                response: ""
+            }
+        ]
+    },
+
+    {
+        type: 'civilian',
+        id: 'encounter_lore',
+        condition: 'always',
+        vars: {},
+        message: "Hey pilot! You seen any [upgrade]shops[/upgrade] nearby? [good]The more shops you have the more people you see[/good], I'm trying to get to know this sector a bit better.",
+        options: [
+            {
+                label: "Yeah I know some shops.",
+                response: "Cool! Maybe I'll see you around."
+            },
+            {
+                label: "Ignore.",
+                response: ""
+            }
+        ]
+    },
+
     // ──────────────────────────────────────────────────────────────
     //  COLONY
     // ──────────────────────────────────────────────────────────────
@@ -414,6 +468,42 @@ export const DIALOG_SCENARIOS = [
         ]
     },
 
+    {
+        type: 'explorer',
+        id: 'carcosa_lore',
+        condition: 'always',
+        vars: {},
+        message: "There is... something out there. [cost]He stands waiting.[/cost] His magnificent robes covering decaying flesh... I- I must find [scrap]Carcosa[/scrap].",
+        options: [
+            {
+                label: "What are you talking about?",
+                response: "[scrap]Yellow. Yellow. Yellow. Yellow. Yellow. Yellow. Yellow. Yellow. Yello-[/scrap] [cost]TRANSMISSION TERMINATED[/cost]"
+            },
+            {
+                label: "Ignore.",
+                response: ""
+            }
+        ]
+    },
+
+    {
+        type: 'explorer',
+        id: 'asteroid_lore',
+        condition: 'always',
+        vars: {},
+        message: "These damn asteroids keep messing up my sails! Feels like [good]the more I explore the more asteroids I run into[/good]! I can just never catch a break.",
+        options: [
+            {
+                label: "Maybe invest in some better shields.",
+                response: "Probably a good idea... at least I've got a lot of [scrap]scrap[/scrap] from all these space rocks."
+            },
+            {
+                label: "Ignore.",
+                response: ""
+            }
+        ]
+    },
+
     // ──────────────────────────────────────────────────────────────
     //  JUNKER
     // ──────────────────────────────────────────────────────────────
@@ -474,6 +564,24 @@ export const DIALOG_SCENARIOS = [
             },
             { label: "Not interested", response: "Suit yourself." },
             { label: "[warn]Help myself[/warn]", actions: ['convert_hostile'], response: "You'll pay for that!" }
+        ]
+    },
+
+    {
+        type: 'junker',
+        id: 'fractured_station_lore',
+        condition: 'always',
+        vars: {},
+        message: "Have you seen any [scrap]abandoned stations[/scrap] around? We hear they got good parts for the taking.",
+        options: [
+            {
+                label: "Abandoned stations?",
+                response: "Yeah, the crews saw some [scrap]frozen rock[/scrap] pass by, supposedly [bad]drove them all mad[/bad]. Guess we'll keep looking."
+            },
+            {
+                label: "Ignore.",
+                response: ""
+            }
         ]
     },
 
@@ -561,6 +669,24 @@ export const DIALOG_SCENARIOS = [
             {
                 label: "Not my problem",
                 response: "Understood. Patrol out."
+            }
+        ]
+    },
+
+    {
+        type: 'law_enforcement',
+        id: 'enemy_lore',
+        condition: 'always',
+        vars: {},
+        message: "Hey pilot, if you get [good]far enough away[/good] from them, most [bad]enemies[/bad] will leave you alone. [warn]Not the big ones though[/warn], their engines can spin up too quick.",
+        options: [
+            {
+                label: "Thanks for the tip.",
+                response: "Keep out of trouble pilot."
+            },
+            {
+                label: "Ignore.",
+                response: ""
             }
         ]
     },

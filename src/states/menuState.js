@@ -49,6 +49,26 @@ export class MenuState {
                 alpha: 0.15 + Math.random() * 0.2
             });
         }
+
+        this.showConstellation = Math.random() < 0.01;
+        if (this.showConstellation) {
+            const safeSpots = [
+                { x: 0.15, y: 0.45 }, // Left Middle
+                { x: 0.15, y: 0.65 }, // Left Bottom/Middle
+                { x: 0.8, y: 0.25 },  // Top Right
+                { x: 0.85, y: 0.5 },  // Right Middle
+                { x: 0.8, y: 0.7 }    // Right Bottom/Middle
+            ];
+            const spot = safeSpots[Math.floor(Math.random() * safeSpots.length)];
+            this.constellation = {
+                // Pick a spot, then add a little random offset (+/- 5% of screen)
+                x: spot.x + (Math.random() - 0.5) * 0.1,
+                y: spot.y + (Math.random() - 0.5) * 0.1,
+                alpha: 0.4 + Math.random() * 0.3,
+                pulseSpeed: 0.5 + Math.random() * 0.5
+            };
+        }
+
         this.time = 0;
 
         // Direct event listener to bypass any framework/loop delay for sounds
@@ -72,7 +92,13 @@ export class MenuState {
     enter() {
         document.body.classList.remove('playing');
         this._computeLayout();
-        this.game.sounds.playTitleMusic();
+
+        if (this.constellation) {
+            this.game.sounds.playMusicByLabel("King's Victory");
+        } else {
+            this.game.sounds.playTitleMusic();
+        }
+
         window.addEventListener('mousedown', this._onMouseDown);
     }
 
@@ -291,6 +317,22 @@ export class MenuState {
             }
         }
         ctx.restore();
+
+        // Draw Christus Victor constellation if active
+        if (this.constellation) {
+            ctx.save();
+            const pulse = Math.sin(this.time * this.constellation.pulseSpeed);
+            ctx.globalAlpha = this.constellation.alpha + pulse * 0.15;
+            ctx.globalCompositeOperation = 'screen';
+            game.drawSpriteCentered(
+                ctx,
+                'christus_victor_constellation',
+                this.constellation.x * cw,
+                this.constellation.y * ch,
+                game.uiScale
+            );
+            ctx.restore();
+        }
 
         for (const star of this.stars) {
             const alpha = star.brightness + Math.sin(this.time * star.twinkleSpeed + star.twinkleOffset) * 0.2;
