@@ -11,7 +11,7 @@ export class Game {
 
         // Dynamic scaling
         this.worldScale = 2; // In-game world
-        this.worldScaleModifier = 0.8333333333333334; // 20% larger FOV (1 / 1.2)
+        this.worldScaleModifier = 1.0; // Base FOV scale
         this.uiScale = 3;    // Menus / Pause
         this.hudScale = 4;   // HUD overlays
 

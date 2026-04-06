@@ -135,6 +135,10 @@ export class PlayingState {
         };
         this.bossDeathImmunityTimer = 0;
         this.bossWrecks = [];
+
+        // FOV Scaling state
+        this.fovUpgradeMult = 1.0;
+        this.currentFovMult = 1.0;
     }
 
     _triggerShakeAt(x, y, intensity, minPassDist = 1200, maxDist = 4000) {
@@ -592,6 +596,24 @@ export class PlayingState {
             }
         }
         this.camera.update(dt, this.player);
+
+        // --- Dynamic FOV Scaling ---
+        const currentSpeed = Math.sqrt(this.player.vx * this.player.vx + this.player.vy * this.player.vy);
+        // Scale FOV from 1.0 to 1.3 based on speed. Max zoom reached at 2000 px/s (typical boost speed)
+        const speedFactor = Math.min(1.0, currentSpeed / 2000);
+        const speedFovMult = 1.0 + (speedFactor * 0.3);
+        const targetFovMult = this.fovUpgradeMult * speedFovMult;
+
+        // Smoothly interpolate FOV to avoid jitter
+        const fovLerpSpeed = 5.0; // Adjust for snappiness
+        this.currentFovMult += (targetFovMult - this.currentFovMult) * dt * fovLerpSpeed;
+
+        // Apply scale to engine
+        const targetScale = 1.0 / this.currentFovMult;
+        if (Math.abs(this.game.worldScaleModifier - targetScale) > 0.001) {
+            this.game.worldScaleModifier = targetScale;
+            this.game.resize();
+        }
 
         // Shop interaction check (already calculated above for input priority)
 
@@ -2436,7 +2458,7 @@ export class PlayingState {
         let blinkEngines = 0;
         let repeaters = 0;
 
-        let fovMult = 1.2; // 20% larger base FOV
+        let fovMult = 1.0; // Default base FOV
         for (const entry of p.inventory.items) {
             const item = entry.item;
 
@@ -2497,9 +2519,8 @@ export class PlayingState {
             if (item.id === 'knowledge') p.hasRadar = true;
         }
 
-        // Apply FOV change
-        this.game.worldScaleModifier = 1.0 / fovMult;
-        this.game.resize();
+        // Store FOV upgrade contribution
+        this.fovUpgradeMult = fovMult;
 
         if (repeaters > 0) {
             let rMult = 0.5;
