@@ -285,6 +285,7 @@ export class MenuState {
 
     draw(ctx) {
         ctx.save();
+        ctx.imageSmoothingEnabled = false;
         ctx.textBaseline = 'alphabetic';
 
         const game = this.game;
@@ -300,18 +301,20 @@ export class MenuState {
             const key = `starfield_${sf.spriteIdx}`;
             const img = game.assets.get(key);
             if (img) {
-                const w = (img.width || img.canvas.width) * game.uiScale;
-                const h = (img.height || img.canvas.height) * game.uiScale;
+                const w = Math.round((img.width || img.canvas.width) * game.uiScale);
+                const h = Math.round((img.height || img.canvas.height) * game.uiScale);
                 const x = sf.x * cw;
                 const y = sf.y * ch;
+                const rx = Math.round(x);
+                const ry = Math.round(y);
 
                 if (sf.rotation === 0) {
-                    ctx.drawImage(img.canvas || img, x - w / 2, y - h / 2, w, h);
+                    ctx.drawImage(img.canvas || img, Math.round(rx - w / 2), Math.round(ry - h / 2), w, h);
                 } else {
                     ctx.save();
-                    ctx.translate(x, y);
+                    ctx.translate(rx, ry);
                     ctx.rotate(sf.rotation);
-                    ctx.drawImage(img.canvas || img, -w / 2, -h / 2, w, h);
+                    ctx.drawImage(img.canvas || img, Math.round(-w / 2), Math.round(-h / 2), w, h);
                     ctx.restore();
                 }
             }
@@ -343,17 +346,30 @@ export class MenuState {
             }
         }
 
+        // Render menu stars with pixel-perfect sharpness
+        ctx.save();
+        ctx.imageSmoothingEnabled = false;
         for (const star of this.stars) {
+            const key = `star_${star.spriteIdx}`;
+            const asset = game.assets.get(key);
+            if (!asset) continue;
+
             const alpha = star.brightness + Math.sin(this.time * star.twinkleSpeed + star.twinkleOffset) * 0.2;
-            ctx.save();
+            const img = asset.canvas || asset;
+            const scale = game.uiScale;
+            const w = Math.round((asset.width || img.width) * scale);
+            const h = Math.round((asset.height || img.height) * scale);
+            const cx = star.x * cw;
+            const cy = star.y * ch;
+
             ctx.globalAlpha = Math.max(0.1, Math.min(1, alpha));
-            game.drawSpriteCentered(ctx, `star_${star.spriteIdx}`, star.x * cw, star.y * ch, game.uiScale);
-            ctx.restore();
+            ctx.drawImage(img, Math.round(cx - w / 2), Math.round(cy - h / 2), w, h);
         }
+        ctx.restore();
 
         const titleSize = game.spriteSize('title', game.uiScale);
         const titleY = Math.floor(game.uiScale * 12);
-        game.drawSpriteCentered(ctx, 'title', cx, titleY + titleSize.h / 2, game.uiScale);
+        game.drawSpriteCentered(ctx, 'title', Math.round(cx), Math.round(titleY + titleSize.h / 2), game.uiScale);
 
         const ship = SHIPS[this.selectedShipIndex];
         const nameY = Math.floor(titleY + titleSize.h + game.uiScale * 14);
