@@ -82,7 +82,7 @@ export const DIALOG_SCENARIOS = [
                 response: "Pleasure doing business."
             },
             {
-                label: "Counter-offer ([scrap]-{negotiate} scrap[/scrap])",
+                label: "Counter-offer ([scrap]+{negotiate} scrap[/scrap])",
                 negotiate: { chance: 0.5, price: 'negotiate', fallbackPrice: 'offer' },
                 actions: ['remove_item:targetItem', 'add_scrap:negotiate', 'recalc'],
                 fallbackActions: ['remove_item:targetItem', 'add_scrap:offer', 'recalc'],

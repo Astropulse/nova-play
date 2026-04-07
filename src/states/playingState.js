@@ -30,7 +30,7 @@ export class PlayingState {
         this.skipClear = false;
 
         this.camera = new Camera(game);
-        this.world = new World(game);
+        this.world = new World(game, Math.floor(Math.random() * 1000000));
         this.player = new Player(game, shipData);
         this.hud = new HUD(game, this.player);
 
@@ -173,9 +173,8 @@ export class PlayingState {
     _spawnInitialShops() {
         // First shop near spawn, always revealed
         const s1 = new Shop(this.game, 400, 400);
-        s1.revealed = true;
         this.shops.push(s1);
-        this.revealedShops.push(s1);
+        this._revealShop(s1);
     }
 
     _spawnEvents() {
@@ -1013,6 +1012,17 @@ export class PlayingState {
         this.itemPickups = this.itemPickups.filter(it => it.alive);
         this.events = this.events.filter(ev => ev.alive);
         this.encounters = this.encounters.filter(enc => enc.alive);
+
+        // Shop proximity discovery
+        for (const s of this.shops) {
+            if (!s.revealed) {
+                const dx = s.worldX - this.player.worldX;
+                const dy = s.worldY - this.player.worldY;
+                if (dx * dx + dy * dy < 1200 * 1200) {
+                    this._revealShop(s);
+                }
+            }
+        }
 
         // --- Encounter Spawning ---
         // Track player distance traveled
@@ -2592,25 +2602,37 @@ export class PlayingState {
         }
     }
 
+    _revealShop(shop) {
+        if (!shop) return;
+        
+        // If already revealed, move to the end of the queue (most recent)
+        const idx = this.revealedShops.indexOf(shop);
+        if (idx !== -1) {
+            this.revealedShops.splice(idx, 1);
+        }
+        
+        shop.revealed = true;
+        this.revealedShops.push(shop);
+        
+        // Prune oldest shop marker if count > 3
+        while (this.revealedShops.length > 3) {
+            const oldest = this.revealedShops.shift();
+            if (oldest) oldest.revealed = false;
+        }
+    }
+
     spawnDistantShop() {
         // Random direction
         const angle = Math.random() * Math.PI * 2;
-        // 15,000 pixels away
-        const dist = 15000;
+        // 6,000 to 10,000 pixels away
+        const dist = 6000 + Math.random() * 4000;
 
         const sx = this.player.worldX + Math.cos(angle) * dist;
         const sy = this.player.worldY + Math.sin(angle) * dist;
 
         const newShop = new Shop(this.game, sx, sy);
-        newShop.revealed = true;
         this.shops.push(newShop);
-
-        // Add to revealed queue and manage limit
-        this.revealedShops.push(newShop);
-        if (this.revealedShops.length > 3) {
-            const oldest = this.revealedShops.shift();
-            oldest.revealed = false;
-        }
+        this._revealShop(newShop);
 
         this.stats.shopsUnlocked++;
         return true;
@@ -2638,25 +2660,6 @@ export class PlayingState {
         return false;
     }
 
-    spawnDistantShop() {
-        const angle = Math.random() * Math.PI * 2;
-        const dist = 6000 + Math.random() * 4000;
-        const wx = this.player.worldX + Math.cos(angle) * dist;
-        const wy = this.player.worldY + Math.sin(angle) * dist;
-
-        const shop = new Shop(this.game, wx, wy);
-        shop.revealed = true;
-        this.shops.push(shop);
-        this.revealedShops.push(shop);
-
-        if (this.revealedShops.length > 3) {
-            const oldShop = this.revealedShops.shift();
-            // oldShop.revealed = false; // We can leave it revealed but just stop tracking it as one of the 3 latest if needed, but it seems HUD handles all shops with shop.revealed. We'll stick to however the original dev setup it.
-        }
-
-        this.stats.shopsUnlocked++;
-        return true;
-    }
 
     _spawnEncounter(specificType) {
         const type = specificType || rollEncounterType();

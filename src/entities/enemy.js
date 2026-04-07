@@ -285,7 +285,7 @@ export class Enemy {
 
             case AI_STATE.ATTACK:
                 // Stay in attack until burst is done OR we get very close
-                const minBreakDist = 200;
+                const minBreakDist = this.radius * 2.5 + 50;
                 const burstDone = this.burstShotsLeft <= 0;
                 const tooClose = dist < minBreakDist;
 
@@ -1001,12 +1001,12 @@ export class HostileEncounter extends Enemy {
         this.img = img;
         this.spriteKey = spriteKey;
         if (CollisionScanner && this.img) {
-            this._nativeRadius = CollisionScanner.getRadius(this.img, this.game);
+            this._nativeRadius = CollisionScanner.getRadius(this.img, this.spriteKey);
             this.radius = this._nativeRadius * 0.95;
         }
 
         const radiusScale = this.radius / 30.0;
-        const scaleDist = Math.max(1.0, radiusScale * 0.8);
+        const scaleDist = Math.max(1.0, radiusScale * 1.2);
 
         this.attackRange = 500 * scaleDist;
         this.breakRange = 450 * scaleDist;
@@ -1145,17 +1145,41 @@ export class HostileEncounter extends Enemy {
 
         this.deathExplosions = [];
         const baseStaggers = [0, 0.3, 0.6, 0.9, 1.2];
+        const asset = img;
+        const logicalW = asset.width || (asset.canvas ? asset.canvas.width : asset.width);
+        const logicalH = asset.height || (asset.canvas ? asset.canvas.height : asset.height);
+
+        // Sampling for solid pixels to place explosions (logic from Boss.js)
+        const canvas = document.createElement('canvas');
+        canvas.width = logicalW;
+        canvas.height = logicalH;
+        const ctx = canvas.getContext('2d');
+        ctx.imageSmoothingEnabled = false;
+        // img is the asset object here, draw scaled to logical size
+        ctx.drawImage(img.canvas || img, 0, 0, (img.canvas ? img.canvas.width : img.width), (img.canvas ? img.canvas.height : img.height), 0, 0, logicalW, logicalH);
+        const data = ctx.getImageData(0, 0, logicalW, logicalH).data;
+
+        const solidPoints = [];
+        for (let i = 0; i < 200; i++) {
+            const x = Math.floor(Math.random() * logicalW);
+            const y = Math.floor(Math.random() * logicalH);
+            if (data[(y * logicalW + x) * 4 + 3] > 60) {
+                solidPoints.push({ lx: x - logicalW / 2, ly: y - logicalH / 2 });
+            }
+        }
+        if (solidPoints.length === 0) solidPoints.push({ lx: 0, ly: 0 });
 
         for (let i = 0; i < baseStaggers.length; i++) {
+            const pt = solidPoints[Math.floor(Math.random() * solidPoints.length)];
             this.deathExplosions.push({
-                lx: (Math.random() - 0.5) * img.width * 0.8,
-                ly: (Math.random() - 0.5) * img.height * 0.8,
+                lx: pt.lx,
+                ly: pt.ly,
                 delay: baseStaggers[i],
                 fired: false,
                 finished: false,
                 animTimer: 0,
                 totalDuration: totalExplosionDuration,
-                scale: 0.8 + Math.random() * 0.6
+                scale: 0.8 + Math.random() * 0.7
             });
         }
         this.deathTimer = baseStaggers[baseStaggers.length - 1] + 0.4;
@@ -1175,15 +1199,15 @@ export class HostileEncounter extends Enemy {
 
             for (const ex of this.deathExplosions) {
                 if (ex.fired && !ex.finished) {
-                    let frameImg = fireFrames[0].canvas;
+                    let frame = fireFrames[0];
                     let elapsed = ex.animTimer;
                     for (const f of fireFrames) {
-                        if (elapsed < f.delay) { frameImg = f.canvas; break; }
+                        if (elapsed < f.delay) { frame = f; break; }
                         elapsed -= f.delay;
                     }
-                    const ew = frameImg.width * this.game.worldScale * ex.scale;
-                    const eh = frameImg.height * this.game.worldScale * ex.scale;
-                    ctx.drawImage(frameImg, ex.lx * this.game.worldScale - ew / 2, ex.ly * this.game.worldScale - eh / 2, ew, eh);
+                    const ew = (frame.width || frame.canvas.width / 4) * this.game.worldScale * ex.scale;
+                    const eh = (frame.height || frame.canvas.height / 4) * this.game.worldScale * ex.scale;
+                    ctx.drawImage(frame.canvas || frame, ex.lx * this.game.worldScale - ew / 2, ex.ly * this.game.worldScale - eh / 2, ew, eh);
                 }
             }
             ctx.restore();
@@ -1195,19 +1219,19 @@ export class HostileEncounter extends Enemy {
         const img = this.game.assets.get(this.spriteKey);
 
         if (img && VoronoiSlicer) {
-            const fragments = VoronoiSlicer.slice(img, 20 + Math.floor(Math.random() * 15));
+            const fragments = VoronoiSlicer.slice(img, 80 + Math.floor(Math.random() * 40));
             for (const frag of fragments) {
                 const rotAngle = this.angle + Math.PI / 2;
                 const cosA = Math.cos(rotAngle);
                 const sinA = Math.sin(rotAngle);
-                const wx = this.worldX + (frag.offsetX * cosA - frag.offsetY * sinA);
-                const wy = this.worldY + (frag.offsetX * sinA + frag.offsetY * cosA);
+                const wx = this.worldX + (frag.lx * cosA - frag.ly * sinA);
+                const wy = this.worldY + (frag.lx * sinA + frag.ly * cosA);
 
-                const outAngle = Math.atan2(frag.offsetY, frag.offsetX) + rotAngle;
-                const spread = 20 + Math.random() * 80;
+                const outAngle = Math.atan2(frag.ly, frag.lx) + rotAngle;
+                const spread = 40 + Math.random() * 120;
 
                 spawns.push(new ProceduralDebris(
-                    this.game, wx, wy, frag.canvas,
+                    this.game, wx, wy, frag,
                     Math.cos(outAngle) * spread, Math.sin(outAngle) * spread,
                     rotAngle, (Math.random() - 0.5) * 4, 3 + Math.random() * 2
                 ));

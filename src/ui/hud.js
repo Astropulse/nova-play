@@ -217,7 +217,7 @@ export class HUD {
             const state = this.game.currentState;
             if (state) {
                 drawDot(state.asteroids, 'rgba(120, 120, 120, 0.5)', 1);
-                drawDot(state.shops, '#44aaff', 1);
+                drawDot(state.shops.filter(s => s.revealed), '#44aaff', 1);
                 drawDot(state.events, '#ffcc00', 1);
                 drawDot(state.enemies, '#ff4444', 1);
                 drawDot(state.encounters, '#44ffaa', 1);

@@ -12,9 +12,10 @@ function mulberry32(seed) {
 
 // Parallax starfield — pre-renders stars into tileable canvases for high performance
 export class World {
-    constructor(game) {
+    constructor(game, seed = 42) {
         this.game = game;
         this.tileSize = 2048; // Standard tile size for baking (safe for VRAM)
+        this.seed = seed;
 
         // Assets
         this.starImages = [];
@@ -47,8 +48,21 @@ export class World {
             { parallax: 0.55, count: 10, alpha: 1.0, singleStarCount: 5 },    // closest
         ];
 
-        const virtualSize = 2048; // Logical wrap window
-        const rng = mulberry32(42);
+        const virtualSize = 4096; // Logical wrap window
+        const rng = mulberry32(this.seed);
+
+        // Rare object index pool (shuffle-bag) to ensure uniform distribution
+        let rarePool = [];
+        const refillPool = () => {
+            // Pool 0..L-1
+            rarePool = Array.from({ length: this.rareImages.length }, (_, i) => i);
+            // Fisher-Yates shuffle with our seeded RNG
+            for (let i = rarePool.length - 1; i > 0; i--) {
+                const j = Math.floor(rng() * (i + 1));
+                [rarePool[i], rarePool[j]] = [rarePool[j], rarePool[i]];
+            }
+        };
+        refillPool();
 
         layerConfigs.forEach((config, idx) => {
             const stars = [];
@@ -75,11 +89,16 @@ export class World {
                 for (let r = 0; r < rareCount; r++) {
                     let imgAsset;
                     let blend = 'screen';
-                    if (rng() < 0.02 && this.blackHoleImage) {
+                    let isBlackHole = false;
+                    if (rng() < 0.03 && this.blackHoleImage && idx == 1) {
                         imgAsset = this.blackHoleImage;
                         blend = 'source-over';
+                        isBlackHole = true;
                     } else {
-                        imgAsset = this.rareImages[Math.floor(rng() * this.rareImages.length)];
+                        // Use shuffle-bag for uniform rare selection
+                        if (rarePool.length === 0) refillPool();
+                        const rareIdx = rarePool.pop();
+                        imgAsset = this.rareImages[rareIdx];
                     }
 
                     if (imgAsset) {
@@ -88,9 +107,10 @@ export class World {
                             y: rng() * virtualSize,
                             asset: imgAsset, // Store asset directly for rare items
                             type: 'rare',
-                            blend: blend,
+                            blend: blend, // Use the correct blend mode
+                            isBlackHole: isBlackHole,
                             rotation: Math.floor(rng() * 4) * (Math.PI / 2),
-                            alphaBoost: 1.0
+                            alphaBoost: isBlackHole ? 1.0 : (0.5 + rng() * 0.4) // No alpha boost needed for solid black hole
                         });
                     }
                 }
@@ -161,7 +181,8 @@ export class World {
                         const offsetMult = s / samples;
                         // Corrected: Only apply brightness compensation if samples > 1 (boosting)
                         const boostComp = samples > 1 ? (1.8 / samples) : 1.0;
-                        ctx.globalAlpha = Math.max(0, Math.min(1.0, layerAlpha * star.alphaBoost * weight * boostComp));
+                        const finalAlpha = star.isBlackHole ? 1.0 : (layerAlpha * star.alphaBoost * weight * boostComp);
+                        ctx.globalAlpha = Math.max(0, Math.min(1.0, finalAlpha));
 
                         const finalX = dx + (svx * offsetMult);
                         const finalY = dy + (svy * offsetMult);
