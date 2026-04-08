@@ -431,14 +431,15 @@ export class MenuState {
 
     _drawStats(ctx, ship, y, x, barWidth) {
         const stats = [
-            { label: 'HP', value: ship.health, max: 200, color: '#44ff66' },
-            { label: 'SPD', value: ship.speed, max: 10, color: '#44aaff' },
-            { label: 'SHD', value: ship.shield, max: 60, color: '#aa66ff' },
-            { label: 'STR', value: ship.storage.rows, max: 5, color: '#ffaa44' },
+            { label: 'HEALTH', value: ship.health, max: 200, color: '#44ff66' },
+            { label: 'SHIELD', value: ship.shield, max: 60, color: '#44aaff' },
+            { label: 'SPEED', value: ship.speed, max: 10, color: '#aa66ff' },
+            { label: 'DAMAGE', value: ship.baseDamage, max: 15, color: '#ff4444' },
+            { label: 'CARGO', value: ship.storage.rows, max: 5, color: '#ffaa44' },
         ];
 
         const barHeight = Math.floor(this.game.uiScale * 3);
-        const labelWidth = Math.floor(this.game.uiScale * 18);
+        const labelWidth = Math.floor(this.game.uiScale * 36);
         const barStartX = Math.floor(x + labelWidth);
         const lineHeight = Math.floor(this.game.uiScale * 9);
 

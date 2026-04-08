@@ -52,7 +52,7 @@ export const SHIPS = [
         health: 80,
         speed: 8,
         shield: 20,
-        storage: { cols: 4, rows: 3 },
+        storage: { cols: 4, rows: 4 },
         baseDamage: 10.0,
         special: 'dodge',
         assets: {

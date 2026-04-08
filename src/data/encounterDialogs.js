@@ -182,11 +182,11 @@ export const DIALOG_SCENARIOS = [
         id: 'hull_reinforce',
         condition: 'always',
         vars: { cost: 80, negotiate: 60 },
-        message: "Your hull's seen better days. For [cost]{cost} scrap[/cost] I can reinforce it — [good]+50 max health[/good], permanent.",
+        message: "Your hull's seen better days. For [cost]{cost} scrap[/cost] I can reinforce it — [good]+30 max health[/good], permanent.",
         options: [
             {
                 label: "Accept ([cost]-{cost} scrap[/cost])",
-                actions: ['remove_scrap:cost', 'add_perm_health:50', 'recalc'],
+                actions: ['remove_scrap:cost', 'add_perm_health:30', 'recalc'],
                 response: "Hull reinforced. Much tougher now."
             },
             {
@@ -205,11 +205,11 @@ export const DIALOG_SCENARIOS = [
         id: 'shield_calibrate',
         condition: 'always',
         vars: { cost: 55 },
-        message: "I can recalibrate your shields — [good]+200 max shield energy[/good]. [cost]{cost} scrap[/cost].",
+        message: "I can recalibrate your shields — [good]+50 max shield energy[/good]. [cost]{cost} scrap[/cost].",
         options: [
             {
                 label: "Accept ([cost]-{cost} scrap[/cost])",
-                actions: ['remove_scrap:cost', 'add_perm_shield:200', 'recalc'],
+                actions: ['remove_scrap:cost', 'add_perm_shield:50', 'recalc'],
                 response: "Shields recalibrated."
             },
             { label: "Decline", response: "Your call." }
@@ -221,11 +221,11 @@ export const DIALOG_SCENARIOS = [
         id: 'weapon_overhaul',
         condition: 'always',
         vars: { cost: 100 },
-        message: "Your weapons need an overhaul. [cost]{cost} scrap[/cost] for a [good]permanent +20 damage boost[/good].",
+        message: "Your weapons need an overhaul. [cost]{cost} scrap[/cost] for a [good]permanent +10 damage boost[/good].",
         options: [
             {
                 label: "Accept ([cost]-{cost} scrap[/cost])",
-                actions: ['remove_scrap:cost', 'add_perm_damage:20'],
+                actions: ['remove_scrap:cost', 'add_perm_damage:10'],
                 response: "Weapons overhauled. Hitting harder now."
             },
             { label: "Decline", response: "Come back anytime." }
