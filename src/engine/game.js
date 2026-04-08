@@ -644,7 +644,7 @@ export class Game {
             'encounter_black_market_3': 'Assets/Ships/Encounter/black_market_3.png',
             'encounter_tuner_1': 'Assets/Ships/Encounter/tuner_1.png',
             'encounter_tuner_2': 'Assets/Ships/Encounter/tuner_2.png',
-            'christus_victor_constellation': 'Assets/Events/christus_victor_constellation.png',
+            'christus_victor_constellation': 'Assets/Events/christus_victor/christus_victor_constellation.png',
             // Space backgrounds
             'starfield_0': 'Assets/Space/starfield_0.png',
             'starfield_1': 'Assets/Space/starfield_1.png',
