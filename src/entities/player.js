@@ -854,7 +854,7 @@ export class Player {
 
     updateMaxShield(flatBonus) {
         this.permShieldBonus += flatBonus;
-        const base = this.shipData.shield * 150 * this.obedienceMult;
+        const base = this.shipData.shield * 15 * this.obedienceMult;
         this.maxShieldEnergy = (base + this.permShieldBonus) * this.shieldBoosterMult;
         this.shieldEnergy += flatBonus; // instantly grant the new capacity
         this.shieldEnergy = Math.max(0, Math.min(this.maxShieldEnergy, this.shieldEnergy));
