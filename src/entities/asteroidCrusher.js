@@ -6,7 +6,7 @@ export class AsteroidCrusher extends Boss {
         super(game, worldX, worldY, difficultyScale);
         this.spriteKey = 'asteroid_crusher';
         this.radius = 120;
-        this.health = 40 * this.difficultyScale;
+        this.health = 400 * this.difficultyScale;
         this.maxHealth = this.health;
 
         this.baseSpeed = 400; // Slow moving tank
@@ -240,7 +240,7 @@ export class AsteroidCrusher extends Boss {
 
         const proj = new Projectile(
             this.game, px, py, fireAngle,
-            550, 'red_laser_ball', this, 0.3 * this.curvedDifficultyScale, 8.0
+            550, 'red_laser_ball', this, 3.0 * this.curvedDifficultyScale, 8.0
         );
         proj.isRocket = true;
         proj.target = player;
@@ -258,7 +258,7 @@ export class AsteroidCrusher extends Boss {
 
         const proj = new Projectile(
             this.game, px, py, this.angle,
-            750, 'red_laser_ball_big', this, 1.5 * this.curvedDifficultyScale, 6.0
+            750, 'red_laser_ball_big', this, 15.0 * this.curvedDifficultyScale, 6.0
         );
         this.pendingProjectiles.push(proj);
         this.game.sounds.play('railgun_shoot', { volume: 0.6, x: this.worldX, y: this.worldY });

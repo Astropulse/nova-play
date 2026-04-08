@@ -56,6 +56,7 @@ export class Player {
         this.hasAncientCurse = false;
         this.hasBoostDrive = false;
         this.naniteRegen = 0;
+        this.naniteAccumulator = 0; // Accumulate for floating text
         this.shieldCapacitorCount = 0;
         this.asteroidSpawnMult = 1.0;
 
@@ -94,12 +95,12 @@ export class Player {
         this.scrap = 0;
 
         // Shield — proper asset, breaks when depleted
-        this.shieldEnergy = shipData.shield * 15;
-        this.maxShieldEnergy = shipData.shield * 15;
+        this.shieldEnergy = shipData.shield * 150;
+        this.maxShieldEnergy = shipData.shield * 150;
         this.shielding = false;
         this.shieldBroken = false;        // true when fully depleted, must recharge to 30%
-        this.shieldRechargeRate = 8;
-        this.shieldDrainRate = 20;
+        this.shieldRechargeRate = 80;
+        this.shieldDrainRate = 200;
         this.shieldImg = game.assets.get('shield');
 
         // Shooting
@@ -610,7 +611,19 @@ export class Player {
 
         // --- Nanite Tank Regeneration ---
         if (this.naniteRegen > 0 && this.health < this.maxHealth) {
-            this.health = Math.min(this.maxHealth, this.health + this.naniteRegen * dt);
+            const healed = this.naniteRegen * dt;
+            this.health = Math.min(this.maxHealth, this.health + healed);
+
+            this.naniteAccumulator += healed;
+            if (this.naniteAccumulator >= 1.0) {
+                const count = Math.floor(this.naniteAccumulator);
+                if (this.game.currentState && this.game.currentState.spawnFloatingText) {
+                    this.game.currentState.spawnFloatingText(this.worldX, this.worldY, `+${count}`, '#44ff44');
+                }
+                this.naniteAccumulator -= count;
+            }
+        } else {
+            this.naniteAccumulator = 0; // Reset if full or no regen
         }
     }
 
@@ -819,7 +832,14 @@ export class Player {
 
     heal(percent) {
         const amount = this.maxHealth * percent;
+        const prev = this.health;
         this.health = Math.min(this.maxHealth, this.health + amount);
+
+        const healed = this.health - prev;
+        if (healed > 0 && this.game.currentState && this.game.currentState.spawnFloatingText) {
+            this.game.currentState.spawnFloatingText(this.worldX, this.worldY, `+${Math.ceil(healed)}`, '#44ff44');
+        }
+
         this.game.sounds.play('select', { volume: 0.5, x: this.worldX, y: this.worldY }); // Heal sound
     }
 
@@ -834,7 +854,7 @@ export class Player {
 
     updateMaxShield(flatBonus) {
         this.permShieldBonus += flatBonus;
-        const base = this.shipData.shield * 15 * this.obedienceMult;
+        const base = this.shipData.shield * 150 * this.obedienceMult;
         this.maxShieldEnergy = (base + this.permShieldBonus) * this.shieldBoosterMult;
         this.shieldEnergy += flatBonus; // instantly grant the new capacity
         this.shieldEnergy = Math.max(0, Math.min(this.maxShieldEnergy, this.shieldEnergy));

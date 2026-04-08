@@ -43,7 +43,7 @@ export class CthulhuEvent {
         this.spawnTimer = 0;
 
         // Damage tracking
-        this.health = 20; // Only matters in DESTRUCTIBLE state
+        this.health = 200; // Only matters in DESTRUCTIBLE state
         this.invulnTimer = 0;
 
         // Wake Rumble for polish
@@ -165,6 +165,11 @@ export class CthulhuEvent {
 
         // Only take damage if destructible
         this.health -= damage;
+
+        if (this.game.currentState && this.game.currentState.spawnFloatingText) {
+            this.game.currentState.spawnFloatingText(this.worldX, this.worldY, `-${Math.ceil(damage)}`, '#ff4444');
+        }
+
         this.invulnTimer = 0.1;
         this.game.sounds.play('asteroid_break', { volume: 0.6, x: this.worldX, y: this.worldY });
 

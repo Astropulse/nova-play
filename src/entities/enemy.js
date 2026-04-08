@@ -81,7 +81,7 @@ export class Enemy {
         const turnScale = 1 + (difficultyScale - 1) * 0.1;
         this.baseSpeed = (320 + Math.random() * 80) * speedScale;
         this.turnSpeed = (6.5 + Math.random() * 1.0) * turnScale;
-        this.health = Math.ceil(2 + 1.5 * difficultyScale);
+        this.health = Math.ceil(20 + 15 * difficultyScale);
         this._nativeRadius = CollisionScanner.getRadius(this.img, this.spriteKey);
         this.radius = this._nativeRadius * 0.95;
 
@@ -285,7 +285,9 @@ export class Enemy {
 
             case AI_STATE.ATTACK:
                 // Stay in attack until burst is done OR we get very close
-                const minBreakDist = this.radius * 2.5 + 50;
+                // Hostile encounters are slightly more aggressive but still break for safety
+                const breakMult = this.isHostileEncounter ? 1.8 : 2.5;
+                const minBreakDist = this.radius * breakMult + 50;
                 const burstDone = this.burstShotsLeft <= 0;
                 const tooClose = dist < minBreakDist;
 
@@ -449,7 +451,7 @@ export class Enemy {
         const noseOffset = 30;
         const px = this.worldX + Math.cos(this.angle) * noseOffset;
         const py = this.worldY + Math.sin(this.angle) * noseOffset;
-        let damage = (1 + (this.difficultyScale - 1) * 0.5) * this.damageMult;
+        let damage = (10 + (this.difficultyScale - 1) * 5) * this.damageMult;
 
         if (this.upgradeType === 'bigBall') {
             const proj = new Projectile(this.game, px, py, this.angle, laserSpeed * 0.8, 'red_laser_ball_big', this, damage * 1.5);
@@ -514,6 +516,11 @@ export class Enemy {
     hit(damage) {
         if (this.invulnTimer > 0) return false;
         this.health -= damage;
+
+        if (this.game.currentState && this.game.currentState.spawnFloatingText) {
+            this.game.currentState.spawnFloatingText(this.worldX, this.worldY, `-${Math.ceil(damage)}`, '#ff4444');
+        }
+
         if (this.health <= 0) {
             this.alive = false;
             return true;
@@ -528,11 +535,11 @@ export class Enemy {
     }
 
     onCollision(player) {
-        let damage = 2;
+        let damage = 20;
 
         // --- Shield Capacitor Impact Damage ---
         if (player.shielding && player.shieldCapacitorCount > 0) {
-            damage = 2.0 + (player.shieldCapacitorCount * 4.0); // 6.0 for one, 10.0 for two, etc.
+            damage = 20.0 + (player.shieldCapacitorCount * 40.0); // 60.0 for one, 100.0 for two, etc.
         }
 
         this.hit(damage);
@@ -872,7 +879,7 @@ export class KamikazeEnemy extends Enemy {
         this.baseSpeed = (500 + Math.random() * 50) * speedScale;
         this.turnSpeed = 7.0 + Math.random() * 1.0;
         // Moderate health, slightly tougher than standard enemies but not sponges
-        this.health = Math.ceil(3 + 1.5 * difficultyScale);
+        this.health = Math.ceil(30 + 15 * difficultyScale);
 
         // Disable shooting
         this.attackRange = -1; // Never enter ATTACK state based on distance
@@ -937,7 +944,7 @@ export class CthulhuEnemy extends Enemy {
         const speedScale = 1 + (difficultyScale - 1) * 0.15;
         this.baseSpeed = (800 + Math.random() * 100) * speedScale;
         this.turnSpeed = 7.0 + Math.random() * 1.0;
-        this.health = Math.ceil(3 + 1.5 * difficultyScale);
+        this.health = Math.ceil(30 + 15 * difficultyScale);
 
         // Disable shooting
         this.attackRange = -1;
@@ -1008,7 +1015,7 @@ export class HostileEncounter extends Enemy {
         const radiusScale = this.radius / 30.0;
         const scaleDist = Math.max(1.0, radiusScale * 1.2);
 
-        this.attackRange = 500 * scaleDist;
+        this.attackRange = 700 * scaleDist;
         this.breakRange = 450 * scaleDist;
         this.reversalTriggerDist = 350 * scaleDist;
     }
@@ -1029,13 +1036,10 @@ export class HostileEncounter extends Enemy {
             return;
         }
 
-        // Cycle through all upgraded weapons
-        this.weaponCycle = this.weaponCycle || 0;
-        this.upgradeType = this.selectedUpgrades[this.weaponCycle % this.selectedUpgrades.length];
-
+        // Type is already set by update() cycle
         super.shoot();
 
-        // Advance cycle for the next shot
+        // Advance cycle for the NEXT shot cycle
         this.weaponCycle++;
     }
 
@@ -1044,6 +1048,13 @@ export class HostileEncounter extends Enemy {
             this._updateDying(dt);
             return;
         }
+
+        // Sync upgradeType for the base Enemy class targeting logic
+        if (this.selectedUpgrades && this.selectedUpgrades.length > 0) {
+            this.weaponCycle = this.weaponCycle || 0;
+            this.upgradeType = this.selectedUpgrades[this.weaponCycle % this.selectedUpgrades.length];
+        }
+
         super.update(dt, player, asteroids, projectiles, enemies);
     }
 
@@ -1090,7 +1101,7 @@ export class HostileEncounter extends Enemy {
         const state = this.game.currentState;
         if (!state || !state.player) return;
 
-        const abstractActions = ['reveal_shop', 'reveal_event', 'reveal_event_2', 'heal', 'add_perm_health', 'add_scrap'];
+        const abstractActions = ['reveal_shop', 'reveal_event', 'reveal_event_2', 'heal', 'add_perm_health', 'add_scrap', 'add_upgrade'];
 
         for (const opt of this.rawScenario.options) {
             if (opt.actions) {
@@ -1116,11 +1127,18 @@ export class HostileEncounter extends Enemy {
                                 state.player.heal(0.3);
                                 break;
                             case 'add_perm_health':
-                                state.player.permHealthBonus++;
+                                state.player.permHealthBonus += 10;
                                 break;
                             case 'add_scrap':
                                 const scrapAmount = parseInt(act.split(':')[1]) || 0;
                                 state.player.scrap += scrapAmount;
+                                break;
+                            case 'add_upgrade':
+                                const upgVar = act.split(':')[1];
+                                const upgrade = this.encounterVars[upgVar];
+                                if (upgrade && state.itemPickups) {
+                                    state.itemPickups.push(new ItemPickup(this.game, this.worldX, this.worldY, upgrade));
+                                }
                                 break;
                         }
                     }

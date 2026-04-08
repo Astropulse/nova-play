@@ -2,10 +2,10 @@
 
 // Asteroid sizes — maps to asset keys, stats, and split behavior
 const ASTEROID_TYPES = {
-    big: { keys: ['asteroid_big_0', 'asteroid_big_1', 'asteroid_big_2'], hp: 5, damage: 4, scrap: 3, splitInto: 'tiny', splitCount: 5, rubbleCount: 12 },
-    medium: { keys: ['asteroid_medium_0', 'asteroid_medium_1', 'asteroid_medium_2'], hp: 3, damage: 3, scrap: 2, splitInto: 'rubble', splitCount: 0, rubbleCount: 8 },
-    small: { keys: ['asteroid_small_0', 'asteroid_small_1'], hp: 2, damage: 2, scrap: 1, splitInto: 'rubble', splitCount: 0, rubbleCount: 5 },
-    tiny: { keys: null, hp: 1, damage: 1, scrap: 1, splitInto: 'rubble', splitCount: 0, rubbleCount: 3 },
+    big: { keys: ['asteroid_big_0', 'asteroid_big_1', 'asteroid_big_2'], hp: 50, damage: 40, scrap: 3, splitInto: 'tiny', splitCount: 5, rubbleCount: 12 },
+    medium: { keys: ['asteroid_medium_0', 'asteroid_medium_1', 'asteroid_medium_2'], hp: 30, damage: 30, scrap: 2, splitInto: 'rubble', splitCount: 0, rubbleCount: 8 },
+    small: { keys: ['asteroid_small_0', 'asteroid_small_1'], hp: 20, damage: 20, scrap: 1, splitInto: 'rubble', splitCount: 0, rubbleCount: 5 },
+    tiny: { keys: null, hp: 10, damage: 10, scrap: 1, splitInto: 'rubble', splitCount: 0, rubbleCount: 3 },
 };
 
 // All tiny keys
@@ -570,6 +570,11 @@ export class Asteroid {
 
     hit(damage) {
         this.hp -= damage;
+
+        if (this.game.currentState && this.game.currentState.spawnFloatingText) {
+            this.game.currentState.spawnFloatingText(this.worldX, this.worldY, `-${Math.ceil(damage)}`, '#ff4444');
+        }
+
         if (this.hp <= 0) {
             this.alive = false;
             return true;
@@ -580,7 +585,7 @@ export class Asteroid {
     onCollision(player) {
         // --- Shield Capacitor Impact Damage ---
         if (player.shielding && player.shieldCapacitorCount > 0) {
-            this.hit(50.0); // Massive damage to asteroids
+            this.hit(500.0); // Massive damage to asteroids
         }
     }
 

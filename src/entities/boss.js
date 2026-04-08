@@ -41,10 +41,10 @@ export class Boss {
         this.stateTimer = 0;
         this.musicKey = null;
 
-        this.health = 150 * difficultyScale;
+        this.health = 500 * difficultyScale;
         this.maxHealth = this.health;
         this.isBoss = true;
-        this.radius = 80;
+        this.radius = 120;
 
         this.invulnTimer = 0;
         this.freezeTimer = 0;
@@ -183,6 +183,11 @@ export class Boss {
     hit(damage) {
         if (this.invulnTimer > 0 || this.phase === BOSS_PHASE.INTRO || this.state === BOSS_STATE.DASH || this.state === BOSS_STATE.DYING) return false;
         this.health -= damage;
+
+        if (this.game.currentState && this.game.currentState.spawnFloatingText) {
+            this.game.currentState.spawnFloatingText(this.worldX, this.worldY, `-${Math.ceil(damage)}`, '#ff4444');
+        }
+
         if (this.health <= 0) {
             this._triggerDeathSequence();
             return false; // Not dead yet, playing animation
@@ -262,7 +267,7 @@ export class Boss {
 
     onCollision(playerX, playerY) {
         // Bosses are massive; they don't recoil like normal enemies, but they take minor impact damage.
-        this.hit(0.1);
+        this.hit(1.0);
         this.game.camera.shake(1.0);
     }
 

@@ -431,9 +431,9 @@ export class MenuState {
 
     _drawStats(ctx, ship, y, x, barWidth) {
         const stats = [
-            { label: 'HP', value: ship.health, max: 20, color: '#44ff66' },
+            { label: 'HP', value: ship.health, max: 200, color: '#44ff66' },
             { label: 'SPD', value: ship.speed, max: 10, color: '#44aaff' },
-            { label: 'SHD', value: ship.shield, max: 6, color: '#aa66ff' },
+            { label: 'SHD', value: ship.shield, max: 60, color: '#aa66ff' },
             { label: 'STR', value: ship.storage.rows, max: 5, color: '#ffaa44' },
         ];
 

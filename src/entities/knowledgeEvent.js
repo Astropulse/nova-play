@@ -52,8 +52,8 @@ export class KnowledgeEvent {
         this.beamTimer = 1.0; // Start sooner
 
         // Health Phase 1: 50 damage to wake up
-        this.health = 5;
-        this.maxBossHealth = 40;
+        this.health = 50;
+        this.maxBossHealth = 400;
         this.invulnTimer = 0;
 
         this.pendingSpawns = [];
@@ -355,7 +355,7 @@ export class KnowledgeEvent {
     _fireLasers(player, diff) {
         // Spiral pattern
         const count = Math.floor(8 + (diff * 2));
-        const damage = (1 + (diff - 1) * 0.5);
+        const damage = (10 + (diff - 1) * 5);
         for (let i = 0; i < count; i++) {
             const angle = (i / count) * Math.PI * 2 + (Math.random() * 0.2);
             const speed = 500 + (diff * 30);
@@ -367,7 +367,7 @@ export class KnowledgeEvent {
 
     _fireSwirlingProjectiles(player, diff) {
         const count = Math.floor(12 + (diff * 4));
-        const damage = (1 + (diff - 1) * 0.5);
+        const damage = (10 + (diff - 1) * 5);
         const baseAngle = Math.random() * Math.PI * 2;
         const speed = 400 + (diff * 20);
         const angularVelocity = 1.0 + Math.random() * 1.0; // Variable radius: 1.5 was current (small), 0.5 is large spiral
@@ -392,7 +392,7 @@ export class KnowledgeEvent {
     }
 
     _fireWaveProjectiles(player, diff) {
-        const damage = (1 + (diff - 1) * 0.5);
+        const damage = (10 + (diff - 1) * 5);
         const waveAngle = Math.atan2(player.worldY - this.worldY, player.worldX - this.worldX);
         const arc = Math.PI * 0.4; // 40% of a circle
         const count = Math.floor(15 + (diff * 5));
@@ -408,7 +408,7 @@ export class KnowledgeEvent {
 
     _fireHitscanBeam(player, diff) {
         const angle = this.targetingAngle;
-        const damage = (1 + (diff - 1) * 0.5) * 2.5;
+        const damage = (10 + (diff - 1) * 5) * 2.5;
         const length = 12000;
 
         this.activeBeams.push({
@@ -460,6 +460,10 @@ export class KnowledgeEvent {
                 this.healthScaled = true;
             }
             this.health -= damage;
+
+            if (this.game.currentState && this.game.currentState.spawnFloatingText) {
+                this.game.currentState.spawnFloatingText(this.worldX, this.worldY, `-${Math.ceil(damage)}`, '#ff4444');
+            }
             this.game.sounds.play('hit', { volume: 0.5, x: this.worldX, y: this.worldY });
 
             if (this.health <= 0) {
@@ -475,6 +479,11 @@ export class KnowledgeEvent {
         if (this.state !== KNOWLEDGE_STATE.BOSS || this.invulnTimer > 0) return false;
 
         this.health -= damage;
+
+        if (this.game.currentState && this.game.currentState.spawnFloatingText) {
+            this.game.currentState.spawnFloatingText(this.worldX, this.worldY, `-${Math.ceil(damage)}`, '#ff4444');
+        }
+
         this.invulnTimer = 0.1;
         this.game.sounds.play('hit', { volume: 0.5, x: this.worldX, y: this.worldY });
 

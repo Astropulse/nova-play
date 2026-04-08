@@ -16,6 +16,7 @@ import { Projectile } from '../entities/projectile.js';
 import { Starcore } from '../entities/starcore.js';
 import { AsteroidCrusher } from '../entities/asteroidCrusher.js';
 import { MenuState } from './menuState.js';
+import { FloatingText } from '../entities/floatingText.js';
 import { MUSIC_STATE } from '../engine/soundManager.js';
 import { BOSS_STATE } from '../entities/boss.js';
 import { EncounterShip, ENC_STATE } from '../entities/encounter.js';
@@ -56,6 +57,7 @@ export class PlayingState {
         this.encounterBonuses = { speedMult: 1.0, fireRateMult: 1.0, turnMult: 1.0 };
 
         this.particles = [];
+        this.floatingTexts = [];
 
         this.asteroidSpawner = new AsteroidSpawner(game);
         this.enemySpawner = new EnemySpawner(game);
@@ -472,7 +474,7 @@ export class PlayingState {
                 if (target) {
                     const aimAngle = Math.atan2(target.worldY - this.player.worldY, target.worldX - this.player.worldX);
                     // Increased damage and applied modifiers
-                    const damage = (10.0 + this.player.permDamageBonus) * (this.player.hasLaserOverride ? 1.3 : 1.0);
+                    const damage = (100.0 + this.player.permDamageBonus) * (this.player.hasLaserOverride ? 1.3 : 1.0);
                     const spriteKey = 'blue_laser_ball_big';
 
                     const proj = new Projectile(this.game, this.player.worldX, this.player.worldY, aimAngle, 1200, spriteKey, this.player, damage);
@@ -562,7 +564,7 @@ export class PlayingState {
                     const aimAngle = Math.atan2(target.worldY - py, target.worldX - px);
 
                     const spriteKey = this.player.hasLaserOverride ? 'blue_laser_ball_big' : 'blue_laser_ball';
-                    const damage = 0.7 * (this.player.hasLaserOverride ? 1.3 : 1.0);
+                    const damage = 7.0 * (this.player.hasLaserOverride ? 1.3 : 1.0);
 
                     this.projectiles.push(
                         new Projectile(this.game, px, py, aimAngle, 2400, spriteKey, this.player, damage)
@@ -791,6 +793,14 @@ export class PlayingState {
             r.update(dt);
         }
 
+        // Update floating texts
+        for (let i = this.floatingTexts.length - 1; i >= 0; i--) {
+            this.floatingTexts[i].update(dt);
+            if (!this.floatingTexts[i].alive) {
+                this.floatingTexts.splice(i, 1);
+            }
+        }
+
         // Update scrap entities (magnetized to player)
         for (const s of this.scrapEntities) {
             s.update(dt, this.player.worldX, this.player.worldY, this.player.scrapRangeMult);
@@ -956,7 +966,7 @@ export class PlayingState {
             const dy = this.player.worldY - en.worldY;
             const dist = Math.sqrt(dx * dx + dy * dy);
             if (dist < this.player.radius + en.radius) {
-                this._damagePlayer(2); // Ramming hurts!
+                this._damagePlayer(20); // Ramming hurts!
                 en.onCollision(this.player);
                 if (!en.alive) this._onEntityDestroyed(en);
                 this._applyKnockback(dx, dy, dist, 300);
@@ -970,7 +980,7 @@ export class PlayingState {
             const dy = this.player.worldY - ev.worldY;
             const dist = Math.sqrt(dx * dx + dy * dy);
             if (dist < this.player.radius + ev.radius * 0.5) { // Smaller inner radius for waking
-                this._damagePlayer(2);
+                this._damagePlayer(20);
                 ev.hit(1); // Triggers wake
                 this._applyKnockback(dx, dy, dist, 600); // Big knockback from boss
             }
@@ -985,9 +995,9 @@ export class PlayingState {
                 const dy = en.worldY - ast.worldY;
                 const dist = Math.sqrt(dx * dx + dy * dy);
                 if (dist < en.radius + ast.radius) {
-                    // Bosses take nearly no damage from asteroids (0.1 damage per hit)
+                    // Bosses take nearly no damage from asteroids (1.0 damage per hit)
                     // AsteroidCrusher takes NO damage from asteroids
-                    const damage = (en instanceof AsteroidCrusher) ? 0 : (en.isBoss ? 0.1 : 1);
+                    const damage = (en instanceof AsteroidCrusher) ? 0 : (en.isBoss ? 1.0 : 10);
                     en.hit(damage);
 
                     // Don't break if tractored by THIS enemy OR recently released by a crusher
@@ -1098,6 +1108,7 @@ export class PlayingState {
         if (this.player.invulnTimer > 0 || this.isDead || this.bossDeathImmunityTimer > 0) return;
 
         if (this.player.shielding) {
+            this.spawnFloatingText(this.player.worldX, this.player.worldY, `-${Math.ceil(amount)}`, '#44ddff');
             this.player.shieldEnergy -= amount * 5;
             if (this.player.shieldEnergy <= 0) {
                 this.player.shieldEnergy = 0;
@@ -1110,6 +1121,7 @@ export class PlayingState {
                 this.game.sounds.play('asteroid_break', { volume: 0.3, x: this.player.worldX, y: this.player.worldY }); // Shield hit sound
             }
         } else {
+            this.spawnFloatingText(this.player.worldX, this.player.worldY, `-${Math.ceil(amount)}`, '#ff4444');
             this.player.health -= amount;
             // Increased with damage slightly, but with diminishing returns (sqrt)
             this.camera.shake(Math.sqrt(amount) * 1.2, 15.0);
@@ -1118,6 +1130,7 @@ export class PlayingState {
             if (this.player.health <= 0) {
                 if (this.player.hasSacrifice) {
                     this.player.hasSacrifice = false; // Consume it
+                    this.spawnFloatingText(this.player.worldX, this.player.worldY, `+${Math.ceil(this.player.maxHealth)}`, '#44ff44');
                     this.player.health = this.player.maxHealth;
                     this.player.shieldEnergy = this.player.maxShieldEnergy;
                     this.player.shieldBroken = false;
@@ -1319,6 +1332,10 @@ export class PlayingState {
         this._triggerShakeAt(x, y, 2.0);
     }
 
+    spawnFloatingText(x, y, text, color) {
+        this.floatingTexts.push(new FloatingText(this.game, x, y, text, color));
+    }
+
     draw(ctx) {
         ctx.textBaseline = 'alphabetic';
         // Draw main scene normally (clean clear)
@@ -1398,6 +1415,11 @@ export class PlayingState {
 
         // Explosions (drawn above most things, below UI)
         this._drawExplosions(ctx);
+
+        // Draw floating texts
+        for (const ft of this.floatingTexts) {
+            ft.draw(ctx, this.camera);
+        }
 
         this.hud.draw(ctx);
 
@@ -2054,12 +2076,12 @@ export class PlayingState {
                             this.activeShop.permUpgrades[btn.bounds.id].stock--;
 
                             if (btn.bounds.id === 'health') {
-                                this.player.permHealthBonus += 3;
+                                this.player.permHealthBonus += 30;
                                 this._onInventoryChanged(true);
                             } else if (btn.bounds.id === 'shield') {
-                                this.player.updateMaxShield(10);
+                                this.player.updateMaxShield(100);
                             } else if (btn.bounds.id === 'damage') {
-                                this.player.permDamageBonus += 0.5;
+                                this.player.permDamageBonus += 5.0;
                                 this.game.sounds.play('laser', 0.2); // extra feedback
                             } else if (btn.bounds.id === 'inventory') {
                                 this.player.inventoryUpgradeTier++;
@@ -2540,7 +2562,7 @@ export class PlayingState {
             if (item.id === 'sensor_accelerator') {
                 fovMult *= 1.1; // 10% increase in FOV
             }
-            if (item.id === 'nanite_tank') p.naniteRegen += 0.06;
+            if (item.id === 'nanite_tank') p.naniteRegen += 0.6;
             if (item.id === 'shield_capacitor') p.shieldCapacitorCount += 1;
             if (item.id === 'asteroid_accumulator') p.asteroidSpawnMult += 0.5;
 
@@ -2604,16 +2626,16 @@ export class PlayingState {
 
     _revealShop(shop) {
         if (!shop) return;
-        
+
         // If already revealed, move to the end of the queue (most recent)
         const idx = this.revealedShops.indexOf(shop);
         if (idx !== -1) {
             this.revealedShops.splice(idx, 1);
         }
-        
+
         shop.revealed = true;
         this.revealedShops.push(shop);
-        
+
         // Prune oldest shop marker if count > 3
         while (this.revealedShops.length > 3) {
             const oldest = this.revealedShops.shift();

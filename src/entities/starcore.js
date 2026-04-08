@@ -8,7 +8,7 @@ export class Starcore extends Boss {
         super(game, worldX, worldY, difficultyScale);
         this.spriteKey = 'starcore';
         this.radius = 120;
-        this.health = 30 * this.difficultyScale;
+        this.health = 300 * this.difficultyScale;
         this.maxHealth = this.health;
 
         this.shootTimer = 2.0;
@@ -78,7 +78,7 @@ export class Starcore extends Boss {
                     if (dot > 0.99) {
                         const cross = Math.abs(dx * dirY - dy * dirX);
                         if (cross < (player.radius + 30)) {
-                            this.game.currentState._damagePlayer(5.0 * dt * this.curvedDifficultyScale);
+                            this.game.currentState._damagePlayer(50.0 * dt * this.curvedDifficultyScale);
                         }
                     }
                 }
@@ -109,7 +109,7 @@ export class Starcore extends Boss {
                         const proj = new Projectile(
                             this.game, px, py,
                             this.angle + (Math.random() - 0.5) * spread,
-                            1200, 'red_laser_ball', this, 0.5 * this.curvedDifficultyScale
+                            1200, 'red_laser_ball', this, 5.0 * this.curvedDifficultyScale
                         );
                         this.pendingProjectiles.push(proj);
                     });
@@ -211,7 +211,7 @@ export class Starcore extends Boss {
             const py = this.worldY + Math.sin(angle) * 50;
 
             const proj = new Projectile(
-                this.game, px, py, angle, 600, 'red_laser_ball_big', this, 1.0 * this.curvedDifficultyScale, 12.0
+                this.game, px, py, angle, 600, 'red_laser_ball_big', this, 10.0 * this.curvedDifficultyScale, 12.0
             );
             proj.isRocket = true;
             proj.target = player;
