@@ -81,7 +81,7 @@ export class Enemy {
         const turnScale = 1 + (difficultyScale - 1) * 0.12;  // Increased from 0.1
         this.baseSpeed = (320 + Math.random() * 80) * speedScale;
         this.turnSpeed = (6.5 + Math.random() * 1.0) * turnScale;
-        this.health = Math.ceil(10 + 30 * difficultyScale); // Increased from 20 + 15 * difficultyScale
+        this.health = Math.ceil(15 + 20 * difficultyScale);
         this._nativeRadius = CollisionScanner.getRadius(this.img, this.spriteKey);
         this.radius = this._nativeRadius * 0.95;
 
@@ -944,7 +944,7 @@ export class KamikazeEnemy extends Enemy {
         this.baseSpeed = (500 + Math.random() * 50) * speedScale;
         this.turnSpeed = 7.0 + Math.random() * 1.0;
         // Moderate health, slightly tougher than standard enemies but not sponges
-        this.health = Math.ceil(25 + 25 * difficultyScale);
+        this.health = Math.ceil(20 + 20 * difficultyScale);
 
         // Disable shooting
         this.attackRange = -1; // Never enter ATTACK state based on distance
