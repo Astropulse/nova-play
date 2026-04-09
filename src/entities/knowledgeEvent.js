@@ -53,7 +53,7 @@ export class KnowledgeEvent {
 
         // Health Phase 1: 50 damage to wake up
         this.health = 50;
-        this.maxBossHealth = 400 + 30 * this.difficultyScale;
+        this.maxBossHealth = 400 + 20 * this.difficultyScale;
         this.invulnTimer = 0;
 
         this.pendingSpawns = [];
@@ -355,7 +355,7 @@ export class KnowledgeEvent {
     _fireLasers(player, diff) {
         // Spiral pattern
         const count = Math.floor(8 + (diff * 2));
-        const damage = (10 + (diff - 1) * 5);
+        const damage = (10 + 2.5 * diff);
         for (let i = 0; i < count; i++) {
             const angle = (i / count) * Math.PI * 2 + (Math.random() * 0.2);
             const speed = 500 + (diff * 30);
@@ -367,7 +367,7 @@ export class KnowledgeEvent {
 
     _fireSwirlingProjectiles(player, diff) {
         const count = Math.floor(12 + (diff * 4));
-        const damage = (10 + (diff - 1) * 5);
+        const damage = (10 + 2.5 * diff);
         const baseAngle = Math.random() * Math.PI * 2;
         const speed = 400 + (diff * 20);
         const angularVelocity = 1.0 + Math.random() * 1.0; // Variable radius: 1.5 was current (small), 0.5 is large spiral
@@ -392,7 +392,7 @@ export class KnowledgeEvent {
     }
 
     _fireWaveProjectiles(player, diff) {
-        const damage = (10 + (diff - 1) * 5);
+        const damage = (10 + 2.5 * diff);
         const waveAngle = Math.atan2(player.worldY - this.worldY, player.worldX - this.worldX);
         const arc = Math.PI * 0.4; // 40% of a circle
         const count = Math.floor(15 + (diff * 5));
@@ -408,7 +408,7 @@ export class KnowledgeEvent {
 
     _fireHitscanBeam(player, diff) {
         const angle = this.targetingAngle;
-        const damage = (10 + (diff - 1) * 5) * 2.5;
+        const damage = (10 + 2.5 * diff) * 2.5;
         const length = 12000;
 
         this.activeBeams.push({

@@ -47,6 +47,11 @@ class GameDataScanner:
             if kami_match:
                 self.formulas['kamikaze_enemy_hp'] = self._clean_formula(kami_match.group(1))
 
+            # Find CthulhuEnemy health
+            cthulhu_match = re.search(r'class CthulhuEnemy.*?this\.health\s*=\s*Math\.ceil\((.*?)\);', content, re.DOTALL)
+            if cthulhu_match:
+                self.formulas['cthulhu_enemy_hp'] = self._clean_formula(cthulhu_match.group(1))
+
         # 2. Asteroid Crusher
         with open(CRUSHER_PATH, 'r') as f:
             content = f.read()
@@ -67,6 +72,15 @@ class GameDataScanner:
             know_match = re.search(r'this\.maxBossHealth\s*=\s*(.*?);', content)
             if know_match:
                 self.formulas['knowledge_boss_hp'] = self._clean_formula(know_match.group(1))
+
+        # 5. Base Boss Class
+        BOSS_PATH = os.path.join(BASE_DIR, 'src', 'entities', 'boss.js')
+        if os.path.exists(BOSS_PATH):
+            with open(BOSS_PATH, 'r') as f:
+                content = f.read()
+                boss_match = re.search(r'this\.health\s*=\s*(.*?);', content)
+                if boss_match:
+                    self.formulas['generic_boss_hp'] = self._clean_formula(boss_match.group(1))
 
     def _scan_combat_formulas(self):
         with open(ENEMY_PATH, 'r') as f:
@@ -136,7 +150,7 @@ def generate_plot():
     scanner = GameDataScanner()
     scanner.scan_all()
 
-    total_minutes = 20
+    total_minutes = 30
     total_seconds = total_minutes * 60
     t_values = np.linspace(0, total_seconds, 1200) # Increased resolution for 20m
     
@@ -162,6 +176,8 @@ def generate_plot():
     # 2. Enemy Health Plot
     ax2.plot(t_values / 60, results.get('standard_enemy_hp', []), label='Standard Enemy HP', color='#4CAF50', linewidth=2)
     ax2.plot(t_values / 60, results.get('kamikaze_enemy_hp', []), label='Kamikaze Enemy HP', color='#FF9800', linewidth=2)
+    if 'cthulhu_enemy_hp' in results:
+        ax2.plot(t_values / 60, results['cthulhu_enemy_hp'], label='Cthulhu Enemy HP', color='#795548', linewidth=2, linestyle=':')
     ax2.set_title('Enemy Health Scaling', fontsize=12)
     ax2.set_ylabel('Health (HP)', fontsize=12)
     ax2.grid(True, linestyle=(':'), alpha=0.6)
@@ -170,10 +186,12 @@ def generate_plot():
     # 3. Boss Health Plot
     boss_map = {'starcore_hp': ('Starcore', '#9C27B0'), 
                 'asteroid_crusher_hp': ('Asteroid Crusher', '#2196F3'), 
-                'knowledge_boss_hp': ('Knowledge Boss', '#F44336')}
+                'knowledge_boss_hp': ('Knowledge Boss', '#F44336'),
+                'generic_boss_hp': ('Generic Boss Base', '#9E9E9E')}
     for key, (label, color) in boss_map.items():
         if key in results:
-            ax3.plot(t_values / 60, results[key], label=label, color=color, linewidth=2)
+            ls = '--' if 'generic' in key else '-'
+            ax3.plot(t_values / 60, results[key], label=label, color=color, linewidth=2, linestyle=ls)
     ax3.set_title('Boss Health Comparison', fontsize=12)
     ax3.set_ylabel('Health (HP)', fontsize=12)
     ax3.grid(True, linestyle=':', alpha=0.6)
@@ -216,7 +234,7 @@ def generate_plot():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     output_path = os.path.join(script_dir, 'progression_plot.png')
     plt.savefig(output_path, dpi=120, bbox_inches='tight')
-    print(f"\nSuccess! Full progression plot (20m) saved to: {output_path}")
+    print(f"\nSuccess! Full progression plot ({total_minutes}m) saved to: {output_path}")
 
 if __name__ == "__main__":
     generate_plot()

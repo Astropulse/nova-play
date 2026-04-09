@@ -6,7 +6,7 @@ export class AsteroidCrusher extends Boss {
         super(game, worldX, worldY, difficultyScale);
         this.spriteKey = 'asteroid_crusher';
         this.radius = 120;
-        this.health = 300 + 40 * this.difficultyScale;
+        this.health = 300 + 25 * this.difficultyScale;
         this.maxHealth = this.health;
 
         this.baseSpeed = 400; // Slow moving tank

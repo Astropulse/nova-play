@@ -77,11 +77,11 @@ export class Enemy {
         this.activeBeams = [];
 
         // Stats - Scale with difficulty
-        const speedScale = 1 + (difficultyScale - 1) * 0.1;
+        const speedScale = 1 + (difficultyScale - 1) * 0.08;
         const turnScale = 1 + (difficultyScale - 1) * 0.08;
         this.baseSpeed = Math.min(900, (320 + Math.random() * 80) * speedScale);
         this.turnSpeed = Math.min(14.0, (6.5 + Math.random() * 1.0) * turnScale);
-        this.health = Math.ceil(15 + 20 * difficultyScale);
+        this.health = Math.ceil(15 + 15 * difficultyScale);
         this._nativeRadius = CollisionScanner.getRadius(this.img, this.spriteKey);
         this.radius = this._nativeRadius * 0.95;
 
@@ -516,7 +516,7 @@ export class Enemy {
         const noseOffset = 30;
         const px = this.worldX + Math.cos(this.angle) * noseOffset;
         const py = this.worldY + Math.sin(this.angle) * noseOffset;
-        let damage = (10 + (this.difficultyScale - 1) * 5) * this.damageMult;
+        let damage = (10 + 2.5 * this.difficultyScale) * this.damageMult;
 
         if (this.upgradeType === 'bigBall') {
             const proj = new Projectile(this.game, px, py, this.angle, laserSpeed * 0.8, 'red_laser_ball_big', this, damage * 1.5);
@@ -940,11 +940,11 @@ export class KamikazeEnemy extends Enemy {
         super(game, worldX, worldY, difficultyScale);
 
         // Custom stats for kamikaze
-        const speedScale = 1 + (difficultyScale - 1) * 0.14;
+        const speedScale = 1 + (difficultyScale - 1) * 0.1;
         this.baseSpeed = Math.min(1050, (500 + Math.random() * 50) * speedScale);
         this.turnSpeed = Math.min(7.0, 7.0 + Math.random() * 1.0);
         // Moderate health, slightly tougher than standard enemies but not sponges
-        this.health = Math.ceil(25 + 18 * difficultyScale);
+        this.health = Math.ceil(25 + 14 * difficultyScale);
 
         // Disable shooting
         this.attackRange = -1; // Never enter ATTACK state based on distance
@@ -1006,10 +1006,10 @@ export class CthulhuEnemy extends Enemy {
         this.img = game.assets.get(this.spriteKey);
 
         // Custom stats for cthulhu enemies (similar to kamikaze)
-        const speedScale = 1 + (difficultyScale - 1) * 0.18;
+        const speedScale = 1 + (difficultyScale - 1) * 0.1;
         this.baseSpeed = (800 + Math.random() * 100) * speedScale;
         this.turnSpeed = 7.0 + Math.random() * 1.0;
-        this.health = Math.ceil(120 + 40 * difficultyScale);
+        this.health = Math.ceil(25 + 14 * difficultyScale);
 
         // Disable shooting
         this.attackRange = -1;
