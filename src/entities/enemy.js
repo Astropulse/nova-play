@@ -77,10 +77,10 @@ export class Enemy {
         this.activeBeams = [];
 
         // Stats - Scale with difficulty
-        const speedScale = 1 + (difficultyScale - 1) * 0.18; // Increased from 0.15
-        const turnScale = 1 + (difficultyScale - 1) * 0.12;  // Increased from 0.1
-        this.baseSpeed = (320 + Math.random() * 80) * speedScale;
-        this.turnSpeed = (6.5 + Math.random() * 1.0) * turnScale;
+        const speedScale = 1 + (difficultyScale - 1) * 0.1;
+        const turnScale = 1 + (difficultyScale - 1) * 0.08;
+        this.baseSpeed = Math.min(900, (320 + Math.random() * 80) * speedScale);
+        this.turnSpeed = Math.min(14.0, (6.5 + Math.random() * 1.0) * turnScale);
         this.health = Math.ceil(15 + 20 * difficultyScale);
         this._nativeRadius = CollisionScanner.getRadius(this.img, this.spriteKey);
         this.radius = this._nativeRadius * 0.95;
@@ -940,11 +940,11 @@ export class KamikazeEnemy extends Enemy {
         super(game, worldX, worldY, difficultyScale);
 
         // Custom stats for kamikaze
-        const speedScale = 1 + (difficultyScale - 1) * 0.18;
-        this.baseSpeed = (500 + Math.random() * 50) * speedScale;
-        this.turnSpeed = 7.0 + Math.random() * 1.0;
+        const speedScale = 1 + (difficultyScale - 1) * 0.14;
+        this.baseSpeed = Math.min(1050, (500 + Math.random() * 50) * speedScale);
+        this.turnSpeed = Math.min(7.0, 7.0 + Math.random() * 1.0);
         // Moderate health, slightly tougher than standard enemies but not sponges
-        this.health = Math.ceil(20 + 20 * difficultyScale);
+        this.health = Math.ceil(25 + 18 * difficultyScale);
 
         // Disable shooting
         this.attackRange = -1; // Never enter ATTACK state based on distance
