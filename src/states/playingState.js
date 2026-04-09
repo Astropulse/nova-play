@@ -94,6 +94,13 @@ export class PlayingState {
         this.trueTotalTime = 0; // Persistent game time
         this.waveTimer = 120; // 2 minutes
         this.difficultyScale = 1.0;
+
+        // Tunable Difficulty Constants
+        this.difficultyRampTime = 240; // 4 minutes (transition to linear)
+        this.difficultyExponent = 1.52; // Starts slow, curves up (convex)
+        this.difficultyGain = 0.000366; // Calculated for smooth transition at 4m
+        this.difficultySteadyRate = 0.014; // Steady linear growth after ramp
+
         this.flashTimer = 0;
 
         // Music System Overhaul State
@@ -670,15 +677,11 @@ export class PlayingState {
             // Update total game time
             this.totalGameTime += dt;
 
-            // --- Tunable Difficulty Constants ---
-            this.difficultyRampTime = 600; // 10 minutes (600 seconds)
-            this.difficultyExponent = 0.5;
-            this.difficultyGain = 0.12;
-            this.difficultySteadyRate = 0.008; // Steady growth per second after ramp (Increased from 0.005)
+            // --- Tunable Difficulty Constants (Defined in constructor) ---
 
             let timeScale = 1.0;
             if (this.totalGameTime <= this.difficultyRampTime) {
-                // Phase 1: Sharp Ramp (Power Curve)
+                // Phase 1: Convex Ramp (Power Curve) - Starts slow, accelerates
                 timeScale += (this.difficultyGain * Math.pow(this.totalGameTime, this.difficultyExponent));
             } else {
                 // Phase 2: Steady Growth (Linear)
