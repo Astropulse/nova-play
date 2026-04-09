@@ -23,6 +23,9 @@ export class DevConsole {
             'boss': (args) => this._cmdBoss(args),
             'hp': () => this._cmdHP(),
             'encounter': (args) => this._cmdEncounter(args),
+            'dev': () => this._cmdDev(),
+            'fps_uncap': () => this._cmdFPSUncap(),
+            'perf': () => this._cmdPerf(),
             'help': () => this._cmdHelp()
         };
 
@@ -274,8 +277,26 @@ export class DevConsole {
         console.log(`Spawned encounter: ${type || 'random'}`);
     }
 
+    _cmdDev() {
+        this.game.devMode = !this.game.devMode;
+        console.log(`Developer mode ${this.game.devMode ? 'ENABLED' : 'DISABLED'}`);
+    }
+
+    _cmdFPSUncap() {
+        console.log("FPS uncapping is currently handled by potential FPS monitoring. Logic simulation remains locked to 120Hz for stability.");
+    }
+
+    _cmdPerf() {
+        this.game.devMode = !this.game.devMode;
+        if (this.game.devMode) {
+            console.log(`Performance monitoring ENABLED. Potential FPS: ${this.game.potentialFps}`);
+        } else {
+            console.log("Performance monitoring DISABLED.");
+        }
+    }
+
     _cmdHelp() {
-        console.log("Available commands: time, spawn, stat, wave, scrap, locate, save, load, record, boss, hp, encounter, help");
+        console.log("Available commands: time, spawn, stat, wave, scrap, locate, save, load, record, boss, hp, encounter, dev, perf, help");
     }
 
     draw(ctx) {

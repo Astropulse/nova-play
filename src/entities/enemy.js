@@ -81,7 +81,7 @@ export class Enemy {
         const turnScale = 1 + (difficultyScale - 1) * 0.12;  // Increased from 0.1
         this.baseSpeed = (320 + Math.random() * 80) * speedScale;
         this.turnSpeed = (6.5 + Math.random() * 1.0) * turnScale;
-        this.health = Math.ceil(20 + 30 * difficultyScale); // Increased from 20 + 15 * difficultyScale
+        this.health = Math.ceil(10 + 30 * difficultyScale); // Increased from 20 + 15 * difficultyScale
         this._nativeRadius = CollisionScanner.getRadius(this.img, this.spriteKey);
         this.radius = this._nativeRadius * 0.95;
 
@@ -394,7 +394,7 @@ export class Enemy {
             const relVx = this.vx - (ast.vx || 0);
             const relVy = this.vy - (ast.vy || 0);
             const relSpeed = Math.sqrt(relVx * relVx + relVy * relVy);
-            
+
             const adx = ast.worldX - this.worldX;
             const ady = ast.worldY - this.worldY;
             const adist = Math.sqrt(adx * adx + ady * ady);
@@ -419,14 +419,14 @@ export class Enemy {
                     // Calculate required clearance
                     const d = Math.max(safetyRadius * 0.5, adist); // prevent division by zero
                     const clearanceAngle = Math.asin(Math.min(0.999, safetyRadius / d));
-                    
+
                     // IF our target is already clear of this asteroid, don't veer away!
                     if (Math.abs(targetDiff) > clearanceAngle + 0.35) continue;
 
                     const urgency = Math.pow(1 - (adist - safetyRadius) / baseLookAhead, 0.9);
                     if (urgency > maxUrgency) {
                         maxUrgency = urgency;
-                        
+
                         // Pick the side that's closer to our current baseTarget
                         const side = targetDiff > 0 ? 1 : -1;
                         let escapeAngle = angleToAst + (clearanceAngle + 0.2) * side;
@@ -440,7 +440,7 @@ export class Enemy {
                         // Blend the escape angle based on urgency
                         const isUTurnNeeded = Math.abs(targetDiff) > Math.PI * 0.6;
                         let lerpFactor = Math.min(1.0, urgency * (isUTurnNeeded ? 4.0 : 3.0));
-                        
+
                         // EMERGENCY OVERRIDE: If a crash is imminent, stop blending and SNAP to escape.
                         if (urgency > 0.85) lerpFactor = 1.0;
 
@@ -944,7 +944,7 @@ export class KamikazeEnemy extends Enemy {
         this.baseSpeed = (500 + Math.random() * 50) * speedScale;
         this.turnSpeed = 7.0 + Math.random() * 1.0;
         // Moderate health, slightly tougher than standard enemies but not sponges
-        this.health = Math.ceil(30 + 25 * difficultyScale);
+        this.health = Math.ceil(25 + 25 * difficultyScale);
 
         // Disable shooting
         this.attackRange = -1; // Never enter ATTACK state based on distance

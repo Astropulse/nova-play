@@ -39,6 +39,14 @@ export class Game {
         this.mediaRecorder = null;
         this.recordedChunks = [];
         this.isEncoding = false;
+        this.devMode = false;
+        this.fps = 0;
+        this.potentialFps = 0;
+        this._fpsTimer = 0;
+        this._fpsCounter = 0;
+        this._potentialFpsCounter = 0;
+        this._potentialFpsAccumulator = 0;
+        this._lastFrameTime = performance.now();
     }
 
     resize() {
@@ -187,7 +195,7 @@ export class Game {
         this.setState(new MenuState(this));
         this.running = true;
         this.lastTime = performance.now();
-        requestAnimationFrame((t) => this.loop(t));
+        this.loop();
     }
 
     setState(state) {
@@ -207,30 +215,46 @@ export class Game {
         window.addEventListener('keydown', unlock);
     }
 
-    loop(timestamp) {
+    loop() {
         if (!this.running) return;
 
-        const dt = Math.min((timestamp - this.lastTime) / 1000, 0.05);
-        this.lastTime = timestamp;
+        const frameStart = performance.now();
+        const now = frameStart;
+        const dt = Math.min((now - this._lastFrameTime) / 1000, 0.1);
+        this._lastFrameTime = now;
 
+        // --- Logic Updates ---
         this.input.update();
 
-        // Developer Console Hotkey: d + e + v
+        // Hotkeys
         const devPressed = this.input.isKeyDown('KeyD') && this.input.isKeyDown('KeyE') && this.input.isKeyDown('KeyV');
         if (devPressed && !this._devPressedPrev) {
             this.devConsole.toggle();
         }
         this._devPressedPrev = devPressed;
 
-        this.sounds.update(dt);
-
-        // Screenshot/GIF Hotkey: P
         if (this.input.isKeyJustPressed('KeyP') && !this.devConsole.active) {
             this.takeScreenshot();
         }
 
+        this.sounds.update(dt);
+
+        if (!this.isEncoding) {
+            if (this.devConsole.active) {
+                this.devConsole.update(dt);
+            } else if (this.currentState) {
+                this.currentState.update(dt);
+            }
+        }
+
+        // --- Rendering ---
+        if (!this.currentState || !this.currentState.skipClear) {
+            this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+            this.ctx.fillStyle = '#000';
+            this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+        }
+
         if (this.isEncoding) {
-            // Game is effectively paused during final blob creation
             this.ctx.save();
             this.ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
             this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
@@ -240,42 +264,23 @@ export class Game {
             this.ctx.textBaseline = 'middle';
             this.ctx.fillText('SAVING CLIP (PLEASE WAIT)...', this.canvas.width / 2, this.canvas.height / 2);
             this.ctx.restore();
-            requestAnimationFrame((t) => this.loop(t));
-            return;
+        } else {
+            if (this.currentState) {
+                this.currentState.draw(this.ctx);
+            }
+            this.devConsole.draw(this.ctx);
+            this._drawCrosshair(this.ctx);
         }
 
-        if (this.devConsole.active) {
-            this.devConsole.update(dt);
-        } else if (this.currentState) {
-            this.currentState.update(dt);
-        }
-
-        // Clear canvas — state can set skipClear to handle its own clearing (motion blur)
-        if (!this.currentState || !this.currentState.skipClear) {
-            this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-            this.ctx.fillStyle = '#000';
-            this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
-        }
-
-        if (this.currentState) {
-            this.currentState.draw(this.ctx);
-        }
-
-        this.devConsole.draw(this.ctx);
-        this._drawCrosshair(this.ctx);
-
-        // Handle Recording Timer
+        // --- Recording Timer ---
         if (this.isRecording) {
             this.recordTimer += dt;
-
-            // Update DOM indicator
             const indicator = document.getElementById('recordingIndicator');
             const timer = document.getElementById('recordingTimer');
             if (indicator && timer) {
                 indicator.style.display = 'block';
                 timer.innerText = Math.max(0, this.maxRecordTime - this.recordTimer).toFixed(1);
             }
-
             if (this.recordTimer >= this.maxRecordTime) {
                 this.stopRecording();
             }
@@ -284,7 +289,28 @@ export class Game {
             if (indicator) indicator.style.display = 'none';
         }
 
-        requestAnimationFrame((t) => this.loop(t));
+        // --- Performance Tracking ---
+        const frameEnd = performance.now();
+        const frameWorkTime = frameEnd - frameStart;
+        this._potentialFpsAccumulator += frameWorkTime;
+        this._potentialFpsCounter++;
+
+        this._fpsCounter++;
+        this._fpsTimer += dt;
+        if (this._fpsTimer >= 1.0) {
+            this.fps = this._fpsCounter;
+            
+            // Average work time per frame in ms
+            const avgWorkTime = this._potentialFpsAccumulator / this._potentialFpsCounter;
+            this.potentialFps = avgWorkTime > 0 ? Math.round(1000 / avgWorkTime) : 0;
+
+            this._fpsCounter = 0;
+            this._fpsTimer = 0;
+            this._potentialFpsCounter = 0;
+            this._potentialFpsAccumulator = 0;
+        }
+
+        requestAnimationFrame(() => this.loop());
     }
 
     // Draw a sprite at a given scale at the given position (in screen pixels)

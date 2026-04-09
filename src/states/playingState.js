@@ -474,7 +474,7 @@ export class PlayingState {
                 if (target) {
                     const aimAngle = Math.atan2(target.worldY - this.player.worldY, target.worldX - this.player.worldX);
                     // Increased damage and applied modifiers
-                    const damage = (100.0 + this.player.permDamageBonus) * (this.player.hasLaserOverride ? 1.3 : 1.0);
+                    const damage = (70.0 + this.player.permDamageBonus) * (this.player.hasLaserOverride ? 1.3 : 1.0);
                     const spriteKey = 'blue_laser_ball_big';
 
                     const proj = new Projectile(this.game, this.player.worldX, this.player.worldY, aimAngle, 1200, spriteKey, this.player, damage);
@@ -1480,10 +1480,14 @@ export class PlayingState {
             ctx.fillRect(0, 0, this.game.width, this.game.height);
             ctx.restore();
         }
+
+        if (this.game.devMode) {
+            this._drawDevOverlay(ctx);
+        }
     }
 
     _drawHealthIndicators(ctx) {
-        if (!this.game.showHealth) return;
+        if (!this.game.showHealth && !this.game.devMode) return;
 
         ctx.save();
         ctx.textAlign = 'center';
@@ -3555,5 +3559,88 @@ export class PlayingState {
 
         this.game.drawSprite(ctx, fa.hovered ? 'fly_again_on' : 'fly_again_off', fa.x, fa.y, uiScale);
         this.game.drawSprite(ctx, ss.hovered ? 'ship_selection_on' : 'ship_selection_off', ss.x, ss.y, uiScale);
+    }
+
+    _drawDevOverlay(ctx) {
+        const uiScale = this.game.uiScale;
+        const cw = this.game.width;
+        const ch = this.game.height;
+
+        ctx.save();
+
+        // --- Top-Left Stats ---
+        const boxW = 100 * uiScale;
+        const boxH = 35 * uiScale;
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+        ctx.fillRect(10 * uiScale, 10 * uiScale, boxW, boxH);
+        ctx.strokeStyle = '#00ff00';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(10 * uiScale, 10 * uiScale, boxW, boxH);
+
+        ctx.fillStyle = '#00ff00';
+        ctx.font = `${6 * uiScale}px monospace`;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+
+        ctx.fillText(`FPS: ${this.game.fps} (POT: ${this.game.potentialFps})`, 15 * uiScale, 15 * uiScale);
+
+        // Performance Headroom Bar
+        const barW = (boxW - 10 * uiScale);
+        const barH = 2 * uiScale;
+        const barX = 15 * uiScale;
+        const barY = 21 * uiScale;
+
+        // Background
+        ctx.fillStyle = '#002200';
+        ctx.fillRect(barX, barY, barW, barH);
+
+        // Load factor (Real / Potential)
+        const load = this.game.potentialFps > 0 ? (this.game.fps / this.game.potentialFps) : 0;
+        const fillW = Math.min(barW, barW * load);
+
+        ctx.fillStyle = load > 0.8 ? '#ff4444' : (load > 0.5 ? '#ffff44' : '#00ff00');
+        ctx.fillRect(barX, barY, fillW, barH);
+
+        ctx.fillStyle = '#00ff00';
+        ctx.fillText(`DIFF: ${this.difficultyScale.toFixed(2)}`, 15 * uiScale, 26 * uiScale);
+
+        // --- Entity Vectors ---
+        const drawVector = (entities, color = '#ff00ff') => {
+            if (!entities) return;
+            for (const e of entities) {
+                if (!e.alive) continue;
+                const screen = this.camera.worldToScreen(e.worldX, e.worldY, cw, ch);
+                // Wider margin for vectors which might extend off-screen
+                if (screen.x < -200 || screen.x > cw + 200 || screen.y < -200 || screen.y > ch + 200) continue;
+
+                const vx = e.vx || 0;
+                const vy = e.vy || 0;
+                if (Math.abs(vx) < 1 && Math.abs(vy) < 1) continue;
+
+                // Draw velocity vector (scaled for visibility)
+                const vScaling = 0.5;
+                const vEnd = this.camera.worldToScreen(e.worldX + vx * vScaling, e.worldY + vy * vScaling, cw, ch);
+
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 1.5;
+                ctx.beginPath();
+                ctx.moveTo(screen.x, screen.y);
+                ctx.lineTo(vEnd.x, vEnd.y);
+                ctx.stroke();
+
+                // Arrow head or dot
+                ctx.fillStyle = color;
+                ctx.beginPath();
+                ctx.arc(vEnd.x, vEnd.y, 1.5 * uiScale, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        };
+
+        drawVector(this.enemies, '#ff4444');
+        drawVector(this.asteroids, '#ffff44');
+        drawVector([this.player], '#44ff44');
+        drawVector(this.encounters, '#4444ff');
+
+        ctx.restore();
     }
 }
