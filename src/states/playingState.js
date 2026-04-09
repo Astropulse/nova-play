@@ -1108,9 +1108,12 @@ export class PlayingState {
     _damagePlayer(amount) {
         if (this.player.invulnTimer > 0 || this.isDead || this.bossDeathImmunityTimer > 0) return;
 
+        // Cap damage at 1/5th of max health per instance
+        const finalAmount = Math.min(amount, this.player.maxHealth / 5);
+
         if (this.player.shielding) {
-            this.spawnFloatingText(this.player.worldX, this.player.worldY, `-${Math.ceil(amount)}`, '#44ddff');
-            this.player.shieldEnergy -= amount * 5;
+            this.spawnFloatingText(this.player.worldX, this.player.worldY, `-${Math.ceil(finalAmount)}`, '#44ddff');
+            this.player.shieldEnergy -= finalAmount * 5;
             if (this.player.shieldEnergy <= 0) {
                 this.player.shieldEnergy = 0;
                 this.player.shieldBroken = true;
@@ -1122,10 +1125,10 @@ export class PlayingState {
                 this.game.sounds.play('asteroid_break', { volume: 0.3, x: this.player.worldX, y: this.player.worldY }); // Shield hit sound
             }
         } else {
-            this.spawnFloatingText(this.player.worldX, this.player.worldY, `-${Math.ceil(amount)}`, '#ff4444');
-            this.player.health -= amount;
+            this.spawnFloatingText(this.player.worldX, this.player.worldY, `-${Math.ceil(finalAmount)}`, '#ff4444');
+            this.player.health -= finalAmount;
             // Increased with damage slightly, but with diminishing returns (sqrt)
-            this.camera.shake(Math.sqrt(amount) * 1.2, 15.0);
+            this.camera.shake(Math.sqrt(finalAmount) * 1.2, 15.0);
             this.game.sounds.play('ship_explode', { volume: 0.5, x: this.player.worldX, y: this.player.worldY });
 
             if (this.player.health <= 0) {
@@ -2786,8 +2789,8 @@ export class PlayingState {
         // Override sprite and compute correct radii for the encounter ship
         en.initEncounterData(encounter.img, encounter.assetKey);
 
-        // Super-charged stats - 6x health base, scaled by wealth
-        en.health = Math.ceil(en.health * 6 * wealthBonus);
+        // Super-charged stats - 3x health base, scaled by wealth
+        en.health = Math.ceil(en.health * 3 * wealthBonus);
         en.maxHealth = en.health;
 
         // Scale other attributes

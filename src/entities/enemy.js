@@ -115,6 +115,11 @@ export class Enemy {
 
         // Attack Pass Cap
         this.maxAttackPasses = 2 + Math.floor(Math.random() * 2); // 2-3 dive passes before backing off
+
+        // Dodge Persistence
+        this.dodgeTimer = 0;
+        this.dodgeDirectionAngle = 0;
+        this.dodgeDecisionMap = new WeakMap(); // projectile -> { decided: boolean, canDodge: boolean, reactionTimer: number }
     }
 
     _applyUpgrades() {
@@ -157,6 +162,10 @@ export class Enemy {
         // 1. Tactical State Updates
         this.invulnTimer = Math.max(0, this.invulnTimer - dt);
         this.freezeTimer = Math.max(0, this.freezeTimer - dt);
+        this.dodgeTimer = Math.max(0, this.dodgeTimer - dt);
+
+        // We'll manage the decision map and reaction timers inside _avoidObstacles 
+        // because it needs access to the projectile list.
 
         if (this.freezeTimer > 0) {
             this.vx = 0;
@@ -185,7 +194,7 @@ export class Enemy {
         }
         const activeSpeed = currentMaxSpeed * this.speedMult;
 
-        const avoidance = this._avoidObstacles(targetAngle, asteroids, projectiles, enemies, activeSpeed);
+        const avoidance = this._avoidObstacles(targetAngle, asteroids, projectiles, enemies, activeSpeed, dt);
         targetAngle = avoidance.targetAngle;
         const speedOverride = avoidance.speedOverride;
 
@@ -377,7 +386,7 @@ export class Enemy {
         }
     }
 
-    _avoidObstacles(baseTarget, asteroids, projectiles, enemies, activeSpeed) {
+    _avoidObstacles(baseTarget, asteroids, projectiles, enemies, activeSpeed, dt) {
         let finalTarget = baseTarget;
         let speedOverride = null;
 
@@ -479,31 +488,133 @@ export class Enemy {
             }
         }
 
-        // 4. Dodge Projectiles
+        // 4. Dodge Projectiles (Predictive Evasive Maneuvers)
+        let primaryThreat = null;
+        let highestThreatLevel = 0;
+        const activeThreats = [];
+
         for (const p of projectiles) {
-            if (p.owner !== this && p.alive) {
-                const pdx = p.worldX - this.worldX;
-                const pdy = p.worldY - this.worldY;
-                const pdist = Math.sqrt(pdx * pdx + pdy * pdy);
+            if (p.owner === this || !p.alive) continue;
 
-                const playerDist = this.game.currentState.player ?
-                    Math.sqrt(Math.pow(this.game.currentState.player.worldX - this.worldX, 2) + Math.pow(this.game.currentState.player.worldY - this.worldY, 2)) :
-                    Infinity;
+            const pdx = p.worldX - this.worldX;
+            const pdy = p.worldY - this.worldY;
+            const pvx = p.vx;
+            const pvy = p.vy;
+            const pSpeed = Math.sqrt(pvx * pvx + pvy * pvy) || 1;
 
-                if (pdist < 400 && playerDist > 450) {
-                    const pvx = p.vx;
-                    const pvy = p.vy;
-                    const pSpeed = Math.sqrt(pvx * pvx + pvy * pvy);
-                    const dot = (pvx * -pdx + pvy * -pdy) / ((pSpeed * pdist) || 1);
-                    if (dot > 0.94) {
-                        const perpX = -pvy;
-                        const perpY = pvx;
-                        const side = Math.sign(pdx * perpX + pdy * perpY) || 1;
-                        finalTarget = Math.atan2(perpY * side, perpX * side);
-                        break;
-                    }
+            // Find time to closest point of approach (CPA)
+            const t_impact = (-pdx * pvx + -pdy * pvy) / (pSpeed * pSpeed);
+
+            // Only look at projectiles approaching us in the near future (1.2s)
+            if (t_impact <= 0 || t_impact > 1.2) continue;
+
+            const closestX = p.worldX + pvx * t_impact;
+            const closestY = p.worldY + pvy * t_impact;
+            const adx = closestX - this.worldX;
+            const ady = closestY - this.worldY;
+            const dist_cpa = Math.sqrt(adx * adx + ady * ady);
+
+            const shipRadius = this.radius;
+            const projRadius = p.radius || 8;
+            const requiredClearance = shipRadius + projRadius + 15; // 15px safety margin
+
+            if (dist_cpa < requiredClearance) {
+                const threatLevel = (1 - t_impact / 1.2) * (1 - dist_cpa / requiredClearance);
+                const threatData = { p, t_impact, adx, ady, dist_cpa, requiredClearance, threatLevel };
+                activeThreats.push(threatData);
+
+                if (threatLevel > highestThreatLevel) {
+                    highestThreatLevel = threatLevel;
+                    primaryThreat = threatData;
                 }
             }
+        }
+
+        // Saturation Check + Decision Execution
+        if (activeThreats.length > 4) primaryThreat = null;
+
+        if (primaryThreat) {
+            let decision = this.dodgeDecisionMap.get(primaryThreat.p);
+            
+            if (!decision) {
+                const deficit = primaryThreat.requiredClearance - primaryThreat.dist_cpa;
+                // Max lateral displacement rule: D = (s/w) * (1 - cos(w*t))
+                const w = this.turnSpeed || 1;
+                const d_max = (activeSpeed / w) * (1 - Math.cos(Math.min(Math.PI, w * primaryThreat.t_impact)));
+
+                const canPhysicallyDodge = d_max >= (deficit * 0.8);
+                const dodgeRoll = Math.random() < (0.75 + (this.difficultyScale - 1) * 0.05);
+
+                if (canPhysicallyDodge && dodgeRoll) {
+                    // --- MULTI-THREAT SIDE ANALYSIS ---
+                    const laserAngle = Math.atan2(primaryThreat.p.vy, primaryThreat.p.vx);
+                    const sides = [1, -1];
+                    let bestSide = sides[0];
+                    let bestMinClearance = -Infinity;
+
+                    // Evaluate both perpendicular escape vectors
+                    for (const side of sides) {
+                        const dodgeAngle = laserAngle + (Math.PI / 2) * side;
+                        const dx_dodge = Math.cos(dodgeAngle) * d_max;
+                        const dy_dodge = Math.sin(dodgeAngle) * d_max;
+
+                        let minClearanceForSide = Infinity;
+                        for (const other of activeThreats) {
+                            // New CPA distance: |V_cpa_old - D_dodge|
+                            const new_adx = other.adx - dx_dodge;
+                            const new_ady = other.ady - dy_dodge;
+                            const new_dist_cpa = Math.sqrt(new_adx * new_adx + new_ady * new_ady);
+                            const clearance = new_dist_cpa - other.requiredClearance;
+                            if (clearance < minClearanceForSide) minClearanceForSide = clearance;
+                        }
+
+                        if (minClearanceForSide > bestMinClearance) {
+                            bestMinClearance = minClearanceForSide;
+                            bestSide = side;
+                        }
+                    }
+
+                    // STAY-IN-GAP CHECK: If dodging causes more danger than staying put, cancel.
+                    let currentMinClearance = Infinity;
+                    for (const other of activeThreats) {
+                        const clearance = other.dist_cpa - other.requiredClearance;
+                        if (clearance < currentMinClearance) currentMinClearance = clearance;
+                    }
+
+                    if (bestMinClearance < (currentMinClearance - 5)) {
+                        decision = { willDodge: false };
+                    } else {
+                        decision = {
+                            willDodge: true,
+                            reactionTimer: 0.08 + Math.random() * 0.15,
+                            side: bestSide,
+                            noise: (Math.random() - 0.5) * 0.2
+                        };
+                    }
+                } else {
+                    decision = { willDodge: false };
+                }
+                this.dodgeDecisionMap.set(primaryThreat.p, decision);
+            }
+
+            if (decision.willDodge) {
+                decision.reactionTimer -= dt;
+                if (decision.reactionTimer <= 0) {
+                    const laserAngle = Math.atan2(primaryThreat.p.vy, primaryThreat.p.vx);
+                    this.dodgeTimer = 0.45; // Hold for maneuver
+                    this.dodgeDirectionAngle = laserAngle + (Math.PI / 2) * decision.side + decision.noise;
+                }
+            }
+        }
+
+        // Apply dodge persistence and blending
+        if (this.dodgeTimer > 0) {
+            let diff = this.dodgeDirectionAngle - finalTarget;
+            while (diff > Math.PI) diff -= Math.PI * 2;
+            while (diff < -Math.PI) diff += Math.PI * 2;
+
+            const dodgeStrength = Math.min(1.0, this.dodgeTimer * 5.0);
+            finalTarget += diff * dodgeStrength;
         }
 
         return { targetAngle: finalTarget, speedOverride: speedOverride };
