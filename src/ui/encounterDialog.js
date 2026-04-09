@@ -9,18 +9,18 @@
 import { UPGRADES, RARITY_COLORS } from '../data/upgrades.js';
 
 const TAG_COLORS = {
-    scrap:   '#ffff44',
+    scrap: '#ffff44',
     upgrade: '#44ddff',
-    cost:    '#ff4444',
-    good:    '#44ff44',
-    warn:    '#ff8844'
+    cost: '#ff4444',
+    good: '#44ff44',
+    warn: '#ff8844'
 };
 
 const DIALOG_STATE = {
-    TYPING_MESSAGE:  0,
+    TYPING_MESSAGE: 0,
     SHOWING_OPTIONS: 1,
     TYPING_RESPONSE: 2,
-    CLOSED:          3
+    CLOSED: 3
 };
 
 export class EncounterDialog {
@@ -158,7 +158,7 @@ export class EncounterDialog {
 
                 if (this.responseRevealedChars >= this.responseTotalChars) {
                     this.responseRevealedChars = this.responseTotalChars;
-                    
+
                     if (this.options.length > 0) {
                         this.state = DIALOG_STATE.SHOWING_OPTIONS;
                     } else {

@@ -8,28 +8,28 @@ import { DIALOG_SCENARIOS } from './encounterDialogs.js';
 
 // ── Ship asset mappings ──────────────────────────────────────────
 export const ENCOUNTER_ASSETS = {
-    cargo_trader:    ['encounter_cargo_trader_1', 'encounter_cargo_trader_2'],
-    civilian:        ['encounter_civilian_1', 'encounter_civilian_2', 'encounter_civilian_3'],
-    colony:          ['encounter_colony_1', 'encounter_colony_2', 'encounter_colony_3'],
-    engineer:        ['encounter_engineer_1', 'encounter_engineer_2', 'encounter_engineer_3', 'encounter_engineer_4'],
-    explorer:        ['encounter_explorer_1', 'encounter_explorer_2'],
-    junker:          ['encounter_junker_1', 'encounter_junker_2'],
+    cargo_trader: ['encounter_cargo_trader_1', 'encounter_cargo_trader_2'],
+    civilian: ['encounter_civilian_1', 'encounter_civilian_2', 'encounter_civilian_3'],
+    colony: ['encounter_colony_1', 'encounter_colony_2', 'encounter_colony_3'],
+    engineer: ['encounter_engineer_1', 'encounter_engineer_2', 'encounter_engineer_3', 'encounter_engineer_4'],
+    explorer: ['encounter_explorer_1', 'encounter_explorer_2'],
+    junker: ['encounter_junker_1', 'encounter_junker_2'],
     law_enforcement: ['encounter_law_enforcement_1', 'encounter_law_enforcement_2'],
-    black_market:    ['encounter_black_market_1', 'encounter_black_market_2', 'encounter_black_market_3'],
-    tuner:           ['encounter_tuner_1', 'encounter_tuner_2']
+    black_market: ['encounter_black_market_1', 'encounter_black_market_2', 'encounter_black_market_3'],
+    tuner: ['encounter_tuner_1', 'encounter_tuner_2']
 };
 
 // ── Display info ─────────────────────────────────────────────────
 export const ENCOUNTER_INFO = {
-    cargo_trader:    { name: 'CARGO TRADER',    color: '#44ffaa' },
-    civilian:        { name: 'CIVILIAN',        color: '#88bbdd' },
-    colony:          { name: 'COLONY SHIP',     color: '#ddaa44' },
-    engineer:        { name: 'ENGINEER',        color: '#44ddff' },
-    explorer:        { name: 'EXPLORER',        color: '#aa88ff' },
-    junker:          { name: 'JUNKER',          color: '#bb8844' },
-    law_enforcement: { name: 'PATROL',          color: '#4488ff' },
-    black_market:    { name: 'UNKNOWN VESSEL',  color: '#ff4488' },
-    tuner:           { name: 'TUNER',           color: '#ff8844' }
+    cargo_trader: { name: 'CARGO TRADER', color: '#44ffaa' },
+    civilian: { name: 'CIVILIAN', color: '#88bbdd' },
+    colony: { name: 'COLONY SHIP', color: '#ddaa44' },
+    engineer: { name: 'ENGINEER', color: '#44ddff' },
+    explorer: { name: 'EXPLORER', color: '#aa88ff' },
+    junker: { name: 'JUNKER', color: '#bb8844' },
+    law_enforcement: { name: 'PATROL', color: '#4488ff' },
+    black_market: { name: 'UNKNOWN VESSEL', color: '#ff4488' },
+    tuner: { name: 'TUNER', color: '#ff8844' }
 };
 
 // ── Spawn weights ────────────────────────────────────────────────
@@ -392,6 +392,7 @@ function buildDialog(scenario, vars, player, state) {
         return {
             label,
             action: (p, s, enc) => {
+                enc.shouldStay = opt.stay;
                 if (opt.actions && opt.actions.length > 0) {
                     const result = executeActions(opt.actions, vars, p, s, enc);
                     if (result === 'not_enough_scrap') return { message: "Not enough scrap.", close: true };

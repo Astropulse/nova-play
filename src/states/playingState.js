@@ -674,8 +674,7 @@ export class PlayingState {
             this.difficultyRampTime = 600; // 10 minutes (600 seconds)
             this.difficultyExponent = 0.5;
             this.difficultyGain = 0.12;
-            this.difficultySteadyRate = 0.005; // Steady growth per second after ramp
-            this.upgradeDifficultyBonus = 0.10; // Per occupied inventory item
+            this.difficultySteadyRate = 0.008; // Steady growth per second after ramp (Increased from 0.005)
 
             let timeScale = 1.0;
             if (this.totalGameTime <= this.difficultyRampTime) {
@@ -688,10 +687,9 @@ export class PlayingState {
                 timeScale += rampMax + (this.difficultySteadyRate * steadyTime);
             }
 
-            // Upgrade-aware difficulty
-            const upgradeCount = this.player.inventory ? this.player.inventory.items.length : 0;
-            const upgradeBonus = upgradeCount * this.upgradeDifficultyBonus;
-            this.difficultyScale = timeScale + upgradeBonus;
+            // Power-aware difficulty
+            const powerLevel = this._calculatePlayerPowerLevel();
+            this.difficultyScale = timeScale + powerLevel;
 
             // Wave timer: fixed 2-minute interval
             const bossAlive = this.enemies.some(e => e.isBoss && e.alive);
@@ -1313,7 +1311,7 @@ export class PlayingState {
         if (data.playerDistanceTraveled) this.playerDistanceTraveled = data.playerDistanceTraveled;
 
         // Reset camera
-        this.camera.follow(this.player);
+        this.camera.snapTo(this.player);
 
         // Recalculate all stats and multipliers based on loaded inventory
         this._onInventoryChanged(true);
@@ -1775,14 +1773,14 @@ export class PlayingState {
         const startY = shopY + (shopTotalH - totalBtnsH) / 2;
 
         // --- Tunable Shop Cost Multipliers ---
-        this.healthCostMult = 1.25;
-        this.shieldCostMult = 5.0;
-        this.damageCostMult = 15.0;
+        this.healthCostMult = 0.125;
+        this.shieldCostMult = 0.5;
+        this.damageCostMult = 1.5;
 
         const permCosts = {
             health: Math.floor((this.player.shipData.health + this.player.permHealthBonus) * this.healthCostMult),
             shield: Math.floor(((this.player.shipData.shield * 15 + this.player.permShieldBonus) / 10) * this.shieldCostMult),
-            damage: Math.floor((1.0 + this.player.permDamageBonus) * this.damageCostMult),
+            damage: Math.floor((this.player.shipData.baseDamage + this.player.permDamageBonus) * this.damageCostMult),
             inventory: 60 * Math.pow(2, this.player.inventoryUpgradeTier)
         };
 
@@ -2453,6 +2451,45 @@ export class PlayingState {
         ctx.restore();
     }
 
+    _calculatePlayerPowerLevel() {
+        if (!this.player) return 0;
+        let power = 0;
+
+        // 1. Inventory Weight (Rarity-weighted)
+        if (this.player.inventory) {
+            for (const entry of this.player.inventory.items) {
+                const item = entry.item;
+                const rarity = (item.rarity || 'common').toLowerCase();
+                switch (rarity) {
+                    case 'common': power += 0.04; break;
+                    case 'uncommon': power += 0.08; break;
+                    case 'rare': power += 0.15; break;
+                    case 'epic': power += 0.35; break;
+                    case 'legendary': power += 0.7; break;
+                    case 'unique': power += 1.0; break;
+                    default: power += 0.04; break;
+                }
+            }
+        }
+
+        // 2. Permanent Upgrades Weight
+        // Health: 50hp blocks. ~0.1 per block.
+        const healthWeight = (this.player.permHealthBonus / 50) * 0.15;
+        // Shield: 50 energy blocks. ~0.1 per block.
+        const shieldWeight = (this.player.permShieldBonus / 50) * 0.15;
+        // Damage: flat bonus. ~0.2 per 10 points. 
+        const damageWeight = (this.player.permDamageBonus / 10) * 0.25;
+
+        power += healthWeight + shieldWeight + damageWeight;
+
+        // 3. Additional high-power flags
+        if (this.player.hasMultishotGuns) power += 0.1;
+        if (this.player.hasExplosivesUnit) power += 0.15;
+        if (this.player.hasRailgun) power += 0.1;
+
+        return power;
+    }
+
     _onInventoryChanged(healAcquisition = false) {
         const p = this.player;
         const oldMax = p.maxHealth;
@@ -2714,14 +2751,42 @@ export class PlayingState {
     _convertEncounterToEnemy(encounter) {
         const en = new HostileEncounter(this.game, encounter.worldX, encounter.worldY, this.difficultyScale, encounter.dialogData);
 
+        // --- Wealth-based scaling ---
+        let maxScrap = 0;
+        if (encounter.dialogData && encounter.dialogData.vars) {
+            for (const val of Object.values(encounter.dialogData.vars)) {
+                if (typeof val === 'number') {
+                    maxScrap = Math.max(maxScrap, val);
+                } else if (val && typeof val === 'object') {
+                    // Check for item cost or explicit cost/offer properties
+                    if (val.item && typeof val.item.cost === 'number') {
+                        maxScrap = Math.max(maxScrap, val.item.cost);
+                    } else if (typeof val.cost === 'number') {
+                        maxScrap = Math.max(maxScrap, val.cost);
+                    } else if (typeof val.offer === 'number') {
+                        maxScrap = Math.max(maxScrap, val.offer);
+                    } else if (typeof val.negotiate === 'number') {
+                        maxScrap = Math.max(maxScrap, val.negotiate);
+                    }
+                }
+            }
+        }
+
+        // 100 scrap is baseline (1.0). 500 scrap is 2.0x strength bonus.
+        // Formula: 1.0 + max(0, (maxScrap - 100) / 400)
+        const wealthBonus = 1.0 + Math.max(0, (maxScrap - 100) / 400);
+
         // Override sprite and compute correct radii for the encounter ship
         en.initEncounterData(encounter.img, encounter.assetKey);
 
-        // Super-charged stats - 6x health, much faster, shoots much faster
-        en.health = Math.ceil(en.health * 6);
+        // Super-charged stats - 6x health base, scaled by wealth
+        en.health = Math.ceil(en.health * 6 * wealthBonus);
         en.maxHealth = en.health;
-        en.speedMult = 1.5;
-        en.fireRateMult = 1.8;
+
+        // Scale other attributes
+        en.speedMult = 1.5 + (wealthBonus - 1) * 0.5; // Starts at 1.5, up to 2.0
+        en.fireRateMult = 1.8 * wealthBonus;
+        en.damageMult = 1.0 * wealthBonus;
         en.isUpgraded = true;
 
         // They get ALL weapon types natively, which they will cycle through

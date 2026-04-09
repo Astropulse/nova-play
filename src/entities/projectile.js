@@ -23,7 +23,7 @@ export class Projectile {
     }
 
     update(dt) {
-        if (this.target && this.target.alive) {
+        if (this.target && this.target.alive && (!this.owner || (this.owner.alive && this.owner.state !== 'dying'))) {
             const desiredAngle = Math.atan2(this.target.worldY - this.worldY, this.target.worldX - this.worldX);
             let diff = desiredAngle - this.angle;
             while (diff > Math.PI) diff -= Math.PI * 2;

@@ -88,7 +88,8 @@ export const DIALOG_SCENARIOS = [
                 fallbackActions: ['remove_item:targetItem', 'add_scrap:offer', 'recalc'],
                 response: "You drive a hard bargain."
             },
-            { label: "Decline", response: "No worries. Safe travels." },
+            { label: "Hold that thought", stay: true, response: "We'll be around." },
+            { label: "Not interested", response: "Fine. Moving on then." },
             { label: "[warn]Attack them[/warn]", actions: ['convert_hostile'], response: "You'll regret this!" }
         ]
     },
@@ -116,7 +117,8 @@ export const DIALOG_SCENARIOS = [
                 fallbackActions: ['remove_scrap:cost', 'add_upgrade:upgrade', 'recalc'],
                 response: "Fine, take it."
             },
-            { label: "No thanks", response: "Maybe next time." },
+            { label: "I'll return later", stay: true, response: "Maybe next time." },
+            { label: "No thanks", response: "Your loss. Moving on." },
             { label: "[warn]Take it by force[/warn]", actions: ['convert_hostile'], response: "Big mistake!" }
         ]
     },
@@ -135,7 +137,8 @@ export const DIALOG_SCENARIOS = [
                 actions: ['remove_scrap:cost', 'reveal_event'],
                 response: "Coordinates sent. Be careful out there."
             },
-            { label: "Not interested", response: "Suit yourself." }
+            { label: "I'll think about it", stay: true, response: "Suit yourself. We're not moving just yet." },
+            { label: "Pass", response: "Alright. Safe travels." }
         ]
     },
 
@@ -151,7 +154,8 @@ export const DIALOG_SCENARIOS = [
                 actions: ['remove_scrap:cost', 'add_perm_capacity:1', 'recalc'],
                 response: "All done. Enjoy the extra space."
             },
-            { label: "I have enough space", response: "Suit yourself. Running out of room hurts a pilot." }
+            { label: "Wait here, I'll return", stay: true, response: "We'll be here. Don't wait too long." },
+            { label: "Not interested", response: "Understood. Safe travels." }
         ]
     },
 
@@ -196,7 +200,8 @@ export const DIALOG_SCENARIOS = [
                 fallbackActions: ['remove_scrap:cost', 'add_perm_health:50', 'recalc'],
                 response: "Done. Hull reinforced."
             },
-            { label: "Maybe later", response: "We'll be around." }
+            { label: "Hold on, I'll come back", stay: true, response: "We'll be around." },
+            { label: "No thanks", response: "Your hull, your funeral. See ya." }
         ]
     },
 
@@ -212,7 +217,8 @@ export const DIALOG_SCENARIOS = [
                 actions: ['remove_scrap:cost', 'add_perm_shield:50', 'recalc'],
                 response: "Shields recalibrated."
             },
-            { label: "Decline", response: "Your call." }
+            { label: "Give me some time to think", stay: true, response: "Your call. We're staying put for a bit." },
+            { label: "I'm good", response: "Fine by me. Best of luck." }
         ]
     },
 
@@ -228,7 +234,8 @@ export const DIALOG_SCENARIOS = [
                 actions: ['remove_scrap:cost', 'add_perm_damage:10'],
                 response: "Weapons overhauled. Hitting harder now."
             },
-            { label: "Decline", response: "Come back anytime." }
+            { label: "Not right now, maybe later", stay: true, response: "Come back anytime." },
+            { label: "Pass", response: "Have it your way. Moving out." }
         ]
     },
 
@@ -247,7 +254,8 @@ export const DIALOG_SCENARIOS = [
                 actions: ['remove_scrap:cost', 'add_upgrade:upgrade', 'recalc'],
                 response: "System installed. Watch the heat signature on that one."
             },
-            { label: "Too expensive", response: "Quality tech isn't cheap." }
+            { label: "Let me think for a bit", stay: true, response: "Quality tech isn't cheap. We'll wait." },
+            { label: "Not today", response: "Understood. On our way." }
         ]
     },
 
@@ -266,7 +274,8 @@ export const DIALOG_SCENARIOS = [
                 actions: ['remove_item:targetItem', 'add_upgrade:upgrade', 'recalc'],
                 response: "This'll make a fine donor unit."
             },
-            { label: "I'll keep my gear", response: "Fair enough. It's a solid piece of kit." }
+            { label: "I'll decide later", stay: true, response: "Fair enough. It's a solid piece of kit." },
+            { label: "No deal", response: "As you wish. Safe travels." }
         ]
     },
 
@@ -302,7 +311,8 @@ export const DIALOG_SCENARIOS = [
                 actions: ['remove_battery', 'add_scrap:reward', 'recalc'],
                 response: "You saved our crew! Thank you!"
             },
-            { label: "Sorry, I need it", response: "We understand. Be safe." }
+            { label: "I'll have to think about it", stay: true, response: "We'll be here. Be safe." },
+            { label: "Sorry, I need it", response: "We understand. Best of luck out there." }
         ]
     },
 
@@ -376,7 +386,8 @@ export const DIALOG_SCENARIOS = [
                 actions: ['remove_item:targetItem', 'add_scrap:offer', 'recalc'],
                 response: "The colony thanks you."
             },
-            { label: "Can't spare it", response: "Understandable." }
+            { label: "I'll decide later", stay: true, response: "Understandable. We'll be around." },
+            { label: "Not interested", response: "The colony will look elsewhere. Safe travels." }
         ]
     },
 
@@ -392,7 +403,7 @@ export const DIALOG_SCENARIOS = [
                 actions: ['reveal_shop'],
                 response: "Coordinates sent. Good stock when we passed."
             },
-            { label: "No thanks", response: "Safe travels." }
+            { label: "No thanks", response: "Very well. Good luck, pilot." }
         ]
     },
 
@@ -408,7 +419,8 @@ export const DIALOG_SCENARIOS = [
                 actions: ['remove_scrap:cost', 'heal:1.0'],
                 response: "Hull integrity fully restored. Take care out there."
             },
-            { label: "No thanks", response: "Very well. Have a safe journey." }
+            { label: "I'll come back if I need it", stay: true, response: "Very well. Our bays remain open for now." },
+            { label: "I'm fine", response: "Understood. Have a safe journey." }
         ]
     },
 
@@ -428,7 +440,8 @@ export const DIALOG_SCENARIOS = [
                 actions: ['remove_scrap:cost', 'reveal_event'],
                 response: "Data transferred. Good hunting."
             },
-            { label: "No thanks", response: "Your loss." },
+            { label: "I'll come back later", stay: true, response: "We'll stay around for a bit." },
+            { label: "Pass", response: "Suit yourself. Moving to the next sector." },
             { label: "[warn]Take the data[/warn]", actions: ['convert_hostile'], response: "Bad move, pilot!" }
         ]
     },
@@ -448,7 +461,8 @@ export const DIALOG_SCENARIOS = [
                 actions: ['remove_scrap:cost', 'reveal_event_specific:targetEvent'],
                 response: "{targetEvent.displayName} confirmed. Be careful out there."
             },
-            { label: "No thanks", response: "Suit yourself. Space is big." }
+            { label: "I'll return for the coords", stay: true, response: "We'll hang around for a little while longer." },
+            { label: "Not interested", response: "Suit yourself. Space is big." }
         ]
     },
 
@@ -464,7 +478,8 @@ export const DIALOG_SCENARIOS = [
                 actions: ['add_scrap:reward', 'heal:-0.15'],
                 response: "Data collection complete. Repairs recommended."
             },
-            { label: "Decline", response: "Safety first, I suppose." }
+            { label: "Maybe another time", stay: true, response: "Safety first, I suppose. We'll stay on sensors." },
+            { label: "No way", response: "Understandable. Hull integrity is paramount." }
         ]
     },
 
@@ -523,7 +538,8 @@ export const DIALOG_SCENARIOS = [
                 actions: ['remove_scrap:cost', 'add_upgrade:upgrade', 'recalc'],
                 response: "She's yours. Don't ask where I got it."
             },
-            { label: "Pass", response: "Whatever." },
+            { label: "Give me a minute", stay: true, response: "Whatever. We're staying put for now." },
+            { label: "Pass", response: "Scram then." },
             { label: "[warn]Just take it[/warn]", actions: ['convert_hostile'], response: "Hey! That's mine!" }
         ]
     },
@@ -543,7 +559,8 @@ export const DIALOG_SCENARIOS = [
                 actions: ['remove_item:targetItem', 'add_scrap:offer', 'recalc'],
                 response: "Done deal."
             },
-            { label: "Too low", response: "Your loss." }
+            { label: "I'll decide later", stay: true, response: "We're in no rush." },
+            { label: "No thanks", response: "Suit yourself. Moving on." }
         ]
     },
 
@@ -562,7 +579,8 @@ export const DIALOG_SCENARIOS = [
                 actions: ['remove_scrap:cost', 'add_upgrade:upgrade', 'recalc'],
                 response: "One pilot's junk, another's treasure."
             },
-            { label: "Not interested", response: "Suit yourself." },
+            { label: "Wait here, I'll return", stay: true, response: "Suit yourself. We're sticking around." },
+            { label: "I'm good", response: "One pilot's junk, another's treasure. Safe travels." },
             { label: "[warn]Help myself[/warn]", actions: ['convert_hostile'], response: "You'll pay for that!" }
         ]
     },
@@ -632,8 +650,13 @@ export const DIALOG_SCENARIOS = [
                 response: "Beacon active. Spawns are tripled for 60 seconds. Get ready!"
             },
             {
-                label: "No thanks",
-                response: "Probably for the best."
+                label: "Hold that thought",
+                stay: true,
+                response: "Probably for the best. We'll maintain patrol for now."
+            },
+            {
+                label: "Not interested",
+                response: "Understood. Patrol out."
             }
         ]
     },
@@ -665,6 +688,11 @@ export const DIALOG_SCENARIOS = [
                 label: "Transmit coordinates",
                 actions: ['spawn_boss'],
                 response: "Uploading targeting data now. Bring 'em down!"
+            },
+            {
+                label: "Wait here, let me prep",
+                stay: true,
+                response: "Uploading targeting data now. Be ready."
             },
             {
                 label: "Not my problem",
@@ -710,7 +738,8 @@ export const DIALOG_SCENARIOS = [
                 actions: ['remove_scrap:cost', 'add_upgrade:upgrade', 'recalc'],
                 response: "We never met."
             },
-            { label: "Too expensive", response: "Your loss. This doesn't come around twice." },
+            { label: "I'll return shortly", stay: true, response: "We never met. Don't take too long." },
+            { label: "I'm passing", response: "Your loss. This won't stay quiet long." },
             { label: "[warn]Take it by force[/warn]", actions: ['convert_hostile'], response: "Bad idea!" }
         ]
     },
@@ -730,7 +759,8 @@ export const DIALOG_SCENARIOS = [
                 actions: ['remove_scrap:cost', 'add_upgrade:upgrade', 'recalc'],
                 response: "Pleasure. Now get lost."
             },
-            { label: "Pass", response: "Waste of my time." },
+            { label: "I'll think about it", stay: true, response: "Waste of my time. We're here for now though." },
+            { label: "No thanks", response: "Get lost then." },
             { label: "[warn]Just take it[/warn]", actions: ['convert_hostile'], response: "You're dead!" }
         ]
     },
@@ -750,7 +780,8 @@ export const DIALOG_SCENARIOS = [
                 actions: ['remove_scrap:cost', 'add_upgrade:upgrade', 'recalc'],
                 response: "Don't tell anyone."
             },
-            { label: "Not interested", response: "Whatever." },
+            { label: "Wait, I'll be back", stay: true, response: "Whatever. We're staying on sensors." },
+            { label: "Pass", response: "Moving on then." },
             { label: "[warn]Hand it over[/warn]", actions: ['convert_hostile'], response: "You're making a mistake!" }
         ]
     },
@@ -771,7 +802,8 @@ export const DIALOG_SCENARIOS = [
                 actions: ['remove_scrap:cost', 'encounter_speed:1.1', 'recalc'],
                 response: "Thrusters recalibrated."
             },
-            { label: "Not now", response: "We'll swing back sooner or later." }
+            { label: "Hold that thought", stay: true, response: "We'll swing back sooner or later." },
+            { label: "I'm good", response: "Thrusters are your life, pilot. Safe travels." }
         ]
     },
 
@@ -787,7 +819,8 @@ export const DIALOG_SCENARIOS = [
                 actions: ['remove_scrap:cost', 'encounter_fire_rate:0.9', 'recalc'],
                 response: "Fire control optimized."
             },
-            { label: "Pass", response: "Your loss." }
+            { label: "Wait, I'll return", stay: true, response: "Your loss. We're sticking around though." },
+            { label: "No thanks", response: "Understood. Safe travels." }
         ]
     },
 
@@ -803,7 +836,8 @@ export const DIALOG_SCENARIOS = [
                 actions: ['remove_scrap:cost', 'encounter_speed:1.05', 'encounter_fire_rate:0.95', 'encounter_turn:1.05', 'recalc'],
                 response: "Peak performance. Enjoy."
             },
-            { label: "Too expensive", response: "Premium service costs premium scrap." }
+            { label: "Check back later", stay: true, response: "Premium service costs premium scrap. We're staying put for a bit." },
+            { label: "No thanks", response: "Understood. Moving out." }
         ]
     }
 ];

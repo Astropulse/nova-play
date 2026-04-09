@@ -77,11 +77,11 @@ export class Enemy {
         this.activeBeams = [];
 
         // Stats - Scale with difficulty
-        const speedScale = 1 + (difficultyScale - 1) * 0.15;
-        const turnScale = 1 + (difficultyScale - 1) * 0.1;
+        const speedScale = 1 + (difficultyScale - 1) * 0.18; // Increased from 0.15
+        const turnScale = 1 + (difficultyScale - 1) * 0.12;  // Increased from 0.1
         this.baseSpeed = (320 + Math.random() * 80) * speedScale;
         this.turnSpeed = (6.5 + Math.random() * 1.0) * turnScale;
-        this.health = Math.ceil(20 + 15 * difficultyScale);
+        this.health = Math.ceil(20 + 30 * difficultyScale); // Increased from 20 + 15 * difficultyScale
         this._nativeRadius = CollisionScanner.getRadius(this.img, this.spriteKey);
         this.radius = this._nativeRadius * 0.95;
 
@@ -170,7 +170,24 @@ export class Enemy {
         let targetAngle = this._getTargetAngle(angleToPlayer, dist);
 
         // 3. Environmental Avoidance Override
-        targetAngle = this._avoidObstacles(targetAngle, asteroids, projectiles, enemies);
+        // Calculate speed first so avoidance can use it for look-ahead
+        let currentMaxSpeed = this.baseSpeed;
+        if (this.state === AI_STATE.RECOVERY) {
+            currentMaxSpeed = this.baseSpeed * 1.8;
+        } else if (this.state === AI_STATE.BREAK || this.state === AI_STATE.REPOSITION) {
+            currentMaxSpeed = this.baseSpeed * 1.3;
+        } else if (this.state === AI_STATE.ATTACK && this.attackPassCount === 0) {
+            const closeFactor = Math.max(0.3, Math.min(0.6, dist / this.attackRange));
+            currentMaxSpeed = this.baseSpeed * closeFactor;
+        } else if (dist > 1500) {
+            const boostFactor = Math.min(3.0, 1.0 + (dist - 1500) / (2000));
+            currentMaxSpeed *= boostFactor;
+        }
+        const activeSpeed = currentMaxSpeed * this.speedMult;
+
+        const avoidance = this._avoidObstacles(targetAngle, asteroids, projectiles, enemies, activeSpeed);
+        targetAngle = avoidance.targetAngle;
+        const speedOverride = avoidance.speedOverride;
 
         // 4. Coupled Steering
         let angleDiff = targetAngle - this.angle;
@@ -180,20 +197,9 @@ export class Enemy {
         this.angle += Math.sign(angleDiff) * Math.min(Math.abs(angleDiff), this.turnSpeed * dt);
 
         // 5. COUPLED PHYSICS: Movement is strictly forward
-        let currentMaxSpeed = this.baseSpeed;
-        if (this.state === AI_STATE.RECOVERY) {
-            currentMaxSpeed = this.baseSpeed * 1.8; // Emergency boost
-        } else if (this.state === AI_STATE.BREAK || this.state === AI_STATE.REPOSITION) {
-            currentMaxSpeed = this.baseSpeed * 1.3; // Retreat fast
-        } else if (this.state === AI_STATE.ATTACK && this.attackPassCount === 0) {
-            // First engagement: slow down to shoot normally
-            const closeFactor = Math.max(0.3, Math.min(0.6, dist / this.attackRange));
-            currentMaxSpeed = this.baseSpeed * closeFactor;
-        } else if (dist > 1500) {
-            const boostFactor = Math.min(3.0, 1.0 + (dist - 1500) / (2000));
-            currentMaxSpeed *= boostFactor;
+        if (speedOverride !== null) {
+            currentMaxSpeed = speedOverride;
         }
-        // ATTACK pass 1+: full base speed dive
 
         this.vx = Math.cos(this.angle) * currentMaxSpeed * this.speedMult + this.externalVx;
         this.vy = Math.sin(this.angle) * currentMaxSpeed * this.speedMult + this.externalVy;
@@ -371,31 +377,89 @@ export class Enemy {
         }
     }
 
-    _avoidObstacles(baseTarget, asteroids, projectiles, enemies) {
+    _avoidObstacles(baseTarget, asteroids, projectiles, enemies, activeSpeed) {
         let finalTarget = baseTarget;
-        const scanDist = 160;
+        let speedOverride = null;
 
-        // Avoid Asteroids
+        // 1. DYNAMIC DETECTION RANGE
+        // Using relative velocity would be ideal, but activeSpeed is a good proxy 
+        // for most cases. Let's increase the floor and the multiplier slightly more.
+        const baseLookAhead = Math.max(180, activeSpeed * 1.5);
+
+        // 2. AVOID ASTEROIDS
+        let maxUrgency = 0;
+
         for (const ast of asteroids) {
+            // Predict collision based on relative movement
+            const relVx = this.vx - (ast.vx || 0);
+            const relVy = this.vy - (ast.vy || 0);
+            const relSpeed = Math.sqrt(relVx * relVx + relVy * relVy);
+            
             const adx = ast.worldX - this.worldX;
             const ady = ast.worldY - this.worldY;
             const adist = Math.sqrt(adx * adx + ady * ady);
 
-            if (adist < scanDist + ast.radius) {
-                const angleToAst = Math.atan2(ady, adx);
-                let diff = angleToAst - this.angle;
-                while (diff > Math.PI) diff -= Math.PI * 2;
-                while (diff < -Math.PI) diff += Math.PI * 2;
+            const safetyRadius = this.radius + ast.radius + 35;
+            // Scan distance scales with RELATIVE speed to catch fast-moving asteroids
+            const scanDist = Math.max(baseLookAhead, relSpeed * 1.2) + safetyRadius;
 
-                if (Math.abs(diff) < 1.2) { // Slightly wider check for asteroids
-                    const steerSide = diff > 0 ? -1 : 1;
-                    const steerIntensity = (1 - adist / (scanDist + ast.radius)) * 2.0;
-                    finalTarget += steerSide * (Math.PI / 3) * steerIntensity;
+            if (adist < scanDist) {
+                const angleToAst = Math.atan2(ady, adx);
+                let currentHeadingDiff = angleToAst - this.angle;
+                while (currentHeadingDiff > Math.PI) currentHeadingDiff -= Math.PI * 2;
+                while (currentHeadingDiff < -Math.PI) currentHeadingDiff += Math.PI * 2;
+
+                // 1. Is it in front of our current heading? (cone of ~110 degrees)
+                if (Math.abs(currentHeadingDiff) < 1.9) {
+                    // 2. Is it actually BLOCKING our target path?
+                    let targetDiff = baseTarget - angleToAst;
+                    while (targetDiff > Math.PI) targetDiff -= Math.PI * 2;
+                    while (targetDiff < -Math.PI) targetDiff += Math.PI * 2;
+
+                    // Calculate required clearance
+                    const d = Math.max(safetyRadius * 0.5, adist); // prevent division by zero
+                    const clearanceAngle = Math.asin(Math.min(0.999, safetyRadius / d));
+                    
+                    // IF our target is already clear of this asteroid, don't veer away!
+                    if (Math.abs(targetDiff) > clearanceAngle + 0.35) continue;
+
+                    const urgency = Math.pow(1 - (adist - safetyRadius) / baseLookAhead, 0.9);
+                    if (urgency > maxUrgency) {
+                        maxUrgency = urgency;
+                        
+                        // Pick the side that's closer to our current baseTarget
+                        const side = targetDiff > 0 ? 1 : -1;
+                        let escapeAngle = angleToAst + (clearanceAngle + 0.2) * side;
+
+                        // RADIAL EJECTION: if we're actually inside or on the very edge, 
+                        // prioritize moving directly AWAY from center.
+                        if (adist < safetyRadius) {
+                            escapeAngle = Math.atan2(this.worldY - ast.worldY, this.worldX - ast.worldX);
+                        }
+
+                        // Blend the escape angle based on urgency
+                        const isUTurnNeeded = Math.abs(targetDiff) > Math.PI * 0.6;
+                        let lerpFactor = Math.min(1.0, urgency * (isUTurnNeeded ? 4.0 : 3.0));
+                        
+                        // EMERGENCY OVERRIDE: If a crash is imminent, stop blending and SNAP to escape.
+                        if (urgency > 0.85) lerpFactor = 1.0;
+
+                        let diff = escapeAngle - finalTarget;
+                        while (diff > Math.PI) diff -= Math.PI * 2;
+                        while (diff < -Math.PI) diff += Math.PI * 2;
+                        finalTarget += diff * lerpFactor;
+
+                        // STALL/BRAKE: We brake harder if we're actually on a collision path
+                        if (urgency > 0.4 || (isUTurnNeeded && urgency > 0.2)) {
+                            const speedReduc = isUTurnNeeded ? 0.45 : 0.65;
+                            speedOverride = this.baseSpeed * speedReduc;
+                        }
+                    }
                 }
             }
         }
 
-        // Avoid Other Enemies
+        // 3. AVOID OTHER ENEMIES (Simpler, closer range)
         const enemyAvoidDist = 120;
         for (const other of enemies) {
             if (other === this || !other.alive) continue;
@@ -415,13 +479,13 @@ export class Enemy {
             }
         }
 
+        // 4. Dodge Projectiles
         for (const p of projectiles) {
             if (p.owner !== this && p.alive) {
                 const pdx = p.worldX - this.worldX;
                 const pdy = p.worldY - this.worldY;
                 const pdist = Math.sqrt(pdx * pdx + pdy * pdy);
 
-                // Only dodge lasers if there is enough space (don't freak out when player is close)
                 const playerDist = this.game.currentState.player ?
                     Math.sqrt(Math.pow(this.game.currentState.player.worldX - this.worldX, 2) + Math.pow(this.game.currentState.player.worldY - this.worldY, 2)) :
                     Infinity;
@@ -431,7 +495,7 @@ export class Enemy {
                     const pvy = p.vy;
                     const pSpeed = Math.sqrt(pvx * pvx + pvy * pvy);
                     const dot = (pvx * -pdx + pvy * -pdy) / ((pSpeed * pdist) || 1);
-                    if (dot > 0.94) { // Slightly tighter dodge requirement
+                    if (dot > 0.94) {
                         const perpX = -pvy;
                         const perpY = pvx;
                         const side = Math.sign(pdx * perpX + pdy * perpY) || 1;
@@ -441,7 +505,8 @@ export class Enemy {
                 }
             }
         }
-        return finalTarget;
+
+        return { targetAngle: finalTarget, speedOverride: speedOverride };
     }
 
     shoot() {
@@ -875,11 +940,11 @@ export class KamikazeEnemy extends Enemy {
         super(game, worldX, worldY, difficultyScale);
 
         // Custom stats for kamikaze
-        const speedScale = 1 + (difficultyScale - 1) * 0.15;
+        const speedScale = 1 + (difficultyScale - 1) * 0.18;
         this.baseSpeed = (500 + Math.random() * 50) * speedScale;
         this.turnSpeed = 7.0 + Math.random() * 1.0;
         // Moderate health, slightly tougher than standard enemies but not sponges
-        this.health = Math.ceil(30 + 15 * difficultyScale);
+        this.health = Math.ceil(30 + 25 * difficultyScale);
 
         // Disable shooting
         this.attackRange = -1; // Never enter ATTACK state based on distance
@@ -941,10 +1006,10 @@ export class CthulhuEnemy extends Enemy {
         this.img = game.assets.get(this.spriteKey);
 
         // Custom stats for cthulhu enemies (similar to kamikaze)
-        const speedScale = 1 + (difficultyScale - 1) * 0.15;
+        const speedScale = 1 + (difficultyScale - 1) * 0.18;
         this.baseSpeed = (800 + Math.random() * 100) * speedScale;
         this.turnSpeed = 7.0 + Math.random() * 1.0;
-        this.health = Math.ceil(30 + 15 * difficultyScale);
+        this.health = Math.ceil(120 + 40 * difficultyScale);
 
         // Disable shooting
         this.attackRange = -1;
