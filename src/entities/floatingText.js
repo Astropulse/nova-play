@@ -19,7 +19,11 @@ export class FloatingText {
         this.vx = Math.cos(angle) * speed;
         this.vy = Math.sin(angle) * speed;
 
-        this.targetScale = 1.3 + Math.random() * 0.4; // Snappy average 1.5
+        // Scale based on number magnitude: 0 -> 1x, 100 -> 2x, etc.
+        const numValue = parseFloat(this.text.replace(/[^0-9.-]/g, '')) || 0;
+        const magnitudeMult = 1 + (Math.abs(numValue) / 100);
+
+        this.targetScale = (1.1 + Math.random() * 0.4) * magnitudeMult;
         this.scale = this.targetScale * 0.5; // Initial pop-in scale
     }
 
