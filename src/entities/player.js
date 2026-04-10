@@ -163,6 +163,7 @@ export class Player {
         this.trailInterval = 0.005; // Faster interval for more copies
         this.maxTrailLength = 10; // Even more copies for solidity
         this._trailCache = new Map(); // Cache for tinted sprites
+        this._cachedRadius = null;
     }
 
     /**
@@ -571,6 +572,8 @@ export class Player {
                     origins.push({ px, py });
                 }
 
+                let currentBaseDamage = this.shipData.baseDamage * this.obedienceMult + this.permDamageBonus;
+
                 if (this.hasEnergyBlaster) {
                     origins.forEach(origin => {
                         const count = 3 + Math.floor(Math.random() * 3); // 3-5 shots
@@ -578,7 +581,7 @@ export class Player {
                             const spread = (Math.random() - 0.5) * 0.5; // ~±15 degrees
                             const speedVar = baseProjSpeed * (0.8 + Math.random() * 0.4); // 80% to 120%
                             this.pendingProjectiles.push(
-                                new Projectile(this.game, origin.px, origin.py, fireAngle + spread, speedVar, spriteKey, this, (this.shipData.baseDamage * 0.3 + this.permDamageBonus) * damageMult)
+                                new Projectile(this.game, origin.px, origin.py, fireAngle + spread, speedVar, spriteKey, this, currentBaseDamage * 0.3 * damageMult)
                             );
                         }
                     });
@@ -586,7 +589,7 @@ export class Player {
                 } else {
                     origins.forEach(origin => {
                         this.pendingProjectiles.push(
-                            new Projectile(this.game, origin.px, origin.py, fireAngle, baseProjSpeed, spriteKey, this, (this.shipData.baseDamage + this.permDamageBonus) * damageMult)
+                            new Projectile(this.game, origin.px, origin.py, fireAngle, baseProjSpeed, spriteKey, this, currentBaseDamage * damageMult)
                         );
                     });
                     this.shootTimer = this.shootCooldown * this.fireRateMult;
@@ -863,6 +866,8 @@ export class Player {
         const mask = this._getPixelMask(asset);
         if (!mask) return true; // Fallback to broad phase if mask fails
 
+        const prescale = asset.prescale || 1;
+
         // Transform world point to local sprite space
         // Local relative to center
         const lx = worldX - this.worldX;
@@ -874,8 +879,8 @@ export class Player {
         const ry = lx * Math.sin(angle) + ly * Math.cos(angle);
 
         // Map to pixel coords (center is width/2, height/2)
-        const px = Math.floor(rx + mask.width / 2);
-        const py = Math.floor(ry + mask.height / 2);
+        const px = Math.floor(rx * prescale + mask.width / 2);
+        const py = Math.floor(ry * prescale + mask.height / 2);
 
         if (px < 0 || py < 0 || px >= mask.width || py >= mask.height) return false;
 

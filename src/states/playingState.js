@@ -481,7 +481,8 @@ export class PlayingState {
                 if (target) {
                     const aimAngle = Math.atan2(target.worldY - this.player.worldY, target.worldX - this.player.worldX);
                     // Increased damage and applied modifiers
-                    const damage = (70.0 + this.player.permDamageBonus) * (this.player.hasLaserOverride ? 1.3 : 1.0);
+                    const currentBaseDamage = this.player.shipData.baseDamage * this.player.obedienceMult + this.player.permDamageBonus;
+                    const damage = (currentBaseDamage * 10.0) * (this.player.hasLaserOverride ? 1.3 : 1.0);
                     const spriteKey = 'blue_laser_ball_big';
 
                     const proj = new Projectile(this.game, this.player.worldX, this.player.worldY, aimAngle, 1200, spriteKey, this.player, damage);
@@ -571,7 +572,8 @@ export class PlayingState {
                     const aimAngle = Math.atan2(target.worldY - py, target.worldX - px);
 
                     const spriteKey = this.player.hasLaserOverride ? 'blue_laser_ball_big' : 'blue_laser_ball';
-                    const damage = 7.0 * (this.player.hasLaserOverride ? 1.3 : 1.0);
+                    const currentBaseDamage = this.player.shipData.baseDamage * this.player.obedienceMult + this.player.permDamageBonus;
+                    const damage = currentBaseDamage * (this.player.hasLaserOverride ? 1.3 : 1.0);
 
                     this.projectiles.push(
                         new Projectile(this.game, px, py, aimAngle, 2400, spriteKey, this.player, damage)
@@ -3171,6 +3173,8 @@ export class PlayingState {
         let damageMult = (p.hasRepeater ? 0.5 : 1.0) * (p.hasLaserOverride ? 1.3 : 1.0);
         if (p.hasMultishotGuns) damageMult *= 0.7; // 30% reduction
 
+        const currentBaseDamage = p.shipData.baseDamage * p.obedienceMult + p.permDamageBonus;
+
         if (p.hasEnergyBlaster) {
             origins.forEach(origin => {
                 const count = 3 + Math.floor(Math.random() * 3); // 3-5 beams
@@ -3180,7 +3184,7 @@ export class PlayingState {
                     const angle = fireAngle + spread;
                     const dirX = Math.cos(angle);
                     const dirY = Math.sin(angle);
-                    this._fireSingleBeam(origin.x, origin.y, dirX, dirY, beamLength, (3 + p.permDamageBonus) * damageMult);
+                    this._fireSingleBeam(origin.x, origin.y, dirX, dirY, beamLength, currentBaseDamage * 0.6 * damageMult);
                 }
             });
         } else { // Default to Railgun if no Energy Blaster
@@ -3188,7 +3192,7 @@ export class PlayingState {
                 const fireAngle = p.getTargetAngle(origin.x, origin.y);
                 const dirX = Math.cos(fireAngle);
                 const dirY = Math.sin(fireAngle);
-                this._fireSingleBeam(origin.x, origin.y, dirX, dirY, beamLength, (7.2 + p.permDamageBonus) * damageMult);
+                this._fireSingleBeam(origin.x, origin.y, dirX, dirY, beamLength, currentBaseDamage * 2.5 * damageMult);
             });
         }
     }
