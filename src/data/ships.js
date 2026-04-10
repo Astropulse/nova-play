@@ -48,13 +48,13 @@ export const SHIPS = [
     {
         id: 'looper',
         name: 'Looper',
-        description: 'Ultra mobile. Dodge is\nunlocked by default.',
+        description: 'Ultra mobile. Teleport is\nunlocked by default.',
         health: 80,
         speed: 8,
         shield: 20,
         storage: { cols: 4, rows: 4 },
         baseDamage: 10.0,
-        special: 'dodge',
+        special: 'teleport',
         assets: {
             still: 'looper_still', jets: 'looper_jets', flying: 'looper_flying',
             broken: ['looper_broken_0', 'looper_broken_1', 'looper_broken_2', 'looper_broken_3', 'looper_broken_4']

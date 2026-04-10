@@ -109,9 +109,9 @@ export class Game {
                 'Assets/Sounds/Effects/boost_3.wav',
                 'Assets/Sounds/Effects/boost_4.wav',
             ]),
-            this.sounds.register('dodge', [
-                'Assets/Sounds/Effects/dodge_1.wav',
-                'Assets/Sounds/Effects/dodge_2.wav',
+            this.sounds.register('teleport', [
+                'Assets/Sounds/Effects/teleport_1.wav',
+                'Assets/Sounds/Effects/teleport_2.wav',
             ]),
             this.sounds.register('thrust', [
                 'Assets/Sounds/Effects/thrust_1.wav',

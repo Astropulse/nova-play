@@ -743,11 +743,13 @@ export class PlayingState {
             }
 
             // Boss wreckage tracking - clean up when player is close
-            for (const wreck of this.bossWrecks) {
-                const dx = wreck.worldX - this.player.worldX;
-                const dy = wreck.worldY - this.player.worldY;
-                if (dx * dx + dy * dy < 200 * 200) {
-                    wreck.isFinished = true;
+            if (!this.player.isWarping) {
+                for (const wreck of this.bossWrecks) {
+                    const dx = wreck.worldX - this.player.worldX;
+                    const dy = wreck.worldY - this.player.worldY;
+                    if (dx * dx + dy * dy < 200 * 200) {
+                        wreck.isFinished = true;
+                    }
                 }
             }
             this.bossWrecks = this.bossWrecks.filter(w => !w.isFinished);
@@ -804,45 +806,53 @@ export class PlayingState {
 
         // Update scrap entities (magnetized to player)
         for (const s of this.scrapEntities) {
-            s.update(dt, this.player.worldX, this.player.worldY, this.player.scrapRangeMult);
+            if (!this.player.isWarping) {
+                s.update(dt, this.player.worldX, this.player.worldY, this.player.scrapRangeMult);
 
-            // Collection collision
-            const dx = s.worldX - this.player.worldX;
-            const dy = s.worldY - this.player.worldY;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            const collectRange = (s.collectRange + this.player.radius);
-            if (dist < collectRange) {
-                s.alive = false;
-                this.player.scrap += s.value;
-                this.stats.scrapCollected += s.value;
-                this.game.sounds.play('scrap', { volume: 0.4, x: s.worldX, y: s.worldY });
+                // Collection collision
+                const dx = s.worldX - this.player.worldX;
+                const dy = s.worldY - this.player.worldY;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                const collectRange = (s.collectRange + this.player.radius);
+                if (dist < collectRange) {
+                    s.alive = false;
+                    this.player.scrap += s.value;
+                    this.stats.scrapCollected += s.value;
+                    this.game.sounds.play('scrap', { volume: 0.4, x: s.worldX, y: s.worldY });
+                }
+            } else {
+                // Just update drift/friction if not magnetized (Scrap.update handles it if player coords are not passed? No, it needs them)
+                // Actually Scrap.update has a dist check internal. Let's just skip it so they drift.
+                s.update(dt, -99999, -99999); // Pass dummy coords to prevent magnetization
             }
-
-            // Despawn check (now handled by lifetime in Scrap.update)
-            // if (dist > 3000) s.alive = false;
         }
 
         // Update item pickups (magnetized to player)
         for (const it of this.itemPickups) {
-            it.update(dt, this.player.worldX, this.player.worldY, this.player.scrapRangeMult);
+            if (!this.player.isWarping) {
+                it.update(dt, this.player.worldX, this.player.worldY, this.player.scrapRangeMult);
 
-            // Collection collision
-            const dx = it.worldX - this.player.worldX;
-            const dy = it.worldY - this.player.worldY;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            const collectRange = (it.collectRange + this.player.radius);
+                // Collection collision
+                const dx = it.worldX - this.player.worldX;
+                const dy = it.worldY - this.player.worldY;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                const collectRange = (it.collectRange + this.player.radius);
 
-            if (dist < collectRange) {
-                // Try to add to inventory
-                if (this.player.inventory.autoAdd(it.item)) {
-                    it.alive = false;
-                    this.game.sounds.play('select', 0.5);
-                    this._onInventoryChanged(true);
+                if (dist < collectRange) {
+                    // Try to add to inventory
+                    if (this.player.inventory.autoAdd(it.item)) {
+                        it.alive = false;
+                        this.game.sounds.play('select', 0.5);
+                        this._onInventoryChanged(true);
+                    }
                 }
+            } else {
+                it.update(dt, -99999, -99999); // Pass dummy coords to prevent magnetization
             }
-
             // Despawn check
-            if (dist > 4000) it.alive = false;
+            const ddx = it.worldX - this.player.worldX;
+            const ddy = it.worldY - this.player.worldY;
+            if (ddx * ddx + ddy * ddy > 4000 * 4000) it.alive = false;
         }
 
         // --- Collision: Projectiles vs Everything ---
@@ -945,45 +955,47 @@ export class PlayingState {
         }
 
         // --- Collision: Player vs Everything (Physical) ---
-        // Player vs Asteroids (already handled, but let's centralize)
-        for (const ast of this.asteroids) {
-            if (!ast.alive) continue;
-            const dx = this.player.worldX - ast.worldX;
-            const dy = this.player.worldY - ast.worldY;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            if (dist < this.player.radius + ast.radius) {
-                ast.onCollision(this.player);
-                this._damagePlayer(ast.damage);
-                ast.alive = false;
-                this._onEntityDestroyed(ast);
-                this._applyKnockback(dx, dy, dist, 200);
+        if (!this.player.isWarping) {
+            // Player vs Asteroids
+            for (const ast of this.asteroids) {
+                if (!ast.alive) continue;
+                const dx = this.player.worldX - ast.worldX;
+                const dy = this.player.worldY - ast.worldY;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist < this.player.radius + ast.radius) {
+                    ast.onCollision(this.player);
+                    this._damagePlayer(ast.damage);
+                    ast.alive = false;
+                    this._onEntityDestroyed(ast);
+                    this._applyKnockback(dx, dy, dist, 200);
+                }
             }
-        }
 
-        // Player vs Enemies (Ramming)
-        for (const en of this.enemies) {
-            if (!en.alive || en.invulnTimer > 0) continue;
-            const dx = this.player.worldX - en.worldX;
-            const dy = this.player.worldY - en.worldY;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            if (dist < this.player.radius + en.radius) {
-                this._damagePlayer(20); // Ramming hurts!
-                en.onCollision(this.player);
-                if (!en.alive) this._onEntityDestroyed(en);
-                this._applyKnockback(dx, dy, dist, 300);
+            // Player vs Enemies (Ramming)
+            for (const en of this.enemies) {
+                if (!en.alive || en.invulnTimer > 0) continue;
+                const dx = this.player.worldX - en.worldX;
+                const dy = this.player.worldY - en.worldY;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist < this.player.radius + en.radius) {
+                    this._damagePlayer(20); // Ramming hurts!
+                    en.onCollision(this.player);
+                    if (!en.alive) this._onEntityDestroyed(en);
+                    this._applyKnockback(dx, dy, dist, 300);
+                }
             }
-        }
 
-        // Player vs Events (Ramming)
-        for (const ev of this.events) {
-            if (!ev.alive || ev.state !== CTHULHU_STATE.DORMANT) continue;
-            const dx = this.player.worldX - ev.worldX;
-            const dy = this.player.worldY - ev.worldY;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            if (dist < this.player.radius + ev.radius * 0.5) { // Smaller inner radius for waking
-                this._damagePlayer(20);
-                ev.hit(1); // Triggers wake
-                this._applyKnockback(dx, dy, dist, 600); // Big knockback from boss
+            // Player vs Events (Ramming)
+            for (const ev of this.events) {
+                if (!ev.alive || ev.state !== CTHULHU_STATE.DORMANT) continue;
+                const dx = this.player.worldX - ev.worldX;
+                const dy = this.player.worldY - ev.worldY;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist < this.player.radius + ev.radius * 0.5) { // Smaller inner radius for waking
+                    this._damagePlayer(20);
+                    ev.hit(1); // Triggers wake
+                    this._applyKnockback(dx, dy, dist, 600); // Big knockback from boss
+                }
             }
         }
 
@@ -2511,8 +2523,7 @@ export class PlayingState {
         p.boostCooldownMult = 1.0;
         p.shieldDrainMult = 1.0;
         p.scrapRangeMult = 1.0;
-        p.canDodge = p.shipData.special === 'dodge';
-        p.dodgeCooldown = 0.6;
+        p.hasTeleport = p.shipData.special === 'teleport';
         p.hasRailgun = false;
         p.hasEnergyBlaster = false;
         p.hasRepeater = false;
@@ -2536,7 +2547,6 @@ export class PlayingState {
         p.momentumSpeedMult = 1.0;
         p.momentumMaxSpeedMult = 1.0;
         p.momentumBoostMult = 1.0;
-        p.momentumDodgeMult = 1.0;
 
         // Knowledge Event Upgrades
         p.hasSacrifice = false;
@@ -2603,7 +2613,6 @@ export class PlayingState {
                 p.momentumSpeedMult = 0.75;
                 p.momentumMaxSpeedMult = 1.5;
                 p.momentumBoostMult = 0.75;
-                p.momentumDodgeMult = 0.75;
                 p.friction = 0.98;
             }
             if (item.id === 'sensor_accelerator') {
@@ -2632,8 +2641,9 @@ export class PlayingState {
         }
 
         if (blinkEngines > 0) {
-            p.canDodge = true;
-            p.dodgeCooldown = Math.max(0.2, 0.6 - (blinkEngines - 1) * 0.15);
+            p.hasTeleport = true;
+            // More blink engines reduce cooldown
+            boostCooldownMult *= Math.max(0.3, 1.0 - (blinkEngines - 1) * 0.2);
         }
 
         // Apply calculated multipliers to player

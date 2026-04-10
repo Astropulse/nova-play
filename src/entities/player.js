@@ -26,6 +26,7 @@ export class Player {
         // Multipliers (modified by upgrades)
         this.fireRateMult = 1.0;
         this.boostRangeMult = 1.0;
+        this.boostSpeedMult = 1.0;
         this.boostCooldownMult = 1.0;
         this.shieldDrainMult = 1.0;
         this.scrapRangeMult = 1.0;
@@ -42,7 +43,6 @@ export class Player {
         this.mechanicalClawTimer = 0;
 
         // New Upgrade Flags & Multipliers
-        this.boostSpeedMult = 1.0;
         this.pulseJetMult = 1.0;
         this.shieldBoosterMult = 1.0;
         this.mechanicalEngineSpeedMult = 1.0;
@@ -67,7 +67,6 @@ export class Player {
         this.momentumSpeedMult = 0.5;
         this.momentumMaxSpeedMult = 2 * (0.97 / 0.99);
         this.momentumBoostMult = 0.5;
-        this.momentumDodgeMult = 0.5;
 
         this.boostTimer = 0;
         this.boostCooldownTimer = 0;
@@ -76,16 +75,26 @@ export class Player {
         this.boostFlash = 0;
         this._boostWasOnCooldown = false;
 
-        // Dodge — lateral dash (A/D)
-        this.dodgePower = 2500;
-        this.dodgeCooldown = 0.6;
-        this.dodgeCooldownTimer = 0;
-        this.canDodge = shipData.special === 'dodge'; // Overridden by hasAncientCurse dynamically below
-        this.isDodging = false;
-        this.dodgeTimer = 0;
-        this.dodgeDuration = 0.15;
-        this.dodgeFlash = 0;
-        this._dodgeWasOnCooldown = false;
+        // Warp — smooth timed blink (replaces boost for looper/blink engine)
+        this.hasTeleport = shipData.special === 'teleport';
+        this.teleportDuration = 0.2; // s
+        this.warpDuration = 0.2;
+        this.teleportDistance = 700;
+        this.teleportCooldown = 1.25;
+        this.teleportOutlineFade = 0;
+        this.teleportGhost = null;
+        this.teleportFlash = 0;
+        this._teleportWasOnCooldown = false;
+        this._blueGhostCache = null;
+
+        this.isWarping = false;
+        this.warpTimer = 0;
+        this.warpDuration = 0.2;
+        this.warpStartX = 0;
+        this.warpStartY = 0;
+        this.warpTargetX = 0;
+        this.warpTargetY = 0;
+        this.warpAngle = 0;
 
         // State
         this.thrusting = false;
@@ -296,8 +305,9 @@ export class Player {
             }
         }
 
-        // --- Boost ---
+        // --- Boost / Teleport ---
         this.boostCooldownTimer = Math.max(0, this.boostCooldownTimer - dt);
+
         if (this.boostTimer > 0) {
             this.boostTimer -= dt;
             this.boostIntensity = this.boostTimer / this.boostDuration;
@@ -307,7 +317,68 @@ export class Player {
             }
         }
 
-        if (this.hasBoostDrive) {
+        if (this.hasTeleport) {
+            if (input.isKeyJustPressed('Space') && this.boostCooldownTimer <= 0 && !this.isWarping) {
+                // Record Ghost at start
+                this.teleportGhost = {
+                    x: this.worldX,
+                    y: this.worldY,
+                    angle: this.angle,
+                    asset: this.stillImg,
+                    life: 1.0
+                };
+
+                // Initialize Warp
+                this.isWarping = true;
+                this.warpTimer = 0;
+                this.warpStartX = this.worldX;
+                this.warpStartY = this.worldY;
+                const dist = this.teleportDistance * this.momentumBoostMult * this.boostRangeMult * this.boostSpeedMult;
+                this.warpTargetX = this.worldX + Math.cos(this.angle) * dist;
+                this.warpTargetY = this.worldY + Math.sin(this.angle) * dist;
+                this.warpAngle = this.angle;
+
+                // Audio Start
+                this.game.sounds.play('teleport', { volume: 0.5, x: this.worldX, y: this.worldY });
+                this.game.camera.shake(1.0, 20.0);
+
+                this.boostCooldownTimer = this.teleportCooldown * this.boostCooldownMult;
+                this._teleportWasOnCooldown = true;
+            }
+        }
+
+        if (this.isWarping) {
+            const prevX = this.worldX;
+            const prevY = this.worldY;
+
+            this.warpTimer += dt;
+            const rawT = Math.min(1.0, this.warpTimer / this.warpDuration);
+
+            this.isBoosting = true; // Bypasses speed capping during warp
+
+            // Cubic Ease In-Out
+            const t = rawT < 0.5 ? 4 * rawT * rawT * rawT : 1 - Math.pow(-2 * rawT + 2, 3) / 2;
+
+            this.worldX = this.warpStartX + (this.warpTargetX - this.warpStartX) * t;
+            this.worldY = this.warpStartY + (this.warpTargetY - this.warpStartY) * t;
+
+            // Update velocity to reflect the warp movement (helps camera tracking)
+            this.vx = (this.worldX - prevX) / dt;
+            this.vy = (this.worldY - prevY) / dt;
+
+            if (rawT >= 1.0) {
+                this.isWarping = false;
+                this.isBoosting = false;
+                this.teleportOutlineFade = 1.0;
+
+                // Explicit Exit Momentum
+                // We set velocity directly to ensure we come out of the warp with consistent forward power,
+                // regardless of how much the easing curve slowed down at the very end.
+                const exitSpeed = 800; // Average warp speed (3500) + Kick (1200)
+                this.vx = Math.cos(this.warpAngle) * exitSpeed;
+                this.vy = Math.sin(this.warpAngle) * exitSpeed;
+            }
+        } else if (this.hasBoostDrive) {
             if (input.isKeyDown('Space')) {
                 // Play sound once when starting
                 if (!this.isBoosting) {
@@ -351,45 +422,22 @@ export class Player {
         }
         this.boostFlash = Math.max(0, this.boostFlash - dt * 4);
 
-        // --- Dodge ---
-        this.dodgeCooldownTimer = Math.max(0, this.dodgeCooldownTimer - dt);
-        if (this.dodgeTimer > 0) {
-            this.dodgeTimer -= dt;
-            if (this.dodgeTimer <= 0) this.isDodging = false;
+        if (this._teleportWasOnCooldown && this.boostCooldownTimer <= 0) {
+            this.teleportFlash = 1;
+            this._teleportWasOnCooldown = false;
+        }
+        this.teleportFlash = Math.max(0, this.teleportFlash - dt * 4);
+
+        // Update Ghost Life
+        if (this.teleportGhost) {
+            this.teleportGhost.life -= dt * 3.0;
+            if (this.teleportGhost.life <= 0) this.teleportGhost = null;
         }
 
-        if (this.canDodge && !this.hasAncientCurse && this.dodgeCooldownTimer <= 0) {
-            if (input.isKeyJustPressed('KeyA')) {
-                const perpAngle = this.angle - Math.PI / 2;
-                const power = this.dodgePower * this.momentumDodgeMult;
-                this.vx += Math.cos(perpAngle) * power;
-                this.vy += Math.sin(perpAngle) * power;
-                this.isDodging = true;
-                this.dodgeTimer = this.dodgeDuration;
-                this.dodgeCooldownTimer = this.dodgeCooldown;
-                this._dodgeWasOnCooldown = true;
-                this.game.sounds.play('dodge', { volume: 0.4, x: this.worldX, y: this.worldY });
-                this.game.camera.shake(0.9, 12.0);
-            }
-            if (input.isKeyJustPressed('KeyD')) {
-                const perpAngle = this.angle + Math.PI / 2;
-                const power = this.dodgePower * this.momentumDodgeMult;
-                this.vx += Math.cos(perpAngle) * power;
-                this.vy += Math.sin(perpAngle) * power;
-                this.isDodging = true;
-                this.dodgeTimer = this.dodgeDuration;
-                this.dodgeCooldownTimer = this.dodgeCooldown;
-                this._dodgeWasOnCooldown = true;
-                this.game.sounds.play('dodge', { volume: 0.4, x: this.worldX, y: this.worldY });
-                this.game.camera.shake(0.9, 12.0);
-            }
+        // Update Outline Fade
+        if (this.teleportOutlineFade > 0) {
+            this.teleportOutlineFade -= dt * 4.0;
         }
-
-        if (this._dodgeWasOnCooldown && this.dodgeCooldownTimer <= 0) {
-            this.dodgeFlash = 1;
-            this._dodgeWasOnCooldown = false;
-        }
-        this.dodgeFlash = Math.max(0, this.dodgeFlash - dt * 4);
 
         // --- Physics ---
         this.vx += accelX * dt;
@@ -397,7 +445,7 @@ export class Player {
 
         let maxSpeed = this.baseSpeed * this.pulseJetMult * this.mechanicalEngineSpeedMult * this.momentumMaxSpeedMult;
         const currentSpeed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
-        if (!this.isBoosting && !this.isDodging && currentSpeed > maxSpeed) {
+        if (!this.isBoosting && currentSpeed > maxSpeed) {
             const decay = Math.max(maxSpeed / currentSpeed, 1 - dt * 5);
             this.vx *= decay;
             this.vy *= decay;
@@ -631,24 +679,21 @@ export class Player {
         if (!camera) return;
         const screen = camera.worldToScreen(this.worldX, this.worldY, this.game.width, this.game.height);
 
-        // --- Ghost Trail ---
+        // --- Ghost Trail (Ancient Curse) ---
         if (this.hasAncientCurse && this.trailHistory.length > 0) {
             ctx.save();
-            ctx.globalCompositeOperation = 'lighter'; // Additive blending for solid feel
+            ctx.globalCompositeOperation = 'lighter';
             for (let i = 0; i < this.trailHistory.length; i++) {
                 const t = this.trailHistory[i];
                 const alpha = t.life * 0.15 * (1 - i / this.maxTrailLength);
                 if (alpha <= 0) continue;
 
                 const tScreen = camera.worldToScreen(t.x, t.y, this.game.width, this.game.height);
-
-                // Exact scale matching the ship, no dynamic scaling or pulse
                 const asset = t.asset;
                 const img = asset.canvas || asset;
                 const w = (asset.width || img.width) * this.game.worldScale;
                 const h = (asset.height || img.height) * this.game.worldScale;
 
-                // Use cached tinted version for performance and consistency
                 let greenImg = this._trailCache.get(img);
                 if (!greenImg) {
                     greenImg = this._createGreenGhost(img);
@@ -662,6 +707,29 @@ export class Player {
                 ctx.drawImage(greenImg, -w / 2, -h / 2, w, h);
                 ctx.restore();
             }
+            ctx.restore();
+        }
+
+        // --- Teleport Ghost (Start point) ---
+        if (this.teleportGhost) {
+            const t = this.teleportGhost;
+            const tScreen = camera.worldToScreen(t.x, t.y, this.game.width, this.game.height);
+            const img = t.asset.canvas || t.asset;
+            const w = (t.asset.width || img.width) * this.game.worldScale;
+            const h = (t.asset.height || img.height) * this.game.worldScale;
+
+            let blueImg = this._blueGhostCache;
+            if (!blueImg) {
+                blueImg = this._createBlueGhost(img);
+                this._blueGhostCache = blueImg;
+            }
+
+            ctx.save();
+            ctx.globalCompositeOperation = 'lighter';
+            ctx.globalAlpha = t.life * 0.8;
+            ctx.translate(tScreen.x, tScreen.y);
+            ctx.rotate(t.angle + Math.PI / 2);
+            ctx.drawImage(blueImg, -w / 2, -h / 2, w, h);
             ctx.restore();
         }
 
@@ -681,31 +749,41 @@ export class Player {
         ctx.translate(screen.x, screen.y);
         ctx.rotate(this.angle + Math.PI / 2);
 
-        // Blinking if invulnerable
-        if (this.invulnTimer > 0) {
-            ctx.drawImage(img.canvas || img, -w / 2, -h / 2, w, h);
-            ctx.globalCompositeOperation = 'lighter';
-            ctx.globalAlpha = 0.5;
-            ctx.drawImage(img.canvas || img, -w / 2, -h / 2, w, h);
-            ctx.globalAlpha = 1;
-            ctx.globalCompositeOperation = 'source-over';
-        } else {
-            ctx.drawImage(img.canvas || img, -w / 2, -h / 2, w, h);
-        }
+        // Hide ship while warping
+        if (!this.isWarping) {
+            // Blinking if invulnerable
+            if (this.invulnTimer > 0) {
+                ctx.drawImage(img.canvas || img, -w / 2, -h / 2, w, h);
+                ctx.globalCompositeOperation = 'lighter';
+                ctx.globalAlpha = 0.5;
+                ctx.drawImage(img.canvas || img, -w / 2, -h / 2, w, h);
+                ctx.globalAlpha = 1;
+                ctx.globalCompositeOperation = 'source-over';
+            } else {
+                ctx.drawImage(img.canvas || img, -w / 2, -h / 2, w, h);
+            }
 
-        // Low health red pulse
-        if (this.lowHealthPulseTimer > 0) {
-            const pulseIntensity = (Math.sin(this.lowHealthPulseTimer) + 1) / 2; // 0 to 1
-            this._drawTinted(ctx, img, -Math.floor(w / 2), -Math.floor(h / 2), w, h, `rgba(255, 0, 0, ${pulseIntensity * 0.5})`);
+            // Low health red pulse
+            if (this.lowHealthPulseTimer > 0) {
+                const pulseIntensity = (Math.sin(this.lowHealthPulseTimer) + 1) / 2; // 0 to 1
+                this._drawTinted(ctx, img, -Math.floor(w / 2), -Math.floor(h / 2), w, h, `rgba(255, 0, 0, ${pulseIntensity * 0.5})`);
+            }
         }
 
         // Ready flash
-        const flash = Math.max(this.boostFlash, this.dodgeFlash);
+        const flash = Math.max(this.boostFlash, this.teleportFlash);
         if (flash > 0.01) {
             ctx.globalCompositeOperation = 'lighter';
             ctx.globalAlpha = flash * 0.6;
             ctx.drawImage(img.canvas || img, -w / 2, -h / 2, w, h);
             ctx.globalAlpha = 1;
+            ctx.globalCompositeOperation = 'source-over';
+        }
+
+        // Teleport Outline Phase-in
+        if (this.teleportOutlineFade > 0.01) {
+            ctx.globalCompositeOperation = 'lighter';
+            this._drawTinted(ctx, img, -Math.floor(w / 2), -Math.floor(h / 2), w, h, `rgba(0, 150, 255, ${this.teleportOutlineFade * 0.8})`);
             ctx.globalCompositeOperation = 'source-over';
         }
 
@@ -768,6 +846,8 @@ export class Player {
      * Takes world coordinates and checks against the current sprite's bitmask.
      */
     checkPixelCollision(worldX, worldY) {
+        if (this.isWarping) return false;
+
         // 1. Broad phase: Distance check
         const dx = worldX - this.worldX;
         const dy = worldY - this.worldY;
@@ -915,6 +995,26 @@ export class Player {
         // 2. Green tint
         tCtx.globalCompositeOperation = 'source-atop';
         tCtx.fillStyle = 'rgba(0, 255, 100, 1)';
+        tCtx.fillRect(0, 0, aw, ah);
+
+        return ghostCanvas;
+    }
+
+    _createBlueGhost(img) {
+        const canvas = img.canvas || img;
+        const aw = img.width || canvas.width;
+        const ah = img.height || canvas.height;
+        const ghostCanvas = document.createElement('canvas');
+        ghostCanvas.width = aw;
+        ghostCanvas.height = ah;
+        const tCtx = ghostCanvas.getContext('2d');
+        tCtx.imageSmoothingEnabled = false;
+
+        tCtx.filter = 'blur(10px)';
+        tCtx.drawImage(canvas, 0, 0);
+
+        tCtx.globalCompositeOperation = 'source-atop';
+        tCtx.fillStyle = 'rgba(0, 150, 255, 1)';
         tCtx.fillRect(0, 0, aw, ah);
 
         return ghostCanvas;

@@ -6,7 +6,7 @@ export const UPGRADES = [
     {
         id: 'blink_engine',
         name: 'Blink Engine',
-        description: 'Adds dodge ability. If already present, reduces cooldown.',
+        description: 'Adds teleport ability. If already present, reduces cooldown.',
         assetKey: 'blink_engine_3x2',
         width: 3,
         height: 2,

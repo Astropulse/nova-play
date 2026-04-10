@@ -64,6 +64,13 @@ export class Camera {
         this.x += this.vx * dt;
         this.y += this.vy * dt;
 
+        // Position Correction (Spring) — gently pulls the camera toward the target's position
+        // This prevents drift and handles high-speed blinks smoothly.
+        const posStiffness = 8.0;
+        const plf = 1.0 - Math.exp(-posStiffness * dt);
+        this.x += (target.worldX - this.x) * plf;
+        this.y += (target.worldY - this.y) * plf;
+
         // Update Screen Shake
         if (this.shakeIntensity > 0) {
             this.shakeIntensity = Math.max(0, this.shakeIntensity - this.shakeDecay * dt * 3);
