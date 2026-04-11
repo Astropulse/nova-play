@@ -97,9 +97,9 @@ export class PlayingState {
 
         // Tunable Difficulty Constants
         this.difficultyRampTime = 240; // 4 minutes (transition to linear)
-        this.difficultyExponent = 1.52; // Starts slow, curves up (convex)
+        this.difficultyExponent = 1.5; // Starts slow, curves up (convex)
         this.difficultyGain = 0.000366; // Calculated for smooth transition at 4m
-        this.difficultySteadyRate = 0.014; // Steady linear growth after ramp
+        this.difficultySteadyRate = 0.013; // Steady linear growth after ramp
 
         this.flashTimer = 0;
 

@@ -81,7 +81,7 @@ export class Enemy {
         const turnScale = 1 + (difficultyScale - 1) * 0.08;
         this.baseSpeed = Math.min(900, (320 + Math.random() * 80) * speedScale);
         this.turnSpeed = Math.min(14.0, (6.5 + Math.random() * 1.0) * turnScale);
-        this.health = Math.ceil(15 + 15 * difficultyScale);
+        this.health = Math.ceil(10 + 14 * difficultyScale);
         this._nativeRadius = CollisionScanner.getRadius(this.img, this.spriteKey);
         this.radius = this._nativeRadius * 0.95;
 
@@ -535,7 +535,7 @@ export class Enemy {
 
         if (primaryThreat) {
             let decision = this.dodgeDecisionMap.get(primaryThreat.p);
-            
+
             if (!decision) {
                 const deficit = primaryThreat.requiredClearance - primaryThreat.dist_cpa;
                 // Max lateral displacement rule: D = (s/w) * (1 - cos(w*t))
@@ -1055,7 +1055,7 @@ export class KamikazeEnemy extends Enemy {
         this.baseSpeed = Math.min(1050, (500 + Math.random() * 50) * speedScale);
         this.turnSpeed = Math.min(7.0, 7.0 + Math.random() * 1.0);
         // Moderate health, slightly tougher than standard enemies but not sponges
-        this.health = Math.ceil(25 + 14 * difficultyScale);
+        this.health = Math.ceil(18 + 13 * difficultyScale);
 
         // Disable shooting
         this.attackRange = -1; // Never enter ATTACK state based on distance
@@ -1120,7 +1120,7 @@ export class CthulhuEnemy extends Enemy {
         const speedScale = 1 + (difficultyScale - 1) * 0.1;
         this.baseSpeed = (800 + Math.random() * 100) * speedScale;
         this.turnSpeed = 7.0 + Math.random() * 1.0;
-        this.health = Math.ceil(25 + 14 * difficultyScale);
+        this.health = Math.ceil(18 + 13 * difficultyScale);
 
         // Disable shooting
         this.attackRange = -1;
