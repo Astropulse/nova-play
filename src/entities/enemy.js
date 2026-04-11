@@ -81,7 +81,7 @@ export class Enemy {
         const turnScale = 1 + (difficultyScale - 1) * 0.08;
         this.baseSpeed = Math.min(900, (320 + Math.random() * 80) * speedScale);
         this.turnSpeed = Math.min(14.0, (6.5 + Math.random() * 1.0) * turnScale);
-        this.health = Math.ceil(10 + 14 * difficultyScale);
+        this.health = Math.ceil(10 + 10 * difficultyScale);
         this._nativeRadius = CollisionScanner.getRadius(this.img, this.spriteKey);
         this.radius = this._nativeRadius * 0.95;
 
@@ -771,8 +771,8 @@ export class Enemy {
         for (let i = 0; i < count; i++) spawns.push(new Scrap(this.game, this.worldX, this.worldY));
         for (let i = 0; i < 4; i++) spawns.push(new Rubble(this.game, this.worldX, this.worldY));
 
-        // 20% chance to drop a small battery
-        if (Math.random() < 0.20) {
+        // 25% chance to drop a small battery
+        if (Math.random() < 0.25) {
             const battery = UPGRADES.find(u => u.id === 'small_battery');
             if (battery) {
                 spawns.push(new ItemPickup(this.game, this.worldX, this.worldY, battery));
@@ -1055,7 +1055,7 @@ export class KamikazeEnemy extends Enemy {
         this.baseSpeed = Math.min(1050, (500 + Math.random() * 50) * speedScale);
         this.turnSpeed = Math.min(7.0, 7.0 + Math.random() * 1.0);
         // Moderate health, slightly tougher than standard enemies but not sponges
-        this.health = Math.ceil(18 + 13 * difficultyScale);
+        this.health = Math.ceil(18 + 9 * difficultyScale);
 
         // Disable shooting
         this.attackRange = -1; // Never enter ATTACK state based on distance
@@ -1120,7 +1120,7 @@ export class CthulhuEnemy extends Enemy {
         const speedScale = 1 + (difficultyScale - 1) * 0.1;
         this.baseSpeed = (800 + Math.random() * 100) * speedScale;
         this.turnSpeed = 7.0 + Math.random() * 1.0;
-        this.health = Math.ceil(18 + 13 * difficultyScale);
+        this.health = Math.ceil(18 + 10 * difficultyScale);
 
         // Disable shooting
         this.attackRange = -1;

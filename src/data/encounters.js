@@ -194,7 +194,12 @@ function executeActions(actions, vars, player, state, encounter) {
             }
             case 'add_scrap': {
                 const amount = resolveParam();
-                player.scrap += typeof amount === 'number' ? amount : 0;
+                if (typeof amount === 'number') {
+                    player.scrap += amount;
+                    state.stats.scrapCollected += amount;
+                    state.spawnFloatingText(player.worldX, player.worldY, `+${amount} SCRAP`, '#ffff44');
+                    state.game.sounds.play('scrap', { volume: 0.5 });
+                }
                 break;
             }
             case 'remove_scrap': {
@@ -212,17 +217,23 @@ function executeActions(actions, vars, player, state, encounter) {
             case 'add_perm_health': {
                 const amt = resolveParam();
                 player.permHealthBonus += amt;
+                state.spawnFloatingText(player.worldX, player.worldY, `+${amt} MAX HP`, '#44ff44');
+                state.game.sounds.play('select', { volume: 0.8 });
                 state._onInventoryChanged(true);
                 break;
             }
             case 'add_perm_shield': {
                 const amt = resolveParam();
                 player.updateMaxShield(amt);
+                state.spawnFloatingText(player.worldX, player.worldY, `+${Math.floor(amt)} SHIELD`, '#44ddff');
+                state.game.sounds.play('shield', { volume: 0.8 });
                 break;
             }
             case 'add_perm_damage': {
                 const amt = resolveParam();
                 player.permDamageBonus += amt;
+                state.spawnFloatingText(player.worldX, player.worldY, `+${amt} DMG`, '#ff4444');
+                state.game.sounds.play('laser', { volume: 0.6 });
                 break;
             }
             case 'add_perm_capacity': {
@@ -270,6 +281,8 @@ function executeActions(actions, vars, player, state, encounter) {
             case 'heal': {
                 const frac = resolveParam();
                 player.heal(frac);
+                state.spawnFloatingText(player.worldX, player.worldY, `REPAIRED`, '#44ff44');
+                state.game.sounds.play('select', { volume: 0.6 });
                 break;
             }
             case 'give_battery': {

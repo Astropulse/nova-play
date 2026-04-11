@@ -3,7 +3,7 @@ import { World } from '../world/world.js';
 import { Camera } from '../world/camera.js';
 import { Player } from '../entities/player.js';
 import { HUD } from '../ui/hud.js';
-import { Asteroid, AsteroidSpawner, Rubble, Scrap, ItemPickup, ProceduralDebris } from '../entities/asteroid.js';
+import { Asteroid, AsteroidSpawner, Rubble, Scrap, ItemPickup, ProceduralDebris, VoronoiSlicer } from '../entities/asteroid.js';
 import { EnemySpawner, Enemy, HostileEncounter } from '../entities/enemy.js';
 import { Shop } from '../entities/shop.js';
 import { Inventory } from '../engine/inventory.js';
@@ -99,7 +99,7 @@ export class PlayingState {
         this.difficultyRampTime = 240; // 4 minutes (transition to linear)
         this.difficultyExponent = 1.5; // Starts slow, curves up (convex)
         this.difficultyGain = 0.000366; // Calculated for smooth transition at 4m
-        this.difficultySteadyRate = 0.013; // Steady linear growth after ramp
+        this.difficultySteadyRate = 0.012; // Steady linear growth after ramp
 
         this.flashTimer = 0;
 
@@ -284,13 +284,7 @@ export class PlayingState {
             } else {
                 this.deathTimer += dt;
                 // Update debris drift
-                for (const d of this.shipDebris) {
-                    d.worldX += d.vx * dt;
-                    d.worldY += d.vy * dt;
-                    d.rotation += d.spin * dt;
-                    d.vx *= 0.995;
-                    d.vy *= 0.995;
-                }
+                for (const d of this.shipDebris) d.update(dt);
                 // Also update rubble so it keeps drifting
                 for (const r of this.rubble) r.update(dt);
                 if (this.deathTimer >= 3.0) {
@@ -1405,18 +1399,7 @@ export class PlayingState {
             const centerX = this.game.width / 2;
             const centerY = this.game.height / 2;
             for (const d of this.shipDebris) {
-                const screen = this.camera.worldToScreen(d.worldX, d.worldY, this.game.width, this.game.height);
-                ctx.save();
-                ctx.translate(screen.x, screen.y);
-                ctx.rotate(d.rotation);
-
-                const canvas = d.img.canvas || d.img;
-                const prescale = d.img.prescale || 1;
-                const w = (canvas.width / prescale) * this.game.worldScale;
-                const h = (canvas.height / prescale) * this.game.worldScale;
-
-                ctx.drawImage(canvas, -w / 2, -h / 2, w, h);
-                ctx.restore();
+                d.draw(ctx, this.camera);
             }
 
             if (this.showDeathScreen) {
@@ -3431,50 +3414,38 @@ export class PlayingState {
     }
 
     _generateShipDebris() {
-        const brokenKeys = this.shipData.assets.broken;
         const debris = [];
-        const lifetime = 0.8 + Math.random() * 0.4; // A bit longer than generic rubble but still fast
+        if (!this.player.stillImg) return debris;
 
-        if (brokenKeys && brokenKeys.length > 0) {
-            // Use pre-made assets if available
-            for (let i = 0; i < brokenKeys.length; i++) {
-                const img = this.game.assets.get(brokenKeys[i]);
-                if (!img) continue;
+        // 16-24 organic shards for the player ship
+        const numPieces = 16 + Math.floor(Math.random() * 8);
+        const shards = VoronoiSlicer.slice(this.player.stillImg, numPieces);
+        const lifetime = 60.0; // Shards stay for a long time (noFade handles opacity)
 
-                const outAngle = (Math.PI * 2 * i / brokenKeys.length) + (Math.random() - 0.5) * 0.8;
-                const spread = 80 + Math.random() * 160;
+        for (const shard of shards) {
+            const cosA = Math.cos(this.player.angle + Math.PI / 2);
+            const sinA = Math.sin(this.player.angle + Math.PI / 2);
 
-                debris.push({
-                    img: img,
-                    worldX: this.player.worldX,
-                    worldY: this.player.worldY,
-                    vx: this.player.vx * 0.3 + Math.cos(outAngle) * spread,
-                    vy: this.player.vy * 0.3 + Math.sin(outAngle) * spread,
-                    rotation: this.player.angle + Math.PI / 2 + (Math.random() - 0.5) * 0.5,
-                    spin: (Math.random() - 0.5) * 6,
-                    lifetime: lifetime,
-                    maxLifetime: lifetime
-                });
-            }
-        } else if (this.player.img) {
-            // Fallback: Voronoi procedural slicing
-            const shards = VoronoiSlicer.slice(this.player.img, 16);
-            for (const shard of shards) {
-                const outAngle = Math.atan2(shard.ly, shard.lx) || (Math.random() * Math.PI * 2);
-                const spread = 80 + Math.random() * 160;
+            // Transform local fragment offset to world space
+            const worldOffX = (shard.lx * cosA - shard.ly * sinA);
+            const worldOffY = (shard.lx * sinA + shard.ly * cosA);
 
-                debris.push({
-                    img: shard,
-                    worldX: this.player.worldX + shard.lx,
-                    worldY: this.player.worldY + shard.ly,
-                    vx: this.player.vx * 0.3 + Math.cos(outAngle) * spread,
-                    vy: this.player.vy * 0.3 + Math.sin(outAngle) * spread,
-                    rotation: this.player.angle + Math.PI / 2,
-                    spin: (Math.random() - 0.5) * 6,
-                    lifetime: lifetime,
-                    maxLifetime: lifetime
-                });
-            }
+            const outAngle = Math.atan2(worldOffY, worldOffX);
+            const spread = 40 + Math.random() * 70;
+            const vx = this.player.vx * 0.3 + Math.cos(outAngle) * spread;
+            const vy = this.player.vy * 0.3 + Math.sin(outAngle) * spread;
+
+            debris.push(new ProceduralDebris(
+                this.game,
+                this.player.worldX + worldOffX,
+                this.player.worldY + worldOffY,
+                shard,
+                vx, vy,
+                this.player.angle + Math.PI / 2,
+                (Math.random() - 0.5) * 10, // Fast spin
+                lifetime,
+                true // noFade
+            ));
         }
 
         return debris;

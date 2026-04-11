@@ -222,7 +222,7 @@ export class Rubble {
 
 // ProceduralDebris — similar to Rubble but uses a passed-in canvas/image (used for ship breakup)
 export class ProceduralDebris {
-    constructor(game, worldX, worldY, img, vx, vy, rotation, spin, lifetime = null) {
+    constructor(game, worldX, worldY, img, vx, vy, rotation, spin, lifetime = null, noFade = false) {
         this.game = game;
         this.worldX = worldX;
         this.worldY = worldY;
@@ -234,6 +234,7 @@ export class ProceduralDebris {
         this.alive = true;
         this.lifetime = lifetime !== null ? lifetime : (0.4 + Math.random() * 0.4);
         this.maxLifetime = this.lifetime;
+        this.noFade = noFade;
     }
 
     update(dt) {
@@ -260,7 +261,7 @@ export class ProceduralDebris {
         const w = canvas.width * this.game.worldScale;
         const h = canvas.height * this.game.worldScale;
 
-        const alpha = Math.max(0, this.lifetime / this.maxLifetime);
+        const alpha = this.noFade ? 1.0 : Math.max(0, this.lifetime / this.maxLifetime);
         ctx.save();
         ctx.globalAlpha = alpha;
         ctx.translate(screen.x, screen.y);

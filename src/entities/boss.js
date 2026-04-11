@@ -41,7 +41,7 @@ export class Boss {
         this.stateTimer = 0;
         this.musicKey = null;
 
-        this.health = 600 + 30 * difficultyScale;
+        this.health = 600 + 20 * difficultyScale;
         this.maxHealth = this.health;
         this.isBoss = true;
         this.radius = 120;

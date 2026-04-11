@@ -299,7 +299,7 @@ export class Game {
         this._fpsTimer += dt;
         if (this._fpsTimer >= 1.0) {
             this.fps = this._fpsCounter;
-            
+
             // Average work time per frame in ms
             const avgWorkTime = this._potentialFpsAccumulator / this._potentialFpsCounter;
             this.potentialFps = avgWorkTime > 0 ? Math.round(1000 / avgWorkTime) : 0;
@@ -533,27 +533,6 @@ export class Game {
             'bruiser_jets': 'Assets/Ships/Bruiser/bruiser_jets.png',
             'fighter_jets': 'Assets/Ships/Fighter/fighter_jets.png',
             'looper_jets': 'Assets/Ships/Looper/looper_jets.png',
-            // Ships - broken pieces
-            'fighter_broken_0': 'Assets/Ships/Fighter/fighter_broken_0.png',
-            'fighter_broken_1': 'Assets/Ships/Fighter/fighter_broken_1.png',
-            'fighter_broken_2': 'Assets/Ships/Fighter/fighter_broken_2.png',
-            'fighter_broken_3': 'Assets/Ships/Fighter/fighter_broken_3.png',
-            'fighter_broken_4': 'Assets/Ships/Fighter/fighter_broken_4.png',
-            'cruiser_broken_0': 'Assets/Ships/Cruiser/cruiser_broken_0.png',
-            'cruiser_broken_1': 'Assets/Ships/Cruiser/cruiser_broken_1.png',
-            'cruiser_broken_2': 'Assets/Ships/Cruiser/cruiser_broken_2.png',
-            'cruiser_broken_3': 'Assets/Ships/Cruiser/cruiser_broken_3.png',
-            'cruiser_broken_4': 'Assets/Ships/Cruiser/cruiser_broken_4.png',
-            'bruiser_broken_0': 'Assets/Ships/Bruiser/bruiser_broken_0.png',
-            'bruiser_broken_1': 'Assets/Ships/Bruiser/bruiser_broken_1.png',
-            'bruiser_broken_2': 'Assets/Ships/Bruiser/bruiser_broken_2.png',
-            'bruiser_broken_3': 'Assets/Ships/Bruiser/bruiser_broken_3.png',
-            'bruiser_broken_4': 'Assets/Ships/Bruiser/bruiser_broken_4.png',
-            'looper_broken_0': 'Assets/Ships/Looper/looper_broken_0.png',
-            'looper_broken_1': 'Assets/Ships/Looper/looper_broken_1.png',
-            'looper_broken_2': 'Assets/Ships/Looper/looper_broken_2.png',
-            'looper_broken_3': 'Assets/Ships/Looper/looper_broken_3.png',
-            'looper_broken_4': 'Assets/Ships/Looper/looper_broken_4.png',
             // UI
             'title': 'Assets/UI/title.png',
             'start_flight_off': 'Assets/UI/start_flight_off.png',
