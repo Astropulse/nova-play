@@ -146,6 +146,10 @@ export class CthulhuEvent {
         return this.state !== CTHULHU_STATE.DORMANT;
     }
 
+    get isAttackable() {
+        return this.state === CTHULHU_STATE.DESTRUCTIBLE;
+    }
+
     startWave(player) {
         this.wave++;
         this.enemiesToSpawn = 5; // 3 waves of 5 enemies = 15 total

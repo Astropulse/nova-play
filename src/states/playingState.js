@@ -470,10 +470,9 @@ export class PlayingState {
                         }
                     }
                 }
-
                 if (!target) {
                     for (const ev of this.events) {
-                        if (ev.state !== CTHULHU_STATE.DESTRUCTIBLE) continue; // Only aim when destructible
+                        if (!ev.isAttackable) continue; 
                         const edx = ev.worldX - this.player.worldX;
                         const edy = ev.worldY - this.player.worldY;
                         const edist = Math.sqrt(edx * edx + edy * edy);
@@ -550,9 +549,8 @@ export class PlayingState {
                     }
                 }
 
-                // Check Events
                 for (const ev of this.events) {
-                    if (ev.state !== CTHULHU_STATE.DESTRUCTIBLE) continue;
+                    if (!ev.isAttackable) continue;
                     const edx = ev.worldX - this.player.worldX;
                     const edy = ev.worldY - this.player.worldY;
                     const edist = Math.sqrt(edx * edx + edy * edy);
