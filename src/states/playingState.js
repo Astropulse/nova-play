@@ -1679,7 +1679,7 @@ export class PlayingState {
             const ix = cx + Math.cos(angle) * radius;
             const iy = cy + Math.sin(angle) * radius;
 
-            // Draw arrow
+            // Draw arrow (chevron style)
             ctx.save();
             ctx.globalAlpha = opacity;
             ctx.translate(ix, iy);
@@ -1688,21 +1688,28 @@ export class PlayingState {
             ctx.fillStyle = '#44ddff';
             ctx.beginPath();
             ctx.moveTo(10 * this.game.uiScale, 0);
-            ctx.lineTo(-5 * this.game.uiScale, -8 * this.game.uiScale);
-            ctx.lineTo(-5 * this.game.uiScale, 8 * this.game.uiScale);
+            ctx.lineTo(-6 * this.game.uiScale, -8 * this.game.uiScale);
+            ctx.lineTo(-2 * this.game.uiScale, 0); // Cutout center
+            ctx.lineTo(-6 * this.game.uiScale, 8 * this.game.uiScale);
             ctx.closePath();
             ctx.fill();
 
             ctx.restore();
 
-            // Label "SHOP"
+            // Label "SHOP" (Above)
             ctx.save();
             ctx.globalAlpha = opacity;
             ctx.fillStyle = '#44ddff';
             ctx.font = `${6 * this.game.uiScale}px Astro4x`;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.fillText('SHOP', ix, iy - 12 * this.game.uiScale);
+            ctx.fillText('SHOP', ix, iy - 16 * this.game.uiScale);
+
+            // Distance (Below)
+            ctx.font = `${5 * this.game.uiScale}px Astro4x`;
+            ctx.fillStyle = 'rgba(68, 221, 255, 0.7)';
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            ctx.fillText(`${Math.floor(dist)}`, ix, iy + 16 * this.game.uiScale);
             ctx.restore();
         }
     }
@@ -1732,7 +1739,7 @@ export class PlayingState {
             const ix = cx + Math.cos(angle) * radius;
             const iy = cy + Math.sin(angle) * radius;
 
-            // Draw arrow
+            // Draw arrow (chevron style)
             ctx.save();
             ctx.globalAlpha = opacity;
             ctx.translate(ix, iy);
@@ -1741,21 +1748,28 @@ export class PlayingState {
             ctx.fillStyle = '#ffdd44'; // Yellow marker for events
             ctx.beginPath();
             ctx.moveTo(10 * this.game.uiScale, 0);
-            ctx.lineTo(-5 * this.game.uiScale, -8 * this.game.uiScale);
-            ctx.lineTo(-5 * this.game.uiScale, 8 * this.game.uiScale);
+            ctx.lineTo(-6 * this.game.uiScale, -8 * this.game.uiScale);
+            ctx.lineTo(-2 * this.game.uiScale, 0); // Cutout center
+            ctx.lineTo(-6 * this.game.uiScale, 8 * this.game.uiScale);
             ctx.closePath();
             ctx.fill();
 
             ctx.restore();
 
-            // Label "UNKNOWN SIGNAL"
+            // Label "SIGNAL" (Above)
             ctx.save();
             ctx.globalAlpha = opacity;
             ctx.fillStyle = '#ffdd44';
             ctx.font = `${5 * this.game.uiScale}px Astro4x`;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.fillText('SIGNAL', ix, iy - 12 * this.game.uiScale);
+            ctx.fillText('SIGNAL', ix, iy - 16 * this.game.uiScale);
+
+            // Distance (Below)
+            ctx.font = `${5 * this.game.uiScale}px Astro4x`;
+            ctx.fillStyle = 'rgba(255, 221, 68, 0.7)';
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            ctx.fillText(`${Math.floor(dist)}`, ix, iy + 16 * this.game.uiScale);
             ctx.restore();
         }
     }
@@ -1791,8 +1805,9 @@ export class PlayingState {
             ctx.fillStyle = '#ff44ff'; // Purple/Magenta for wreckage
             ctx.beginPath();
             ctx.moveTo(10 * this.game.uiScale, 0);
-            ctx.lineTo(-5 * this.game.uiScale, -8 * this.game.uiScale);
-            ctx.lineTo(-5 * this.game.uiScale, 8 * this.game.uiScale);
+            ctx.lineTo(-6 * this.game.uiScale, -8 * this.game.uiScale);
+            ctx.lineTo(-2 * this.game.uiScale, 0); // Cutout center
+            ctx.lineTo(-6 * this.game.uiScale, 8 * this.game.uiScale);
             ctx.closePath();
             ctx.fill();
             ctx.restore();
@@ -1803,7 +1818,13 @@ export class PlayingState {
             ctx.font = `${5 * this.game.uiScale}px Astro4x`;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.fillText('WRECKAGE', ix, iy - 12 * this.game.uiScale);
+            ctx.fillText('WRECKAGE', ix, iy - 16 * this.game.uiScale);
+
+            // Distance
+            ctx.font = `${5 * this.game.uiScale}px Astro4x`;
+            ctx.fillStyle = 'rgba(255, 68, 255, 0.7)';
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            ctx.fillText(`${Math.floor(dist)}`, ix, iy + 16 * this.game.uiScale);
             ctx.restore();
         }
     }
@@ -3225,24 +3246,36 @@ export class PlayingState {
             ctx.fillStyle = enc.indicatorColor || '#44ffaa';
             ctx.beginPath();
             ctx.moveTo(10 * this.game.uiScale, 0);
-            ctx.lineTo(-5 * this.game.uiScale, -8 * this.game.uiScale);
-            ctx.lineTo(-5 * this.game.uiScale, 8 * this.game.uiScale);
+            ctx.lineTo(-6 * this.game.uiScale, -8 * this.game.uiScale);
+            ctx.lineTo(-2 * this.game.uiScale, 0); // Cutout center
+            ctx.lineTo(-6 * this.game.uiScale, 8 * this.game.uiScale);
             ctx.closePath();
             ctx.fill();
 
             ctx.restore();
 
-            // Draw text label
+            // Draw text label (Above)
             ctx.save();
             ctx.globalAlpha = opacity;
             ctx.font = `${6 * this.game.uiScale}px Astro4x`;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
             ctx.fillStyle = enc.indicatorColor || '#44ffaa';
-            let ty = iy;
-            if (iy < ch / 2) ty += 15 * this.game.uiScale;
-            else ty -= 15 * this.game.uiScale;
-            ctx.fillText(enc.displayName.toUpperCase(), ix, ty);
+            ctx.fillText(enc.displayName.toUpperCase(), ix, iy - 16 * this.game.uiScale);
+
+            // Distance (Below)
+            ctx.font = `${5 * this.game.uiScale}px Astro4x`;
+            const color = enc.indicatorColor || '#44ffaa';
+            // Simple approach to dim the color: parse if it starts with #
+            if (color.startsWith('#')) {
+                const r = parseInt(color.slice(1, 3), 16);
+                const g = parseInt(color.slice(3, 5), 16);
+                const b = parseInt(color.slice(5, 7), 16);
+                ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.7)`;
+            } else {
+                ctx.fillStyle = color;
+            }
+            ctx.fillText(`${Math.floor(dist)}`, ix, iy + 16 * this.game.uiScale);
             ctx.restore();
         }
     }
