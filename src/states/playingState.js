@@ -65,6 +65,12 @@ export class PlayingState {
 
         // Inventory
         this.inventoryImg = game.assets.get('9_slice_inventory');
+        this.inventoryBorderImg = game.assets.get('9_slice_inventory_border');
+        this.shopScrollX = 0;
+        this.shopScrollY = 0;
+        this.playerScrollX = 0;
+        this.playerScrollY = 0;
+        this.draggingScrollbar = null;
         this.inventoryCols = shipData.storage.cols;
         this.inventoryRows = shipData.storage.rows;
 
@@ -472,7 +478,7 @@ export class PlayingState {
                 }
                 if (!target) {
                     for (const ev of this.events) {
-                        if (!ev.isAttackable) continue; 
+                        if (!ev.isAttackable) continue;
                         const edx = ev.worldX - this.player.worldX;
                         const edy = ev.worldY - this.player.worldY;
                         const edist = Math.sqrt(edx * edx + edy * edy);
@@ -882,7 +888,7 @@ export class PlayingState {
                 const dist = Math.sqrt(dx * dx + dy * dy);
                 const collectRange = (it.collectRange + this.player.radius);
 
-                if (dist < collectRange) {
+                if (dist < collectRange && (it.pickupDelay || 0) <= 0) {
                     // Try to add to inventory
                     if (this.player.inventory.autoAdd(it.item)) {
                         it.alive = false;
@@ -1816,43 +1822,36 @@ export class PlayingState {
 
         // --- Shop Layout ---
         const shopInv = this.activeShop.inventory;
-        const shopGridW = shopInv.cols * slotSize;
-        const shopGridH = shopInv.rows * slotSize;
-        const shopTotalW = shopGridW + borderSize * 2 - slotSize * 2;
-        const shopTotalH = shopGridH + borderSize * 2 - slotSize * 2;
-        const shopX = Math.floor((cw - shopTotalW) / 2);
-        const shopY = uiScale * 20;
-        const shopGridX = shopX + borderSize - slotSize;
-        const shopGridY = shopY + borderSize - slotSize;
+        const shopLayout = this._getInventoryLayout(shopInv, 'shop');
 
-        this._draw9Slice(ctx, this.inventoryImg, shopX, shopY, shopTotalW, shopTotalH);
+        this._draw9Slice(ctx, this.inventoryImg, shopLayout.panelX, shopLayout.panelY, shopLayout.totalW, shopLayout.totalH);
 
         ctx.fillStyle = '#44ddff';
         ctx.font = `${8 * uiScale}px Astro5x`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'alphabetic';
-        ctx.fillText('SPACE STATION SHOP', cw / 2, shopY - uiScale * 10);
+        ctx.fillText('SPACE STATION SHOP', cw / 2, shopLayout.panelY - uiScale * 10);
 
         // --- Player Layout ---
         const playerInv = this.player.inventory;
-        const playerGridW = playerInv.cols * slotSize;
-        const playerGridH = playerInv.rows * slotSize;
-        const playerTotalW = playerGridW + borderSize * 2 - slotSize * 2;
-        const playerTotalH = playerGridH + borderSize * 2 - slotSize * 2;
-        const playerX = Math.floor((cw - playerTotalW) / 2);
-        const playerY = ch - playerTotalH - uiScale * 40;
-        const playerGridX = playerX + borderSize - slotSize;
-        const playerGridY = playerY + borderSize - slotSize;
+        const playerLayout = this._getInventoryLayout(playerInv, 'player');
 
-        this._draw9Slice(ctx, this.inventoryImg, playerX, playerY, playerTotalW, playerTotalH);
+        this._draw9Slice(ctx, this.inventoryImg, playerLayout.panelX, playerLayout.panelY, playerLayout.totalW, playerLayout.totalH);
 
         ctx.fillStyle = '#88aabb';
         ctx.font = `${8 * uiScale}px Astro4x`;
-        ctx.fillText('YOUR SHIP CARGO', cw / 2, playerY - uiScale * 10);
+        ctx.fillText('YOUR SHIP CARGO', cw / 2, playerLayout.panelY - uiScale * 10);
 
         // --- Draw Grids and Items ---
-        this._drawInventoryGrid(ctx, shopInv, shopGridX, shopGridY, slotSize);
-        this._drawInventoryGrid(ctx, playerInv, playerGridX, playerGridY, slotSize);
+        this._drawInventoryGrid(ctx, shopInv, shopLayout, this.shopScrollX, this.shopScrollY);
+        this._drawInventoryGrid(ctx, playerInv, playerLayout, this.playerScrollX, this.playerScrollY);
+
+        this._draw9Slice(ctx, this.inventoryBorderImg, shopLayout.panelX, shopLayout.panelY, shopLayout.totalW, shopLayout.totalH);
+        this._draw9Slice(ctx, this.inventoryBorderImg, playerLayout.panelX, playerLayout.panelY, playerLayout.totalW, playerLayout.totalH);
+
+        // --- Draw Scrollbars Over Borders ---
+        this._drawScrollbars(ctx, shopLayout, this.shopScrollX, this.shopScrollY);
+        this._drawScrollbars(ctx, playerLayout, this.playerScrollX, this.playerScrollY);
 
         // --- Permanent Upgrades ---
         const btnW = 60 * uiScale;
@@ -1861,8 +1860,8 @@ export class PlayingState {
         const totalBtnsH = (btnH * 4) + (gap * 3);
 
         // Position them to the right of the shop grid
-        const startX = shopGridX + shopInv.cols * slotSize + 24 * uiScale;
-        const startY = shopY + (shopTotalH - totalBtnsH) / 2;
+        const startX = shopLayout.panelX + shopLayout.totalW + 24 * uiScale;
+        const startY = shopLayout.panelY + (shopLayout.totalH - totalBtnsH) / 2;
 
         // --- Tunable Shop Cost Multipliers ---
         this.healthCostMult = 0.125;
@@ -1916,7 +1915,7 @@ export class PlayingState {
         // --- Scrap Display ---
         ctx.fillStyle = '#ffff44';
         ctx.font = `${10 * uiScale}px Astro5x`;
-        ctx.fillText(`SCRAP: ${this.player.scrap}`, cw / 2, playerY - 30 * uiScale);
+        ctx.fillText(`SCRAP: ${this.player.scrap}`, cw / 2, playerLayout.panelY - 30 * uiScale);
 
         // --- Dragged Item ---
         if (this.draggedItem) {
@@ -1950,15 +1949,23 @@ export class PlayingState {
             let hoveredEntry = null;
 
             // Check Shop
-            const sCol = Math.floor((mouse.x - shopGridX) / slotSize);
-            const sRow = Math.floor((mouse.y - shopGridY) / slotSize);
-            hoveredEntry = shopInv.getItemAt(sCol, sRow);
+            const sVisX = mouse.x - shopLayout.gridVisX;
+            const sVisY = mouse.y - shopLayout.gridVisY;
+            if (sVisX >= 0 && sVisX < shopLayout.visW && sVisY >= 0 && sVisY < shopLayout.visH) {
+                const sCol = Math.floor((sVisX + this.shopScrollX) / slotSize);
+                const sRow = Math.floor((sVisY + this.shopScrollY) / slotSize);
+                hoveredEntry = shopInv.getItemAt(sCol, sRow);
+            }
 
             // Check Player
             if (!hoveredEntry) {
-                const pCol = Math.floor((mouse.x - playerGridX) / slotSize);
-                const pRow = Math.floor((mouse.y - playerGridY) / slotSize);
-                hoveredEntry = playerInv.getItemAt(pCol, pRow);
+                const pVisX = mouse.x - playerLayout.gridVisX;
+                const pVisY = mouse.y - playerLayout.gridVisY;
+                if (pVisX >= 0 && pVisX < playerLayout.visW && pVisY >= 0 && pVisY < playerLayout.visH) {
+                    const pCol = Math.floor((pVisX + this.playerScrollX) / slotSize);
+                    const pRow = Math.floor((pVisY + this.playerScrollY) / slotSize);
+                    hoveredEntry = playerInv.getItemAt(pCol, pRow);
+                }
             }
 
             if (hoveredEntry) {
@@ -2005,13 +2012,134 @@ export class PlayingState {
         return lines;
     }
 
-    _drawInventoryGrid(ctx, inv, startX, startY, slotSize) {
+    _getInventoryLayout(inv, yHint) {
+        const uiScale = this.game.uiScale;
+        const slotSize = 32 * uiScale;
+        const borderSize = 48 * uiScale;
+
+        const gridW = inv.cols * slotSize;
+        const gridH = inv.rows * slotSize;
+
+        const maxW = Math.floor(this.game.width * 0.4);
+        const maxH = Math.floor(this.game.height * 0.4);
+
+        let gridVisCols = inv.cols;
+        let gridVisRows = inv.rows;
+
+        const maxVisibleCols = Math.floor((maxW - borderSize * 2 + slotSize * 2) / slotSize);
+        const maxVisibleRows = Math.floor((maxH - borderSize * 2 + slotSize * 2) / slotSize);
+
+        if (gridVisCols > maxVisibleCols) {
+            gridVisCols = maxVisibleCols;
+        }
+        if (gridVisRows > maxVisibleRows) {
+            gridVisRows = maxVisibleRows;
+        }
+
+        const totalW = gridVisCols * slotSize + borderSize * 2 - slotSize * 2;
+        const totalH = gridVisRows * slotSize + borderSize * 2 - slotSize * 2;
+
+        const scrollableX = inv.cols > gridVisCols;
+        const scrollableY = inv.rows > gridVisRows;
+
+        const panelX = Math.floor((this.game.width - totalW) / 2);
+
+        // yHint is 'shop', 'player', or 'pause'
+        let panelY;
+        if (yHint === 'shop') panelY = uiScale * 20;
+        else if (yHint === 'player') panelY = this.game.height - totalH - uiScale * 40;
+        else if (yHint === 'pause') panelY = uiScale * 24;
+
+        const visW = gridVisCols * slotSize;
+        const visH = gridVisRows * slotSize;
+
+        const gridVisX = panelX + borderSize - slotSize;
+        const gridVisY = panelY + borderSize - slotSize;
+
+        const maxScrollX = Math.max(0, gridW - visW);
+        const maxScrollY = Math.max(0, gridH - visH);
+
+        const trackMargin = 8 * uiScale;
+        const trackSize = 8 * uiScale;
+
+        const trackYBounds = scrollableY ? { x: panelX + totalW + trackMargin, y: panelY, w: trackSize, h: totalH } : null;
+        const trackXBounds = scrollableX ? { x: panelX, y: panelY + totalH + trackMargin, w: totalW, h: trackSize } : null;
+
+        return {
+            panelX, panelY, totalW, totalH,
+            gridVisX, gridVisY, visW, visH,
+            gridW, gridH,
+            maxScrollX, maxScrollY, slotSize, borderSize,
+            scrollableX, scrollableY,
+            trackYBounds, trackXBounds, trackSize
+        };
+    }
+
+    _drawScrollbars(ctx, layout, scrollX, scrollY) {
+        if (!layout.scrollableX && !layout.scrollableY) return;
+
+        const trackSize = layout.trackSize;
+
+        if (layout.scrollableY && layout.trackYBounds) {
+            const b = layout.trackYBounds;
+
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+            ctx.beginPath();
+            ctx.roundRect(b.x, b.y, b.w, b.h, b.w / 2);
+            ctx.fill();
+
+            ctx.strokeStyle = '#334455';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+
+            const thumbH = Math.max(16 * this.game.uiScale, b.h * (layout.visH / layout.gridH));
+            const thumbY = b.y + (b.h - thumbH) * (scrollY / layout.maxScrollY);
+
+            ctx.fillStyle = '#44ddff';
+            ctx.beginPath();
+            ctx.roundRect(b.x + 1 * this.game.uiScale, thumbY + 1 * this.game.uiScale, b.w - 2 * this.game.uiScale, thumbH - 2 * this.game.uiScale, b.w / 2);
+            ctx.fill();
+        }
+
+        if (layout.scrollableX && layout.trackXBounds) {
+            const b = layout.trackXBounds;
+
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+            ctx.beginPath();
+            ctx.roundRect(b.x, b.y, b.w, b.h, b.h / 2);
+            ctx.fill();
+
+            ctx.strokeStyle = '#334455';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+
+            const thumbW = Math.max(16 * this.game.uiScale, b.w * (layout.visW / layout.gridW));
+            const thumbX = b.x + (b.w - thumbW) * (scrollX / layout.maxScrollX);
+
+            ctx.fillStyle = '#44ddff';
+            ctx.beginPath();
+            ctx.roundRect(thumbX + 1 * this.game.uiScale, b.y + 1 * this.game.uiScale, thumbW - 2 * this.game.uiScale, b.h - 2 * this.game.uiScale, b.h / 2);
+            ctx.fill();
+        }
+    }
+
+    _drawInventoryGrid(ctx, inv, layout, scrollX, scrollY) {
+        const { gridVisX: startX, gridVisY: startY, visW, visH, slotSize } = layout;
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(startX, startY, visW, visH);
+        ctx.clip();
         // Draw slots
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
-        ctx.lineWidth = 1;
+        ctx.strokeStyle = '#425a69';
+        ctx.lineWidth = Math.max(1, Math.floor(this.game.hudScale));
         for (let r = 0; r < inv.rows; r++) {
             for (let c = 0; c < inv.cols; c++) {
-                ctx.strokeRect(startX + c * slotSize, startY + r * slotSize, slotSize, slotSize);
+                const sx = startX + c * slotSize - scrollX;
+                const sy = startY + r * slotSize - scrollY;
+                if (sx + slotSize >= startX && sx <= startX + visW && sy + slotSize >= startY && sy <= startY + visH) {
+                    ctx.strokeRect(sx, sy, slotSize, slotSize);
+                }
             }
         }
 
@@ -2033,10 +2161,13 @@ export class PlayingState {
             const frame = frameAsset ? (frameAsset.canvas || frameAsset) : null;
             if (!frame) continue;
 
-            const ix = startX + x * slotSize;
-            const iy = startY + y * slotSize;
+            const ix = startX + x * slotSize - scrollX;
+            const iy = startY + y * slotSize - scrollY;
             const w = item.width * slotSize;
             const h = item.height * slotSize;
+
+            // Simple cull
+            if (ix + w < startX || ix > startX + visW || iy + h < startY || iy > startY + visH) continue;
 
             // Draw rarity overlay
             const baseColor = RARITY_COLORS[item.rarity] || '#ffffff';
@@ -2048,6 +2179,47 @@ export class PlayingState {
 
             ctx.drawImage(frame, ix, iy, w, h);
         }
+
+        // Draw overflow scroll indicators
+        const shadowSize = 12 * this.game.uiScale;
+        const maxAlpha = 0.6;
+
+        if (scrollX > 0) {
+            const alpha = Math.min(1, scrollX / slotSize) * maxAlpha;
+            const grad = ctx.createLinearGradient(startX, 0, startX + shadowSize, 0);
+            grad.addColorStop(0, `rgba(68, 221, 255, ${alpha})`);
+            grad.addColorStop(1, 'rgba(68, 221, 255, 0)');
+            ctx.fillStyle = grad;
+            ctx.fillRect(startX, startY, shadowSize, visH);
+        }
+        if (scrollX < layout.maxScrollX) {
+            const scrollRemaining = layout.maxScrollX - scrollX;
+            const alpha = Math.min(1, scrollRemaining / slotSize) * maxAlpha;
+            const grad = ctx.createLinearGradient(startX + visW, 0, startX + visW - shadowSize, 0);
+            grad.addColorStop(0, `rgba(68, 221, 255, ${alpha})`);
+            grad.addColorStop(1, 'rgba(68, 221, 255, 0)');
+            ctx.fillStyle = grad;
+            ctx.fillRect(startX + visW - shadowSize, startY, shadowSize, visH);
+        }
+        if (scrollY > 0) {
+            const alpha = Math.min(1, scrollY / slotSize) * maxAlpha;
+            const grad = ctx.createLinearGradient(0, startY, 0, startY + shadowSize);
+            grad.addColorStop(0, `rgba(68, 221, 255, ${alpha})`);
+            grad.addColorStop(1, 'rgba(68, 221, 255, 0)');
+            ctx.fillStyle = grad;
+            ctx.fillRect(startX, startY, visW, shadowSize);
+        }
+        if (scrollY < layout.maxScrollY) {
+            const scrollRemaining = layout.maxScrollY - scrollY;
+            const alpha = Math.min(1, scrollRemaining / slotSize) * maxAlpha;
+            const grad = ctx.createLinearGradient(0, startY + visH, 0, startY + visH - shadowSize);
+            grad.addColorStop(0, `rgba(68, 221, 255, ${alpha})`);
+            grad.addColorStop(1, 'rgba(68, 221, 255, 0)');
+            ctx.fillStyle = grad;
+            ctx.fillRect(startX, startY + visH - shadowSize, visW, shadowSize);
+        }
+
+        ctx.restore();
     }
 
     _drawTooltip(ctx, item, mouse) {
@@ -2124,6 +2296,73 @@ export class PlayingState {
 
         ctx.restore();
     }
+    _updateScrollbarDragging(mouse, layouts) {
+        if (!this.game.input.isMouseDown(0)) {
+            this.draggingScrollbar = null;
+            return false;
+        }
+
+        if (this.game.input.isMouseJustPressed(0)) {
+            for (const key of Object.keys(layouts)) {
+                const layout = layouts[key];
+                if (layout.scrollableY && layout.trackYBounds) {
+                    const b = layout.trackYBounds;
+                    if (mouse.x >= b.x - 4 * this.game.uiScale && mouse.x <= b.x + b.w + 4 * this.game.uiScale && mouse.y >= b.y && mouse.y <= b.y + b.h) {
+                        const thumbH = Math.max(16 * this.game.uiScale, b.h * (layout.visH / layout.gridH));
+                        const currentScroll = (key === 'shop') ? this.shopScrollY : this.playerScrollY;
+                        const thumbY = b.y + (b.h - thumbH) * (currentScroll / layout.maxScrollY);
+
+                        let offset = thumbH / 2;
+                        if (mouse.y >= thumbY && mouse.y <= thumbY + thumbH) offset = mouse.y - thumbY;
+
+                        this.draggingScrollbar = { layout: key, axis: 'y', offset };
+                        return true;
+                    }
+                }
+                if (layout.scrollableX && layout.trackXBounds) {
+                    const b = layout.trackXBounds;
+                    if (mouse.x >= b.x && mouse.x <= b.x + b.w && mouse.y >= b.y - 4 * this.game.uiScale && mouse.y <= b.y + b.h + 4 * this.game.uiScale) {
+                        const thumbW = Math.max(16 * this.game.uiScale, b.w * (layout.visW / layout.gridW));
+                        const currentScroll = (key === 'shop') ? this.shopScrollX : this.playerScrollX;
+                        const thumbX = b.x + (b.w - thumbW) * (currentScroll / layout.maxScrollX);
+
+                        let offset = thumbW / 2;
+                        if (mouse.x >= thumbX && mouse.x <= thumbX + thumbW) offset = mouse.x - thumbX;
+
+                        this.draggingScrollbar = { layout: key, axis: 'x', offset };
+                        return true;
+                    }
+                }
+            }
+        }
+
+        if (this.draggingScrollbar) {
+            const drag = this.draggingScrollbar;
+            const currentLayout = layouts[drag.layout];
+            if (!currentLayout) {
+                this.draggingScrollbar = null;
+                return false;
+            }
+
+            if (drag.axis === 'y') {
+                const b = currentLayout.trackYBounds;
+                const thumbH = Math.max(16 * this.game.uiScale, b.h * (currentLayout.visH / currentLayout.gridH));
+                const val = (mouse.y - b.y - drag.offset) / (b.h - thumbH);
+                const targetScroll = val * currentLayout.maxScrollY;
+                if (drag.layout === 'shop') this.shopScrollY = targetScroll;
+                else if (drag.layout === 'player') this.playerScrollY = targetScroll;
+            } else {
+                const b = currentLayout.trackXBounds;
+                const thumbW = Math.max(16 * this.game.uiScale, b.w * (currentLayout.visW / currentLayout.gridW));
+                const val = (mouse.x - b.x - drag.offset) / (b.w - thumbW);
+                const targetScroll = val * currentLayout.maxScrollX;
+                if (drag.layout === 'shop') this.shopScrollX = targetScroll;
+                else if (drag.layout === 'player') this.playerScrollX = targetScroll;
+            }
+            return true;
+        }
+        return false;
+    }
 
     _updateShopUI(dt) {
         const mouse = this.game.getMousePos();
@@ -2133,24 +2372,40 @@ export class PlayingState {
 
         // --- Shop Layout ---
         const shopInv = this.activeShop.inventory;
-        const shopGridW = shopInv.cols * slotSize;
-        const shopGridH = shopInv.rows * slotSize;
-        const shopTotalW = shopGridW + borderSize * 2 - slotSize * 2;
-        const shopX = Math.floor((this.game.width - shopTotalW) / 2);
-        const shopY = uiScale * 20;
-        const shopGridX = shopX + borderSize - slotSize;
-        const shopGridY = shopY + borderSize - slotSize;
+        const shopLayout = this._getInventoryLayout(shopInv, 'shop');
 
         // --- Player Layout ---
         const playerInv = this.player.inventory;
-        const playerGridW = playerInv.cols * slotSize;
-        const playerGridH = playerInv.rows * slotSize;
-        const playerTotalW = playerGridW + borderSize * 2 - slotSize * 2;
-        const playerTotalH = playerGridH + borderSize * 2 - slotSize * 2;
-        const playerX = Math.floor((this.game.width - playerTotalW) / 2);
-        const playerY = this.game.height - playerTotalH - uiScale * 40;
-        const playerGridX = playerX + borderSize - slotSize;
-        const playerGridY = playerY + borderSize - slotSize;
+        const playerLayout = this._getInventoryLayout(playerInv, 'player');
+
+        // Capture Drag Intercepts before processing normal clicks or hovers
+        if (this._updateScrollbarDragging(mouse, { shop: shopLayout, player: playerLayout })) {
+            // Apply clamps from drag immediately
+            this.shopScrollX = Math.max(0, Math.min(this.shopScrollX, shopLayout.maxScrollX));
+            this.shopScrollY = Math.max(0, Math.min(this.shopScrollY, shopLayout.maxScrollY));
+            this.playerScrollX = Math.max(0, Math.min(this.playerScrollX, playerLayout.maxScrollX));
+            this.playerScrollY = Math.max(0, Math.min(this.playerScrollY, playerLayout.maxScrollY));
+            return;
+        }
+
+        // Handle scrolling
+        let mouseInShop = mouse.x >= shopLayout.panelX && mouse.x <= shopLayout.panelX + shopLayout.totalW && mouse.y >= shopLayout.panelY && mouse.y <= shopLayout.panelY + shopLayout.totalH;
+        let mouseInPlayer = mouse.x >= playerLayout.panelX && mouse.x <= playerLayout.panelX + playerLayout.totalW && mouse.y >= playerLayout.panelY && mouse.y <= playerLayout.panelY + playerLayout.totalH;
+
+        if (mouseInShop) {
+            this.shopScrollY += this.game.input.mouseWheelDelta;
+            this.shopScrollX -= this.game.input.mousePanDeltaX;
+            this.shopScrollY -= this.game.input.mousePanDeltaY;
+        } else if (mouseInPlayer) {
+            this.playerScrollY += this.game.input.mouseWheelDelta;
+            this.playerScrollX -= this.game.input.mousePanDeltaX;
+            this.playerScrollY -= this.game.input.mousePanDeltaY;
+        }
+
+        this.shopScrollX = Math.max(0, Math.min(this.shopScrollX, shopLayout.maxScrollX));
+        this.shopScrollY = Math.max(0, Math.min(this.shopScrollY, shopLayout.maxScrollY));
+        this.playerScrollX = Math.max(0, Math.min(this.playerScrollX, playerLayout.maxScrollX));
+        this.playerScrollY = Math.max(0, Math.min(this.playerScrollY, playerLayout.maxScrollY));
 
         if (this.game.input.isMouseJustPressed(0)) {
             // Check Permanent Upgrade clicks
@@ -2175,7 +2430,8 @@ export class PlayingState {
                                 this.game.sounds.play('laser', 0.2); // extra feedback
                             } else if (btn.bounds.id === 'inventory') {
                                 this.player.inventoryUpgradeTier++;
-                                this.player.inventory.resize(this.player.inventory.cols + 1, this.player.inventory.rows);
+                                const ejected = this.player.inventory.resize(this.player.inventory.cols + 1, this.player.inventory.rows);
+                                if (ejected && ejected.length > 0) this._ejectItems(ejected);
                             }
                             this.game.sounds.play('select', 0.8);
                         } else {
@@ -2191,13 +2447,18 @@ export class PlayingState {
             }
 
             // Check Shop click
-            const sCol = Math.floor((mouse.x - shopGridX) / slotSize);
-            const sRow = Math.floor((mouse.y - shopGridY) / slotSize);
-            const shopEntry = shopInv.getItemAt(sCol, sRow);
+            const sVisX = mouse.x - shopLayout.gridVisX;
+            const sVisY = mouse.y - shopLayout.gridVisY;
+            let shopEntry = null;
+            if (sVisX >= 0 && sVisX < shopLayout.visW && sVisY >= 0 && sVisY < shopLayout.visH) {
+                const sCol = Math.floor((sVisX + this.shopScrollX) / slotSize);
+                const sRow = Math.floor((sVisY + this.shopScrollY) / slotSize);
+                shopEntry = shopInv.getItemAt(sCol, sRow);
+            }
 
             if (shopEntry) {
-                const offsetX = mouse.x - (shopGridX + shopEntry.x * slotSize);
-                const offsetY = mouse.y - (shopGridY + shopEntry.y * slotSize);
+                const offsetX = mouse.x - (shopLayout.gridVisX - this.shopScrollX + shopEntry.x * slotSize);
+                const offsetY = mouse.y - (shopLayout.gridVisY - this.shopScrollY + shopEntry.y * slotSize);
 
                 // Remove from shop while dragging
                 shopInv.removeItemAt(shopEntry.x, shopEntry.y);
@@ -2205,13 +2466,18 @@ export class PlayingState {
                 this.game.sounds.play('click', 0.5);
             } else {
                 // Check Player click
-                const pCol = Math.floor((mouse.x - playerGridX) / slotSize);
-                const pRow = Math.floor((mouse.y - playerGridY) / slotSize);
-                const playerEntry = playerInv.getItemAt(pCol, pRow);
+                const pVisX = mouse.x - playerLayout.gridVisX;
+                const pVisY = mouse.y - playerLayout.gridVisY;
+                let playerEntry = null;
+                if (pVisX >= 0 && pVisX < playerLayout.visW && pVisY >= 0 && pVisY < playerLayout.visH) {
+                    const pCol = Math.floor((pVisX + this.playerScrollX) / slotSize);
+                    const pRow = Math.floor((pVisY + this.playerScrollY) / slotSize);
+                    playerEntry = playerInv.getItemAt(pCol, pRow);
+                }
 
                 if (playerEntry) {
-                    const offsetX = mouse.x - (playerGridX + playerEntry.x * slotSize);
-                    const offsetY = mouse.y - (playerGridY + playerEntry.y * slotSize);
+                    const offsetX = mouse.x - (playerLayout.gridVisX - this.playerScrollX + playerEntry.x * slotSize);
+                    const offsetY = mouse.y - (playerLayout.gridVisY - this.playerScrollY + playerEntry.y * slotSize);
 
                     // Remove from player while dragging
                     playerInv.removeItemAt(playerEntry.x, playerEntry.y);
@@ -2224,9 +2490,14 @@ export class PlayingState {
 
         // Right-click to use consumables
         if (this.game.input.isMouseJustPressed(2) && !this.draggedItem) {
-            const pCol = Math.floor((mouse.x - playerGridX) / slotSize);
-            const pRow = Math.floor((mouse.y - playerGridY) / slotSize);
-            const playerEntry = playerInv.getItemAt(pCol, pRow);
+            const pVisX = mouse.x - playerLayout.gridVisX;
+            const pVisY = mouse.y - playerLayout.gridVisY;
+            let playerEntry = null;
+            if (pVisX >= 0 && pVisX < playerLayout.visW && pVisY >= 0 && pVisY < playerLayout.visH) {
+                const pCol = Math.floor((pVisX + this.playerScrollX) / slotSize);
+                const pRow = Math.floor((pVisY + this.playerScrollY) / slotSize);
+                playerEntry = playerInv.getItemAt(pCol, pRow);
+            }
 
             if (playerEntry && playerEntry.item.consumable) {
                 if (playerEntry.item.id === 'small_battery') {
@@ -2255,11 +2526,11 @@ export class PlayingState {
         if (this.draggedItem) {
             if (!this.game.input.isMouseDown(0)) {
                 // Potential drop snapped positions
-                const pCol = Math.floor((mouse.x - playerGridX - this.draggedItem.offsetX) / slotSize + 0.5);
-                const pRow = Math.floor((mouse.y - playerGridY - this.draggedItem.offsetY) / slotSize + 0.5);
+                const pCol = Math.floor((mouse.x - playerLayout.gridVisX + this.playerScrollX - this.draggedItem.offsetX) / slotSize + 0.5);
+                const pRow = Math.floor((mouse.y - playerLayout.gridVisY + this.playerScrollY - this.draggedItem.offsetY) / slotSize + 0.5);
 
-                const sCol = Math.floor((mouse.x - shopGridX - this.draggedItem.offsetX) / slotSize + 0.5);
-                const sRow = Math.floor((mouse.y - shopGridY - this.draggedItem.offsetY) / slotSize + 0.5);
+                const sCol = Math.floor((mouse.x - shopLayout.gridVisX + this.shopScrollX - this.draggedItem.offsetX) / slotSize + 0.5);
+                const sRow = Math.floor((mouse.y - shopLayout.gridVisY + this.shopScrollY - this.draggedItem.offsetY) / slotSize + 0.5);
 
                 let dropped = false;
 
@@ -2348,14 +2619,24 @@ export class PlayingState {
         const borderSize = 48 * uiScale;
 
         const playerInv = this.player.inventory;
-        const gridW = playerInv.cols * slotSize;
-        const gridH = playerInv.rows * slotSize;
-        const totalW = gridW + borderSize * 2 - slotSize * 2;
-        const totalH = gridH + borderSize * 2 - slotSize * 2;
-        const panelX = Math.floor((this.game.width - totalW) / 2);
-        const panelY = uiScale * 24;
-        const gridX = panelX + borderSize - slotSize;
-        const gridY = panelY + borderSize - slotSize;
+        const playerLayout = this._getInventoryLayout(playerInv, 'pause');
+
+        if (this._updateScrollbarDragging(mouse, { player: playerLayout })) {
+            this.playerScrollX = Math.max(0, Math.min(this.playerScrollX, playerLayout.maxScrollX));
+            this.playerScrollY = Math.max(0, Math.min(this.playerScrollY, playerLayout.maxScrollY));
+            return;
+        }
+
+        let mouseInPlayer = mouse.x >= playerLayout.panelX && mouse.x <= playerLayout.panelX + playerLayout.totalW && mouse.y >= playerLayout.panelY && mouse.y <= playerLayout.panelY + playerLayout.totalH;
+
+        if (mouseInPlayer) {
+            this.playerScrollY += this.game.input.mouseWheelDelta;
+            this.playerScrollX -= this.game.input.mousePanDeltaX;
+            this.playerScrollY -= this.game.input.mousePanDeltaY;
+        }
+
+        this.playerScrollX = Math.max(0, Math.min(this.playerScrollX, playerLayout.maxScrollX));
+        this.playerScrollY = Math.max(0, Math.min(this.playerScrollY, playerLayout.maxScrollY));
         // Volume Buttons Layout (Screen Bottom-Right)
         // MUST match menuState.js layout exactly for identical appearance
         const volMargin = Math.floor(uiScale * 8);
@@ -2460,13 +2741,18 @@ export class PlayingState {
                 this.game.sounds.play('click', 0.5);
             }
 
-            const pCol = Math.floor((mouse.x - gridX) / slotSize);
-            const pRow = Math.floor((mouse.y - gridY) / slotSize);
-            const playerEntry = playerInv.getItemAt(pCol, pRow);
+            const pVisX = mouse.x - playerLayout.gridVisX;
+            const pVisY = mouse.y - playerLayout.gridVisY;
+            let playerEntry = null;
+            if (pVisX >= 0 && pVisX < playerLayout.visW && pVisY >= 0 && pVisY < playerLayout.visH) {
+                const pCol = Math.floor((pVisX + this.playerScrollX) / slotSize);
+                const pRow = Math.floor((pVisY + this.playerScrollY) / slotSize);
+                playerEntry = playerInv.getItemAt(pCol, pRow);
+            }
 
             if (playerEntry) {
-                const offsetX = mouse.x - (gridX + playerEntry.x * slotSize);
-                const offsetY = mouse.y - (gridY + playerEntry.y * slotSize);
+                const offsetX = mouse.x - (playerLayout.gridVisX - this.playerScrollX + playerEntry.x * slotSize);
+                const offsetY = mouse.y - (playerLayout.gridVisY - this.playerScrollY + playerEntry.y * slotSize);
 
                 playerInv.removeItemAt(playerEntry.x, playerEntry.y);
                 this.draggedItem = { ...playerEntry, entry: playerEntry, originInventory: playerInv, offsetX, offsetY };
@@ -2477,9 +2763,14 @@ export class PlayingState {
 
         // Right-click to use consumables
         if (this.game.input.isMouseJustPressed(2) && !this.draggedItem) {
-            const pCol = Math.floor((mouse.x - gridX) / slotSize);
-            const pRow = Math.floor((mouse.y - gridY) / slotSize);
-            const playerEntry = playerInv.getItemAt(pCol, pRow);
+            const pVisX = mouse.x - playerLayout.gridVisX;
+            const pVisY = mouse.y - playerLayout.gridVisY;
+            let playerEntry = null;
+            if (pVisX >= 0 && pVisX < playerLayout.visW && pVisY >= 0 && pVisY < playerLayout.visH) {
+                const pCol = Math.floor((pVisX + this.playerScrollX) / slotSize);
+                const pRow = Math.floor((pVisY + this.playerScrollY) / slotSize);
+                playerEntry = playerInv.getItemAt(pCol, pRow);
+            }
 
             if (playerEntry && playerEntry.item.consumable) {
                 if (playerEntry.item.id === 'small_battery') {
@@ -2507,8 +2798,8 @@ export class PlayingState {
 
         if (this.draggedItem) {
             if (!this.game.input.isMouseDown(0)) {
-                const pCol = Math.floor((mouse.x - gridX - this.draggedItem.offsetX) / slotSize + 0.5);
-                const pRow = Math.floor((mouse.y - gridY - this.draggedItem.offsetY) / slotSize + 0.5);
+                const pCol = Math.floor((mouse.x - playerLayout.gridVisX + this.playerScrollX - this.draggedItem.offsetX) / slotSize + 0.5);
+                const pRow = Math.floor((mouse.y - playerLayout.gridVisY + this.playerScrollY - this.draggedItem.offsetY) / slotSize + 0.5);
 
                 if (playerInv.canFit(this.draggedItem.item, pCol, pRow)) {
                     playerInv.addItem(this.draggedItem.item, pCol, pRow);
@@ -3032,6 +3323,32 @@ export class PlayingState {
         }
     }
 
+    _ejectItems(items) {
+        if (!items || items.length === 0) return;
+
+        const p = this.player;
+        const ItemPickupClass = ItemPickup; // Available from imports
+
+        for (const item of items) {
+            const angle = Math.random() * Math.PI * 2;
+            const dist = 10 + Math.random() * 20;
+            const spawnX = p.worldX + Math.cos(angle) * dist;
+            const spawnY = p.worldY + Math.sin(angle) * dist;
+
+            const throwAngle = Math.random() * Math.PI * 2;
+            const throwSpeed = 100 + Math.random() * 200;
+            const vx = p.vx + Math.cos(throwAngle) * throwSpeed;
+            const vy = p.vy + Math.sin(throwAngle) * throwSpeed;
+
+            const pickup = new ItemPickupClass(this.game, spawnX, spawnY, item, 1.0); // 1s delay
+            pickup.vx = vx;
+            pickup.vy = vy;
+            this.itemPickups.push(pickup);
+        }
+
+        this.game.sounds.play('asteroid_break', { volume: 0.6, x: p.worldX, y: p.worldY });
+    }
+
     _drawPauseOverlay(ctx) {
         ctx.save();
         const cw = this.game.width;
@@ -3049,31 +3366,27 @@ export class PlayingState {
         ctx.fillText('PAUSED', cw / 2, this.game.uiScale * 16);
 
         // --- Inventory using 9-slice panel ---
-        const slotSize = 32 * this.game.uiScale;
         const playerInv = this.player.inventory;
-        const gridW = playerInv.cols * slotSize;
-        const gridH = playerInv.rows * slotSize;
-        const borderSize = 48 * this.game.uiScale;
-        const totalW = gridW + borderSize * 2 - slotSize * 2;
-        const totalH = gridH + borderSize * 2 - slotSize * 2;
-        const panelX = Math.floor((cw - totalW) / 2);
-        const panelY = this.game.uiScale * 24;
+        const playerLayout = this._getInventoryLayout(playerInv, 'pause');
 
-        this._draw9Slice(ctx, this.inventoryImg, panelX, panelY, totalW, totalH);
+        this._draw9Slice(ctx, this.inventoryImg, playerLayout.panelX, playerLayout.panelY, playerLayout.totalW, playerLayout.totalH);
 
-        const gridX = panelX + borderSize - slotSize;
-        const gridY = panelY + borderSize - slotSize;
-        this._drawInventoryGrid(ctx, playerInv, gridX, gridY, slotSize);
+        this._drawInventoryGrid(ctx, playerInv, playerLayout, this.playerScrollX, this.playerScrollY);
+
+        this._draw9Slice(ctx, this.inventoryBorderImg, playerLayout.panelX, playerLayout.panelY, playerLayout.totalW, playerLayout.totalH);
+
+        this._drawScrollbars(ctx, playerLayout, this.playerScrollX, this.playerScrollY);
+
+        const offsetY = playerLayout.scrollableX ? this.game.uiScale * 18 : 0;
 
         // Label
         ctx.textAlign = 'center';
         ctx.fillStyle = '#88aabb';
-        ctx.font = `${8 * this.game.uiScale}px Astro4x`;
-        ctx.fillText('SHIP INVENTORY', cw / 2, panelY + totalH + this.game.uiScale * 12);
+        ctx.fillText('SHIP INVENTORY', cw / 2, playerLayout.panelY + playerLayout.totalH + this.game.uiScale * 12 + offsetY);
 
         // Stats summary below inventory
         const p = this.player;
-        const statsY = panelY + totalH + this.game.uiScale * 20;
+        const statsY = playerLayout.panelY + playerLayout.totalH + this.game.uiScale * 28 + offsetY;
         ctx.textAlign = 'center';
         ctx.fillStyle = '#667788';
         ctx.font = `${8 * this.game.uiScale}px Astro4x`;
@@ -3088,8 +3401,8 @@ export class PlayingState {
             const frameAsset = this.game.getAnimationFrame(item.assetKey);
             const frame = frameAsset ? (frameAsset.canvas || frameAsset) : null;
             if (frame) {
-                const w = item.width * slotSize;
-                const h = item.height * slotSize;
+                const w = item.width * playerLayout.slotSize;
+                const h = item.height * playerLayout.slotSize;
                 ctx.drawImage(frame, mouse.x - offsetX, mouse.y - offsetY, w, h);
             }
         }
@@ -3102,14 +3415,16 @@ export class PlayingState {
         // Tooltip support in pause menu
         if (!this.draggedItem) {
             const mouse = this.game.getMousePos();
-            const pCol = Math.floor((mouse.x - gridX) / slotSize);
-            const pRow = Math.floor((mouse.y - gridY) / slotSize);
-
-            if (pCol >= 0 && pCol < playerInv.cols && pRow >= 0 && pRow < playerInv.rows) {
-                const item = playerInv.getItemAt(pCol, pRow);
-                if (item) {
-                    this._drawTooltip(ctx, item.item, mouse);
-                }
+            let hoveredEntry = null;
+            const pVisX = mouse.x - playerLayout.gridVisX;
+            const pVisY = mouse.y - playerLayout.gridVisY;
+            if (pVisX >= 0 && pVisX < playerLayout.visW && pVisY >= 0 && pVisY < playerLayout.visH) {
+                const pCol = Math.floor((pVisX + this.playerScrollX) / playerLayout.slotSize);
+                const pRow = Math.floor((pVisY + this.playerScrollY) / playerLayout.slotSize);
+                hoveredEntry = playerInv.getItemAt(pCol, pRow);
+            }
+            if (hoveredEntry) {
+                this._drawTooltip(ctx, hoveredEntry.item, mouse);
             }
         }
 
@@ -3721,9 +4036,9 @@ export class PlayingState {
 
     _drawPerfGraph(ctx, uiScale, cw, ch) {
         // Fixed pixel sizes independent of uiScale — generous but clamped to screen
-        const MARGIN    = 8;
-        const graphW    = Math.floor(Math.min(cw * 0.55, 900)); // up to 55% width or 900px
-        const graphH    = Math.floor(Math.min(ch * 0.30, 300)); // up to 30% height or 300px
+        const MARGIN = 8;
+        const graphW = Math.floor(Math.min(cw * 0.55, 900)); // up to 55% width or 900px
+        const graphH = Math.floor(Math.min(ch * 0.30, 300)); // up to 30% height or 300px
 
         // Anchor to bottom-right, above the HUD coordinate readout
         const hudMargin = this.game.hudScale * 4;

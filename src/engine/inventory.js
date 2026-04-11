@@ -87,13 +87,21 @@ export class Inventory {
      */
     resize(newCols, newRows) {
         const newGrid = Array(newRows).fill(null).map(() => Array(newCols).fill(null));
+        const ejectedItems = [];
+        const keptItems = [];
 
         // Re-place existing items into the new grid
         for (const entry of this.items) {
             const { item, x, y } = entry;
-            for (let r = y; r < y + item.height && r < newRows; r++) {
-                for (let c = x; c < x + item.width && c < newCols; c++) {
-                    newGrid[r][c] = entry;
+            
+            if (x + item.width > newCols || y + item.height > newRows) {
+                ejectedItems.push(item);
+            } else {
+                keptItems.push(entry);
+                for (let r = y; r < y + item.height; r++) {
+                    for (let c = x; c < x + item.width; c++) {
+                        newGrid[r][c] = entry;
+                    }
                 }
             }
         }
@@ -101,6 +109,9 @@ export class Inventory {
         this.cols = newCols;
         this.rows = newRows;
         this.grid = newGrid;
+        this.items = keptItems;
+        
+        return ejectedItems;
     }
 
     /**

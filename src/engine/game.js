@@ -560,6 +560,7 @@ export class Game {
             'shield_bar_empty': 'Assets/UI/shield_bar_empty.png',
             'shield_bar_full': 'Assets/UI/shield_bar_full.png',
             '9_slice_inventory': 'Assets/UI/9_slice_inventory.png',
+            '9_slice_inventory_border': 'Assets/UI/9_slice_inventory_border.png',
             'blue_laser_ball': 'Assets/VFX/blue_laser_ball.png',
             'blue_laser_ball_big': 'Assets/VFX/blue_laser_ball_big.png',
             'blue_laser_beam': 'Assets/VFX/blue_laser_beam.png',

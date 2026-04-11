@@ -158,9 +158,13 @@ export class DevConsole {
                 const cols = parseInt(parts[0]);
                 const rows = parseInt(parts[1]);
                 if (!isNaN(cols) && !isNaN(rows)) {
-                    p.inventory.resize(Math.max(1, cols), Math.max(1, rows));
-                    if (this.game.currentState._onInventoryChanged) {
-                        this.game.currentState._onInventoryChanged();
+                    const ejected = p.inventory.resize(Math.max(1, cols), Math.max(1, rows));
+                    const state = this.game.currentState;
+                    if (state && state._ejectItems && ejected && ejected.length > 0) {
+                        state._ejectItems(ejected);
+                    }
+                    if (state._onInventoryChanged) {
+                        state._onInventoryChanged();
                     }
                 }
             }
@@ -178,11 +182,17 @@ export class DevConsole {
             case 'shield': p.maxShieldEnergy = value; p.shieldEnergy = value; break;
             case 'rows':
             case 'cargo_rows':
-                p.inventory.resize(p.inventory.cols, Math.max(1, Math.floor(value)));
+                {
+                    const ejected = p.inventory.resize(p.inventory.cols, Math.max(1, Math.floor(value)));
+                    if (this.game.currentState._ejectItems && ejected && ejected.length > 0) this.game.currentState._ejectItems(ejected);
+                }
                 break;
             case 'cols':
             case 'cargo_cols':
-                p.inventory.resize(Math.max(1, Math.floor(value)), p.inventory.rows);
+                {
+                    const ejected = p.inventory.resize(Math.max(1, Math.floor(value)), p.inventory.rows);
+                    if (this.game.currentState._ejectItems && ejected && ejected.length > 0) this.game.currentState._ejectItems(ejected);
+                }
                 break;
         }
         

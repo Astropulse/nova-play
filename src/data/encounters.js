@@ -238,7 +238,11 @@ function executeActions(actions, vars, player, state, encounter) {
             }
             case 'add_perm_capacity': {
                 const amt = resolveParam();
-                player.inventory.resize(player.inventory.cols + amt, player.inventory.rows);
+                const ejected = player.inventory.resize(player.inventory.cols + amt, player.inventory.rows);
+                if (state._ejectItems && ejected && ejected.length > 0) {
+                    state._ejectItems(ejected);
+                }
+                state._onInventoryChanged(true);
                 break;
             }
             case 'encounter_speed': {

@@ -16,6 +16,14 @@ export class InputManager {
         this.mouseButtonsJustPressed = new Set();
         this._mouseButtonsPrev = new Set();
 
+        this._accWheelDelta = 0;
+        this._accPanDeltaX = 0;
+        this._accPanDeltaY = 0;
+        
+        this.mouseWheelDelta = 0;
+        this.mousePanDeltaX = 0;
+        this.mousePanDeltaY = 0;
+
         this._bindEvents();
     }
 
@@ -31,6 +39,11 @@ export class InputManager {
             const rect = this.canvas.getBoundingClientRect();
             this.mouseScreenX = e.clientX - rect.left;
             this.mouseScreenY = e.clientY - rect.top;
+            
+            if (this.mouseButtons.has(1)) { // Middle button
+                this._accPanDeltaX += e.movementX;
+                this._accPanDeltaY += e.movementY;
+            }
         };
         this._mousedownListener = (e) => {
             this.mouseButtons.add(e.button);
@@ -41,6 +54,9 @@ export class InputManager {
         this._contextmenuListener = (e) => {
             e.preventDefault();
         };
+        this._wheelListener = (e) => {
+            this._accWheelDelta += e.deltaY;
+        };
 
         window.addEventListener('keydown', this._keydownListener);
         window.addEventListener('keyup', this._keyupListener);
@@ -48,6 +64,7 @@ export class InputManager {
         this.canvas.addEventListener('mousedown', this._mousedownListener);
         this.canvas.addEventListener('mouseup', this._mouseupListener);
         this.canvas.addEventListener('contextmenu', this._contextmenuListener);
+        this.canvas.addEventListener('wheel', this._wheelListener, { passive: true });
     }
 
     destroy() {
@@ -57,6 +74,7 @@ export class InputManager {
         this.canvas.removeEventListener('mousedown', this._mousedownListener);
         this.canvas.removeEventListener('mouseup', this._mouseupListener);
         this.canvas.removeEventListener('contextmenu', this._contextmenuListener);
+        this.canvas.removeEventListener('wheel', this._wheelListener);
     }
 
     update() {
@@ -77,6 +95,13 @@ export class InputManager {
         this._mouseButtonsPrev = new Set(this.mouseButtons);
 
         this.keysJustReleased.clear();
+
+        this.mouseWheelDelta = this._accWheelDelta;
+        this.mousePanDeltaX = this._accPanDeltaX;
+        this.mousePanDeltaY = this._accPanDeltaY;
+        this._accWheelDelta = 0;
+        this._accPanDeltaX = 0;
+        this._accPanDeltaY = 0;
     }
 
     isKeyDown(code) { return this.keysDown.has(code); }

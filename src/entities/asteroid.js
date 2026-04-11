@@ -398,7 +398,7 @@ export class Scrap {
  * Physical item pickup that drifts and magnetizes to player
  */
 export class ItemPickup {
-    constructor(game, worldX, worldY, item) {
+    constructor(game, worldX, worldY, item, pickupDelay = 0) {
         if (!item) {
             console.warn('ItemPickup created with undefined item at', worldX, worldY);
             return;
@@ -423,9 +423,21 @@ export class ItemPickup {
         this.magnetRange = 200;
         this.collectRange = 30;
         this.suckTimer = 0;
+        this.pickupDelay = pickupDelay;
     }
 
     update(dt, playerX, playerY, magnetMult = 1.0) {
+        if (this.pickupDelay > 0) {
+            this.pickupDelay -= dt;
+            const currentFriction = Math.pow(0.98, dt * 60);
+            this.vx *= currentFriction;
+            this.vy *= currentFriction;
+            this.worldX += this.vx * dt;
+            this.worldY += this.vy * dt;
+            this.rotation += this.rotSpeed * dt;
+            return;
+        }
+
         const dx = playerX - this.worldX;
         const dy = playerY - this.worldY;
         const dist = Math.sqrt(dx * dx + dy * dy);
@@ -474,7 +486,8 @@ export class ItemPickup {
             vx: this.vx,
             vy: this.vy,
             rotation: this.rotation,
-            rotSpeed: this.rotSpeed
+            rotSpeed: this.rotSpeed,
+            pickupDelay: this.pickupDelay
         };
     }
 
