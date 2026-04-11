@@ -47,6 +47,7 @@ export class AsteroidCrusher extends Boss {
 
     _updateAI(dt, player, dist, angleToPlayer) {
         this.stateTimer -= dt;
+        const distMult = this._getDistanceMult();
 
         // Phase 2 Transition
         if (this.phase !== this._lastPhase) {
@@ -64,7 +65,7 @@ export class AsteroidCrusher extends Boss {
         }
 
         // Proximity Avoidance: Phase-dependent (Closer in P1, distant in P2)
-        const avoidDist = (this.phase === BOSS_PHASE.ATTACK2) ? 380 : 250;
+        const avoidDist = ((this.phase === BOSS_PHASE.ATTACK2) ? 380 : 250) * distMult;
         if (dist < avoidDist && this.state !== BOSS_STATE.REPOSITION) {
             this.state = BOSS_STATE.REPOSITION;
             this.stateTimer = 1.2;
@@ -94,7 +95,7 @@ export class AsteroidCrusher extends Boss {
         }
 
         // Weapon Timers - Only decrement if within range and not dead/intro
-        if (dist < this.attackRange && this.state !== BOSS_STATE.INTRO) {
+        if (dist < this.attackRange * distMult && this.state !== BOSS_STATE.INTRO) {
             this.missileTimer -= dt;
             this.laserTimer -= dt;
             this.tractorTimer -= dt;
@@ -193,7 +194,7 @@ export class AsteroidCrusher extends Boss {
         }
 
         // Tractor Beam Logic - Only if within range
-        if (dist < this.attackRange) {
+        if (dist < this.attackRange * distMult) {
             this._updateTractorBeam(dt, player);
         }
 
@@ -204,9 +205,10 @@ export class AsteroidCrusher extends Boss {
     }
 
     _selectNextAction(dist, angleToPlayer) {
+        const distMult = this._getDistanceMult();
         const roll = Math.random();
         // Reposition at 600 (P2) or 400 (P1)
-        const repoThreshold = (this.phase === BOSS_PHASE.ATTACK2) ? 500 : 400;
+        const repoThreshold = ((this.phase === BOSS_PHASE.ATTACK2) ? 500 : 400) * distMult;
 
         if (roll < 0.4 || dist < repoThreshold) {
             // Reposition sideways

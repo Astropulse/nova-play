@@ -145,19 +145,49 @@ export class DevConsole {
     }
 
     _cmdStat(args) {
-        if (args.length < 2) return;
+        if (args.length < 1) return;
         const stat = args[0].toLowerCase();
-        const value = parseFloat(args[1]);
-        if (isNaN(value)) return;
 
         const p = this.game.currentState?.player;
         if (!p) return;
+
+        // Handle 'cargo' which can be 'stat cargo 1,4' or 'stat cargo 1 4'
+        if (stat === 'cargo' && args.length >= 2) {
+            const parts = args.slice(1).join(' ').split(/[\s,]+/).filter(p => p.length > 0);
+            if (parts.length >= 2) {
+                const cols = parseInt(parts[0]);
+                const rows = parseInt(parts[1]);
+                if (!isNaN(cols) && !isNaN(rows)) {
+                    p.inventory.resize(Math.max(1, cols), Math.max(1, rows));
+                    if (this.game.currentState._onInventoryChanged) {
+                        this.game.currentState._onInventoryChanged();
+                    }
+                }
+            }
+            return;
+        }
+
+        if (args.length < 2) return;
+        const value = parseFloat(args[1]);
+        if (isNaN(value)) return;
 
         switch (stat) {
             case 'scrap': p.scrap = value; break;
             case 'health': p.health = value; p.maxHealth = Math.max(p.health, p.maxHealth); break;
             case 'speed': p.speedMult = value; break;
             case 'shield': p.maxShieldEnergy = value; p.shieldEnergy = value; break;
+            case 'rows':
+            case 'cargo_rows':
+                p.inventory.resize(p.inventory.cols, Math.max(1, Math.floor(value)));
+                break;
+            case 'cols':
+            case 'cargo_cols':
+                p.inventory.resize(Math.max(1, Math.floor(value)), p.inventory.rows);
+                break;
+        }
+        
+        if (this.game.currentState._onInventoryChanged) {
+            this.game.currentState._onInventoryChanged();
         }
     }
 

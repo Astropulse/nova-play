@@ -63,6 +63,20 @@ export class Boss {
         return Math.pow(this.difficultyScale, 0.6);
     }
 
+    _getDistanceMult() {
+        // 1. FOV Factor: increase engagement distance as player FOV increases (zooms out)
+        const fov = (this.game.currentState && this.game.currentState.currentFovMult) || 1.0;
+        // Subtle scaling: 25% of the zoom-out factor is applied to distance
+        const fovFactor = 1.0 + (fov - 1.0) * 0.25;
+
+        // 2. Speed Factor: increase distances as velocity increases
+        // Baseline speed for bosses is roughly 500. Softer ramp than enemies.
+        const speed = this.baseSpeed;
+        const speedFactor = 1.0 + Math.max(0, (speed - 500) * 0.0003);
+
+        return fovFactor * speedFactor;
+    }
+
     update(dt, player, asteroids, projectiles, enemies) {
         if (this.freezeTimer > 0) {
             this.freezeTimer -= dt;

@@ -544,7 +544,8 @@ export class Asteroid {
         this.highlightRed = false;
 
         // Despawn if very far from player
-        this.despawnDist = 4500;
+        const fov = (this.game.currentState && this.game.currentState.currentFovMult) || 1.0;
+        this.despawnDist = 4500 * fov;
         this.tractorCooldown = 0;
     }
 
@@ -584,10 +585,6 @@ export class Asteroid {
     }
 
     onCollision(player) {
-        // --- Shield Capacitor Impact Damage ---
-        if (player.shielding && player.shieldCapacitorCount > 0) {
-            this.hit(500.0); // Massive damage to asteroids
-        }
     }
 
     _generateProceduralDebris() {
@@ -758,9 +755,11 @@ export class AsteroidSpawner {
         if (this.distanceAccumulator >= spawnThreshold) {
             this.distanceAccumulator -= spawnThreshold;
 
+            const fov = (this.game.currentState && this.game.currentState.currentFovMult) || 1.0;
+
             // Normal asteroid spawn
             const spawnChance = Math.random();
-            if (spawnChance < 0.1 * spawnMult) {
+            if (spawnChance < 0.1 * spawnMult * fov) {
                 // Chance to spawn one normal asteroid
 
                 // Pick size
@@ -775,7 +774,7 @@ export class AsteroidSpawner {
                 const halfH = this.game.height / 2 / this.game.worldScale;
 
                 // Big asteroids spawn much further out
-                const margin = size === 'big' ? 800 : 500;
+                const margin = (size === 'big' ? 800 : 500) * fov;
 
                 // Bias spawn toward direction of travel (70% forward, 30% any edge)
                 const moveAngle = Math.atan2(playerVy, playerVx);

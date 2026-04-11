@@ -33,6 +33,7 @@ export class Starcore extends Boss {
 
     _updateAI(dt, player, dist, angleToPlayer) {
         this.stateTimer -= dt;
+        const distMult = this._getDistanceMult();
 
         // Phase 2 Transition Logic - Immediate Dash
         if (this.phase !== this._lastPhase) {
@@ -86,7 +87,7 @@ export class Starcore extends Boss {
         }
 
         // Only fire guns and progress burst if within attack range
-        if (this.gunBurstQueue > 0 && dist < this.attackRange) {
+        if (this.gunBurstQueue > 0 && dist < this.attackRange * distMult) {
             // Predicitive target for the turn logic
             const predAimAngle = this._getPredictedAngle(player, 1200);
             let angleDiff = predAimAngle - this.angle;
@@ -119,7 +120,7 @@ export class Starcore extends Boss {
         }
 
         // Phase 1 Avoidance: Force reposition if too close to player to avoid ramming
-        if (this.phase === BOSS_PHASE.ATTACK1 && dist < 400 && this.state !== BOSS_STATE.REPOSITION) {
+        if (this.phase === BOSS_PHASE.ATTACK1 && dist < 400 * distMult && this.state !== BOSS_STATE.REPOSITION) {
             this.state = BOSS_STATE.REPOSITION;
             this.stateTimer = 1.0;
             const side = Math.random() > 0.5 ? 1 : -1;
@@ -148,7 +149,7 @@ export class Starcore extends Boss {
         }
 
         // Combat Timers - Only decrement if within range
-        if (this.state !== BOSS_STATE.DASH && dist < this.attackRange) {
+        if (this.state !== BOSS_STATE.DASH && dist < this.attackRange * distMult) {
             this.shootTimer -= dt;
             this.missileTimer -= dt;
             this.beamTimer -= dt;
@@ -175,6 +176,7 @@ export class Starcore extends Boss {
 
     _selectNextAction(dist, angleToPlayer) {
         const roll = Math.random();
+        const distMult = this._getDistanceMult();
 
         if (this.phase === BOSS_PHASE.ATTACK2 && roll < 0.45) {
             // Ramming attack
@@ -183,7 +185,7 @@ export class Starcore extends Boss {
             this.baseSpeed = 2000; // Specified charge speed
             this.targetAngle = angleToPlayer;
             this.game.sounds.play('boost', { volume: 1.2, x: this.worldX, y: this.worldY });
-        } else if (roll < 0.7 || dist < 700) {
+        } else if (roll < 0.7 || dist < 700 * distMult) {
             // Reposition aggressively but not "charging" speed
             this.state = BOSS_STATE.REPOSITION;
             this.stateTimer = 1.0;

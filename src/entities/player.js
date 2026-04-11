@@ -119,7 +119,9 @@ export class Player {
         this.pendingProjectiles = []; // collected each frame by playingState
         this.hasRailgun = false;
         this.hasEnergyBlaster = false;
+        this.energyBlasterCount = 0;
         this.hasRepeater = false;
+
         this.hasLaserOverride = false;
         this.isRailgunTargeting = false;
         this.railgunTargetTimer = 0;
@@ -576,12 +578,16 @@ export class Player {
 
                 if (this.hasEnergyBlaster) {
                     origins.forEach(origin => {
-                        const count = 3 + Math.floor(Math.random() * 3); // 3-5 shots
+                        const extraCount = (this.energyBlasterCount - 1) * 2;
+                        const count = 3 + Math.floor(Math.random() * 3) + extraCount; // 3-5 + 2 per extra
+                        const spreadBase = 0.5 + (this.energyBlasterCount - 1) * 0.1; // Wider with more blasters
+                        const dmgReduc = Math.pow(0.85, this.energyBlasterCount - 1); // 15% reduction per extra
+
                         for (let i = 0; i < count; i++) {
-                            const spread = (Math.random() - 0.5) * 0.5; // ~±15 degrees
-                            const speedVar = baseProjSpeed * (0.8 + Math.random() * 0.4); // 80% to 120%
+                            const spread = (Math.random() - 0.5) * spreadBase;
+                            const speedVar = baseProjSpeed * (0.8 + Math.random() * 0.4);
                             this.pendingProjectiles.push(
-                                new Projectile(this.game, origin.px, origin.py, fireAngle + spread, speedVar, spriteKey, this, currentBaseDamage * 0.3 * damageMult)
+                                new Projectile(this.game, origin.px, origin.py, fireAngle + spread, speedVar, spriteKey, this, currentBaseDamage * 0.3 * dmgReduc * damageMult)
                             );
                         }
                     });

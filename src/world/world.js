@@ -39,13 +39,13 @@ export class World {
 
     _initLayers() {
         const layerConfigs = [
-            { parallax: 0.02, count: 80, alpha: 0.25, singleStarCount: 40 },   // very far
-            { parallax: 0.05, count: 50, alpha: 0.35, singleStarCount: 50 },
-            { parallax: 0.10, count: 40, alpha: 0.45, singleStarCount: 60 },
-            { parallax: 0.18, count: 30, alpha: 0.60, singleStarCount: 40 },
-            { parallax: 0.28, count: 20, alpha: 0.75, singleStarCount: 20 },
-            { parallax: 0.40, count: 15, alpha: 0.90, singleStarCount: 10 },
-            { parallax: 0.55, count: 10, alpha: 1.0, singleStarCount: 5 },    // closest
+            { parallax: 0.02, count: 320, alpha: 0.25, singleStarCount: 160 },   // very far
+            { parallax: 0.05, count: 200, alpha: 0.35, singleStarCount: 200 },
+            { parallax: 0.10, count: 160, alpha: 0.45, singleStarCount: 240 },
+            { parallax: 0.18, count: 120, alpha: 0.60, singleStarCount: 160 },
+            { parallax: 0.28, count: 80, alpha: 0.75, singleStarCount: 80 },
+            { parallax: 0.40, count: 60, alpha: 0.90, singleStarCount: 40 },
+            { parallax: 0.55, count: 40, alpha: 1.0, singleStarCount: 20 },    // closest
         ];
 
         const virtualSize = 4096; // Logical wrap window
@@ -85,7 +85,7 @@ export class World {
 
             // Rare objects in middle layers
             if (idx >= 1 && idx <= 4) {
-                const rareCount = (rng() < 0.3) ? 2 : 1;
+                const rareCount = Math.floor(rng() * 7) + 1;
                 for (let r = 0; r < rareCount; r++) {
                     let imgAsset;
                     let blend = 'screen';
@@ -131,12 +131,18 @@ export class World {
         const boostIntensity = player ? player.boostIntensity : 0;
         const isBoosting = boostIntensity > 0.01;
         const streakFactor = 0.04;
-        const virtualSize = 2048;
+        const virtualSize = 4096;
 
         // Razor-sharp: No sub-pixel blurring during individual star draw
         ctx.imageSmoothingEnabled = false;
         ctx.webkitImageSmoothingEnabled = false;
         ctx.msImageSmoothingEnabled = false;
+
+        // Calculate tile coverage needed for current view bounds (including margin)
+        const viewW = cw / worldScale;
+        const viewH = ch / worldScale;
+        const rangeX = Math.ceil(viewW / virtualSize / 2) + 1;
+        const rangeY = Math.ceil(viewH / virtualSize / 2) + 1;
 
         // Draw parallax layers (Back to Front)
         for (const layer of this.layers) {
@@ -148,56 +154,64 @@ export class World {
             const svy = player ? -player.vy * layer.parallax * streakFactor * boostIntensity * worldScale : 0;
 
             for (const star of layer.stars) {
-                // Calculate wrapped screen position relative to the center of the virtual wrap window
-                let sx = ((star.x - (camera.x * layer.parallax)) % virtualSize);
-                let sy = ((star.y - (camera.y * layer.parallax)) % virtualSize);
+                // Calculate base wrapped position relative to camera
+                let relX = (star.x - (camera.x * layer.parallax)) % virtualSize;
+                let relY = (star.y - (camera.y * layer.parallax)) % virtualSize;
 
                 const halfSize = virtualSize / 2;
-                if (sx < -halfSize) sx += virtualSize;
-                if (sx > halfSize) sx -= virtualSize;
-                if (sy < -halfSize) sy += virtualSize;
-                if (sy > halfSize) sy -= virtualSize;
+                if (relX < -halfSize) relX += virtualSize;
+                if (relX > halfSize) relX -= virtualSize;
+                if (relY < -halfSize) relY += virtualSize;
+                if (relY > halfSize) relY -= virtualSize;
 
-                const dx = sx * worldScale + (cw / 2);
-                const dy = sy * worldScale + (ch / 2);
+                // Draw multiple wraps to fill the screen at any FOV
+                for (let k = -rangeX; k <= rangeX; k++) {
+                    for (let m = -rangeY; m <= rangeY; m++) {
+                        const sx = relX + k * virtualSize;
+                        const sy = relY + m * virtualSize;
 
-                if (dx > -256 && dx < cw + 256 && dy > -256 && dy < ch + 256) {
-                    const imgAsset = star.type === 'star' ?
-                        (star.isCluster ? this.starImages[star.spriteIdx] : this.singleStars[star.spriteIdx]) :
-                        star.asset;
+                        const dx = sx * worldScale + (cw / 2);
+                        const dy = sy * worldScale + (ch / 2);
 
-                    if (!imgAsset) continue;
+                        // generous culling bounds to cover screen + margin
+                        if (dx > -512 && dx < cw + 512 && dy > -512 && dy < ch + 512) {
+                            const imgAsset = star.type === 'star' ?
+                                (star.isCluster ? this.starImages[star.spriteIdx] : this.singleStars[star.spriteIdx]) :
+                                star.asset;
 
-                    const img = imgAsset.canvas || imgAsset;
-                    const sw = (imgAsset.width || img.width) * worldScale;
-                    const sh = (imgAsset.height || img.height) * worldScale;
+                            if (!imgAsset) continue;
 
-                    ctx.save();
-                    ctx.globalCompositeOperation = star.blend;
+                            const img = imgAsset.canvas || imgAsset;
+                            const sw = (imgAsset.width || img.width) * worldScale;
+                            const sh = (imgAsset.height || img.height) * worldScale;
 
-                    for (let s = 0; s < samples; s++) {
-                        const t = samples > 1 ? s / (samples - 1) : 0.5;
-                        const weight = samples > 1 ? Math.sin(t * Math.PI) : 1.0;
-                        const offsetMult = s / samples;
-                        // Corrected: Only apply brightness compensation if samples > 1 (boosting)
-                        const boostComp = samples > 1 ? (1.8 / samples) : 1.0;
-                        const finalAlpha = star.isBlackHole ? 1.0 : (layerAlpha * star.alphaBoost * weight * boostComp);
-                        ctx.globalAlpha = Math.max(0, Math.min(1.0, finalAlpha));
-
-                        const finalX = dx + (svx * offsetMult);
-                        const finalY = dy + (svy * offsetMult);
-
-                        if (star.rotation === 0) {
-                            ctx.drawImage(img, finalX - sw / 2, finalY - sh / 2, sw, sh);
-                        } else {
                             ctx.save();
-                            ctx.translate(finalX, finalY);
-                            ctx.rotate(star.rotation);
-                            ctx.drawImage(img, -sw / 2, -sh / 2, sw, sh);
+                            ctx.globalCompositeOperation = star.blend;
+
+                            for (let s = 0; s < samples; s++) {
+                                const t = samples > 1 ? s / (samples - 1) : 0.5;
+                                const weight = samples > 1 ? Math.sin(t * Math.PI) : 1.0;
+                                const offsetMult = s / samples;
+                                const boostComp = samples > 1 ? (1.8 / samples) : 1.0;
+                                const finalAlpha = star.isBlackHole ? 1.0 : (layerAlpha * star.alphaBoost * weight * boostComp);
+                                ctx.globalAlpha = Math.max(0, Math.min(1.0, finalAlpha));
+
+                                const finalX = dx + (svx * offsetMult);
+                                const finalY = dy + (svy * offsetMult);
+
+                                if (star.rotation === 0) {
+                                    ctx.drawImage(img, finalX - sw / 2, finalY - sh / 2, sw, sh);
+                                } else {
+                                    ctx.save();
+                                    ctx.translate(finalX, finalY);
+                                    ctx.rotate(star.rotation);
+                                    ctx.drawImage(img, -sw / 2, -sh / 2, sw, sh);
+                                    ctx.restore();
+                                }
+                            }
                             ctx.restore();
                         }
                     }
-                    ctx.restore();
                 }
             }
         }

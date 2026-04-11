@@ -1,4 +1,5 @@
 // Dynamic scaling via game properties
+import { PerfProfiler } from '../engine/perfProfiler.js';
 import { World } from '../world/world.js';
 import { Camera } from '../world/camera.js';
 import { Player } from '../entities/player.js';
@@ -154,6 +155,9 @@ export class PlayingState {
         this.indicatorRadiusFactorExclamation = 0.42;
 
         this.indicatorOpacities = new Map(); // entity -> { opacity }
+
+        // Performance profiler (dev mode only)
+        this.perf = new PerfProfiler();
     }
 
     _triggerShakeAt(x, y, intensity, minPassDist = 1200, maxDist = 4000) {
@@ -387,7 +391,9 @@ export class PlayingState {
         }
 
         // Update player
+        this.perf.begin('player');
         this.player.update(dt);
+        this.perf.end('player');
         this.game.sounds.setListenerPosition(this.player.worldX, this.player.worldY);
 
         // --- Event Update ---
@@ -605,6 +611,7 @@ export class PlayingState {
                 }
             }
         }
+        this.perf.begin('misc');
         this.camera.update(dt, this.player);
 
         // --- Dynamic FOV Scaling ---
@@ -628,6 +635,7 @@ export class PlayingState {
         const currentMean = Math.sqrt(this.game.width * this.game.height);
         const refMean = Math.sqrt(2560 * 1440);
         this.game.worldScale = Math.max(0.1, (2 * (currentMean / refMean)) * this.game.worldScaleModifier);
+        this.perf.end('misc');
 
         // Shop interaction check (already calculated above for input priority)
 
@@ -670,11 +678,13 @@ export class PlayingState {
         // --- Freeze spawning if an event is active ---
         if (!isEventActive && this.eventBufferTimer <= 0) {
             // Spawn asteroids
+            this.perf.begin('asteroids');
             const newAsteroids = this.asteroidSpawner.update(
                 dt, this.player.worldX, this.player.worldY,
                 this.player.vx, this.player.vy, this.player.asteroidSpawnMult
             );
             this.asteroids.push(...newAsteroids);
+            this.perf.end('asteroids');
 
             // Update total game time
             this.totalGameTime += dt;
@@ -733,8 +743,10 @@ export class PlayingState {
             }
 
             // Spawn enemies
+            this.perf.begin('enemies');
             const newEnemies = this.enemySpawner.update(dt, this.player.worldX, this.player.worldY, this.difficultyScale);
             this.enemies.push(...newEnemies);
+            this.perf.end('enemies');
 
             // Boss death immunity: while any boss is dying, and for 2 seconds after
             const isBossDying = this.enemies.some(e => e.isBoss && e.state === BOSS_STATE.DYING);
@@ -761,8 +773,20 @@ export class PlayingState {
             this.flashTimer -= dt;
         }
 
-        // Update enemies
+        // Update enemies — split into boss vs regular for perf tracking
+        this.perf.begin('enemies');
+        this.perf.begin('boss');
         for (const e of this.enemies) {
+            if (!e.isBoss) continue;
+            e.update(dt, this.player, this.asteroids, this.projectiles, this.enemies);
+            if (e.pendingProjectiles.length > 0) {
+                this.projectiles.push(...e.pendingProjectiles);
+                e.pendingProjectiles.length = 0;
+            }
+        }
+        this.perf.end('boss');
+        for (const e of this.enemies) {
+            if (e.isBoss) continue;
             e.update(dt, this.player, this.asteroids, this.projectiles, this.enemies);
             if (e.pendingProjectiles.length > 0) {
                 this.projectiles.push(...e.pendingProjectiles);
@@ -772,18 +796,22 @@ export class PlayingState {
             // Despawn if way too far
             const dxArr = e.worldX - this.player.worldX;
             const dyArr = e.worldY - this.player.worldY;
-            if (Math.sqrt(dxArr * dxArr + dyArr * dyArr) > 3500 && !e.isBoss) {
+            if (Math.sqrt(dxArr * dxArr + dyArr * dyArr) > 3500 * this.currentFovMult && !e.isBoss) {
                 e.alive = false;
             }
         }
+        this.perf.end('enemies');
 
         // Update projectiles
+        this.perf.begin('projectiles');
         for (const p of this.projectiles) {
             p.update(dt);
         }
+        this.perf.end('projectiles');
 
         // --- Collision Handling ---
         // Update asteroids
+        this.perf.begin('asteroids');
         for (const a of this.asteroids) {
             a.update(dt);
             const dx = a.worldX - this.player.worldX;
@@ -792,8 +820,10 @@ export class PlayingState {
                 a.alive = false;
             }
         }
+        this.perf.end('asteroids');
 
-        // Update rubble
+        // Update rubble / particles
+        this.perf.begin('particles');
         for (const r of this.rubble) {
             r.update(dt);
         }
@@ -805,6 +835,7 @@ export class PlayingState {
                 this.floatingTexts.splice(i, 1);
             }
         }
+        this.perf.end('particles');
 
         // Cleanup stale indicator opacities
         for (const [entity, state] of this.indicatorOpacities) {
@@ -871,6 +902,7 @@ export class PlayingState {
         }
 
         // --- Collision: Projectiles vs Everything ---
+        this.perf.begin('collisions');
         for (const proj of this.projectiles) {
             if (!proj.alive) continue;
 
@@ -1015,6 +1047,7 @@ export class PlayingState {
         }
 
         // --- Collision: Enemies vs Asteroids ---
+        // (Note: still inside collisions timing block)
         for (const en of this.enemies) {
             if (!en.alive) continue;
             for (const ast of this.asteroids) {
@@ -1041,6 +1074,8 @@ export class PlayingState {
             }
         }
 
+        this.perf.end('collisions');
+
         // Cleanup dead entities
         this.projectiles = this.projectiles.filter(p => p.alive);
         this.asteroids = this.asteroids.filter(a => a.alive);
@@ -1050,13 +1085,15 @@ export class PlayingState {
         this.itemPickups = this.itemPickups.filter(it => it.alive);
         this.events = this.events.filter(ev => ev.alive);
         this.encounters = this.encounters.filter(enc => enc.alive);
+        this.shops = this.shops.filter(s => s.alive);
 
-        // Shop proximity discovery
+        // Shop proximity discovery & tracking refresh
         for (const s of this.shops) {
-            if (!s.revealed) {
-                const dx = s.worldX - this.player.worldX;
-                const dy = s.worldY - this.player.worldY;
-                if (dx * dx + dy * dy < 1200 * 1200) {
+            const dx = s.worldX - this.player.worldX;
+            const dy = s.worldY - this.player.worldY;
+            if (dx * dx + dy * dy < 1200 * 1200) {
+                // If not revealed, or revealed but not the most recent one, refresh it
+                if (!s.revealed || this.revealedShops[this.revealedShops.length - 1] !== s) {
                     this._revealShop(s);
                 }
             }
@@ -1369,44 +1406,63 @@ export class PlayingState {
 
     draw(ctx) {
         ctx.textBaseline = 'alphabetic';
-        // Draw main scene normally (clean clear)
+
+        // --- World / starfield ---
+        this.perf.begin('world');
         this.world.draw(ctx, this.camera, this.player, this.totalGameTime);
+        this.perf.end('world');
+
+        // --- Particles / rubble / scrap / events / pickups ---
+        this.perf.begin('particles');
         for (const r of this.rubble) {
             r.draw(ctx, this.camera);
         }
-
         for (const s of this.scrapEntities) {
             s.draw(ctx, this.camera);
         }
-
         for (const ev of this.events) {
             ev.draw(ctx, this.camera);
         }
-
         for (const it of this.itemPickups) {
             it.draw(ctx, this.camera);
         }
+        this.perf.end('particles');
 
-        // Draw thing that should be underneath entities (e.g. boss beams, shadows)
+        // --- Boss under-layer (beams, shadows) ---
+        this.perf.begin('boss');
         for (const e of this.enemies) {
             if (e.drawUnder) e.drawUnder(ctx, this.camera);
         }
+        this.perf.end('boss');
 
+        // --- Asteroids draw ---
+        this.perf.begin('asteroids');
         for (const a of this.asteroids) {
             a.draw(ctx, this.camera);
         }
+        this.perf.end('asteroids');
 
+        // --- Enemies & encounters draw ---
+        this.perf.begin('boss');
         for (const e of this.enemies) {
-            e.draw(ctx, this.camera);
+            if (e.isBoss) e.draw(ctx, this.camera);
         }
-
+        this.perf.end('boss');
+        this.perf.begin('enemies');
+        for (const e of this.enemies) {
+            if (!e.isBoss) e.draw(ctx, this.camera);
+        }
         for (const enc of this.encounters) {
             enc.draw(ctx, this.camera);
         }
+        this.perf.end('enemies');
 
+        // --- Projectiles draw ---
+        this.perf.begin('projectiles');
         for (const p of this.projectiles) {
             p.draw(ctx, this.camera);
         }
+        this.perf.end('projectiles');
 
         // --- Railgun Visuals ---
         if (this.player.hasRailgun) {
@@ -1427,19 +1483,23 @@ export class PlayingState {
             return;
         }
 
+        this.perf.begin('player');
         this.player.draw(ctx, this.camera);
+        this.perf.end('player');
 
         if ((this.canInteractShop || this.canInteractEncounter) && !this.isShopOpen && !this.isEncounterOpen) {
             this._drawInteractPrompt(ctx);
         }
 
         // Explosions (drawn above most things, below UI)
+        this.perf.begin('particles');
         this._drawExplosions(ctx);
 
         // Draw floating texts
         for (const ft of this.floatingTexts) {
             ft.draw(ctx, this.camera);
         }
+        this.perf.end('particles');
 
         this.hud.draw(ctx);
 
@@ -1505,6 +1565,9 @@ export class PlayingState {
 
         if (this.game.devMode) {
             this._drawDevOverlay(ctx);
+            // Commit after the overlay so the graph always shows the *previous* complete frame.
+            // world timing (begin/end inside draw) is already accumulated before we commitFrame.
+            this.perf.commitFrame();
         }
     }
 
@@ -1819,7 +1882,7 @@ export class PlayingState {
             { id: 'health', label: '+Max HP', cost: permCosts.health, stock: this.activeShop.permUpgrades.health.stock },
             { id: 'shield', label: '+Shield', cost: permCosts.shield, stock: this.activeShop.permUpgrades.shield.stock },
             { id: 'damage', label: '+Damage', cost: permCosts.damage, stock: this.activeShop.permUpgrades.damage.stock },
-            { id: 'inventory', label: '+Cargo', cost: permCosts.inventory, stock: this.activeShop.permUpgrades.inventory.stock, maxed: this.player.inventory.cols >= 10 }
+            { id: 'inventory', label: '+Cargo', cost: permCosts.inventory, stock: this.activeShop.permUpgrades.inventory.stock }
         ];
 
         ctx.font = `${6 * uiScale}px Astro4x`;
@@ -2535,6 +2598,7 @@ export class PlayingState {
         p.hasTeleport = p.shipData.special === 'teleport';
         p.hasRailgun = false;
         p.hasEnergyBlaster = false;
+        p.energyBlasterCount = 0;
         p.hasRepeater = false;
         p.hasLaserOverride = false;
         p.pulseJetMult = 1.0;
@@ -2595,7 +2659,10 @@ export class PlayingState {
             if (item.id === 'auto_turret') this.hasAutoTurret = true;
             if (item.id === 'mechanical_claw') this.hasMechanicalClaw = true;
             if (item.id === 'railgun') p.hasRailgun = true;
-            if (item.id === 'energy_blaster') p.hasEnergyBlaster = true;
+            if (item.id === 'energy_blaster') {
+                p.hasEnergyBlaster = true;
+                p.energyBlasterCount++;
+            }
             if (item.id === 'repeater') {
                 p.hasRepeater = true;
                 repeaters++;
@@ -2705,7 +2772,10 @@ export class PlayingState {
         // Prune oldest shop marker if count > 3
         while (this.revealedShops.length > 3) {
             const oldest = this.revealedShops.shift();
-            if (oldest) oldest.revealed = false;
+            if (oldest) {
+                oldest.revealed = false;
+                oldest.alive = false; // Despawn from world when pruned from radar
+            }
         }
     }
 
@@ -3169,14 +3239,18 @@ export class PlayingState {
 
         if (p.hasEnergyBlaster) {
             origins.forEach(origin => {
-                const count = 3 + Math.floor(Math.random() * 3); // 3-5 beams
+                const extraCount = (p.energyBlasterCount - 1) * 2;
+                const count = 3 + Math.floor(Math.random() * 3) + extraCount; // 3-5 + 2 per extra
+                const spreadBase = 0.5 + (p.energyBlasterCount - 1) * 0.1; // Wider with more blasters
+                const dmgReduc = Math.pow(0.85, p.energyBlasterCount - 1); // 15% reduction per extra
+
                 const fireAngle = p.getTargetAngle(origin.x, origin.y);
                 for (let i = 0; i < count; i++) {
-                    const spread = (Math.random() - 0.5) * 0.5; // ±15 deg
+                    const spread = (Math.random() - 0.5) * spreadBase;
                     const angle = fireAngle + spread;
                     const dirX = Math.cos(angle);
                     const dirY = Math.sin(angle);
-                    this._fireSingleBeam(origin.x, origin.y, dirX, dirY, beamLength, currentBaseDamage * 0.6 * damageMult);
+                    this._fireSingleBeam(origin.x, origin.y, dirX, dirY, beamLength, currentBaseDamage * 0.6 * dmgReduc * damageMult);
                 }
             });
         } else { // Default to Railgun if no Energy Blaster
@@ -3568,7 +3642,7 @@ export class PlayingState {
 
         ctx.save();
 
-        // --- Top-Left Stats ---
+        // --- Top-Left Stats Box ---
         const boxW = 100 * uiScale;
         const boxH = 35 * uiScale;
         ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
@@ -3585,21 +3659,21 @@ export class PlayingState {
         ctx.fillText(`FPS: ${this.game.fps} (POT: ${this.game.potentialFps})`, 15 * uiScale, 15 * uiScale);
 
         // Performance Headroom Bar
-        const barW = (boxW - 10 * uiScale);
-        const barH = 2 * uiScale;
-        const barX = 15 * uiScale;
-        const barY = 21 * uiScale;
+        const headroomBarW = (boxW - 10 * uiScale);
+        const headroomBarH = 2 * uiScale;
+        const headroomBarX = 15 * uiScale;
+        const headroomBarY = 21 * uiScale;
 
         // Background
         ctx.fillStyle = '#002200';
-        ctx.fillRect(barX, barY, barW, barH);
+        ctx.fillRect(headroomBarX, headroomBarY, headroomBarW, headroomBarH);
 
         // Load factor (Real / Potential)
         const load = this.game.potentialFps > 0 ? (this.game.fps / this.game.potentialFps) : 0;
-        const fillW = Math.min(barW, barW * load);
+        const fillW = Math.min(headroomBarW, headroomBarW * load);
 
         ctx.fillStyle = load > 0.8 ? '#ff4444' : (load > 0.5 ? '#ffff44' : '#00ff00');
-        ctx.fillRect(barX, barY, fillW, barH);
+        ctx.fillRect(headroomBarX, headroomBarY, fillW, headroomBarH);
 
         ctx.fillStyle = '#00ff00';
         ctx.fillText(`DIFF: ${this.difficultyScale.toFixed(2)}`, 15 * uiScale, 26 * uiScale);
@@ -3641,6 +3715,29 @@ export class PlayingState {
         drawVector([this.player], '#44ff44');
         drawVector(this.encounters, '#4444ff');
 
+        // --- Render-Time Graph (bottom-right) ---
+        this._drawPerfGraph(ctx, uiScale, cw, ch);
+
         ctx.restore();
+    }
+
+    _drawPerfGraph(ctx, uiScale, cw, ch) {
+        // Fixed pixel sizes independent of uiScale — generous but clamped to screen
+        const MARGIN    = 8;
+        const graphW    = Math.floor(Math.min(cw * 0.55, 900)); // up to 55% width or 900px
+        const graphH    = Math.floor(Math.min(ch * 0.30, 300)); // up to 30% height or 300px
+
+        // Anchor to bottom-right, above the HUD coordinate readout
+        const hudMargin = this.game.hudScale * 4;
+        const coordRowH = this.game.hudScale * 10;
+
+        const gx = cw - graphW - hudMargin;
+        const gy = ch - hudMargin - coordRowH - graphH - MARGIN;
+
+        // Clamp so it never exits the screen
+        const clampedGx = Math.max(MARGIN, Math.min(gx, cw - graphW - MARGIN));
+        const clampedGy = Math.max(MARGIN, Math.min(gy, ch - graphH - MARGIN));
+
+        this.perf.draw(ctx, clampedGx, clampedGy, graphW, graphH, uiScale);
     }
 }

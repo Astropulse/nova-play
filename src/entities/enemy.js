@@ -122,6 +122,20 @@ export class Enemy {
         this.dodgeDecisionMap = new WeakMap(); // projectile -> { decided: boolean, canDodge: boolean, reactionTimer: number }
     }
 
+    _getDistanceMult() {
+        // 1. FOV Factor: increase engagement distance as player FOV increases (zooms out)
+        const fov = (this.game.currentState && this.game.currentState.currentFovMult) || 1.0;
+        // Subtle scaling: 25% of the zoom-out factor is applied to distance
+        const fovFactor = 1.0 + (fov - 1.0) * 0.25;
+
+        // 2. Speed Factor: increase distances as velocity increases to prevent constant collisions
+        // Using a much softer linear ramp: 1.0 at 400 speed, 1.2 at 900 speed.
+        const speed = this.baseSpeed * this.speedMult;
+        const speedFactor = 1.0 + Math.max(0, (speed - 400) * 0.0004);
+
+        return fovFactor * speedFactor;
+    }
+
     _applyUpgrades() {
         if (this.isUpgraded) return;
         this.isUpgraded = true;
@@ -158,6 +172,9 @@ export class Enemy {
         const dy = player.worldY - this.worldY;
         const dist = Math.sqrt(dx * dx + dy * dy);
         const angleToPlayer = Math.atan2(dy, dx);
+        const distMult = this._getDistanceMult();
+        const activeAttackRange = this.attackRange * distMult;
+        const activeBreakRange = this.breakRange * distMult;
 
         // 1. Tactical State Updates
         this.invulnTimer = Math.max(0, this.invulnTimer - dt);
@@ -173,7 +190,7 @@ export class Enemy {
             return; // Skip movement/rotation when frozen
         }
 
-        this._updateAIState(dt, dist, angleToPlayer, player, enemies);
+        this._updateAIState(dt, dist, angleToPlayer, player, enemies, distMult);
 
         // 2. Determine Target Angle
         let targetAngle = this._getTargetAngle(angleToPlayer, dist);
@@ -186,7 +203,7 @@ export class Enemy {
         } else if (this.state === AI_STATE.BREAK || this.state === AI_STATE.REPOSITION) {
             currentMaxSpeed = this.baseSpeed * 1.3;
         } else if (this.state === AI_STATE.ATTACK && this.attackPassCount === 0) {
-            const closeFactor = Math.max(0.3, Math.min(0.6, dist / this.attackRange));
+            const closeFactor = Math.max(0.3, Math.min(0.6, dist / activeAttackRange));
             currentMaxSpeed = this.baseSpeed * closeFactor;
         } else if (dist > 1500) {
             const boostFactor = Math.min(3.0, 1.0 + (dist - 1500) / (2000));
@@ -224,7 +241,7 @@ export class Enemy {
         // 6. Combat — shoot only during attack runs
         if (this.state === AI_STATE.ATTACK) {
             this.shootTimer -= dt;
-            if (this.shootTimer <= 0 && dist < this.attackRange) {
+            if (this.shootTimer <= 0 && dist < activeAttackRange) {
                 const shootDiff = angleToPlayer - this.angle;
                 const absDiff = Math.abs(Math.atan2(Math.sin(shootDiff), Math.cos(shootDiff)));
                 if (absDiff < 0.5) {
@@ -266,7 +283,7 @@ export class Enemy {
         }
     }
 
-    _updateAIState(dt, dist, angleToPlayer, player, enemies) {
+    _updateAIState(dt, dist, angleToPlayer, player, enemies, distMult) {
         this.stateTimer -= dt;
 
         // Detection: Is the player tailing/chasing me?
@@ -275,7 +292,11 @@ export class Enemy {
         const absDiff = Math.abs(Math.atan2(Math.sin(angleDiffToPlayer), Math.cos(angleDiffToPlayer)));
         const playerIsBehind = absDiff > 2.2; // roughly 120-130 degrees behind
 
-        if (playerIsBehind && dist < this.reversalTriggerDist && this.state !== AI_STATE.REVERSAL && this.state !== AI_STATE.RECOVERY) {
+        const activeAttackRange = this.attackRange * distMult;
+        const activeBreakRange = this.breakRange * distMult;
+        const activeReversalDist = this.reversalTriggerDist * distMult;
+
+        if (playerIsBehind && dist < activeReversalDist && this.state !== AI_STATE.REVERSAL && this.state !== AI_STATE.RECOVERY) {
             // Check if player is actually pointing at us
             const playerToEnemyAngle = Math.atan2(this.worldY - player.worldY, this.worldX - player.worldX);
             const playerFacingDiff = playerToEnemyAngle - player.angle;
@@ -291,7 +312,7 @@ export class Enemy {
         switch (this.state) {
             case AI_STATE.PURSUIT:
                 // Charge at the player — transition to ATTACK when in range
-                if (dist < this.attackRange) {
+                if (dist < activeAttackRange) {
                     this.state = AI_STATE.ATTACK;
                     this.burstShotsLeft = this.burstShotsMax;
                     this.shootTimer = 0.1;
@@ -306,7 +327,7 @@ export class Enemy {
                 const burstDone = this.burstShotsLeft <= 0;
                 const tooClose = dist < minBreakDist;
 
-                const breakThreshold = burstDone ? (this.breakRange * 0.7) : minBreakDist;
+                const breakThreshold = burstDone ? (activeBreakRange * 0.7) : minBreakDist;
 
                 if (dist < breakThreshold || tooClose) {
                     if (this.attackPassCount >= this.maxAttackPasses) {
@@ -314,13 +335,13 @@ export class Enemy {
                     } else {
                         this._startVeerOff(angleToPlayer);
                     }
-                } else if (dist > this.attackRange + 400) {
+                } else if (dist > activeAttackRange + 400 * distMult) {
                     this.state = AI_STATE.PURSUIT;
                 }
                 break;
 
             case AI_STATE.REPOSITION:
-                if (this.stateTimer <= 0 || dist > 600) {
+                if (this.stateTimer <= 0 || dist > 600 * distMult) {
                     this.attackPassCount = 0; // Reset counter after backing off
                     this.state = AI_STATE.PURSUIT;
                 }
@@ -722,8 +743,14 @@ export class Enemy {
         if (!this.alive) return;
 
         this.state = AI_STATE.RECOVERY;
-        this.stateTimer = 0.6;
-        this.invulnTimer = 0.6;
+
+        // Scale invulnerability window based on speed
+        // 0.6s at 400 speed (standard), 0.2s at 800 speed (high speed)
+        const currentSpeed = this.baseSpeed * this.speedMult;
+        const invulnDuration = Math.max(0.1, 0.6 - Math.max(0, (currentSpeed - 400) * 0.001));
+
+        this.stateTimer = invulnDuration;
+        this.invulnTimer = invulnDuration;
 
         // Steer away from player
         const angleAway = Math.atan2(this.worldY - player.worldY, this.worldX - player.worldX);
@@ -874,6 +901,8 @@ export class EnemySpawner {
         this.waveDelay = 0;         // Delay before the FIRST enemy of a wave spawns
         this.waveSpawnScale = 1.0;  // Difficulty at time wave was triggered
         this.waveNumber = 0;        // Tracks which wave we're on
+        this.waveSpawnInterval = 1.5; // Seconds between wave spawns (scales)
+        this.waveBatchSize = 1;      // How many enemies per wave spawn tick
         this.lastBossType = null;
 
         this.spawnRateMult = 1.0;
@@ -890,8 +919,9 @@ export class EnemySpawner {
         const BossClass = bosses[Math.floor(Math.random() * bosses.length)];
         this.lastBossType = BossClass.name;
 
+        const fov = (this.game.currentState && this.game.currentState.currentFovMult) || 1.0;
+        const dist = 1600 * fov;
         const angle = Math.random() * Math.PI * 2;
-        const dist = 1600;
         return [new BossClass(this.game, playerX + Math.cos(angle) * dist, playerY + Math.sin(angle) * dist, difficultyScale)];
     }
 
@@ -914,18 +944,23 @@ export class EnemySpawner {
                 return [];
             }
 
-            this.waveSpawnTimer -= dt;
             if (this.waveSpawnTimer <= 0) {
-                this.waveQueue--;
-                // Stagger spawns 1.5-3s apart
-                this.waveSpawnTimer = 1.5 + Math.random() * 1.5;
+                const toSpawn = Math.min(this.waveQueue, this.waveBatchSize);
+                this.waveQueue -= toSpawn;
+                
+                // Add some jitter to the interval
+                this.waveSpawnTimer = this.waveSpawnInterval * (0.8 + Math.random() * 0.4);
 
-                const angle = Math.random() * Math.PI * 2;
-                // Spawn further out so they arrive staggered (1800-2400)
-                const dist = 1800 + Math.random() * 600;
-                const en = new Enemy(this.game, playerX + Math.cos(angle) * dist, playerY + Math.sin(angle) * dist, this.waveSpawnScale);
-                Enemy.rollUpgrade(en, player);
-                spawned.push(en);
+                const fov = (this.game.currentState && this.game.currentState.currentFovMult) || 1.0;
+                
+                for (let i = 0; i < toSpawn; i++) {
+                    // Spawn further out so they arrive staggered (1800-2440)
+                    const angle = Math.random() * Math.PI * 2;
+                    const dist = (1800 + Math.random() * 640) * fov;
+                    const en = new Enemy(this.game, playerX + Math.cos(angle) * dist, playerY + Math.sin(angle) * dist, this.waveSpawnScale);
+                    Enemy.rollUpgrade(en, player);
+                    spawned.push(en);
+                }
             }
             return spawned;  // Don't run ambient burst spawns during a wave
         }
@@ -954,7 +989,8 @@ export class EnemySpawner {
                 this.burstSpawnTimer = 3 + Math.random() * 3;
 
                 const angle = Math.random() * Math.PI * 2;
-                const dist = 1400 + Math.random() * 600;
+                const fov = (this.game.currentState && this.game.currentState.currentFovMult) || 1.0;
+                const dist = (1400 + Math.random() * 600) * fov;
                 const en = new Enemy(this.game, playerX + Math.cos(angle) * dist, playerY + Math.sin(angle) * dist, difficultyScale);
                 Enemy.rollUpgrade(en, player);
                 spawned.push(en);
@@ -1012,6 +1048,12 @@ export class EnemySpawner {
         this.waveSpawnTimer = 0; // First enemy spawns after initial delay
         this.waveDelay = 0.5;    // Give the flash/hud half a second to breathe
         this.waveSpawnScale = difficultyScale;
+
+        // Compression: all enemies should spawn within 10-20s (Target 15s)
+        const targetTime = 15;
+        // Interval floor 0.4s for visual spacing, cap 2.0s for responsiveness
+        this.waveSpawnInterval = Math.max(0.4, Math.min(2.0, targetTime / count));
+        this.waveBatchSize = Math.max(1, Math.ceil((count * this.waveSpawnInterval) / targetTime));
         // Return empty — enemies will be spawned via update() over time
         return [];
     }
@@ -1027,6 +1069,8 @@ export class EnemySpawner {
             waveDelay: this.waveDelay,
             waveSpawnScale: this.waveSpawnScale,
             waveNumber: this.waveNumber,
+            waveSpawnInterval: this.waveSpawnInterval,
+            waveBatchSize: this.waveBatchSize,
             lastBossType: this.lastBossType
         };
     }
@@ -1042,6 +1086,8 @@ export class EnemySpawner {
         this.waveDelay = data.waveDelay;
         this.waveSpawnScale = data.waveSpawnScale;
         this.waveNumber = data.waveNumber;
+        this.waveSpawnInterval = data.waveSpawnInterval || 1.5;
+        this.waveBatchSize = data.waveBatchSize || 1;
         this.lastBossType = data.lastBossType || null;
     }
 }
