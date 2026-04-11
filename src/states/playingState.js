@@ -148,6 +148,12 @@ export class PlayingState {
         // FOV Scaling state
         this.fovUpgradeMult = 1.0;
         this.currentFovMult = 1.0;
+
+        // Off-screen indicator radii
+        this.indicatorRadiusFactorArrow = 0.36;
+        this.indicatorRadiusFactorExclamation = 0.42;
+
+        this.indicatorOpacities = new Map(); // entity -> { opacity }
     }
 
     _triggerShakeAt(x, y, intensity, minPassDist = 1200, maxDist = 4000) {
@@ -476,7 +482,7 @@ export class PlayingState {
                     const aimAngle = Math.atan2(target.worldY - this.player.worldY, target.worldX - this.player.worldX);
                     // Increased damage and applied modifiers
                     const currentBaseDamage = this.player.shipData.baseDamage * this.player.obedienceMult + this.player.permDamageBonus;
-                    const damage = (currentBaseDamage * 10.0) * (this.player.hasLaserOverride ? 1.3 : 1.0);
+                    const damage = (currentBaseDamage * 3.0) * (this.player.hasLaserOverride ? 1.3 : 1.0);
                     const spriteKey = 'blue_laser_ball_big';
 
                     const proj = new Projectile(this.game, this.player.worldX, this.player.worldY, aimAngle, 1200, spriteKey, this.player, damage);
@@ -743,7 +749,7 @@ export class PlayingState {
                 for (const wreck of this.bossWrecks) {
                     const dx = wreck.worldX - this.player.worldX;
                     const dy = wreck.worldY - this.player.worldY;
-                    if (dx * dx + dy * dy < 200 * 200) {
+                    if (dx * dx + dy * dy < 450 * 450) {
                         wreck.isFinished = true;
                     }
                 }
@@ -800,6 +806,18 @@ export class PlayingState {
             }
         }
 
+        // Cleanup stale indicator opacities
+        for (const [entity, state] of this.indicatorOpacities) {
+            if (!this.enemies.includes(entity) &&
+                !this.asteroids.includes(entity) &&
+                !this.shops.includes(entity) &&
+                !this.events.includes(entity) &&
+                !this.encounters.includes(entity) &&
+                !this.bossWrecks.includes(entity)) {
+                this.indicatorOpacities.delete(entity);
+            }
+        }
+
         // Update scrap entities (magnetized to player)
         for (const s of this.scrapEntities) {
             if (!this.player.isWarping) {
@@ -815,6 +833,7 @@ export class PlayingState {
                     this.player.scrap += s.value;
                     this.stats.scrapCollected += s.value;
                     this.game.sounds.play('scrap', { volume: 0.4, x: s.worldX, y: s.worldY });
+                    this.spawnFloatingText(s.worldX, s.worldY, `+${s.value}`, '#ffff00');
                 }
             } else {
                 // Just update drift/friction if not magnetized (Scrap.update handles it if player coords are not passed? No, it needs them)
@@ -1489,6 +1508,23 @@ export class PlayingState {
         }
     }
 
+    _getIndicatorOpacity(entity, shouldShow, dt) {
+        let state = this.indicatorOpacities.get(entity);
+        if (!state) {
+            state = { opacity: 0 };
+            this.indicatorOpacities.set(entity, state);
+        }
+
+        const fadeSpeed = 2.0; // Fades in/out in 0.5s
+        if (shouldShow) {
+            state.opacity = Math.min(1.0, state.opacity + dt * fadeSpeed);
+        } else {
+            state.opacity = Math.max(0.0, state.opacity - dt * fadeSpeed);
+        }
+
+        return state.opacity;
+    }
+
     _drawHealthIndicators(ctx) {
         if (!this.game.showHealth && !this.game.devMode) return;
 
@@ -1556,37 +1592,29 @@ export class PlayingState {
         const ch = this.game.height;
         const margin = 20 * this.game.uiScale;
 
+        const dt = this.game.lastDt || 0.016;
         for (const shop of this.shops) {
             if (!shop.revealed) continue;
             const screen = this.camera.worldToScreen(shop.worldX, shop.worldY, cw, ch);
-
-            // If on screen, skip indicator
-            if (screen.x >= 0 && screen.x <= cw && screen.y >= 0 && screen.y <= ch) continue;
 
             const dx = shop.worldX - this.player.worldX;
             const dy = shop.worldY - this.player.worldY;
             const angle = Math.atan2(dy, dx);
 
-            // Clamp to screen edges
+            // If on screen, shouldShow is false (to trigger fade out)
+            const isOnScreen = screen.x >= 0 && screen.x <= cw && screen.y >= 0 && screen.y <= ch;
+            const opacity = this._getIndicatorOpacity(shop, !isOnScreen, dt);
+            if (opacity <= 0) continue;
+
             const cx = cw / 2;
             const cy = ch / 2;
-            let ix = cx + Math.cos(angle) * (cw / 2 - margin);
-            let iy = cy + Math.sin(angle) * (ch / 2 - margin);
-
-            // Re-calculate based on actual screen bounds for better edge sticking
-            const slope = dy / dx;
-            if (Math.abs(dx) * (ch / 2 - margin) > Math.abs(dy) * (cw / 2 - margin)) {
-                // Hits left or right
-                ix = (dx > 0) ? cw - margin : margin;
-                iy = ch / 2 + (ix - cw / 2) * slope;
-            } else {
-                // Hits top or bottom
-                iy = (dy > 0) ? ch - margin : margin;
-                ix = cw / 2 + (iy - ch / 2) / slope;
-            }
+            const radius = Math.min(cw, ch) * this.indicatorRadiusFactorArrow;
+            const ix = cx + Math.cos(angle) * radius;
+            const iy = cy + Math.sin(angle) * radius;
 
             // Draw arrow
             ctx.save();
+            ctx.globalAlpha = opacity;
             ctx.translate(ix, iy);
             ctx.rotate(angle);
 
@@ -1602,6 +1630,7 @@ export class PlayingState {
 
             // Label "SHOP"
             ctx.save();
+            ctx.globalAlpha = opacity;
             ctx.fillStyle = '#44ddff';
             ctx.font = `${6 * this.game.uiScale}px Astro4x`;
             ctx.textAlign = 'center';
@@ -1616,35 +1645,29 @@ export class PlayingState {
         const ch = this.game.height;
         const margin = 20 * this.game.uiScale;
 
+        const dt = this.game.lastDt || 0.016;
         for (const ev of this.events) {
             if (!ev.revealed || ev.isFinished) continue; // Keep marker until destroyed or finished (scrap spawned)
             const screen = this.camera.worldToScreen(ev.worldX, ev.worldY, cw, ch);
-
-            // If on screen, skip indicator
-            if (screen.x >= 0 && screen.x <= cw && screen.y >= 0 && screen.y <= ch) continue;
 
             const dx = ev.worldX - this.player.worldX;
             const dy = ev.worldY - this.player.worldY;
             const angle = Math.atan2(dy, dx);
 
-            // Clamp to screen edges
+            // If on screen, shouldShow is false
+            const isOnScreen = screen.x >= 0 && screen.x <= cw && screen.y >= 0 && screen.y <= ch;
+            const opacity = this._getIndicatorOpacity(ev, !isOnScreen, dt);
+            if (opacity <= 0) continue;
+
             const cx = cw / 2;
             const cy = ch / 2;
-            let ix = cx + Math.cos(angle) * (cw / 2 - margin);
-            let iy = cy + Math.sin(angle) * (ch / 2 - margin);
-
-            // Re-calculate based on actual screen bounds for better edge sticking
-            const slope = dy / dx;
-            if (Math.abs(dx) * (ch / 2 - margin) > Math.abs(dy) * (cw / 2 - margin)) {
-                ix = (dx > 0) ? cw - margin : margin;
-                iy = ch / 2 + (ix - cw / 2) * slope;
-            } else {
-                iy = (dy > 0) ? ch - margin : margin;
-                ix = cw / 2 + (iy - ch / 2) / slope;
-            }
+            const radius = Math.min(cw, ch) * this.indicatorRadiusFactorArrow;
+            const ix = cx + Math.cos(angle) * radius;
+            const iy = cy + Math.sin(angle) * radius;
 
             // Draw arrow
             ctx.save();
+            ctx.globalAlpha = opacity;
             ctx.translate(ix, iy);
             ctx.rotate(angle);
 
@@ -1660,6 +1683,7 @@ export class PlayingState {
 
             // Label "UNKNOWN SIGNAL"
             ctx.save();
+            ctx.globalAlpha = opacity;
             ctx.fillStyle = '#ffdd44';
             ctx.font = `${5 * this.game.uiScale}px Astro4x`;
             ctx.textAlign = 'center';
@@ -1675,27 +1699,26 @@ export class PlayingState {
         const ch = this.game.height;
         const margin = 20 * this.game.uiScale;
 
+        const dt = this.game.lastDt || 0.016;
         for (const wreck of this.bossWrecks) {
             const screen = this.camera.worldToScreen(wreck.worldX, wreck.worldY, cw, ch);
-            if (screen.x >= 0 && screen.x <= cw && screen.y >= 0 && screen.y <= ch) continue;
 
             const dx = wreck.worldX - this.player.worldX;
             const dy = wreck.worldY - this.player.worldY;
             const angle = Math.atan2(dy, dx);
 
+            const isOnScreen = screen.x >= 0 && screen.x <= cw && screen.y >= 0 && screen.y <= ch;
+            const opacity = this._getIndicatorOpacity(wreck, !isOnScreen, dt);
+            if (opacity <= 0) continue;
+
             const cx = cw / 2;
             const cy = ch / 2;
-            let ix, iy;
-            const slope = dy / dx;
-            if (Math.abs(dx) * (ch / 2 - margin) > Math.abs(dy) * (cw / 2 - margin)) {
-                ix = (dx > 0) ? cw - margin : margin;
-                iy = ch / 2 + (ix - cw / 2) * slope;
-            } else {
-                iy = (dy > 0) ? ch - margin : margin;
-                ix = cw / 2 + (iy - ch / 2) / slope;
-            }
+            const radius = Math.min(cw, ch) * this.indicatorRadiusFactorArrow;
+            const ix = cx + Math.cos(angle) * radius;
+            const iy = cy + Math.sin(angle) * radius;
 
             ctx.save();
+            ctx.globalAlpha = opacity;
             ctx.translate(ix, iy);
             ctx.rotate(angle);
             ctx.fillStyle = '#ff44ff'; // Purple/Magenta for wreckage
@@ -1708,6 +1731,7 @@ export class PlayingState {
             ctx.restore();
 
             ctx.save();
+            ctx.globalAlpha = opacity;
             ctx.fillStyle = '#ff44ff';
             ctx.font = `${5 * this.game.uiScale}px Astro4x`;
             ctx.textAlign = 'center';
@@ -2784,8 +2808,12 @@ export class PlayingState {
         // Override sprite and compute correct radii for the encounter ship
         en.initEncounterData(encounter.img, encounter.assetKey);
 
-        // Super-charged stats - 3x health base, scaled by wealth
-        en.health = Math.ceil(en.health * 3 * wealthBonus);
+        // --- Boss-based health scaling ---
+        const curvedDifficultyScale = Math.pow(this.difficultyScale, 0.6);
+        const bossBaseHealth = (220 * curvedDifficultyScale) + 70 * this.difficultyScale;
+
+        // Hostile encounters are strong: 90% of boss health base, scaled by wealth
+        en.health = Math.ceil(bossBaseHealth * 0.9 * wealthBonus);
         en.maxHealth = en.health;
 
         // Scale other attributes
@@ -2807,39 +2835,31 @@ export class PlayingState {
         const ch = this.game.height;
         const margin = 20 * this.game.uiScale;
 
+        const dt = this.game.lastDt || 0.016;
         for (const enc of this.encounters) {
             if (!enc.alive || enc.state === ENC_STATE.HOSTILE) continue;
 
             const screen = this.camera.worldToScreen(enc.worldX, enc.worldY, cw, ch);
 
-            // If on screen, skip edge indicator
-            if (screen.x >= 0 && screen.x <= cw && screen.y >= 0 && screen.y <= ch) continue;
-
             const dx = enc.worldX - this.player.worldX;
             const dy = enc.worldY - this.player.worldY;
             const dist = Math.sqrt(dx * dx + dy * dy);
-            if (dist > Math.max(cw, ch) * 3) continue;
+
+            const isOnScreen = screen.x >= 0 && screen.x <= cw && screen.y >= 0 && screen.y <= ch;
+            const isWithinDist = dist <= Math.max(cw, ch) * 3;
+            const opacity = this._getIndicatorOpacity(enc, !isOnScreen && isWithinDist, dt);
+            if (opacity <= 0) continue;
 
             const angle = Math.atan2(dy, dx);
             const cx = cw / 2;
             const cy = ch / 2;
-            let ix = cx + Math.cos(angle) * (cw / 2 - margin);
-            let iy = cy + Math.sin(angle) * (ch / 2 - margin);
-
-            // Re-calculate based on actual screen bounds for better edge sticking
-            const slope = dy / dx;
-            if (Math.abs(dx) * (ch / 2 - margin) > Math.abs(dy) * (cw / 2 - margin)) {
-                // Hits left or right
-                ix = (dx > 0) ? cw - margin : margin;
-                iy = ch / 2 + (ix - cw / 2) * slope;
-            } else {
-                // Hits top or bottom
-                iy = (dy > 0) ? ch - margin : margin;
-                ix = cw / 2 + (iy - ch / 2) / slope;
-            }
+            const radius = Math.min(cw, ch) * this.indicatorRadiusFactorArrow;
+            const ix = cx + Math.cos(angle) * radius;
+            const iy = cy + Math.sin(angle) * radius;
 
             // Draw arrow
             ctx.save();
+            ctx.globalAlpha = opacity;
             ctx.translate(ix, iy);
             ctx.rotate(angle);
 
@@ -2855,6 +2875,7 @@ export class PlayingState {
 
             // Draw text label
             ctx.save();
+            ctx.globalAlpha = opacity;
             ctx.font = `${6 * this.game.uiScale}px Astro4x`;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
@@ -2872,35 +2893,29 @@ export class PlayingState {
         const ch = this.game.height;
         const margin = 15 * this.game.uiScale;
 
+        const dt = this.game.lastDt || 0.016;
         for (const en of this.enemies) {
             const screen = this.camera.worldToScreen(en.worldX, en.worldY, cw, ch);
-
-            // If on screen, skip indicator
-            if (screen.x >= 0 && screen.x <= cw && screen.y >= 0 && screen.y <= ch) continue;
 
             const dx = en.worldX - this.player.worldX;
             const dy = en.worldY - this.player.worldY;
             const dist = Math.sqrt(dx * dx + dy * dy);
 
-            // Only show if within 2 screen distances
-            if (dist > Math.max(cw, ch) * 2) continue;
+            const isOnScreen = screen.x >= 0 && screen.x <= cw && screen.y >= 0 && screen.y <= ch;
+            const isWithinDist = dist <= Math.max(cw, ch) * 2;
+            const opacity = this._getIndicatorOpacity(en, !isOnScreen && isWithinDist, dt);
+            if (opacity <= 0) continue;
 
-            // Clamp to screen edges using slope
+            const angle = Math.atan2(dy, dx);
             const cx = cw / 2;
             const cy = ch / 2;
-            let ix, iy;
-            const slope = dy / dx;
-
-            if (Math.abs(dx) * (ch / 2 - margin) > Math.abs(dy) * (cw / 2 - margin)) {
-                ix = (dx > 0) ? cw - margin : margin;
-                iy = ch / 2 + (ix - cw / 2) * slope;
-            } else {
-                iy = (dy > 0) ? ch - margin : margin;
-                ix = cw / 2 + (iy - ch / 2) / slope;
-            }
+            const radius = Math.min(cw, ch) * this.indicatorRadiusFactorExclamation;
+            const ix = cx + Math.cos(angle) * radius;
+            const iy = cy + Math.sin(angle) * radius;
 
             // Draw "!" indicator (bosses are purple, regular enemies red)
             ctx.save();
+            ctx.globalAlpha = opacity;
             ctx.fillStyle = en.isBoss ? '#ff44ff' : '#ff2222';
             ctx.font = `${12 * this.game.uiScale}px Astro5x`;
             ctx.textAlign = 'center';
@@ -2915,37 +2930,31 @@ export class PlayingState {
         const ch = this.game.height;
         const margin = 15 * this.game.uiScale;
 
+        const dt = this.game.lastDt || 0.016;
         for (const ast of this.asteroids) {
             if (!ast.alive) continue;
 
             const screen = this.camera.worldToScreen(ast.worldX, ast.worldY, cw, ch);
 
-            // If on screen, skip indicator
-            if (screen.x >= 0 && screen.x <= cw && screen.y >= 0 && screen.y <= ch) continue;
-
             const dx = ast.worldX - this.player.worldX;
             const dy = ast.worldY - this.player.worldY;
             const dist = Math.sqrt(dx * dx + dy * dy);
 
-            // Only show if within 1.5 screen distances to avoid clutter
-            if (dist > Math.max(cw, ch) * 1.5) continue;
+            const isOnScreen = screen.x >= 0 && screen.x <= cw && screen.y >= 0 && screen.y <= ch;
+            const isWithinDist = dist <= Math.max(cw, ch) * 1.5;
+            const opacity = this._getIndicatorOpacity(ast, !isOnScreen && isWithinDist, dt);
+            if (opacity <= 0) continue;
 
-            // Clamp to screen edges using slope
+            const angle = Math.atan2(dy, dx);
             const cx = cw / 2;
             const cy = ch / 2;
-            let ix, iy;
-            const slope = dy / dx;
-
-            if (Math.abs(dx) * (ch / 2 - margin) > Math.abs(dy) * (cw / 2 - margin)) {
-                ix = (dx > 0) ? cw - margin : margin;
-                iy = ch / 2 + (ix - cw / 2) * slope;
-            } else {
-                iy = (dy > 0) ? ch - margin : margin;
-                ix = cw / 2 + (iy - ch / 2) / slope;
-            }
+            const radius = Math.min(cw, ch) * this.indicatorRadiusFactorExclamation;
+            const ix = cx + Math.cos(angle) * radius;
+            const iy = cy + Math.sin(angle) * radius;
 
             // Draw yellow "!" indicator
             ctx.save();
+            ctx.globalAlpha = opacity;
             ctx.fillStyle = '#ffff44';
             ctx.font = `${12 * this.game.uiScale}px Astro5x`;
             ctx.textAlign = 'center';

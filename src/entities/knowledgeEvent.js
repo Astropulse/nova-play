@@ -53,7 +53,7 @@ export class KnowledgeEvent {
 
         // Health Phase 1: 50 damage to wake up
         this.health = 50;
-        this.maxBossHealth = 700 + 15 * this.difficultyScale;
+        this.maxBossHealth = 700 + 50 * this.difficultyScale;
         this.invulnTimer = 0;
 
         this.pendingSpawns = [];

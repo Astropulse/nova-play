@@ -21,7 +21,7 @@ export class FloatingText {
 
         // Scale based on number magnitude: 0 -> 1x, 100 -> 2x, etc.
         const numValue = parseFloat(this.text.replace(/[^0-9.-]/g, '')) || 0;
-        const magnitudeMult = 1 + (Math.abs(numValue) / 100);
+        const magnitudeMult = 1 + Math.pow(Math.abs(numValue), 0.5) / 10; // Power scaling for diminishing returns
 
         this.targetScale = (1.1 + Math.random() * 0.4) * magnitudeMult;
         this.scale = this.targetScale * 0.5; // Initial pop-in scale

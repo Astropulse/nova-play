@@ -119,9 +119,11 @@ class GameDataScanner:
     def _clean_formula(self, formula):
         # Convert JS difficultyScale refs to Python 'd'
         formula = formula.replace('this.difficultyScale', 'd').replace('difficultyScale', 'd')
+        # Handle the new curvedDifficultyScale getter
+        formula = formula.replace('this.curvedDifficultyScale', '(d**0.6)').replace('curvedDifficultyScale', '(d**0.6)')
         # Handle JS Math functions
         formula = formula.replace('Math.ceil(', '(').replace('Math.floor(', '(')
-        formula = formula.replace('Math.min(', 'min(')
+        formula = formula.replace('Math.pow(', 'pow(').replace('Math.min(', 'min(')
         # Handle simple multiplications/additions
         formula = formula.replace('this.damageMult', '1.0') # Assume baseline
         return formula

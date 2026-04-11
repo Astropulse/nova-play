@@ -1191,9 +1191,9 @@ export class HostileEncounter extends Enemy {
         const radiusScale = this.radius / 30.0;
         const scaleDist = Math.max(1.0, radiusScale * 1.2);
 
-        this.attackRange = 700 * scaleDist;
-        this.breakRange = 450 * scaleDist;
-        this.reversalTriggerDist = 350 * scaleDist;
+        this.attackRange = 850 * scaleDist;
+        this.breakRange = 500 * scaleDist;
+        this.reversalTriggerDist = 450 * scaleDist;
     }
 
     hit(damage) {
