@@ -796,7 +796,7 @@ export class Enemy {
         const spawns = this._generateProceduralDebris();
         const count = 3 + Math.floor(Math.random() * 3);
         const difficultyScale = (this.game.currentState && this.game.currentState.difficultyScale) || 1.0;
-        const expAmount = Math.ceil(5 * difficultyScale);
+        const expAmount = Math.floor(4 + 1 * difficultyScale);
 
         for (let i = 0; i < count; i++) spawns.push(new Scrap(this.game, this.worldX, this.worldY));
         for (let i = 0; i < 4; i++) spawns.push(new Rubble(this.game, this.worldX, this.worldY));
@@ -951,6 +951,8 @@ export class EnemySpawner {
                 this.waveDelay -= dt;
                 return [];
             }
+
+            this.waveSpawnTimer -= dt;
 
             if (this.waveSpawnTimer <= 0) {
                 const toSpawn = Math.min(this.waveQueue, this.waveBatchSize);
@@ -1126,6 +1128,10 @@ export class KamikazeEnemy extends Enemy {
     getSpawnOnDeath() {
         // Use inherited procedural debris
         const spawns = this._generateProceduralDebris();
+        const difficultyScale = (this.game.currentState && this.game.currentState.difficultyScale) || 1.0;
+        const expAmount = Math.floor(4 + 1 * difficultyScale);
+        for (let i = 0; i < expAmount; i++) spawns.push(new ExpOrb(this.game, this.worldX, this.worldY, 1));
+
         const count = 1 + Math.floor(Math.random() * 2);
         for (let i = 0; i < count; i++) spawns.push(new Scrap(this.game, this.worldX, this.worldY));
         for (let i = 0; i < 4; i++) spawns.push(new Rubble(this.game, this.worldX, this.worldY));
@@ -1190,6 +1196,10 @@ export class CthulhuEnemy extends Enemy {
 
     getSpawnOnDeath() {
         const spawns = this._generateProceduralDebris();
+        const difficultyScale = (this.game.currentState && this.game.currentState.difficultyScale) || 1.0;
+        const expAmount = Math.floor(4 + 1 * difficultyScale);
+        for (let i = 0; i < expAmount; i++) spawns.push(new ExpOrb(this.game, this.worldX, this.worldY, 1));
+
         const count = 1 + Math.floor(Math.random() * 2);
         for (let i = 0; i < count; i++) spawns.push(new Scrap(this.game, this.worldX, this.worldY));
         for (let i = 0; i < 4; i++) spawns.push(new Rubble(this.game, this.worldX, this.worldY));
@@ -1464,6 +1474,10 @@ export class HostileEncounter extends Enemy {
 
     getSpawnOnDeath() {
         const spawns = [];
+        const difficultyScale = (this.game.currentState && this.game.currentState.difficultyScale) || 1.0;
+        const expAmount = Math.floor(4 + 1 * difficultyScale);
+        for (let i = 0; i < expAmount; i++) spawns.push(new ExpOrb(this.game, this.worldX, this.worldY, 1));
+
         const img = this.game.assets.get(this.spriteKey);
 
         if (img && VoronoiSlicer) {

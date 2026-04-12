@@ -1,5 +1,5 @@
 import { Projectile } from './projectile.js';
-import { Scrap, VoronoiSlicer, ProceduralDebris, ItemPickup, Asteroid } from './asteroid.js';
+import { Scrap, VoronoiSlicer, ProceduralDebris, ItemPickup, Asteroid, ExpOrb } from './asteroid.js';
 import { UPGRADES } from '../data/upgrades.js';
 
 export const BOSS_PHASE = {
@@ -394,6 +394,10 @@ export class Boss {
                 }
             }
         }
+
+        const difficultyScale = (this.game.currentState && this.game.currentState.difficultyScale) || 1.0;
+        const expAmount = Math.floor(15 + 3 * difficultyScale);
+        for (let i = 0; i < expAmount; i++) spawns.push(new ExpOrb(this.game, this.worldX, this.worldY, 1));
 
         // Add extra loot spread around (Reduced scrap as requested)
         for (let i = 0; i < 3 + Math.random() * 2; i++) {

@@ -1,5 +1,5 @@
 import { Enemy } from './enemy.js';
-import { Rubble, ItemPickup, Scrap } from './asteroid.js';
+import { Rubble, ItemPickup, Scrap, ExpOrb } from './asteroid.js';
 import { UPGRADES } from '../data/upgrades.js';
 import { Projectile } from './projectile.js';
 
@@ -495,6 +495,11 @@ export class KnowledgeEvent {
 
     getSpawnOnDeath() {
         const spawns = [];
+        
+        const difficultyScale = (this.game.currentState && this.game.currentState.difficultyScale) || 1.0;
+        const expAmount = Math.floor(15 + 3 * difficultyScale);
+        for (let i = 0; i < expAmount; i++) spawns.push(new ExpOrb(this.game, this.worldX, this.worldY, 1));
+        
         // Spawn Knowledge upgrade
         const up = UPGRADES.find(u => u.id === 'knowledge');
         if (up) {

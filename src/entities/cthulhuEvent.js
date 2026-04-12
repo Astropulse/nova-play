@@ -1,5 +1,5 @@
 import { KamikazeEnemy, Enemy, CthulhuEnemy } from './enemy.js';
-import { Rubble, ItemPickup } from './asteroid.js';
+import { Rubble, ItemPickup, ExpOrb } from './asteroid.js';
 import { UPGRADES } from '../data/upgrades.js';
 
 export const CTHULHU_STATE = {
@@ -199,6 +199,10 @@ export class CthulhuEvent {
         this.game.sounds.play('ship_explode', { volume: 0.8, x: this.worldX, y: this.worldY });
 
         const spawns = [];
+
+        const difficultyScale = (this.game.currentState && this.game.currentState.difficultyScale) || 1.0;
+        const expAmount = Math.floor(15 + 3 * difficultyScale);
+        for (let i = 0; i < expAmount; i++) spawns.push(new ExpOrb(this.game, this.worldX, this.worldY, 1));
 
         // Lots of rubble
         for (let i = 0; i < 20; i++) {
