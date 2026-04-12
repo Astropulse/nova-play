@@ -4,7 +4,7 @@ import { World } from '../world/world.js';
 import { Camera } from '../world/camera.js';
 import { Player } from '../entities/player.js';
 import { HUD } from '../ui/hud.js';
-import { Asteroid, AsteroidSpawner, Rubble, Scrap, ItemPickup, ProceduralDebris, VoronoiSlicer } from '../entities/asteroid.js';
+import { Asteroid, AsteroidSpawner, Rubble, Scrap, ItemPickup, ProceduralDebris, VoronoiSlicer, ExpOrb } from '../entities/asteroid.js';
 import { EnemySpawner, Enemy, HostileEncounter } from '../entities/enemy.js';
 import { Shop } from '../entities/shop.js';
 import { Inventory } from '../engine/inventory.js';
@@ -46,6 +46,7 @@ export class PlayingState {
         this.activeBeams = []; // specific fx
         this.explosions = []; // area fx
         this.events = [];
+        this.expOrbs = [];
         // Encounter system
         this.encounters = [];
         this.encounterSpawnTimer = 60 + Math.random() * 10; // First encounter around ~1 minute
@@ -436,6 +437,7 @@ export class PlayingState {
                     else if (s instanceof Rubble || s instanceof ProceduralDebris) this.rubble.push(s);
                     else if (s instanceof Asteroid) this.asteroids.push(s);
                     else if (s instanceof ItemPickup) this.itemPickups.push(s);
+                    else if (s instanceof ExpOrb) this.expOrbs.push(s);
                 }
             }
         }
@@ -905,6 +907,32 @@ export class PlayingState {
             if (ddx * ddx + ddy * ddy > 4000 * 4000) it.alive = false;
         }
 
+        // Update ExpOrbs
+        for (let i = this.expOrbs.length - 1; i >= 0; i--) {
+            const orb = this.expOrbs[i];
+            orb.update(dt, this.player.worldX, this.player.worldY);
+
+            // Collection collision
+            const dx = orb.worldX - this.player.worldX;
+            const dy = orb.worldY - this.player.worldY;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const collectRange = (orb.collectRange + this.player.radius);
+
+            if (dist < collectRange) {
+                orb.alive = false;
+                this.player.addExp(orb.amount);
+                this.game.sounds.play('scrap', { volume: 0.3, pitch: 1.5, x: orb.worldX, y: orb.worldY });
+                
+                // Floating text for every collection
+                const offsetX = (Math.random() - 0.5) * 20;
+                const offsetY = (Math.random() - 0.5) * 20;
+                this.spawnFloatingText(orb.worldX + offsetX, orb.worldY + offsetY, `+${orb.amount} XP`, '#915dbf');
+            }
+
+            // Despawn check
+            if (dx * dx + dy * dy > 5000 * 5000) orb.alive = false;
+        }
+
         // --- Collision: Projectiles vs Everything ---
         this.perf.begin('collisions');
         for (const proj of this.projectiles) {
@@ -1087,6 +1115,7 @@ export class PlayingState {
         this.rubble = this.rubble.filter(r => r.alive);
         this.scrapEntities = this.scrapEntities.filter(s => s.alive);
         this.itemPickups = this.itemPickups.filter(it => it.alive);
+        this.expOrbs = this.expOrbs.filter(orb => orb.alive);
         this.events = this.events.filter(ev => ev.alive);
         this.encounters = this.encounters.filter(enc => enc.alive);
         this.shops = this.shops.filter(s => s.alive);
@@ -1170,6 +1199,7 @@ export class PlayingState {
             else if (s instanceof Rubble || s instanceof ProceduralDebris) this.rubble.push(s);
             else if (s instanceof Asteroid) this.asteroids.push(s);
             else if (s instanceof ItemPickup) this.itemPickups.push(s);
+            else if (s instanceof ExpOrb) this.expOrbs.push(s);
         }
     }
 
@@ -1262,7 +1292,8 @@ export class PlayingState {
             asteroids: this.asteroids.map(a => a.serialize()),
             shops: this.shops.map(s => s.serialize()),
             encounterBonuses: { ...this.encounterBonuses },
-            playerDistanceTraveled: this.playerDistanceTraveled
+            playerDistanceTraveled: this.playerDistanceTraveled,
+            expOrbs: this.expOrbs.map(orb => orb.serialize())
         };
     }
 
@@ -1295,7 +1326,7 @@ export class PlayingState {
         }
 
         const { UPGRADES } = await import('../data/upgrades.js');
-        const { Asteroid, Scrap, ItemPickup } = await import('../entities/asteroid.js');
+        const { Asteroid, Scrap, ItemPickup, ExpOrb } = await import('../entities/asteroid.js');
 
         // Recreate events
         this.events = [];
@@ -1373,6 +1404,19 @@ export class PlayingState {
             ast.assetKey = aData.assetKey;
             this.asteroids.push(ast);
         }
+        
+        // Recreate EXP Orbs
+        this.expOrbs = [];
+        for (const oData of (data.expOrbs || [])) {
+            const orb = new ExpOrb(this.game, oData.worldX, oData.worldY, oData.amount);
+            orb.vx = oData.vx;
+            orb.vy = oData.vy;
+            orb.rotation = oData.rotation;
+            orb.rotSpeed = oData.rotSpeed;
+            orb.suckTimer = oData.suckTimer;
+            orb.time = oData.time;
+            this.expOrbs.push(orb);
+        }
 
         // Cleanup other lists
         this.projectiles = [];
@@ -1429,6 +1473,9 @@ export class PlayingState {
         }
         for (const it of this.itemPickups) {
             it.draw(ctx, this.camera);
+        }
+        for (const orb of this.expOrbs) {
+            orb.draw(ctx, this.camera);
         }
         this.perf.end('particles');
 

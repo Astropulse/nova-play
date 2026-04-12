@@ -1,6 +1,6 @@
 // Scaling is now dynamic via game properties
 import { Projectile } from './projectile.js';
-import { Scrap, Rubble, ItemPickup, ProceduralDebris, VoronoiSlicer } from './asteroid.js';
+import { Scrap, Rubble, ItemPickup, ProceduralDebris, VoronoiSlicer, ExpOrb } from './asteroid.js';
 import { UPGRADES } from '../data/upgrades.js';
 import { Starcore } from './starcore.js';
 import { AsteroidCrusher } from './asteroidCrusher.js';
@@ -795,8 +795,16 @@ export class Enemy {
     getSpawnOnDeath() {
         const spawns = this._generateProceduralDebris();
         const count = 3 + Math.floor(Math.random() * 3);
+        const difficultyScale = (this.game.currentState && this.game.currentState.difficultyScale) || 1.0;
+        const expAmount = Math.ceil(5 * difficultyScale);
+
         for (let i = 0; i < count; i++) spawns.push(new Scrap(this.game, this.worldX, this.worldY));
         for (let i = 0; i < 4; i++) spawns.push(new Rubble(this.game, this.worldX, this.worldY));
+
+        // Spawn ExpOrbs individually for explosion effect
+        for (let i = 0; i < expAmount; i++) {
+            spawns.push(new ExpOrb(this.game, this.worldX, this.worldY, 1));
+        }
 
         // 25% chance to drop a small battery
         if (Math.random() < 0.25) {

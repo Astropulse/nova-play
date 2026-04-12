@@ -733,6 +733,172 @@ export class Asteroid {
     }
 }
 
+/**
+ * Experience orb dropped by enemies
+ */
+export class ExpOrb {
+    constructor(game, worldX, worldY, amount = 5) {
+        this.game = game;
+        this.worldX = worldX;
+        this.worldY = worldY;
+        this.amount = amount;
+        this.alive = true;
+
+        this.assetKey = 'exp';
+        // GIF frames are handled by game.getAnimationFrame
+
+        // Initial pop velocity (More exploding, more drama)
+        const angle = Math.random() * Math.PI * 2;
+        const speed = 350 + Math.random() * 450;
+        this.vx = Math.cos(angle) * speed;
+        this.vy = Math.sin(angle) * speed;
+
+        this.rotation = Math.random() * Math.PI * 2;
+        this.rotSpeed = (Math.random() - 0.5) * 4;
+
+        this.collectRange = 18; // Closer pickup as requested
+        this.suckTimer = 0;
+        this.vacuumDelay = 0.2 + Math.random() * 0.3; // Randomized delay
+
+        // Wave/Wobble properties
+        this.wobbleFreq = 4 + Math.random() * 4;
+        this.wobbleAmp = 100 + Math.random() * 150;
+        this.wobbleOffset = Math.random() * Math.PI * 2;
+        this.time = 0;
+
+        // Animation variety
+        this.animOffset = Math.random() * 1000; // Start at random time
+        this.frameDuration = 40 + Math.random() * 30; // 40ms to 70ms per frame
+
+        // Trail history
+        this.history = [];
+        this.maxHistory = 6;
+    }
+
+    update(dt, playerX, playerY) {
+        this.time += dt;
+
+        const dx = playerX - this.worldX;
+        const dy = playerY - this.worldY;
+
+        // ExpOrbs vacuum to player after a small delay
+        this.suckTimer += dt;
+        const pullProgress = Math.max(0, (this.suckTimer - this.vacuumDelay) * 1.5);
+        const dtFactor = dt * 60;
+        const suckFactor = 1.0 + pullProgress * 2.5;
+
+        const angle = Math.atan2(dy, dx);
+        // Base force increases as it gets closer and with time
+        const force = 1200 * suckFactor * (this.suckTimer < this.vacuumDelay ? 0.05 : 1.0);
+        
+        // Add wavy movement perpendicular to the pull direction
+        const perpX = -Math.sin(angle);
+        const perpY = Math.cos(angle);
+        const wobble = Math.sin(this.time * this.wobbleFreq + this.wobbleOffset) * this.wobbleAmp;
+
+        this.vx += (Math.cos(angle) * force + perpX * wobble) * dt;
+        this.vy += (Math.sin(angle) * force + perpY * wobble) * dt;
+
+        // More aggressive steering to prevent orbiting
+        const steerWeight = Math.min(0.98, (0.3 + this.suckTimer * 2.0) * dtFactor);
+        const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+        const targetVx = Math.cos(angle) * speed;
+        const targetVy = Math.sin(angle) * speed;
+        this.vx = this.vx * (1 - steerWeight) + targetVx * steerWeight;
+        this.vy = this.vy * (1 - steerWeight) + targetVy * steerWeight;
+
+        // Damping
+        const damping = Math.pow(0.94, dt * 60);
+        this.vx *= damping;
+        this.vy *= damping;
+
+        this.worldX += this.vx * dt;
+        this.worldY += this.vy * dt;
+        this.rotation += this.rotSpeed * dt;
+
+        // Update trail history
+        this.history.unshift({ x: this.worldX, y: this.worldY, r: this.rotation });
+        if (this.history.length > this.maxHistory) this.history.pop();
+    }
+
+    serialize() {
+        return {
+            worldX: this.worldX,
+            worldY: this.worldY,
+            vx: this.vx,
+            vy: this.vy,
+            amount: this.amount,
+            rotation: this.rotation,
+            rotSpeed: this.rotSpeed,
+            suckTimer: this.suckTimer,
+            time: this.time
+        };
+    }
+
+    draw(ctx, camera) {
+        if (!this.alive) return;
+        
+        const asset = this.game.assets.get(this.assetKey);
+        if (!asset || !Array.isArray(asset)) return;
+
+        // Custom animation variety: Random offset and duration
+        const frameIndex = Math.floor((this.time * 1000 + this.animOffset) / this.frameDuration) % asset.length;
+        const frameData = asset[frameIndex];
+        const frame = frameData.canvas || frameData;
+
+        const screen = camera.worldToScreen(this.worldX, this.worldY, this.game.width, this.game.height);
+        const w = (frame.width || 12);
+        const h = (frame.height || 12);
+
+        // Simple cull
+        if (screen.x + w < -100 || screen.x - w > this.game.width + 100 ||
+            screen.y + h < -100 || screen.y - h > this.game.height + 100) return;
+
+        ctx.save();
+        
+        // Screen blending mode + Bloom (Glow)
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.shadowBlur = 12 * this.game.worldScale;
+        ctx.shadowColor = '#915dbf';
+
+        // Draw Trail (No shadow for performance)
+        ctx.shadowBlur = 0;
+        for (let i = 0; i < this.history.length; i++) {
+            const pos = this.history[i];
+            const tScreen = camera.worldToScreen(pos.x, pos.y, this.game.width, this.game.height);
+            const alpha = 0.4 * (1 - i / this.history.length);
+            const scale = (1 - i / (this.history.length * 1.5));
+            
+            ctx.save();
+            ctx.globalAlpha = alpha;
+            ctx.translate(tScreen.x, tScreen.y);
+            ctx.scale(scale, scale);
+            ctx.drawImage(frame, -w / 2, -h / 2, w, h);
+            ctx.restore();
+        }
+
+        // Apply Bloom only to main orb
+        ctx.shadowBlur = 15 * this.game.worldScale;
+        ctx.shadowColor = '#915dbf';
+
+        ctx.translate(screen.x, screen.y);
+        
+        // POP animation: scale from 0 to 1 over first 0.2s
+        const spawnScale = Math.min(1.0, this.suckTimer * 5.0);
+        ctx.scale(spawnScale, spawnScale);
+        ctx.globalCompositeOperation = 'lighter';
+        
+        ctx.drawImage(frame.canvas || frame, -w / 2, -h / 2, w, h);
+        
+        // Pulse effect
+        const pulse = 0.8 + Math.sin(this.time * 10) * 0.2;
+        ctx.globalAlpha = 0.4;
+        ctx.drawImage(frame.canvas || frame, -w * pulse / 2, -h * pulse / 2, w * pulse, h * pulse);
+        
+        ctx.restore();
+    }
+}
+
 // Spawner — creates asteroids ahead of the player in their direction of travel
 export class AsteroidSpawner {
     constructor(game) {

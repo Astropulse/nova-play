@@ -165,7 +165,14 @@ export class Player {
         this.trailInterval = 0.005; // Faster interval for more copies
         this.maxTrailLength = 10; // Even more copies for solidity
         this._trailCache = new Map(); // Cache for tinted sprites
-        this._cachedRadius = null;
+        this.naniteAccumulator = 0; // Accumulate for floating text
+        this.shieldCapacitorCount = 0;
+        this.asteroidSpawnMult = 1.0;
+
+        // EXP and Leveling
+        this.level = 1;
+        this.exp = 0;
+        this.expNeeded = 25;
     }
 
     /**
@@ -1031,6 +1038,25 @@ export class Player {
         return ghostCanvas;
     }
 
+    /**
+     * Adds experience and handles leveling up.
+     * @param {number} amount
+     */
+    addExp(amount) {
+        this.exp += amount;
+        while (this.exp >= this.expNeeded) {
+            this.exp -= this.expNeeded;
+            this.level++;
+            this.expNeeded *= 2;
+
+            // Visual/Audio feedback for level up
+            if (this.game.currentState && this.game.currentState.spawnFloatingText) {
+                this.game.currentState.spawnFloatingText(this.worldX, this.worldY, "LEVEL UP!", "#ffff44", 2.0);
+            }
+            this.game.sounds.play('select', { volume: 1.0, x: this.worldX, y: this.worldY });
+        }
+    }
+
     serialize() {
         return {
             worldX: this.worldX,
@@ -1047,6 +1073,9 @@ export class Player {
             permShieldBonus: this.permShieldBonus,
             permDamageBonus: this.permDamageBonus,
             inventoryUpgradeTier: this.inventoryUpgradeTier,
+            level: this.level,
+            exp: this.exp,
+            expNeeded: this.expNeeded,
             inventory: this.inventory ? this.inventory.serialize() : null
         };
     }
@@ -1066,6 +1095,9 @@ export class Player {
         this.permShieldBonus = data.permShieldBonus;
         this.permDamageBonus = data.permDamageBonus;
         this.inventoryUpgradeTier = data.inventoryUpgradeTier;
+        this.level = data.level || 1;
+        this.exp = data.exp || 0;
+        this.expNeeded = data.expNeeded || 25;
 
         if (data.inventory && this.inventory) {
             await this.inventory.deserialize(data.inventory);

@@ -561,6 +561,8 @@ export class Game {
             'shield_bar_full': 'Assets/UI/shield_bar_full.png',
             '9_slice_inventory': 'Assets/UI/9_slice_inventory.png',
             '9_slice_inventory_border': 'Assets/UI/9_slice_inventory_border.png',
+            '3_slice_exp_bar_empty': 'Assets/UI/3_slice_exp_bar_empty.png',
+            '3_slice_exp_bar_full': 'Assets/UI/3_slice_exp_bar_full.png',
             'blue_laser_ball': 'Assets/VFX/blue_laser_ball.png',
             'blue_laser_ball_big': 'Assets/VFX/blue_laser_ball_big.png',
             'blue_laser_beam': 'Assets/VFX/blue_laser_beam.png',
@@ -771,6 +773,7 @@ export class Game {
     _getGifManifest() {
         return {
             'fire_explosion': 'Assets/VFX/fire_explosion.gif',
+            'exp': 'Assets/VFX/exp.gif',
             'blue_laser_explosion': 'Assets/VFX/blue_laser_explosion.gif',
             'cruiser_flying': 'Assets/Ships/Cruiser/cruiser_flying.gif',
             'bruiser_flying': 'Assets/Ships/Bruiser/bruiser_flying.gif',

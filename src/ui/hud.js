@@ -13,6 +13,12 @@ export class HUD {
         // Offscreen radar masking
         this.radarCanvas = document.createElement('canvas');
         this.radarCtx = this.radarCanvas.getContext('2d');
+
+        this.expBarEmpty = game.assets.get('3_slice_exp_bar_empty');
+        this.expBarFull = game.assets.get('3_slice_exp_bar_full');
+
+        this.expGlowCanvas = document.createElement('canvas');
+        this.expGlowCtx = this.expGlowCanvas.getContext('2d');
     }
 
     draw(ctx) {
@@ -25,7 +31,7 @@ export class HUD {
         // Displacement is in world units, convert to pixels and scale for HUD
         const lagX = (this.game.currentState.camera.displacementX || 0) * this.game.worldScale * 0.075;
         const lagY = (this.game.currentState.camera.displacementY || 0) * this.game.worldScale * 0.075;
-        
+
         ctx.save();
         ctx.textBaseline = 'alphabetic';
         ctx.translate(Math.floor(lagX), Math.floor(lagY));
@@ -50,7 +56,7 @@ export class HUD {
             const hfImg = this.healthBarFull.canvas || this.healthBarFull;
             const hfH = this.healthBarFull.height || hfImg.height;
             const hPrescale = hfImg.width / (this.healthBarFull.width || hfImg.width);
-            
+
             ctx.drawImage(
                 hfImg,
                 0, 0, srcClipW * hPrescale, hfH * hPrescale,
@@ -118,6 +124,8 @@ export class HUD {
             ctx.fillText(`NEXT WAVE: ${mins}:${secs}`, margin, this.game.hudScale * 10);
         }
 
+        this._drawExpBar(ctx, cw, ch);
+
         ctx.restore();
     }
 
@@ -154,7 +162,8 @@ export class HUD {
             const cx = Math.floor((rw / 2) / uiScale) * uiScale;
             const cy = Math.floor((rh / 2) / uiScale) * uiScale;
 
-            const radarRange = 2000;
+            const fovMult = (this.game.currentState && this.game.currentState.currentFovMult) || 1.0;
+            const radarRange = 2000 * (fovMult * 0.75);
             const radarSize = (rw / 2) - (2 * uiScale);
 
             const drawDot = (entities, color, size = 1) => {
@@ -231,5 +240,168 @@ export class HUD {
 
         // 3. Draw frame on top
         ctx.drawImage(img.canvas || img, rx, ry, rw, rh);
+    }
+
+    _drawExpBar(ctx, cw, ch) {
+        const p = this.player;
+        const hudScale = this.game.hudScale;
+        const barW = Math.floor(cw * 0.4); // 2/5 of screen width
+        const emptyAsset = this.expBarEmpty;
+        const fullAsset = this.expBarFull;
+        if (!emptyAsset || !fullAsset) return;
+
+        const imgH = emptyAsset.height || (emptyAsset.canvas ? emptyAsset.canvas.height / emptyAsset.prescale : emptyAsset.height);
+        const barH = imgH * hudScale;
+        const x = (cw - barW) / 2;
+        const y = ch - barH - hudScale * 4;
+
+        // Draw empty background
+        this.draw3Slice(ctx, emptyAsset, x, y, barW, barH);
+
+        const expPct = Math.max(0, Math.min(1, p.exp / p.expNeeded));
+        if (expPct > 0) {
+            const fillW = Math.floor(barW * expPct);
+            if (fillW > 0) {
+                // --- SHARED WAVE STATE ---
+                const time = (this.game.currentState && this.game.currentState.trueTotalTime) || (performance.now() / 1000);
+                const sweepProgress = (time % 2.0) / 2.0;
+                const glowWidth = barW * 0.15;
+                const glowCenter = -glowWidth + (barW + glowWidth * 2) * sweepProgress;
+                
+                // Rhythmic pulse for both wave and aura intensity
+                const pulseIntensity = 0.8 + Math.sin(time * 6) * 0.2;
+
+                // 1. Prepare Shape-Accurate Mask in offscreen buffer
+                if (this.expGlowCanvas.width !== barW || this.expGlowCanvas.height !== barH) {
+                    this.expGlowCanvas.width = barW;
+                    this.expGlowCanvas.height = barH;
+                }
+                this.expGlowCtx.clearRect(0, 0, barW, barH);
+                
+                // Draw the filled segment silhouette
+                this.draw3Slice(this.expGlowCtx, fullAsset, 0, 0, barW, barH);
+                this.expGlowCtx.save();
+                this.expGlowCtx.globalCompositeOperation = 'destination-in';
+                this.expGlowCtx.fillStyle = 'white';
+                this.expGlowCtx.fillRect(0, 0, fillW, barH);
+                this.expGlowCtx.restore();
+
+                // 2. SHAPE-ACCURATE BLOOM (Concentrated where the wave is)
+                // We create a temporary masked version of the silhouette for the aura
+                const auraTempCanvas = document.createElement('canvas');
+                auraTempCanvas.width = barW;
+                auraTempCanvas.height = barH;
+                const auraTempCtx = auraTempCanvas.getContext('2d');
+                
+                auraTempCtx.drawImage(this.expGlowCanvas, 0, 0);
+                auraTempCtx.save();
+                auraTempCtx.globalCompositeOperation = 'source-in';
+                
+                // Gradient that peaks at the wave center
+                const auraMask = auraTempCtx.createLinearGradient(glowCenter - glowWidth * 1.5, 0, glowCenter + glowWidth * 1.5, 0);
+                auraMask.addColorStop(0, 'rgba(255, 255, 255, 0.2)'); // Base glow
+                auraMask.addColorStop(0.5, 'rgba(255, 255, 255, 1.0)'); // Peak at wave
+                auraMask.addColorStop(1, 'rgba(255, 255, 255, 0.2)'); // Base glow
+                auraTempCtx.fillStyle = auraMask;
+                auraTempCtx.fillRect(0, 0, barW, barH);
+                auraTempCtx.restore();
+
+                ctx.save();
+                ctx.globalCompositeOperation = 'screen';
+                // Apply bloom filters to the localized aura
+                ctx.filter = `blur(${hudScale * 3.5}px)`;
+                ctx.globalAlpha = 0.75 * pulseIntensity;
+                ctx.drawImage(auraTempCanvas, x, y);
+                
+                ctx.filter = `blur(${hudScale * 1.5}px)`;
+                ctx.globalAlpha = 0.5 * pulseIntensity;
+                ctx.drawImage(auraTempCanvas, x, y);
+                ctx.restore();
+
+                // 3. PRIMARY BAR TEXTURE (Drawn normally)
+                ctx.save();
+                ctx.beginPath();
+                ctx.rect(x, y, fillW, barH);
+                ctx.clip();
+                this.draw3Slice(ctx, fullAsset, x, y, barW, barH);
+                ctx.restore();
+
+                // 4. --- PULSE WAVE (The internal energy streak) ---
+                // Re-clear and draw the wave streak onto the silhouette
+                this.expGlowCtx.save();
+                this.expGlowCtx.globalCompositeOperation = 'source-in';
+                const grad = this.expGlowCtx.createLinearGradient(glowCenter - glowWidth, 0, glowCenter + glowWidth, 0);
+                grad.addColorStop(0, 'rgba(255, 255, 255, 0)');
+                grad.addColorStop(0.5, `rgba(255, 255, 255, ${0.4 + 0.3 * pulseIntensity})`);
+                grad.addColorStop(1, 'rgba(255, 255, 255, 0)');
+                this.expGlowCtx.fillStyle = grad;
+                this.expGlowCtx.fillRect(0, 0, barW, barH);
+                this.expGlowCtx.restore();
+
+                ctx.save();
+                ctx.beginPath();
+                ctx.rect(x, y, fillW, barH);
+                ctx.clip();
+                ctx.globalCompositeOperation = 'lighter';
+                ctx.drawImage(this.expGlowCanvas, x, y);
+                ctx.restore();
+            }
+        }
+
+        // Draw Level Text
+        ctx.save();
+        ctx.fillStyle = '#ffffff';
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = hudScale * 1; // 1 HUD-pixel outline
+        ctx.lineJoin = 'round';
+        ctx.font = `${6 * hudScale}px Astro5x`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'bottom';
+        const textY = y - hudScale * 1.5;
+        ctx.strokeText(`LEVEL ${p.level}`, cw / 2, textY);
+        ctx.fillText(`LEVEL ${p.level}`, cw / 2, textY);
+        ctx.restore();
+    }
+
+    /**
+     * Draws a 3-slice sprite.
+     * Assumes slices are equal thirds of the image width.
+     */
+    draw3Slice(ctx, asset, x, y, targetW, targetH) {
+        const img = asset.canvas || asset;
+        const srcW = asset.width || img.width;
+        const srcH = asset.height || img.height;
+        const prescale = asset.prescale || 1;
+
+        const capSrcW = Math.floor(srcW / 3);
+        const middleSrcW = srcW - capSrcW * 2;
+
+        const hScale = targetH / srcH;
+        const capDestW = Math.floor(capSrcW * hScale);
+        const middleDestW = Math.max(0, Math.floor(targetW - capDestW * 2));
+
+        const dx = Math.floor(x);
+        const dy = Math.floor(y);
+        const dh = Math.floor(targetH);
+
+        // Left Cap (+1px overlap)
+        ctx.drawImage(img,
+            0, 0, capSrcW * prescale, srcH * prescale,
+            dx, dy, capDestW + 1, dh
+        );
+
+        // Middle (Tile/Stretch) (+1px overlap)
+        if (middleDestW > 0) {
+            ctx.drawImage(img,
+                capSrcW * prescale, 0, middleSrcW * prescale, srcH * prescale,
+                dx + capDestW, dy, middleDestW + 1, dh
+            );
+        }
+
+        // Right Cap
+        ctx.drawImage(img,
+            (capSrcW + middleSrcW) * prescale, 0, capSrcW * prescale, srcH * prescale,
+            dx + capDestW + middleDestW, dy, capDestW, dh
+        );
     }
 }
