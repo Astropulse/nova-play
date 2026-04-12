@@ -1047,7 +1047,7 @@ export class Player {
         while (this.exp >= this.expNeeded) {
             this.exp -= this.expNeeded;
             this.level++;
-            this.expNeeded *= 2;
+            this.expNeeded = Math.floor(this.expNeeded * 1.5);
 
             // Visual/Audio feedback for level up
             if (this.game.currentState && this.game.currentState.spawnFloatingText) {

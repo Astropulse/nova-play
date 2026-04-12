@@ -131,6 +131,12 @@ export class Game {
                 'Assets/Sounds/Effects/scrap_3.wav',
                 'Assets/Sounds/Effects/scrap_4.wav',
             ]),
+            this.sounds.register('exp', [
+                'Assets/Sounds/Effects/exp_1.wav',
+                'Assets/Sounds/Effects/exp_2.wav',
+                'Assets/Sounds/Effects/exp_3.wav',
+                'Assets/Sounds/Effects/exp_4.wav',
+            ]),
             this.sounds.register('shield', [
                 'Assets/Sounds/Effects/shield.wav',
             ]),

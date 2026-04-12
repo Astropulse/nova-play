@@ -921,7 +921,7 @@ export class PlayingState {
             if (dist < collectRange) {
                 orb.alive = false;
                 this.player.addExp(orb.amount);
-                this.game.sounds.play('scrap', { volume: 0.3, pitch: 1.5, x: orb.worldX, y: orb.worldY });
+                this.game.sounds.play('exp', { volume: 0.3, pitch: 1.5, x: orb.worldX, y: orb.worldY });
                 
                 // Floating text for every collection
                 const offsetX = (Math.random() - 0.5) * 20;

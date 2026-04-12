@@ -16,6 +16,7 @@ export class DevConsole {
             'stat': (args) => this._cmdStat(args),
             'wave': (args) => this._cmdWave(args),
             'scrap': (args) => this._cmdScrap(args),
+            'exp': (args) => this._cmdExp(args),
             'locate': (args) => this._cmdLocate(args),
             'save': () => this._cmdSave(),
             'load': () => this._cmdLoad(),
@@ -218,6 +219,15 @@ export class DevConsole {
         }
     }
 
+    _cmdExp(args) {
+        if (args.length < 1) return;
+        const amount = parseFloat(args[0]);
+        const p = this.game.currentState?.player;
+        if (!isNaN(amount) && p && p.addExp) {
+            p.addExp(amount);
+        }
+    }
+
     _cmdLocate(args) {
         const state = this.game.currentState;
         if (!state || !state.events) return;
@@ -336,7 +346,7 @@ export class DevConsole {
     }
 
     _cmdHelp() {
-        console.log("Available commands: time, spawn, stat, wave, scrap, locate, save, load, record, boss, hp, encounter, dev, perf, help");
+        console.log("Available commands: time, spawn, stat, wave, scrap, exp, locate, save, load, record, boss, hp, encounter, dev, perf, help");
     }
 
     draw(ctx) {
