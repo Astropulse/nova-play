@@ -23,6 +23,9 @@ import { BOSS_STATE } from '../entities/boss.js';
 import { EncounterShip, ENC_STATE } from '../entities/encounter.js';
 import { rollEncounterType, generateEncounterDialog } from '../data/encounters.js';
 import { EncounterDialog } from '../ui/encounterDialog.js';
+import { SpaceCache, CacheSpawner, CACHE_STATE, CACHE_CONFIG } from '../entities/spaceCache.js';
+import { CacheUI } from '../ui/cacheUI.js';
+import { LevelUpDialog } from '../ui/levelUpDialog.js';
 
 export class PlayingState {
     constructor(game, shipData) {
@@ -63,6 +66,23 @@ export class PlayingState {
 
         this.asteroidSpawner = new AsteroidSpawner(game);
         this.enemySpawner = new EnemySpawner(game);
+        this.cacheSpawner = new CacheSpawner(game);
+
+        // Level-up dialog queue
+        this.levelUpQueue        = [];
+        this.isLevelUpOpen       = false;
+        this.activeLevelUpDialog = null;
+        this._levelUpOrigin      = null; // 'pause' | 'cache' | 'shop'
+
+        // Space Caches
+        this.caches = [];
+        this.activeCacheUI  = null;
+        this.isCacheOpen    = false;
+        this.canInteractCache = false;
+        this._activeCache   = null;  // cache whose UI is currently open
+        this._pendingCache  = null;  // cache mid-opening animation (UI not shown yet)
+        this.cacheScrollX   = 0;
+        this.cacheScrollY   = 0;
 
         // Inventory
         this.inventoryImg = game.assets.get('9_slice_inventory');
@@ -143,7 +163,8 @@ export class PlayingState {
             musicInc: { x: 0, y: 0, w: 0, h: 0, hovered: false },
             sfxDec: { x: 0, y: 0, w: 0, h: 0, hovered: false },
             sfxInc: { x: 0, y: 0, w: 0, h: 0, hovered: false },
-            shipSelection: { x: 0, y: 0, w: 0, h: 0, hovered: false }
+            shipSelection: { x: 0, y: 0, w: 0, h: 0, hovered: false },
+            claimLevels: { x: 0, y: 0, w: 0, h: 0, hovered: false }
         };
         this.confirmRestart = false;
         this.confirmRestartButtons = {
@@ -290,7 +311,7 @@ export class PlayingState {
 
     update(dt) {
         // Increment true total time only if not paused, not in shop, and not dead
-        if (!this.paused && !this.isShopOpen && !this.isEncounterOpen && !this.isDead) {
+        if (!this.paused && !this.isShopOpen && !this.isEncounterOpen && !this.isCacheOpen && !this.isLevelUpOpen && !this.isDead) {
             this.trueTotalTime += dt;
         }
 
@@ -307,6 +328,24 @@ export class PlayingState {
                 if (this.deathTimer >= 3.0) {
                     this.showDeathScreen = true;
                     this.game.sounds.playGameOverMusic();
+                }
+            }
+            return;
+        }
+
+        // --- Level-up dialog ---
+        if (this.isLevelUpOpen && this.activeLevelUpDialog) {
+            this.activeLevelUpDialog.update(dt);
+            if (this.activeLevelUpDialog.closed) {
+                this.isLevelUpOpen       = false;
+                this.activeLevelUpDialog = null;
+                if (this.levelUpQueue.length > 0) {
+                    this._openLevelUpDialog(this.levelUpQueue.shift());
+                } else {
+                    // Return to pause menu if that's where we came from;
+                    // cache/shop contexts manage paused via isCacheOpen/isShopOpen.
+                    this.paused = (this._levelUpOrigin === 'pause');
+                    this._levelUpOrigin = null;
                 }
             }
             return;
@@ -332,6 +371,12 @@ export class PlayingState {
             return;
         }
 
+        // --- Cache UI ---
+        if (this.isCacheOpen && this.activeCacheUI) {
+            this._updateCacheUI(dt);
+            return;
+        }
+
         if (this.isShopOpen) {
             this._updateShopUI(dt);
             return;
@@ -354,6 +399,15 @@ export class PlayingState {
         });
         this.canInteractEncounter = !!nearEncounter;
 
+        // Cache interaction check
+        const nearCache = this.caches.find(c => {
+            if (!c.canInteract) return false;
+            const dx = c.worldX - this.player.worldX;
+            const dy = c.worldY - this.player.worldY;
+            return Math.sqrt(dx * dx + dy * dy) < c.interactRange;
+        });
+        this.canInteractCache = !!nearCache;
+
         if (this.game.input.isKeyJustPressed('Escape')) {
             if (this.paused) {
                 // About to unpause, return dragged item
@@ -371,6 +425,16 @@ export class PlayingState {
             if (nearEncounter) {
                 // Prioritize encounter interaction
                 this._openEncounterDialog(nearEncounter);
+            } else if (nearCache) {
+                if (nearCache.state === CACHE_STATE.OPEN) {
+                    // Chest already open — show the UI immediately
+                    this._openCacheUI(nearCache);
+                } else {
+                    // FOUND state: kick off the opening animation.
+                    // The UI will appear once the animation completes.
+                    nearCache.open();
+                    this._pendingCache = nearCache;
+                }
             } else if (nearShop) {
                 // Shop interaction
                 this.activeShop = nearShop;
@@ -494,7 +558,7 @@ export class PlayingState {
                 if (target) {
                     const aimAngle = Math.atan2(target.worldY - this.player.worldY, target.worldX - this.player.worldX);
                     // Increased damage and applied modifiers
-                    const currentBaseDamage = this.player.shipData.baseDamage * this.player.obedienceMult + this.player.permDamageBonus;
+                    const currentBaseDamage = (this.player.shipData.baseDamage * this.player.obedienceMult + this.player.permDamageBonus) * this.player.laserCartridgeMult;
                     const damage = (currentBaseDamage * 3.0) * (this.player.hasLaserOverride ? 1.3 : 1.0);
                     const spriteKey = 'blue_laser_ball_big';
 
@@ -584,7 +648,7 @@ export class PlayingState {
                     const aimAngle = Math.atan2(target.worldY - py, target.worldX - px);
 
                     const spriteKey = this.player.hasLaserOverride ? 'blue_laser_ball_big' : 'blue_laser_ball';
-                    const currentBaseDamage = this.player.shipData.baseDamage * this.player.obedienceMult + this.player.permDamageBonus;
+                    const currentBaseDamage = (this.player.shipData.baseDamage * this.player.obedienceMult + this.player.permDamageBonus) * this.player.laserCartridgeMult;
                     const damage = currentBaseDamage * (this.player.hasLaserOverride ? 1.3 : 1.0);
 
                     this.projectiles.push(
@@ -692,6 +756,12 @@ export class PlayingState {
             this.asteroids.push(...newAsteroids);
             this.perf.end('asteroids');
 
+            // Spawn caches (rare, distance-accumulator based)
+            const newCaches = this.cacheSpawner.update(
+                this.player.worldX, this.player.worldY, this.caches.length, this.player.lvlCacheFreqMult
+            );
+            this.caches.push(...newCaches);
+
             // Update total game time
             this.totalGameTime += dt;
 
@@ -700,7 +770,7 @@ export class PlayingState {
             let timeScale = 1.0;
             if (this.totalGameTime <= this.difficultyRampTime) {
                 // Phase 1: Convex Ramp (Power Curve) - Starts slow, accelerates
-                timeScale += (this.difficultyGain * Math.pow(this.totalGameTime, this.difficultyExponent));
+                timeScale += (this.difficultyGain * this.player.lvlDifficultyMult * Math.pow(this.totalGameTime, this.difficultyExponent));
             } else {
                 // Phase 2: Steady Growth (Linear)
                 const rampMax = this.difficultyGain * Math.pow(this.difficultyRampTime, this.difficultyExponent);
@@ -744,13 +814,13 @@ export class PlayingState {
 
             if (this.waveTimer <= 0) {
                 this._triggerWave();
-                this.waveTimer = 120;
+                this.waveTimer = 120 * this.player.lvlWaveCountdownMult;
                 this.postWaveTimer = 0;
             }
 
             // Spawn enemies
             this.perf.begin('enemies');
-            const newEnemies = this.enemySpawner.update(dt, this.player.worldX, this.player.worldY, this.difficultyScale);
+            const newEnemies = this.enemySpawner.update(dt, this.player.worldX, this.player.worldY, this.difficultyScale * this.player.lvlEnemySpawnMult);
             this.enemies.push(...newEnemies);
             this.perf.end('enemies');
 
@@ -850,7 +920,8 @@ export class PlayingState {
                 !this.shops.includes(entity) &&
                 !this.events.includes(entity) &&
                 !this.encounters.includes(entity) &&
-                !this.bossWrecks.includes(entity)) {
+                !this.bossWrecks.includes(entity) &&
+                !this.caches.includes(entity)) {
                 this.indicatorOpacities.delete(entity);
             }
         }
@@ -920,13 +991,14 @@ export class PlayingState {
 
             if (dist < collectRange) {
                 orb.alive = false;
-                this.player.addExp(orb.amount);
-                this.game.sounds.play('exp', { volume: 0.3, pitch: 1.5, x: orb.worldX, y: orb.worldY });
-                
+                const finalExp = Math.ceil(orb.amount * (this.player.experienceCondenserMult || 1.0));
+                this.player.addExp(finalExp);
+                this.game.sounds.play('exp', { volume: 0.15, pitch: 1.5, x: orb.worldX, y: orb.worldY });
+
                 // Floating text for every collection
                 const offsetX = (Math.random() - 0.5) * 20;
                 const offsetY = (Math.random() - 0.5) * 20;
-                this.spawnFloatingText(orb.worldX + offsetX, orb.worldY + offsetY, `+${orb.amount} XP`, '#915dbf');
+                this.spawnFloatingText(orb.worldX + offsetX, orb.worldY + offsetY, `+${finalExp} XP`, '#915dbf');
             }
 
             // Despawn check
@@ -1043,7 +1115,7 @@ export class PlayingState {
                 const dist = Math.sqrt(dx * dx + dy * dy);
                 if (dist < this.player.radius + ast.radius) {
                     ast.onCollision(this.player);
-                    this._damagePlayer(ast.damage);
+                    this._damagePlayer(ast.damage * this.player.lvlAsteroidResistanceMult);
                     ast.alive = false;
                     this._onEntityDestroyed(ast);
                     this._applyKnockback(dx, dy, dist, 200);
@@ -1119,6 +1191,22 @@ export class PlayingState {
         this.events = this.events.filter(ev => ev.alive);
         this.encounters = this.encounters.filter(enc => enc.alive);
         this.shops = this.shops.filter(s => s.alive);
+        this.caches = this.caches.filter(c => c.alive);
+
+        // Update caches and discovery
+        for (const c of this.caches) {
+            c.update(dt, this.player.worldX, this.player.worldY);
+        }
+
+        // Once the pending cache finishes its opening animation, show the UI
+        if (this._pendingCache) {
+            if (!this._pendingCache.alive) {
+                this._pendingCache = null;
+            } else if (this._pendingCache.state === CACHE_STATE.OPEN) {
+                this._openCacheUI(this._pendingCache);
+                this._pendingCache = null;
+            }
+        }
 
         // Shop proximity discovery & tracking refresh
         for (const s of this.shops) {
@@ -1167,7 +1255,7 @@ export class PlayingState {
                 const baseWait = 140; // ~2.3 minutes base
                 const minWait = 45;   // 45 seconds minimum
                 const wait = Math.max(minWait, baseWait / explorationFactor + (Math.random() - 0.5) * 40);
-                this.encounterSpawnTimer = wait;
+                this.encounterSpawnTimer = wait / Math.max(0.1, this.player.lvlEncounterFreqMult);
             }
         }
     }
@@ -1185,6 +1273,12 @@ export class PlayingState {
                 } else {
                     this.game.sounds.restoreMusic();
                 }
+            }
+
+            // Spawn a cache on boss death (always)
+            if (this.caches.length < CACHE_CONFIG.maxActiveCaches + 2) {
+                const bossCache = this.cacheSpawner.spawnNear(entity.worldX, entity.worldY, 200, 500);
+                this.caches.push(bossCache);
             }
         }
         // Track stats
@@ -1404,7 +1498,7 @@ export class PlayingState {
             ast.assetKey = aData.assetKey;
             this.asteroids.push(ast);
         }
-        
+
         // Recreate EXP Orbs
         this.expOrbs = [];
         for (const oData of (data.expOrbs || [])) {
@@ -1470,6 +1564,9 @@ export class PlayingState {
         }
         for (const ev of this.events) {
             ev.draw(ctx, this.camera);
+        }
+        for (const c of this.caches) {
+            c.draw(ctx, this.camera);
         }
         for (const it of this.itemPickups) {
             it.draw(ctx, this.camera);
@@ -1538,7 +1635,7 @@ export class PlayingState {
         this.player.draw(ctx, this.camera);
         this.perf.end('player');
 
-        if ((this.canInteractShop || this.canInteractEncounter) && !this.isShopOpen && !this.isEncounterOpen) {
+        if ((this.canInteractShop || this.canInteractEncounter || this.canInteractCache) && !this.isShopOpen && !this.isEncounterOpen && !this.isCacheOpen) {
             this._drawInteractPrompt(ctx);
         }
 
@@ -1571,6 +1668,9 @@ export class PlayingState {
         // --- Shop Indicators ---
         this._drawShopIndicators(ctx);
 
+        // --- Cache Indicators ---
+        this._drawCacheIndicators(ctx);
+
         // --- Event Indicators ---
         this._drawEventIndicators(ctx);
         this._drawBossWreckIndicators(ctx);
@@ -1578,8 +1678,12 @@ export class PlayingState {
         // --- Encounter Indicators ---
         this._drawEncounterIndicators(ctx);
 
-        if (this.isEncounterOpen && this.activeEncounterDialog) {
+        if (this.isLevelUpOpen && this.activeLevelUpDialog) {
+            this.activeLevelUpDialog.draw(ctx);
+        } else if (this.isEncounterOpen && this.activeEncounterDialog) {
             this.activeEncounterDialog.draw(ctx);
+        } else if (this.isCacheOpen && this.activeCacheUI) {
+            this._drawCacheOverlay(ctx);
         } else if (this.isShopOpen) {
             this._drawShopOverlay(ctx);
         } else if (this.paused) {
@@ -1761,6 +1865,63 @@ export class PlayingState {
         }
     }
 
+    _drawCacheIndicators(ctx) {
+        const cw = this.game.width;
+        const ch = this.game.height;
+        const dt = this.game.lastDt || 0.016;
+
+        for (const cache of this.caches) {
+            // Only show indicator for found (not yet emptied/despawning) caches
+            if (!cache.isFound || cache.state === CACHE_STATE.EMPTIED || cache.state === CACHE_STATE.DESPAWNING) continue;
+
+            const screen = this.camera.worldToScreen(cache.worldX, cache.worldY, cw, ch);
+            const dx = cache.worldX - this.player.worldX;
+            const dy = cache.worldY - this.player.worldY;
+            const angle = Math.atan2(dy, dx);
+
+            const isOnScreen = screen.x >= 0 && screen.x <= cw && screen.y >= 0 && screen.y <= ch;
+            const opacity = this._getIndicatorOpacity(cache, !isOnScreen, dt);
+            if (opacity <= 0) continue;
+
+            const cx = cw / 2;
+            const cy = ch / 2;
+            const radius = Math.min(cw, ch) * this.indicatorRadiusFactorArrow;
+            const ix = cx + Math.cos(angle) * radius;
+            const iy = cy + Math.sin(angle) * radius;
+
+            // Gold chevron arrow
+            ctx.save();
+            ctx.globalAlpha = opacity;
+            ctx.translate(ix, iy);
+            ctx.rotate(angle);
+
+            ctx.fillStyle = '#ffcc44';
+            ctx.beginPath();
+            ctx.moveTo(10 * this.game.uiScale, 0);
+            ctx.lineTo(-6 * this.game.uiScale, -8 * this.game.uiScale);
+            ctx.lineTo(-2 * this.game.uiScale, 0);
+            ctx.lineTo(-6 * this.game.uiScale,  8 * this.game.uiScale);
+            ctx.closePath();
+            ctx.fill();
+            ctx.restore();
+
+            // Label
+            ctx.save();
+            ctx.globalAlpha = opacity;
+            ctx.fillStyle = '#ffcc44';
+            ctx.font = `${6 * this.game.uiScale}px Astro4x`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('CACHE', ix, iy - 16 * this.game.uiScale);
+
+            ctx.font = `${5 * this.game.uiScale}px Astro4x`;
+            ctx.fillStyle = 'rgba(255, 204, 68, 0.7)';
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            ctx.fillText(`${Math.floor(dist)}`, ix, iy + 16 * this.game.uiScale);
+            ctx.restore();
+        }
+    }
+
     _drawEventIndicators(ctx) {
         const cw = this.game.width;
         const ch = this.game.height;
@@ -1876,78 +2037,138 @@ export class PlayingState {
         }
     }
 
+    _drawCacheOverlay(ctx) {
+        if (!this.activeCacheUI) return;
+        const ui      = this.activeCacheUI;
+        const cw      = this.game.width;
+        const ch      = this.game.height;
+        const uiScale = this.game.uiScale;
+        const slotSize = 32 * uiScale;
+
+        const cacheInv  = ui.cacheInventory;
+        const playerInv = this.player.inventory;
+
+        const cacheLayout  = this._getInventoryLayout(cacheInv,  'shop');
+        const playerLayout = this._getInventoryLayout(playerInv, 'player');
+
+        ctx.save();
+        ctx.globalAlpha = ui.panelAlpha;
+
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.82)';
+        ctx.fillRect(0, 0, cw, ch);
+
+        // ── Cache inventory panel ─────────────────────────────────────────────
+        this._draw9Slice(ctx, this.inventoryImg, cacheLayout.panelX, cacheLayout.panelY, cacheLayout.totalW, cacheLayout.totalH);
+        ctx.fillStyle = '#ffcc44';
+        ctx.font = `${8 * uiScale}px Astro5x`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'alphabetic';
+        ctx.fillText('SPACE CACHE', cw / 2, cacheLayout.panelY - uiScale * 10);
+        this._drawInventoryGrid(ctx, cacheInv, cacheLayout, this.cacheScrollX, this.cacheScrollY);
+        this._draw9Slice(ctx, this.inventoryBorderImg, cacheLayout.panelX, cacheLayout.panelY, cacheLayout.totalW, cacheLayout.totalH);
+        this._drawScrollbars(ctx, cacheLayout, this.cacheScrollX, this.cacheScrollY);
+        ui.draw(ctx, cacheLayout.gridVisX, cacheLayout.gridVisY, cacheLayout.visW, cacheLayout.visH, slotSize, uiScale);
+
+        // ── Player inventory panel ────────────────────────────────────────────
+        this._draw9Slice(ctx, this.inventoryImg, playerLayout.panelX, playerLayout.panelY, playerLayout.totalW, playerLayout.totalH);
+        ctx.fillStyle = '#88aabb';
+        ctx.font = `${8 * uiScale}px Astro4x`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'alphabetic';
+        ctx.fillText('YOUR SHIP CARGO', cw / 2, playerLayout.panelY - uiScale * 10);
+        this._drawInventoryGrid(ctx, playerInv, playerLayout, this.playerScrollX, this.playerScrollY);
+        this._draw9Slice(ctx, this.inventoryBorderImg, playerLayout.panelX, playerLayout.panelY, playerLayout.totalW, playerLayout.totalH);
+        this._drawScrollbars(ctx, playerLayout, this.playerScrollX, this.playerScrollY);
+
+        this._drawDraggedItem(ctx, slotSize);
+
+        // ── Hint text ─────────────────────────────────────────────────────────
+        if (ui.isAnimating) {
+            ctx.fillStyle = 'rgba(255, 204, 68, 0.6)';
+            ctx.font = `${6 * uiScale}px Astro4x`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('CLICK TO SKIP', cw / 2, cacheLayout.panelY + cacheLayout.totalH + uiScale * 12);
+        }
+        ctx.fillStyle = '#667788';
+        ctx.font = `${6 * uiScale}px Astro4x`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'alphabetic';
+        ctx.fillText('Drag to move  •  E to close', cw / 2, ch - uiScale * 10);
+
+        if (!ui.isAnimating) {
+            this._drawInventoryTooltip(ctx, [
+                { inv: cacheInv,  layout: cacheLayout,  scrollX: this.cacheScrollX,  scrollY: this.cacheScrollY },
+                { inv: playerInv, layout: playerLayout, scrollX: this.playerScrollX, scrollY: this.playerScrollY }
+            ]);
+        }
+
+        this._drawStatsPanel(ctx);
+        this._drawClaimLevelsButton(ctx);
+
+        ctx.restore();
+    }
+
     _drawShopOverlay(ctx) {
         ctx.save();
         const cw = this.game.width;
         const ch = this.game.height;
         const uiScale = this.game.uiScale;
         const slotSize = 32 * uiScale;
-        const borderSize = 48 * uiScale;
 
-        // Dim background
         ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
         ctx.fillRect(0, 0, cw, ch);
 
-        // --- Shop Layout ---
-        const shopInv = this.activeShop.inventory;
+        const shopInv    = this.activeShop.inventory;
         const shopLayout = this._getInventoryLayout(shopInv, 'shop');
+        const playerInv  = this.player.inventory;
+        const playerLayout = this._getInventoryLayout(playerInv, 'player');
 
+        // ── Shop panel ────────────────────────────────────────────────────────
         this._draw9Slice(ctx, this.inventoryImg, shopLayout.panelX, shopLayout.panelY, shopLayout.totalW, shopLayout.totalH);
-
         ctx.fillStyle = '#44ddff';
         ctx.font = `${8 * uiScale}px Astro5x`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'alphabetic';
         ctx.fillText('SPACE STATION SHOP', cw / 2, shopLayout.panelY - uiScale * 10);
 
-        // --- Player Layout ---
-        const playerInv = this.player.inventory;
-        const playerLayout = this._getInventoryLayout(playerInv, 'player');
-
+        // ── Player panel ──────────────────────────────────────────────────────
         this._draw9Slice(ctx, this.inventoryImg, playerLayout.panelX, playerLayout.panelY, playerLayout.totalW, playerLayout.totalH);
-
         ctx.fillStyle = '#88aabb';
         ctx.font = `${8 * uiScale}px Astro4x`;
         ctx.fillText('YOUR SHIP CARGO', cw / 2, playerLayout.panelY - uiScale * 10);
 
-        // --- Draw Grids and Items ---
         this._drawInventoryGrid(ctx, shopInv, shopLayout, this.shopScrollX, this.shopScrollY);
         this._drawInventoryGrid(ctx, playerInv, playerLayout, this.playerScrollX, this.playerScrollY);
-
         this._draw9Slice(ctx, this.inventoryBorderImg, shopLayout.panelX, shopLayout.panelY, shopLayout.totalW, shopLayout.totalH);
         this._draw9Slice(ctx, this.inventoryBorderImg, playerLayout.panelX, playerLayout.panelY, playerLayout.totalW, playerLayout.totalH);
-
-        // --- Draw Scrollbars Over Borders ---
         this._drawScrollbars(ctx, shopLayout, this.shopScrollX, this.shopScrollY);
         this._drawScrollbars(ctx, playerLayout, this.playerScrollX, this.playerScrollY);
 
-        // --- Permanent Upgrades ---
+        // ── Permanent Upgrades ────────────────────────────────────────────────
         const btnW = 60 * uiScale;
         const btnH = 24 * uiScale;
-        const gap = 8 * uiScale;
+        const gap  = 8  * uiScale;
         const totalBtnsH = (btnH * 4) + (gap * 3);
-
-        // Position them to the right of the shop grid
         const startX = shopLayout.panelX + shopLayout.totalW + 24 * uiScale;
         const startY = shopLayout.panelY + (shopLayout.totalH - totalBtnsH) / 2;
 
-        // --- Tunable Shop Cost Multipliers ---
         this.healthCostMult = 0.125;
         this.shieldCostMult = 0.5;
         this.damageCostMult = 1.5;
 
         const permCosts = {
-            health: Math.floor((this.player.shipData.health + this.player.permHealthBonus) * this.healthCostMult),
-            shield: Math.floor(((this.player.shipData.shield * 15 + this.player.permShieldBonus) / 10) * this.shieldCostMult),
-            damage: Math.floor((this.player.shipData.baseDamage + this.player.permDamageBonus) * this.damageCostMult),
+            health:    Math.floor((this.player.shipData.health + this.player.permHealthBonus) * this.healthCostMult),
+            shield:    Math.floor(((this.player.shipData.shield * 15 + this.player.permShieldBonus) / 10) * this.shieldCostMult),
+            damage:    Math.floor((this.player.shipData.baseDamage + this.player.permDamageBonus) * this.damageCostMult),
             inventory: 60 * Math.pow(2, this.player.inventoryUpgradeTier)
         };
 
         const upgrades = [
-            { id: 'health', label: '+Max HP', cost: permCosts.health, stock: this.activeShop.permUpgrades.health.stock },
-            { id: 'shield', label: '+Shield', cost: permCosts.shield, stock: this.activeShop.permUpgrades.shield.stock },
-            { id: 'damage', label: '+Damage', cost: permCosts.damage, stock: this.activeShop.permUpgrades.damage.stock },
-            { id: 'inventory', label: '+Cargo', cost: permCosts.inventory, stock: this.activeShop.permUpgrades.inventory.stock }
+            { id: 'health',    label: '+Max HP',  cost: permCosts.health,    stock: this.activeShop.permUpgrades.health.stock },
+            { id: 'shield',    label: '+Shield',  cost: permCosts.shield,    stock: this.activeShop.permUpgrades.shield.stock },
+            { id: 'damage',    label: '+Damage',  cost: permCosts.damage,    stock: this.activeShop.permUpgrades.damage.stock },
+            { id: 'inventory', label: '+Cargo',   cost: permCosts.inventory, stock: this.activeShop.permUpgrades.inventory.stock }
         ];
 
         ctx.font = `${6 * uiScale}px Astro4x`;
@@ -1960,7 +2181,7 @@ export class PlayingState {
             const canAfford = this.player.scrap >= up.cost;
             const available = up.stock > 0 && !up.maxed;
 
-            ctx.fillStyle = available ? (canAfford ? '#113322' : '#331111') : '#222222';
+            ctx.fillStyle   = available ? (canAfford ? '#113322' : '#331111') : '#222222';
             ctx.strokeStyle = available ? (canAfford ? '#44ff44' : '#ff4444') : '#555555';
             ctx.lineWidth = 1;
             ctx.fillRect(bx, by, btnW, btnH);
@@ -1972,74 +2193,32 @@ export class PlayingState {
             ctx.fillStyle = available ? (canAfford ? '#44ff44' : '#ff4444') : '#555555';
             ctx.fillText(up.maxed ? 'MAXED' : (available ? `${up.cost} SCRAP` : 'SOLD OUT'), bx + btnW / 2, by + Math.floor(btnH * 0.75));
 
-            // Store bounds for click detection
             up.bounds = { x: bx, y: by, w: btnW, h: btnH, canBuy: available && canAfford, cost: up.cost, id: up.id, maxed: up.maxed };
         });
 
-        // Store current buttons for _updateShopUI to read
         this._currentPermButtons = upgrades;
-        ctx.textBaseline = 'alphabetic'; // Reset
+        ctx.textBaseline = 'alphabetic';
 
-        // --- Scrap Display ---
+        // ── Scrap display ─────────────────────────────────────────────────────
         ctx.fillStyle = '#ffff44';
         ctx.font = `${10 * uiScale}px Astro5x`;
         ctx.fillText(`SCRAP: ${this.player.scrap}`, cw / 2, playerLayout.panelY - 30 * uiScale);
 
-        // --- Dragged Item ---
-        if (this.draggedItem) {
-            const { item, offsetX, offsetY } = this.draggedItem;
-            const mouse = this.game.getMousePos();
-            const frameAsset = this.game.getAnimationFrame(item.assetKey);
-            const frame = frameAsset.canvas || frameAsset;
-            const w = item.width * slotSize;
-            const h = item.height * slotSize;
+        this._drawDraggedItem(ctx, slotSize, shopInv);
 
-            ctx.drawImage(frame, mouse.x - offsetX, mouse.y - offsetY, w, h);
-
-            // Cost indicator if from shop
-            if (this.draggedItem.originInventory === shopInv) {
-                ctx.fillStyle = this.player.scrap >= item.cost ? '#44ff44' : '#ff4444';
-                ctx.font = `${6 * uiScale}px Astro4x`;
-                ctx.textAlign = 'center';
-                ctx.fillText(`COST: ${item.cost}`, mouse.x - offsetX + w / 2, mouse.y - offsetY + h + 10);
-            }
-        }
-
-        // Instructions
         ctx.fillStyle = '#667788';
         ctx.font = `${6 * uiScale}px Astro4x`;
         ctx.textAlign = 'center';
+        ctx.textBaseline = 'alphabetic';
         ctx.fillText('Drag to buy/sell/move • E to close', cw / 2, ch - uiScale * 10);
 
-        // --- Tooltip for hovered item ---
-        if (!this.draggedItem) {
-            const mouse = this.game.getMousePos();
-            let hoveredEntry = null;
+        this._drawInventoryTooltip(ctx, [
+            { inv: shopInv,   layout: shopLayout,   scrollX: this.shopScrollX,   scrollY: this.shopScrollY },
+            { inv: playerInv, layout: playerLayout, scrollX: this.playerScrollX, scrollY: this.playerScrollY }
+        ]);
 
-            // Check Shop
-            const sVisX = mouse.x - shopLayout.gridVisX;
-            const sVisY = mouse.y - shopLayout.gridVisY;
-            if (sVisX >= 0 && sVisX < shopLayout.visW && sVisY >= 0 && sVisY < shopLayout.visH) {
-                const sCol = Math.floor((sVisX + this.shopScrollX) / slotSize);
-                const sRow = Math.floor((sVisY + this.shopScrollY) / slotSize);
-                hoveredEntry = shopInv.getItemAt(sCol, sRow);
-            }
-
-            // Check Player
-            if (!hoveredEntry) {
-                const pVisX = mouse.x - playerLayout.gridVisX;
-                const pVisY = mouse.y - playerLayout.gridVisY;
-                if (pVisX >= 0 && pVisX < playerLayout.visW && pVisY >= 0 && pVisY < playerLayout.visH) {
-                    const pCol = Math.floor((pVisX + this.playerScrollX) / slotSize);
-                    const pRow = Math.floor((pVisY + this.playerScrollY) / slotSize);
-                    hoveredEntry = playerInv.getItemAt(pCol, pRow);
-                }
-            }
-
-            if (hoveredEntry) {
-                this._drawTooltip(ctx, hoveredEntry.item, mouse);
-            }
-        }
+        this._drawStatsPanel(ctx);
+        this._drawClaimLevelsButton(ctx);
     }
 
     _drawTotalGameTimer(ctx) {
@@ -2364,40 +2543,231 @@ export class PlayingState {
 
         ctx.restore();
     }
-    _updateScrollbarDragging(mouse, layouts) {
+    // ── Shared inventory UI helpers ────────────────────────────────────────────
+
+    // Renders the currently-dragged item under the cursor.
+    // Pass shopInv to show a cost indicator when dragging from the shop.
+    _drawDraggedItem(ctx, slotSize, shopInv = null) {
+        if (!this.draggedItem) return;
+        const { item, offsetX, offsetY } = this.draggedItem;
+        const mouse = this.game.getMousePos();
+        const frameAsset = this.game.getAnimationFrame(item.assetKey);
+        if (!frameAsset) return;
+        const frame = frameAsset.canvas || frameAsset;
+        const w = item.width  * slotSize;
+        const h = item.height * slotSize;
+        ctx.drawImage(frame, mouse.x - offsetX, mouse.y - offsetY, w, h);
+        if (shopInv && this.draggedItem.originInventory === shopInv) {
+            ctx.fillStyle = this.player.scrap >= item.cost ? '#44ff44' : '#ff4444';
+            ctx.font = `${6 * this.game.uiScale}px Astro4x`;
+            ctx.textAlign = 'center';
+            ctx.fillText(`COST: ${item.cost}`, mouse.x - offsetX + w / 2, mouse.y - offsetY + h + 10);
+        }
+    }
+
+    // Renders the "CLAIM N LEVELS" button (shared across shop, cache, and pause).
+    _drawClaimLevelsButton(ctx) {
+        const cl = this.pauseButtons.claimLevels;
+        if (cl.w <= 0) return;
+        const count = this.levelUpQueue.length;
+        const us = this.game.uiScale;
+        ctx.fillStyle   = cl.hovered ? '#333300' : '#1a1a00';
+        ctx.strokeStyle = cl.hovered ? '#ffff55' : '#aaaa00';
+        ctx.lineWidth = 1;
+        ctx.fillRect(cl.x, cl.y, cl.w, cl.h);
+        ctx.strokeRect(cl.x, cl.y, cl.w, cl.h);
+        ctx.fillStyle = cl.hovered ? '#ffff55' : '#cccc00';
+        ctx.font = `${6 * us}px Astro4x`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(`CLAIM ${count} LEVEL${count !== 1 ? 'S' : ''}`, cl.x + cl.w / 2, cl.y + cl.h / 2);
+    }
+
+    // Draws a tooltip for the first item found under the mouse across all given panels.
+    // panels: [{ inv, layout, scrollX, scrollY }]
+    _drawInventoryTooltip(ctx, panels) {
+        if (this.draggedItem) return;
+        const mouse = this.game.getMousePos();
+        for (const p of panels) {
+            const vx = mouse.x - p.layout.gridVisX;
+            const vy = mouse.y - p.layout.gridVisY;
+            if (vx >= 0 && vx < p.layout.visW && vy >= 0 && vy < p.layout.visH) {
+                const entry = p.inv.getItemAt(
+                    Math.floor((vx + p.scrollX) / p.layout.slotSize),
+                    Math.floor((vy + p.scrollY) / p.layout.slotSize)
+                );
+                if (entry) { this._drawTooltip(ctx, entry.item, mouse); return; }
+            }
+        }
+    }
+
+    // Attempts to use a consumable item. Returns true if the item was handled.
+    _tryUseConsumable(entry, playerInv) {
+        if (!entry || !entry.item.consumable) return false;
+        const id = entry.item.id;
+        if (id === 'small_battery') {
+            this.player.heal(0.2);
+            playerInv.removeItemAt(entry.x, entry.y);
+            this.game.sounds.play('select', 0.8);
+            this._onInventoryChanged();
+            return true;
+        }
+        if (id === 'shop_map') {
+            if (this.spawnDistantShop()) {
+                playerInv.removeItemAt(entry.x, entry.y);
+                this.game.sounds.play('select', 0.8);
+                this._onInventoryChanged();
+            }
+            return true;
+        }
+        if (id === 'advanced_locator') {
+            if (this.revealNearestEvent()) {
+                playerInv.removeItemAt(entry.x, entry.y);
+                this.game.sounds.play('select', 0.8);
+                this._onInventoryChanged();
+            } else {
+                this.game.sounds.play('asteroid_break', 0.5);
+            }
+            return true;
+        }
+        return false;
+    }
+
+    // Handles right-click consumable use from the player inventory.
+    _handleRightClickConsumable(mouse, playerLayout, playerInv) {
+        if (!this.game.input.isMouseJustPressed(2) || this.draggedItem) return;
+        const vx = mouse.x - playerLayout.gridVisX;
+        const vy = mouse.y - playerLayout.gridVisY;
+        if (vx < 0 || vx >= playerLayout.visW || vy < 0 || vy >= playerLayout.visH) return;
+        const entry = playerInv.getItemAt(
+            Math.floor((vx + this.playerScrollX) / playerLayout.slotSize),
+            Math.floor((vy + this.playerScrollY) / playerLayout.slotSize)
+        );
+        this._tryUseConsumable(entry, playerInv);
+    }
+
+    // Applies mouse-wheel / trackpad-pan scroll input to the given panels.
+    // panels: [{ layout, scrollXKey, scrollYKey }]  — *Key props are property names on `this`
+    _applyScrollInput(panels) {
+        const mouse = this.game.getMousePos();
+        for (const p of panels) {
+            const { layout } = p;
+            if (mouse.x >= layout.gridVisX && mouse.x <= layout.gridVisX + layout.visW &&
+                mouse.y >= layout.gridVisY && mouse.y <= layout.gridVisY + layout.visH) {
+                this[p.scrollYKey] += this.game.input.mouseWheelDelta;
+                this[p.scrollXKey] -= this.game.input.mousePanDeltaX;
+                this[p.scrollYKey] -= this.game.input.mousePanDeltaY;
+                break;
+            }
+        }
+    }
+
+    // Tries to pick up an item from inv at the mouse position. Returns true if successful.
+    // scrollXKey / scrollYKey are property names on `this`.
+    _tryPickUpItem(mouse, inv, layout, scrollXKey, scrollYKey) {
+        const slotSize = 32 * this.game.uiScale;
+        const vx = mouse.x - layout.gridVisX;
+        const vy = mouse.y - layout.gridVisY;
+        if (vx < 0 || vx >= layout.visW || vy < 0 || vy >= layout.visH) return false;
+        const entry = inv.getItemAt(
+            Math.floor((vx + this[scrollXKey]) / slotSize),
+            Math.floor((vy + this[scrollYKey]) / slotSize)
+        );
+        if (!entry) return false;
+        const offsetX = mouse.x - (layout.gridVisX - this[scrollXKey] + entry.x * slotSize);
+        const offsetY = mouse.y - (layout.gridVisY - this[scrollYKey] + entry.y * slotSize);
+        inv.removeItemAt(entry.x, entry.y);
+        this.draggedItem = { ...entry, entry, originInventory: inv, offsetX, offsetY };
+        this.game.sounds.play('click', 0.5);
+        return true;
+    }
+
+    // Returns the snapped grid {col, row} for dropping the dragged item onto a panel.
+    _getDropPosition(mouse, layout, scrollXKey, scrollYKey) {
+        const slotSize = 32 * this.game.uiScale;
+        return {
+            col: Math.floor((mouse.x - layout.gridVisX + this[scrollXKey] - this.draggedItem.offsetX) / slotSize + 0.5),
+            row: Math.floor((mouse.y - layout.gridVisY + this[scrollYKey] - this.draggedItem.offsetY) / slotSize + 0.5)
+        };
+    }
+
+    // Applies edge-scrolling while an item is being dragged near the border of a panel.
+    _applyEdgeScroll(dt, panels, baseSpeed = 300) {
+        if (!this.draggedItem) return;
+        const mouse = this.game.getMousePos();
+        const uiScale = this.game.uiScale;
+        const edgeMargin = 40 * uiScale;
+        const speed = baseSpeed * dt * uiScale;
+        for (const p of panels) {
+            const { layout } = p;
+            if (mouse.x >= layout.gridVisX && mouse.x <= layout.gridVisX + layout.visW &&
+                mouse.y >= layout.gridVisY && mouse.y <= layout.gridVisY + layout.visH) {
+                if (layout.scrollableY) {
+                    if (mouse.y < layout.gridVisY + edgeMargin)                    this[p.scrollYKey] -= speed;
+                    else if (mouse.y > layout.gridVisY + layout.visH - edgeMargin) this[p.scrollYKey] += speed;
+                }
+                if (layout.scrollableX) {
+                    if (mouse.x < layout.gridVisX + edgeMargin)                    this[p.scrollXKey] -= speed;
+                    else if (mouse.x > layout.gridVisX + layout.visW - edgeMargin) this[p.scrollXKey] += speed;
+                }
+            }
+        }
+    }
+
+    // Updates the Claim Levels button position/hover and opens the dialog on click.
+    // Returns true if the dialog was opened (caller should return early).
+    _updateClaimLevelsButton(mouse, origin) {
+        const cl = this.pauseButtons.claimLevels;
+        if (this.levelUpQueue.length > 0 && this._statsPanelRect) {
+            const sp = this._statsPanelRect;
+            const us = this.game.uiScale;
+            cl.x = Math.floor(sp.x);
+            cl.y = Math.floor(sp.y + sp.h + us * 6);
+            cl.w = Math.floor(sp.w);
+            cl.h = Math.floor(us * 20);
+            cl.hovered = mouse.x >= cl.x && mouse.x <= cl.x + cl.w &&
+                         mouse.y >= cl.y && mouse.y <= cl.y + cl.h;
+            if (this.game.input.isMouseJustPressed(0) && cl.hovered && !this.draggedItem) {
+                this._levelUpOrigin = origin;
+                this._openLevelUpDialog(this.levelUpQueue.shift());
+                return true;
+            }
+        } else {
+            cl.w = 0;
+            cl.h = 0;
+        }
+        return false;
+    }
+
+    // panels: [{ layout, scrollXKey, scrollYKey }]
+    _updateScrollbarDragging(mouse, panels) {
         if (!this.game.input.isMouseDown(0)) {
             this.draggingScrollbar = null;
             return false;
         }
 
         if (this.game.input.isMouseJustPressed(0)) {
-            for (const key of Object.keys(layouts)) {
-                const layout = layouts[key];
+            for (const p of panels) {
+                const { layout } = p;
                 if (layout.scrollableY && layout.trackYBounds) {
                     const b = layout.trackYBounds;
-                    if (mouse.x >= b.x - 4 * this.game.uiScale && mouse.x <= b.x + b.w + 4 * this.game.uiScale && mouse.y >= b.y && mouse.y <= b.y + b.h) {
+                    if (mouse.x >= b.x - 4 * this.game.uiScale && mouse.x <= b.x + b.w + 4 * this.game.uiScale &&
+                        mouse.y >= b.y && mouse.y <= b.y + b.h) {
                         const thumbH = Math.max(16 * this.game.uiScale, b.h * (layout.visH / layout.gridH));
-                        const currentScroll = (key === 'shop') ? this.shopScrollY : this.playerScrollY;
-                        const thumbY = b.y + (b.h - thumbH) * (currentScroll / layout.maxScrollY);
-
-                        let offset = thumbH / 2;
-                        if (mouse.y >= thumbY && mouse.y <= thumbY + thumbH) offset = mouse.y - thumbY;
-
-                        this.draggingScrollbar = { layout: key, axis: 'y', offset };
+                        const thumbY = b.y + (b.h - thumbH) * (this[p.scrollYKey] / layout.maxScrollY);
+                        const offset = (mouse.y >= thumbY && mouse.y <= thumbY + thumbH) ? mouse.y - thumbY : thumbH / 2;
+                        this.draggingScrollbar = { layout, scrollXKey: p.scrollXKey, scrollYKey: p.scrollYKey, axis: 'y', offset };
                         return true;
                     }
                 }
                 if (layout.scrollableX && layout.trackXBounds) {
                     const b = layout.trackXBounds;
-                    if (mouse.x >= b.x && mouse.x <= b.x + b.w && mouse.y >= b.y - 4 * this.game.uiScale && mouse.y <= b.y + b.h + 4 * this.game.uiScale) {
+                    if (mouse.x >= b.x && mouse.x <= b.x + b.w &&
+                        mouse.y >= b.y - 4 * this.game.uiScale && mouse.y <= b.y + b.h + 4 * this.game.uiScale) {
                         const thumbW = Math.max(16 * this.game.uiScale, b.w * (layout.visW / layout.gridW));
-                        const currentScroll = (key === 'shop') ? this.shopScrollX : this.playerScrollX;
-                        const thumbX = b.x + (b.w - thumbW) * (currentScroll / layout.maxScrollX);
-
-                        let offset = thumbW / 2;
-                        if (mouse.x >= thumbX && mouse.x <= thumbX + thumbW) offset = mouse.x - thumbX;
-
-                        this.draggingScrollbar = { layout: key, axis: 'x', offset };
+                        const thumbX = b.x + (b.w - thumbW) * (this[p.scrollXKey] / layout.maxScrollX);
+                        const offset = (mouse.x >= thumbX && mouse.x <= thumbX + thumbW) ? mouse.x - thumbX : thumbW / 2;
+                        this.draggingScrollbar = { layout, scrollXKey: p.scrollXKey, scrollYKey: p.scrollYKey, axis: 'x', offset };
                         return true;
                     }
                 }
@@ -2406,74 +2776,142 @@ export class PlayingState {
 
         if (this.draggingScrollbar) {
             const drag = this.draggingScrollbar;
-            const currentLayout = layouts[drag.layout];
-            if (!currentLayout) {
-                this.draggingScrollbar = null;
-                return false;
-            }
-
+            if (!drag.layout) { this.draggingScrollbar = null; return false; }
             if (drag.axis === 'y') {
-                const b = currentLayout.trackYBounds;
-                const thumbH = Math.max(16 * this.game.uiScale, b.h * (currentLayout.visH / currentLayout.gridH));
-                const val = (mouse.y - b.y - drag.offset) / (b.h - thumbH);
-                const targetScroll = val * currentLayout.maxScrollY;
-                if (drag.layout === 'shop') this.shopScrollY = targetScroll;
-                else if (drag.layout === 'player') this.playerScrollY = targetScroll;
+                const b = drag.layout.trackYBounds;
+                const thumbH = Math.max(16 * this.game.uiScale, b.h * (drag.layout.visH / drag.layout.gridH));
+                this[drag.scrollYKey] = ((mouse.y - b.y - drag.offset) / (b.h - thumbH)) * drag.layout.maxScrollY;
             } else {
-                const b = currentLayout.trackXBounds;
-                const thumbW = Math.max(16 * this.game.uiScale, b.w * (currentLayout.visW / currentLayout.gridW));
-                const val = (mouse.x - b.x - drag.offset) / (b.w - thumbW);
-                const targetScroll = val * currentLayout.maxScrollX;
-                if (drag.layout === 'shop') this.shopScrollX = targetScroll;
-                else if (drag.layout === 'player') this.playerScrollX = targetScroll;
+                const b = drag.layout.trackXBounds;
+                const thumbW = Math.max(16 * this.game.uiScale, b.w * (drag.layout.visW / drag.layout.gridW));
+                this[drag.scrollXKey] = ((mouse.x - b.x - drag.offset) / (b.w - thumbW)) * drag.layout.maxScrollX;
             }
             return true;
         }
         return false;
     }
 
-    _updateShopUI(dt) {
-        const mouse = this.game.getMousePos();
-        const uiScale = this.game.uiScale;
-        const slotSize = 32 * uiScale;
-        const borderSize = 48 * uiScale;
+    _clampScrollPanels(panels) {
+        for (const p of panels) {
+            this[p.scrollXKey] = Math.max(0, Math.min(this[p.scrollXKey], p.layout.maxScrollX));
+            this[p.scrollYKey] = Math.max(0, Math.min(this[p.scrollYKey], p.layout.maxScrollY));
+        }
+    }
 
-        // --- Shop Layout ---
-        const shopInv = this.activeShop.inventory;
-        const shopLayout = this._getInventoryLayout(shopInv, 'shop');
+    // Handles all scroll input for the given panels in one call.
+    // Returns true if a scrollbar was dragged (caller should return early to skip drag-drop).
+    _applyScrollPanels(dt, mouse, panels, edgeSpeed = 300) {
+        if (this._updateScrollbarDragging(mouse, panels)) {
+            this._clampScrollPanels(panels);
+            return true;
+        }
+        this._applyEdgeScroll(dt, panels, edgeSpeed);
+        this._applyScrollInput(panels);
+        this._clampScrollPanels(panels);
+        return false;
+    }
 
-        // --- Player Layout ---
+    _updateCacheUI(dt) {
+        const ui = this.activeCacheUI;
+        if (!ui) return;
+
+        ui.update(dt);
+
+        const mouse     = this.game.getMousePos();
+        const cacheInv  = ui.cacheInventory;
         const playerInv = this.player.inventory;
+
+        const cacheLayout  = this._getInventoryLayout(cacheInv,  'shop');
         const playerLayout = this._getInventoryLayout(playerInv, 'player');
 
-        // Capture Drag Intercepts before processing normal clicks or hovers
-        if (this._updateScrollbarDragging(mouse, { shop: shopLayout, player: playerLayout })) {
-            // Apply clamps from drag immediately
-            this.shopScrollX = Math.max(0, Math.min(this.shopScrollX, shopLayout.maxScrollX));
-            this.shopScrollY = Math.max(0, Math.min(this.shopScrollY, shopLayout.maxScrollY));
-            this.playerScrollX = Math.max(0, Math.min(this.playerScrollX, playerLayout.maxScrollX));
-            this.playerScrollY = Math.max(0, Math.min(this.playerScrollY, playerLayout.maxScrollY));
-            return;
+        const panels = [
+            { layout: cacheLayout,  scrollXKey: 'cacheScrollX',  scrollYKey: 'cacheScrollY' },
+            { layout: playerLayout, scrollXKey: 'playerScrollX', scrollYKey: 'playerScrollY' }
+        ];
+
+        if (this._applyScrollPanels(dt, mouse, panels)) return;
+
+        // ── Skip animation on click ──────────────────────────────────────────
+        if (this.game.input.isMouseJustPressed(0) && ui.isAnimating) {
+            ui.skipRequested = true;
         }
 
-        // Handle scrolling
-        let mouseInShop = mouse.x >= shopLayout.panelX && mouse.x <= shopLayout.panelX + shopLayout.totalW && mouse.y >= shopLayout.panelY && mouse.y <= shopLayout.panelY + shopLayout.totalH;
-        let mouseInPlayer = mouse.x >= playerLayout.panelX && mouse.x <= playerLayout.panelX + playerLayout.totalW && mouse.y >= playerLayout.panelY && mouse.y <= playerLayout.panelY + playerLayout.totalH;
+        // ── Drag-drop (only when IDLE) ───────────────────────────────────────
+        if (!ui.isAnimating) {
+            if (this.game.input.isMouseJustPressed(0) && !this.draggedItem) {
+                if (!this._tryPickUpItem(mouse, cacheInv, cacheLayout, 'cacheScrollX', 'cacheScrollY')) {
+                    if (this._tryPickUpItem(mouse, playerInv, playerLayout, 'playerScrollX', 'playerScrollY')) {
+                        this._onInventoryChanged();
+                    }
+                }
+            }
 
-        if (mouseInShop) {
-            this.shopScrollY += this.game.input.mouseWheelDelta;
-            this.shopScrollX -= this.game.input.mousePanDeltaX;
-            this.shopScrollY -= this.game.input.mousePanDeltaY;
-        } else if (mouseInPlayer) {
-            this.playerScrollY += this.game.input.mouseWheelDelta;
-            this.playerScrollX -= this.game.input.mousePanDeltaX;
-            this.playerScrollY -= this.game.input.mousePanDeltaY;
+            // Release drag
+            if (this.draggedItem && !this.game.input.isMouseDown(0)) {
+                const { col: pCol, row: pRow } = this._getDropPosition(mouse, playerLayout, 'playerScrollX', 'playerScrollY');
+                const { col: cCol, row: cRow } = this._getDropPosition(mouse, cacheLayout,  'cacheScrollX',  'cacheScrollY');
+
+                if (playerInv.canFit(this.draggedItem.item, pCol, pRow)) {
+                    playerInv.addItem(this.draggedItem.item, pCol, pRow);
+                    this._onInventoryChanged(true);
+                    this.game.sounds.play('select', 0.8);
+                    if (this.draggedItem.originInventory === cacheInv && cacheInv.items.length === 0) {
+                        if (this._activeCache) this._activeCache.markEmptied();
+                    }
+                } else if (cacheInv.canFit(this.draggedItem.item, cCol, cRow)) {
+                    cacheInv.addItem(this.draggedItem.item, cCol, cRow);
+                    if (this.draggedItem.originInventory === playerInv) this._onInventoryChanged();
+                    this.game.sounds.play('click', 0.5);
+                } else {
+                    this.draggedItem.originInventory.addItem(this.draggedItem.item, this.draggedItem.x, this.draggedItem.y);
+                    if (this.draggedItem.originInventory === playerInv) this._onInventoryChanged();
+                    this.game.sounds.play('click', 0.3);
+                }
+
+                this.draggedItem = null;
+            }
+
+            this._handleRightClickConsumable(mouse, playerLayout, playerInv);
+
+            if (this._updateClaimLevelsButton(mouse, 'cache')) return;
         }
 
-        this.shopScrollX = Math.max(0, Math.min(this.shopScrollX, shopLayout.maxScrollX));
-        this.shopScrollY = Math.max(0, Math.min(this.shopScrollY, shopLayout.maxScrollY));
-        this.playerScrollX = Math.max(0, Math.min(this.playerScrollX, playerLayout.maxScrollX));
-        this.playerScrollY = Math.max(0, Math.min(this.playerScrollY, playerLayout.maxScrollY));
+        // ── E or ESC closes ───────────────────────────────────────────────────
+        if (this.game.input.isKeyJustPressed('KeyE') || this.game.input.isKeyJustPressed('Escape')) {
+            if (this.draggedItem) {
+                this.draggedItem.originInventory.addItem(this.draggedItem.item, this.draggedItem.x, this.draggedItem.y);
+                if (this.draggedItem.originInventory === playerInv) this._onInventoryChanged();
+                this.draggedItem = null;
+            }
+            ui.close();
+        }
+
+        // ── Teardown ─────────────────────────────────────────────────────────
+        if (ui.isClosed) {
+            this.isCacheOpen = false;
+            this.paused      = false;
+            if (this._activeCache) this._activeCache.close();
+            this.activeCacheUI  = null;
+            this._activeCache   = null;
+            this.cacheScrollX   = 0;
+            this.cacheScrollY   = 0;
+        }
+    }
+
+    _updateShopUI(dt) {
+        const mouse = this.game.getMousePos();
+
+        const shopInv    = this.activeShop.inventory;
+        const shopLayout = this._getInventoryLayout(shopInv, 'shop');
+        const playerInv  = this.player.inventory;
+        const playerLayout = this._getInventoryLayout(playerInv, 'player');
+
+        const panels = [
+            { layout: shopLayout,   scrollXKey: 'shopScrollX',   scrollYKey: 'shopScrollY' },
+            { layout: playerLayout, scrollXKey: 'playerScrollX', scrollYKey: 'playerScrollY' }
+        ];
+
+        if (this._applyScrollPanels(dt, mouse, panels)) return;
 
         if (this.game.input.isMouseJustPressed(0)) {
             // Check Permanent Upgrade clicks
@@ -2495,7 +2933,7 @@ export class PlayingState {
                                 this.player.updateMaxShield(100);
                             } else if (btn.bounds.id === 'damage') {
                                 this.player.permDamageBonus += 5.0;
-                                this.game.sounds.play('laser', 0.2); // extra feedback
+                                this.game.sounds.play('laser', 0.2);
                             } else if (btn.bounds.id === 'inventory') {
                                 this.player.inventoryUpgradeTier++;
                                 const ejected = this.player.inventory.resize(this.player.inventory.cols + 1, this.player.inventory.rows);
@@ -2504,8 +2942,7 @@ export class PlayingState {
                             this.game.sounds.play('select', 0.8);
                         } else {
                             if (!btn.bounds.maxed && this.activeShop.permUpgrades[btn.bounds.id].stock > 0) {
-                                // Can't afford
-                                this.game.sounds.play('asteroid_break', 0.3); // Error sound
+                                this.game.sounds.play('asteroid_break', 0.3);
                             }
                         }
                         break;
@@ -2514,163 +2951,73 @@ export class PlayingState {
                 if (clickedPerm) return;
             }
 
-            // Check Shop click
-            const sVisX = mouse.x - shopLayout.gridVisX;
-            const sVisY = mouse.y - shopLayout.gridVisY;
-            let shopEntry = null;
-            if (sVisX >= 0 && sVisX < shopLayout.visW && sVisY >= 0 && sVisY < shopLayout.visH) {
-                const sCol = Math.floor((sVisX + this.shopScrollX) / slotSize);
-                const sRow = Math.floor((sVisY + this.shopScrollY) / slotSize);
-                shopEntry = shopInv.getItemAt(sCol, sRow);
-            }
-
-            if (shopEntry) {
-                const offsetX = mouse.x - (shopLayout.gridVisX - this.shopScrollX + shopEntry.x * slotSize);
-                const offsetY = mouse.y - (shopLayout.gridVisY - this.shopScrollY + shopEntry.y * slotSize);
-
-                // Remove from shop while dragging
-                shopInv.removeItemAt(shopEntry.x, shopEntry.y);
-                this.draggedItem = { ...shopEntry, entry: shopEntry, originInventory: shopInv, offsetX, offsetY };
-                this.game.sounds.play('click', 0.5);
-            } else {
-                // Check Player click
-                const pVisX = mouse.x - playerLayout.gridVisX;
-                const pVisY = mouse.y - playerLayout.gridVisY;
-                let playerEntry = null;
-                if (pVisX >= 0 && pVisX < playerLayout.visW && pVisY >= 0 && pVisY < playerLayout.visH) {
-                    const pCol = Math.floor((pVisX + this.playerScrollX) / slotSize);
-                    const pRow = Math.floor((pVisY + this.playerScrollY) / slotSize);
-                    playerEntry = playerInv.getItemAt(pCol, pRow);
+            if (!this._tryPickUpItem(mouse, shopInv, shopLayout, 'shopScrollX', 'shopScrollY')) {
+                if (this._tryPickUpItem(mouse, playerInv, playerLayout, 'playerScrollX', 'playerScrollY')) {
+                    this._onInventoryChanged();
                 }
+            }
+        }
 
-                if (playerEntry) {
-                    const offsetX = mouse.x - (playerLayout.gridVisX - this.playerScrollX + playerEntry.x * slotSize);
-                    const offsetY = mouse.y - (playerLayout.gridVisY - this.playerScrollY + playerEntry.y * slotSize);
+        this._handleRightClickConsumable(mouse, playerLayout, playerInv);
 
-                    // Remove from player while dragging
-                    playerInv.removeItemAt(playerEntry.x, playerEntry.y);
-                    this.draggedItem = { ...playerEntry, entry: playerEntry, originInventory: playerInv, offsetX, offsetY };
+        if (this.draggedItem && !this.game.input.isMouseDown(0)) {
+            const { col: pCol, row: pRow } = this._getDropPosition(mouse, playerLayout, 'playerScrollX', 'playerScrollY');
+            const { col: sCol, row: sRow } = this._getDropPosition(mouse, shopLayout,   'shopScrollX',   'shopScrollY');
+
+            // 1. Try Drop in Player Inventory
+            if (playerInv.canFit(this.draggedItem.item, pCol, pRow)) {
+                if (this.draggedItem.originInventory === shopInv) {
+                    if (this.player.scrap >= this.draggedItem.item.cost) {
+                        this.player.scrap -= this.draggedItem.item.cost;
+                        playerInv.addItem(this.draggedItem.item, pCol, pRow);
+                        this.game.sounds.play('select', 0.8);
+                        this._onInventoryChanged(true);
+                    } else {
+                        shopInv.addItem(this.draggedItem.item, this.draggedItem.x, this.draggedItem.y);
+                        this.game.sounds.play('asteroid_break', 0.5);
+                    }
+                } else {
+                    playerInv.addItem(this.draggedItem.item, pCol, pRow);
                     this.game.sounds.play('click', 0.5);
                     this._onInventoryChanged();
                 }
             }
-        }
-
-        // Right-click to use consumables
-        if (this.game.input.isMouseJustPressed(2) && !this.draggedItem) {
-            const pVisX = mouse.x - playerLayout.gridVisX;
-            const pVisY = mouse.y - playerLayout.gridVisY;
-            let playerEntry = null;
-            if (pVisX >= 0 && pVisX < playerLayout.visW && pVisY >= 0 && pVisY < playerLayout.visH) {
-                const pCol = Math.floor((pVisX + this.playerScrollX) / slotSize);
-                const pRow = Math.floor((pVisY + this.playerScrollY) / slotSize);
-                playerEntry = playerInv.getItemAt(pCol, pRow);
-            }
-
-            if (playerEntry && playerEntry.item.consumable) {
-                if (playerEntry.item.id === 'small_battery') {
-                    this.player.heal(0.2);
-                    playerInv.removeItemAt(playerEntry.x, playerEntry.y);
+            // 2. Try Drop in Shop Inventory (Sell/Return)
+            else if (shopInv.canFit(this.draggedItem.item, sCol, sRow)) {
+                if (this.draggedItem.originInventory === playerInv) {
+                    this.player.scrap += Math.floor(this.draggedItem.item.cost * 0.7);
+                    shopInv.addItem(this.draggedItem.item, sCol, sRow);
                     this.game.sounds.play('select', 0.8);
                     this._onInventoryChanged();
-                } else if (playerEntry.item.id === 'shop_map') {
-                    if (this.spawnDistantShop()) {
-                        playerInv.removeItemAt(playerEntry.x, playerEntry.y);
-                        this.game.sounds.play('select', 0.8);
-                        this._onInventoryChanged();
-                    }
-                } else if (playerEntry.item.id === 'advanced_locator') {
-                    if (this.revealNearestEvent()) {
-                        playerInv.removeItemAt(playerEntry.x, playerEntry.y);
-                        this.game.sounds.play('select', 0.8);
-                        this._onInventoryChanged();
-                    } else {
-                        this.game.sounds.play('asteroid_break', 0.5); // Error sound
-                    }
+                } else {
+                    shopInv.addItem(this.draggedItem.item, sCol, sRow);
+                    this.game.sounds.play('click', 0.5);
                 }
             }
-        }
-
-        if (this.draggedItem) {
-            if (!this.game.input.isMouseDown(0)) {
-                // Potential drop snapped positions
-                const pCol = Math.floor((mouse.x - playerLayout.gridVisX + this.playerScrollX - this.draggedItem.offsetX) / slotSize + 0.5);
-                const pRow = Math.floor((mouse.y - playerLayout.gridVisY + this.playerScrollY - this.draggedItem.offsetY) / slotSize + 0.5);
-
-                const sCol = Math.floor((mouse.x - shopLayout.gridVisX + this.shopScrollX - this.draggedItem.offsetX) / slotSize + 0.5);
-                const sRow = Math.floor((mouse.y - shopLayout.gridVisY + this.shopScrollY - this.draggedItem.offsetY) / slotSize + 0.5);
-
-                let dropped = false;
-
-                // 1. Try Drop in Player Inventory
-                if (playerInv.canFit(this.draggedItem.item, pCol, pRow)) {
-                    if (this.draggedItem.originInventory === shopInv) {
-                        // Attempt Purchase
-                        if (this.player.scrap >= this.draggedItem.item.cost) {
-                            this.player.scrap -= this.draggedItem.item.cost;
-                            playerInv.addItem(this.draggedItem.item, pCol, pRow);
-
-                            // Health adjustment is now handled automatically in Player.updateMaxHealth
-                            // via the _onInventoryChanged -> updateMaxHealth pipeline.
-
-                            this.game.sounds.play('select', 0.8);
-                            this._onInventoryChanged(true);
-                            dropped = true;
-                        } else {
-                            // Return to shop
-                            shopInv.addItem(this.draggedItem.item, this.draggedItem.x, this.draggedItem.y);
-                            this.game.sounds.play('asteroid_break', 0.5);
-                        }
-                    } else {
-                        // Move within player cargo
-                        playerInv.addItem(this.draggedItem.item, pCol, pRow);
-                        this.game.sounds.play('click', 0.5);
-                        this._onInventoryChanged();
-                        dropped = true;
-                    }
+            // 3. Drop failed
+            else {
+                if (this.draggedItem.originInventory === shopInv) {
+                    this.draggedItem.originInventory.addItem(this.draggedItem.item, this.draggedItem.x, this.draggedItem.y);
+                    this.game.sounds.play('click', 0.3);
+                } else {
+                    const worldMouse = this.camera.screenToWorld(mouse.x, mouse.y, this.game.width, this.game.height);
+                    const dropOffset  = (Math.random() - 0.5) * 20;
+                    const dropOffset2 = (Math.random() - 0.5) * 20;
+                    this.itemPickups.push(new ItemPickup(this.game, worldMouse.x + dropOffset, worldMouse.y + dropOffset2, this.draggedItem.item));
+                    this._onInventoryChanged();
+                    this.game.sounds.play('click', 0.5);
                 }
-                // 2. Try Drop in Shop Inventory (Sell/Return)
-                else if (shopInv.canFit(this.draggedItem.item, sCol, sRow)) {
-                    if (this.draggedItem.originInventory === playerInv) {
-                        // Sell back (70% value)
-                        this.player.scrap += Math.floor(this.draggedItem.item.cost * 0.7);
-                        shopInv.addItem(this.draggedItem.item, sCol, sRow);
-                        this.game.sounds.play('select', 0.8);
-                        this._onInventoryChanged();
-                        dropped = true;
-                    } else {
-                        // Move within shop
-                        shopInv.addItem(this.draggedItem.item, sCol, sRow);
-                        this.game.sounds.play('click', 0.5);
-                        dropped = true;
-                    }
-                }
-                // 3. Drop failed: Return to shop or Drop into space
-                else {
-                    if (this.draggedItem.originInventory === shopInv) {
-                        this.draggedItem.originInventory.addItem(this.draggedItem.item, this.draggedItem.x, this.draggedItem.y);
-                        this.game.sounds.play('click', 0.3);
-                    } else {
-                        const worldMouse = this.camera.screenToWorld(mouse.x, mouse.y, this.game.width, this.game.height);
-                        const dropOffset = (Math.random() - 0.5) * 20;
-                        const dropOffset2 = (Math.random() - 0.5) * 20;
-                        this.itemPickups.push(new ItemPickup(this.game, worldMouse.x + dropOffset, worldMouse.y + dropOffset2, this.draggedItem.item));
-                        this._onInventoryChanged();
-                        this.game.sounds.play('click', 0.5);
-                    }
-                }
-
-                this.draggedItem = null;
             }
+
+            this.draggedItem = null;
         }
+
+        if (this._updateClaimLevelsButton(mouse, 'shop')) return;
 
         if (this.game.input.isKeyJustPressed('KeyE') || this.game.input.isKeyJustPressed('Escape')) {
-            // If dragging, return item first
             if (this.draggedItem) {
                 this.draggedItem.originInventory.addItem(this.draggedItem.item, this.draggedItem.x, this.draggedItem.y);
-                if (this.draggedItem.originInventory === playerInv) {
-                    this._onInventoryChanged();
-                }
+                if (this.draggedItem.originInventory === playerInv) this._onInventoryChanged();
                 this.draggedItem = null;
             }
             this.isShopOpen = false;
@@ -2683,41 +3030,25 @@ export class PlayingState {
     _updatePauseUI(dt) {
         const mouse = this.game.getMousePos();
         const uiScale = this.game.uiScale;
-        const slotSize = 32 * uiScale;
-        const borderSize = 48 * uiScale;
-
-        const playerInv = this.player.inventory;
-        const playerLayout = this._getInventoryLayout(playerInv, 'pause');
-
-        if (this._updateScrollbarDragging(mouse, { player: playerLayout })) {
-            this.playerScrollX = Math.max(0, Math.min(this.playerScrollX, playerLayout.maxScrollX));
-            this.playerScrollY = Math.max(0, Math.min(this.playerScrollY, playerLayout.maxScrollY));
-            return;
-        }
-
-        let mouseInPlayer = mouse.x >= playerLayout.panelX && mouse.x <= playerLayout.panelX + playerLayout.totalW && mouse.y >= playerLayout.panelY && mouse.y <= playerLayout.panelY + playerLayout.totalH;
-
-        if (mouseInPlayer) {
-            this.playerScrollY += this.game.input.mouseWheelDelta;
-            this.playerScrollX -= this.game.input.mousePanDeltaX;
-            this.playerScrollY -= this.game.input.mousePanDeltaY;
-        }
-
-        this.playerScrollX = Math.max(0, Math.min(this.playerScrollX, playerLayout.maxScrollX));
-        this.playerScrollY = Math.max(0, Math.min(this.playerScrollY, playerLayout.maxScrollY));
-        // Volume Buttons Layout (Screen Bottom-Right)
-        // MUST match menuState.js layout exactly for identical appearance
-        const volMargin = Math.floor(uiScale * 8);
-        const volBtnSize = this.game.spriteSize('left_arrow_off', uiScale);
-        const volBtnW = volBtnSize.w;
-        const volBtnH = volBtnSize.h;
-        const lineH = Math.floor(uiScale * 20);
-        const barW = Math.floor(uiScale * 60);
-        const volGap = Math.floor(uiScale * 6);
         const cw = this.game.width;
         const ch = this.game.height;
 
-        // Music (Bottom Line) — anchor inc button to bottom-right
+        const playerInv    = this.player.inventory;
+        const playerLayout = this._getInventoryLayout(playerInv, 'pause');
+
+        const panels = [{ layout: playerLayout, scrollXKey: 'playerScrollX', scrollYKey: 'playerScrollY' }];
+
+        if (this._applyScrollPanels(dt, mouse, panels, 500)) return;
+
+        // Volume Buttons Layout (MUST match menuState.js exactly)
+        const volMargin  = Math.floor(uiScale * 8);
+        const volBtnSize = this.game.spriteSize('left_arrow_off', uiScale);
+        const volBtnW    = volBtnSize.w;
+        const volBtnH    = volBtnSize.h;
+        const lineH      = Math.floor(uiScale * 20);
+        const barW       = Math.floor(uiScale * 60);
+        const volGap     = Math.floor(uiScale * 6);
+
         this.pauseButtons.musicInc.x = cw - volMargin - volBtnW;
         this.pauseButtons.musicInc.y = ch - volMargin - volBtnH;
         this.pauseButtons.musicInc.w = volBtnW;
@@ -2728,7 +3059,6 @@ export class PlayingState {
         this.pauseButtons.musicDec.w = volBtnW;
         this.pauseButtons.musicDec.h = volBtnH;
 
-        // SFX (Line above Music)
         this.pauseButtons.sfxInc.x = this.pauseButtons.musicInc.x;
         this.pauseButtons.sfxInc.y = this.pauseButtons.musicInc.y - lineH;
         this.pauseButtons.sfxInc.w = volBtnW;
@@ -2739,34 +3069,27 @@ export class PlayingState {
         this.pauseButtons.sfxDec.w = volBtnW;
         this.pauseButtons.sfxDec.h = volBtnH;
 
-        // Ship Selection Button Positioning
         const shipSelSize = this.game.spriteSize('ship_selection_off', uiScale);
         this.pauseButtons.shipSelection.x = Math.floor(cw / 2 - shipSelSize.w / 2);
         this.pauseButtons.shipSelection.y = ch - Math.floor(uiScale * 30) - shipSelSize.h;
         this.pauseButtons.shipSelection.w = shipSelSize.w;
         this.pauseButtons.shipSelection.h = shipSelSize.h;
 
-        // Confirmation Dialog Positioning
+        // Claim Levels button position (click handled below in the mouse press block)
+        this._updateClaimLevelsButton(mouse, 'pause');
+
         if (this.confirmRestart) {
-            const yesSize = this.game.spriteSize('fly_again_off', uiScale); // Reusing fly again sprite as "YES" if needed or text
-            const gap = 16 * uiScale;
             this.confirmRestartButtons.yes = {
-                x: Math.floor(cw / 2 - 40 * uiScale),
-                y: ch / 2 + 20 * uiScale,
-                w: 30 * uiScale,
-                h: 20 * uiScale,
-                hovered: false
+                x: Math.floor(cw / 2 - 40 * uiScale), y: ch / 2 + 20 * uiScale,
+                w: 30 * uiScale, h: 20 * uiScale, hovered: false
             };
             this.confirmRestartButtons.no = {
-                x: Math.floor(cw / 2 + 10 * uiScale),
-                y: ch / 2 + 20 * uiScale,
-                w: 30 * uiScale,
-                h: 20 * uiScale,
-                hovered: false
+                x: Math.floor(cw / 2 + 10 * uiScale), y: ch / 2 + 20 * uiScale,
+                w: 30 * uiScale, h: 20 * uiScale, hovered: false
             };
         }
 
-        // Hover Checks
+        // Hover checks
         const pb = this.pauseButtons;
         for (const k in pb) {
             const b = pb[k];
@@ -2798,92 +3121,44 @@ export class PlayingState {
                     this.confirmRestart = true;
                     return;
                 }
+                if (pb.claimLevels.hovered && pb.claimLevels.w > 0) {
+                    this._levelUpOrigin = 'pause';
+                    this._openLevelUpDialog(this.levelUpQueue.shift());
+                    return;
+                }
             }
 
             if (pb.musicDec.hovered) this.game.sounds.setMusicVolume(this.game.sounds.musicVolume - 0.1);
             if (pb.musicInc.hovered) this.game.sounds.setMusicVolume(this.game.sounds.musicVolume + 0.1);
-            if (pb.sfxDec.hovered) this.game.sounds.setSfxVolume(this.game.sounds.sfxVolume - 0.1);
-            if (pb.sfxInc.hovered) this.game.sounds.setSfxVolume(this.game.sounds.sfxVolume + 0.1);
-
+            if (pb.sfxDec.hovered)   this.game.sounds.setSfxVolume(this.game.sounds.sfxVolume - 0.1);
+            if (pb.sfxInc.hovered)   this.game.sounds.setSfxVolume(this.game.sounds.sfxVolume + 0.1);
             if (pb.musicDec.hovered || pb.musicInc.hovered || pb.sfxDec.hovered || pb.sfxInc.hovered) {
                 this.game.sounds.play('click', 0.5);
             }
 
-            const pVisX = mouse.x - playerLayout.gridVisX;
-            const pVisY = mouse.y - playerLayout.gridVisY;
-            let playerEntry = null;
-            if (pVisX >= 0 && pVisX < playerLayout.visW && pVisY >= 0 && pVisY < playerLayout.visH) {
-                const pCol = Math.floor((pVisX + this.playerScrollX) / slotSize);
-                const pRow = Math.floor((pVisY + this.playerScrollY) / slotSize);
-                playerEntry = playerInv.getItemAt(pCol, pRow);
-            }
-
-            if (playerEntry) {
-                const offsetX = mouse.x - (playerLayout.gridVisX - this.playerScrollX + playerEntry.x * slotSize);
-                const offsetY = mouse.y - (playerLayout.gridVisY - this.playerScrollY + playerEntry.y * slotSize);
-
-                playerInv.removeItemAt(playerEntry.x, playerEntry.y);
-                this.draggedItem = { ...playerEntry, entry: playerEntry, originInventory: playerInv, offsetX, offsetY };
-                this.game.sounds.play('click', 0.5);
+            if (this._tryPickUpItem(mouse, playerInv, playerLayout, 'playerScrollX', 'playerScrollY')) {
                 this._onInventoryChanged();
             }
         }
 
-        // Right-click to use consumables
-        if (this.game.input.isMouseJustPressed(2) && !this.draggedItem) {
-            const pVisX = mouse.x - playerLayout.gridVisX;
-            const pVisY = mouse.y - playerLayout.gridVisY;
-            let playerEntry = null;
-            if (pVisX >= 0 && pVisX < playerLayout.visW && pVisY >= 0 && pVisY < playerLayout.visH) {
-                const pCol = Math.floor((pVisX + this.playerScrollX) / slotSize);
-                const pRow = Math.floor((pVisY + this.playerScrollY) / slotSize);
-                playerEntry = playerInv.getItemAt(pCol, pRow);
-            }
+        this._handleRightClickConsumable(mouse, playerLayout, playerInv);
 
-            if (playerEntry && playerEntry.item.consumable) {
-                if (playerEntry.item.id === 'small_battery') {
-                    this.player.heal(0.2);
-                    playerInv.removeItemAt(playerEntry.x, playerEntry.y);
-                    this.game.sounds.play('select', 0.8);
-                    this._onInventoryChanged();
-                } else if (playerEntry.item.id === 'shop_map') {
-                    if (this.spawnDistantShop()) {
-                        playerInv.removeItemAt(playerEntry.x, playerEntry.y);
-                        this.game.sounds.play('select', 0.8);
-                        this._onInventoryChanged();
-                    }
-                } else if (playerEntry.item.id === 'advanced_locator') {
-                    if (this.revealNearestEvent()) {
-                        playerInv.removeItemAt(playerEntry.x, playerEntry.y);
-                        this.game.sounds.play('select', 0.8);
-                        this._onInventoryChanged();
-                    } else {
-                        this.game.sounds.play('asteroid_break', 0.5); // Error sound
-                    }
-                }
-            }
-        }
+        if (this.draggedItem && !this.game.input.isMouseDown(0)) {
+            const { col: pCol, row: pRow } = this._getDropPosition(mouse, playerLayout, 'playerScrollX', 'playerScrollY');
 
-        if (this.draggedItem) {
-            if (!this.game.input.isMouseDown(0)) {
-                const pCol = Math.floor((mouse.x - playerLayout.gridVisX + this.playerScrollX - this.draggedItem.offsetX) / slotSize + 0.5);
-                const pRow = Math.floor((mouse.y - playerLayout.gridVisY + this.playerScrollY - this.draggedItem.offsetY) / slotSize + 0.5);
-
-                if (playerInv.canFit(this.draggedItem.item, pCol, pRow)) {
-                    playerInv.addItem(this.draggedItem.item, pCol, pRow);
-                    this.game.sounds.play('click', 0.5);
-                    this._onInventoryChanged();
-                } else {
-                    // Drop into space
-                    const worldMouse = this.camera.screenToWorld(mouse.x, mouse.y, this.game.width, this.game.height);
-                    const dropOffset = (Math.random() - 0.5) * 20;
-                    const dropOffset2 = (Math.random() - 0.5) * 20;
-                    this.itemPickups.push(new ItemPickup(this.game, worldMouse.x + dropOffset, worldMouse.y + dropOffset2, this.draggedItem.item));
-                    this._onInventoryChanged();
-                    this.game.sounds.play('click', 0.5);
-                }
-                this.draggedItem = null;
+            if (playerInv.canFit(this.draggedItem.item, pCol, pRow)) {
+                playerInv.addItem(this.draggedItem.item, pCol, pRow);
+                this.game.sounds.play('click', 0.5);
+                this._onInventoryChanged();
+            } else {
+                const worldMouse = this.camera.screenToWorld(mouse.x, mouse.y, this.game.width, this.game.height);
+                const dropOffset  = (Math.random() - 0.5) * 20;
+                const dropOffset2 = (Math.random() - 0.5) * 20;
+                this.itemPickups.push(new ItemPickup(this.game, worldMouse.x + dropOffset, worldMouse.y + dropOffset2, this.draggedItem.item));
+                this._onInventoryChanged();
+                this.game.sounds.play('click', 0.5);
             }
+            this.draggedItem = null;
         }
     }
 
@@ -2977,6 +3252,9 @@ export class PlayingState {
         p.momentumSpeedMult = 1.0;
         p.momentumMaxSpeedMult = 1.0;
         p.momentumBoostMult = 1.0;
+        p.experienceCondenserMult = 1.0;
+        p.asteroidDrillMult = 1.0;
+        p.laserCartridgeMult = 1.0;
 
         // Knowledge Event Upgrades
         p.hasSacrifice = false;
@@ -2997,6 +3275,7 @@ export class PlayingState {
 
         let blinkEngines = 0;
         let repeaters = 0;
+        let cargoExpansions = 0;
 
         let fovMult = 1.0; // Default base FOV
         for (const entry of p.inventory.items) {
@@ -3059,10 +3338,23 @@ export class PlayingState {
             if (item.id === 'obedience') p.obedienceMult = 1.2;
             if (item.id === 'sacrifice') p.hasSacrifice = true;
             if (item.id === 'knowledge') p.hasRadar = true;
+
+            if (item.id === 'cargo_expansion') cargoExpansions++;
+            if (item.id === 'experience_condenser') p.experienceCondenserMult += 0.2;
+            if (item.id === 'asteroid_drill') p.asteroidDrillMult += 0.5;
+            if (item.id === 'laser_cartridge') p.laserCartridgeMult += 0.1;
         }
 
-        // Store FOV upgrade contribution
-        this.fovUpgradeMult = fovMult;
+        const targetRows = this.inventoryRows + cargoExpansions;
+        if (p.inventory.rows !== targetRows) {
+            const ejected = p.inventory.resize(this.inventoryCols, targetRows);
+            if (ejected && ejected.length > 0) {
+                this._ejectItems(ejected);
+            }
+        }
+
+        // Store FOV upgrade contribution (include level-up FOV bonus here)
+        this.fovUpgradeMult = fovMult * p.lvlFovMult;
 
         if (repeaters > 0) {
             let rMult = 0.5;
@@ -3083,6 +3375,18 @@ export class PlayingState {
         // Apply encounter bonuses before assigning to player
         fireRateMult *= this.encounterBonuses.fireRateMult;
 
+        // Apply level-up bonuses on top of inventory bonuses
+        fireRateMult      *= p.lvlFireRateMult;
+        boostCooldownMult *= p.lvlBoostCooldownMult;
+        shieldDrainMult   *= p.lvlShieldDrainMult;
+        scrapRangeMult    *= p.lvlVacuumRangeMult;
+        shieldRegenMult   *= p.lvlShieldRechargeMult;
+        maxHealthMult     *= p.lvlMaxHpMult;
+        p.boostSpeedMult  *= p.lvlBoostSpeedMult;
+        p.asteroidSpawnMult *= p.lvlAsteroidSpawnMult;
+        p.asteroidDrillMult *= p.lvlScrapChanceMult;
+        p.laserCartridgeMult *= p.lvlDamageMult;
+
         p.boostCooldownMult = boostCooldownMult;
         p.boostRangeMult = boostRangeMult;
         p.shieldDrainMult = shieldDrainMult;
@@ -3093,9 +3397,13 @@ export class PlayingState {
         // Update Max Stats
         p.updateMaxHealth(maxHealthMult);
         p.updateMaxShield(0); // This uses obedienceMult internally now
+        // Apply level-up shield capacity bonus
+        p.maxShieldEnergy *= p.lvlMaxShieldMult;
+        p.shieldEnergy = Math.min(p.shieldEnergy, p.maxShieldEnergy);
 
         // Update base speed and acceleration
         p.baseSpeed = p.shipData.speed * 100 * p.obedienceMult * p.momentumSpeedMult * this.encounterBonuses.speedMult;
+        p.baseSpeed *= p.lvlSpeedMult;
         p.acceleration = p.baseSpeed * 3;
 
         if (healAcquisition) {
@@ -3192,6 +3500,39 @@ export class PlayingState {
         this.game.sounds.play('boost', 0.8);
     }
 
+    _openCacheUI(cache) {
+        this._activeCache = cache;
+
+        if (cache._cachedUI && !cache._cachedUI.closed) {
+            // Reuse the existing UI — no fade, just re-show it
+            const ui = cache._cachedUI;
+            ui.playerInventory = this.player.inventory;
+            ui.uiState    = 'idle';  // CUI_STATE.IDLE
+            ui.panelAlpha = 1;
+            ui.closed     = false;
+            this.activeCacheUI = ui;
+        } else {
+            const ui = new CacheUI(this.game, cache, this.player.inventory);
+            cache._cachedUI    = ui;
+            this.activeCacheUI = ui;
+        }
+
+        this.isCacheOpen = true;
+        this.paused      = true;
+    }
+
+    queueLevelUp(level) {
+        this.levelUpQueue.push(level);
+        this.game.sounds.play('level', 0.5);
+    }
+
+    _openLevelUpDialog(level) {
+        this.activeLevelUpDialog = new LevelUpDialog(this.game, this.player, this, level);
+        this.isLevelUpOpen = true;
+        this.paused        = true;
+        this.game.sounds.play('scrap', 0.8);
+    }
+
     _openEncounterDialog(encounter) {
         encounter.startInteraction();
 
@@ -3264,7 +3605,7 @@ export class PlayingState {
 
         const dt = this.game.lastDt || 0.016;
         for (const enc of this.encounters) {
-            if (!enc.alive || enc.state === ENC_STATE.HOSTILE) continue;
+            if (!enc.alive || enc.state === ENC_STATE.HOSTILE || enc.state === ENC_STATE.DEPARTING) continue;
 
             const screen = this.camera.worldToScreen(enc.worldX, enc.worldY, cw, ch);
 
@@ -3433,108 +3774,70 @@ export class PlayingState {
         ctx.save();
         const cw = this.game.width;
         const ch = this.game.height;
+        const uiScale = this.game.uiScale;
 
-        // Dim background
         ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
         ctx.fillRect(0, 0, cw, ch);
 
-        // Title
         ctx.fillStyle = '#ffffff';
-        ctx.font = `${8 * this.game.uiScale}px Astro5x`;
+        ctx.font = `${8 * uiScale}px Astro5x`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'alphabetic';
-        ctx.fillText('PAUSED', cw / 2, this.game.uiScale * 16);
+        ctx.fillText('PAUSED', cw / 2, uiScale * 16);
 
-        // --- Inventory using 9-slice panel ---
-        const playerInv = this.player.inventory;
+        const playerInv    = this.player.inventory;
         const playerLayout = this._getInventoryLayout(playerInv, 'pause');
 
         this._draw9Slice(ctx, this.inventoryImg, playerLayout.panelX, playerLayout.panelY, playerLayout.totalW, playerLayout.totalH);
-
         this._drawInventoryGrid(ctx, playerInv, playerLayout, this.playerScrollX, this.playerScrollY);
-
         this._draw9Slice(ctx, this.inventoryBorderImg, playerLayout.panelX, playerLayout.panelY, playerLayout.totalW, playerLayout.totalH);
-
         this._drawScrollbars(ctx, playerLayout, this.playerScrollX, this.playerScrollY);
 
-        const offsetY = playerLayout.scrollableX ? this.game.uiScale * 18 : 0;
-
-        // Label
+        const scrollLabelOffsetY = playerLayout.scrollableX ? uiScale * 18 : 0;
         ctx.textAlign = 'center';
         ctx.fillStyle = '#88aabb';
-        ctx.fillText('SHIP INVENTORY', cw / 2, playerLayout.panelY + playerLayout.totalH + this.game.uiScale * 12 + offsetY);
+        ctx.fillText('SHIP INVENTORY', cw / 2, playerLayout.panelY + playerLayout.totalH + uiScale * 12 + scrollLabelOffsetY);
 
-        // Stats summary below inventory
         const p = this.player;
-        const statsY = playerLayout.panelY + playerLayout.totalH + this.game.uiScale * 28 + offsetY;
-        ctx.textAlign = 'center';
+        const statsY = playerLayout.panelY + playerLayout.totalH + uiScale * 28 + scrollLabelOffsetY;
         ctx.fillStyle = '#667788';
-        ctx.font = `${8 * this.game.uiScale}px Astro4x`;
-        ctx.fillText(`HEALTH: ${Math.ceil(p.health)}/${p.maxHealth}`, cw / 2, statsY);
-        ctx.fillText(`SHIELD: ${Math.floor(p.shieldEnergy)}/${p.maxShieldEnergy}${p.shieldBroken ? ' [BROKEN]' : ''}`, cw / 2, statsY + this.game.uiScale * 10);
-        ctx.fillText(`SCRAP: ${p.scrap}`, cw / 2, statsY + this.game.uiScale * 20);
+        ctx.font = `${8 * uiScale}px Astro4x`;
+        ctx.fillText(`HEALTH: ${Math.ceil(p.health)}/${Math.round(p.maxHealth)}`, cw / 2, statsY);
+        ctx.fillText(`SHIELD: ${Math.floor(p.shieldEnergy)}/${Math.round(p.maxShieldEnergy)}${p.shieldBroken ? ' [BROKEN]' : ''}`, cw / 2, statsY + uiScale * 10);
+        ctx.fillText(`SCRAP: ${p.scrap}`, cw / 2, statsY + uiScale * 20);
 
-        // --- Dragged Item ---
-        if (this.draggedItem) {
-            const { item, offsetX, offsetY } = this.draggedItem;
-            const mouse = this.game.getMousePos();
-            const frameAsset = this.game.getAnimationFrame(item.assetKey);
-            const frame = frameAsset ? (frameAsset.canvas || frameAsset) : null;
-            if (frame) {
-                const w = item.width * playerLayout.slotSize;
-                const h = item.height * playerLayout.slotSize;
-                ctx.drawImage(frame, mouse.x - offsetX, mouse.y - offsetY, w, h);
-            }
-        }
+        this._drawDraggedItem(ctx, playerLayout.slotSize);
 
-        // Resume hint
         ctx.textAlign = 'center';
         ctx.fillStyle = '#445566';
-        ctx.fillText('Drag to move | Right-click to use | ESC to resume', cw / 2, ch - this.game.uiScale * 8);
+        ctx.fillText('Drag to move | Right-click to use | ESC to resume', cw / 2, ch - uiScale * 8);
 
-        // Tooltip support in pause menu
-        if (!this.draggedItem) {
-            const mouse = this.game.getMousePos();
-            let hoveredEntry = null;
-            const pVisX = mouse.x - playerLayout.gridVisX;
-            const pVisY = mouse.y - playerLayout.gridVisY;
-            if (pVisX >= 0 && pVisX < playerLayout.visW && pVisY >= 0 && pVisY < playerLayout.visH) {
-                const pCol = Math.floor((pVisX + this.playerScrollX) / playerLayout.slotSize);
-                const pRow = Math.floor((pVisY + this.playerScrollY) / playerLayout.slotSize);
-                hoveredEntry = playerInv.getItemAt(pCol, pRow);
-            }
-            if (hoveredEntry) {
-                this._drawTooltip(ctx, hoveredEntry.item, mouse);
-            }
-        }
+        this._drawInventoryTooltip(ctx, [
+            { inv: playerInv, layout: playerLayout, scrollX: this.playerScrollX, scrollY: this.playerScrollY }
+        ]);
 
-        // Audio Controls
         this._drawPauseVolumeControls(ctx);
 
-        // --- Ship Selection Button ---
         if (!this.confirmRestart) {
             const ss = this.pauseButtons.shipSelection;
-            this.game.drawSprite(ctx, ss.hovered ? 'ship_selection_on' : 'ship_selection_off', ss.x, ss.y, this.game.uiScale);
+            this.game.drawSprite(ctx, ss.hovered ? 'ship_selection_on' : 'ship_selection_off', ss.x, ss.y, uiScale);
         } else {
-            // Confirmation Dialog
             ctx.fillStyle = 'rgba(0,0,0,0.85)';
             ctx.fillRect(0, 0, cw, ch);
 
             ctx.fillStyle = '#ffffff';
-            ctx.font = `${10 * this.game.uiScale}px Astro5x`;
+            ctx.font = `${10 * uiScale}px Astro5x`;
             ctx.textAlign = 'center';
-            ctx.fillText('ARE YOU SURE YOU WANT TO RESTART?', cw / 2, ch / 2 - 10 * this.game.uiScale);
+            ctx.fillText('ARE YOU SURE YOU WANT TO RESTART?', cw / 2, ch / 2 - uiScale * 10);
 
-            // YES Button
             const yb = this.confirmRestartButtons.yes;
             ctx.fillStyle = yb.hovered ? '#44ff44' : '#228822';
             ctx.fillRect(yb.x, yb.y, yb.w, yb.h);
             ctx.fillStyle = '#ffffff';
-            ctx.font = `${8 * this.game.uiScale}px Astro4x`;
+            ctx.font = `${8 * uiScale}px Astro4x`;
             ctx.textBaseline = 'middle';
             ctx.fillText('YES', yb.x + yb.w / 2, yb.y + yb.h / 2);
 
-            // NO Button
             const nb = this.confirmRestartButtons.no;
             ctx.fillStyle = nb.hovered ? '#ff4444' : '#882222';
             ctx.fillRect(nb.x, nb.y, nb.w, nb.h);
@@ -3542,6 +3845,132 @@ export class PlayingState {
             ctx.fillText('NO', nb.x + nb.w / 2, nb.y + nb.h / 2);
             ctx.textBaseline = 'bottom';
         }
+
+        this._drawStatsPanel(ctx);
+        if (!this.confirmRestart) this._drawClaimLevelsButton(ctx);
+
+        ctx.restore();
+    }
+
+    _drawStatsPanel(ctx) {
+        const p  = this.player;
+        const us = this.game.uiScale;
+
+        const statFont = Math.floor(6 * us);
+        const headFont = Math.floor(7 * us);
+        const lh    = Math.floor(statFont * 1.5);   // tight row height
+        const ipad  = Math.floor(6 * us);            // gap between label and value
+        const opad  = Math.floor(10 * us);           // panel outer padding
+        const cGap  = Math.floor(14 * us);           // gap between the two columns
+        const sep   = Math.floor(5 * us);            // gap around separator lines
+
+        ctx.save();
+        ctx.font         = `${statFont}px Astro4x`;
+        ctx.textBaseline = 'middle';
+
+        // Each entry: [label, value, lowerIsBetter?]
+        //   value = number  → shown as %, reflects level-up bonuses only
+        //   value = string  → shown as-is, grey at zero / green when active
+        //   lowerIsBetter   → green < 100%, red > 100% (drain/cooldown/difficulty stats)
+        const colA = [
+            ['Max Hull',      p.lvlMaxHpMult],
+            ['Max Shield',    p.lvlMaxShieldMult],
+            ['Damage',        p.lvlDamageMult],
+            ['Fire Rate',     1 / Math.max(0.01, p.lvlFireRateMult)],   // lower cooldown = higher rate
+            ['Proj. Speed',   p.lvlProjectileSpeedMult],
+            ['Shld Drain',    p.lvlShieldDrainMult,        true],        // less drain = good, shown < 100%
+            ['Shld Regen',    p.lvlShieldRechargeMult],
+            ['Asteroid Res.', 1 / Math.max(0.01, p.lvlAsteroidResistanceMult)], // less damage taken = higher resistance
+            ['Difficulty',    p.lvlDifficultyMult,         true],        // lower difficulty scaling = good
+            ['Hull Regen',    `+${p.lvlHpRegen > 0 ? p.lvlHpRegen.toFixed(1) : '0.0'}/s`],
+        ];
+        const colB = [
+            ['Ship Speed',     p.lvlSpeedMult],
+            ['Turn Speed',     p.lvlTurnSpeedMult],
+            ['Boost Speed',    p.lvlBoostSpeedMult],
+            ['Boost Duration', p.lvlBoostDurationMult],
+            ['Boost Rech.',    1 / Math.max(0.01, p.lvlBoostCooldownMult)], // shorter cooldown = faster recharge
+            ['Vacuum Range',   p.lvlVacuumRangeMult],
+            ['Exp Gain',       p.lvlExpGainMult],
+            ['Scrap Chance',   p.lvlScrapChanceMult],
+            ['Enemy Spawn',    p.lvlEnemySpawnMult,        true],        // fewer enemies = good, shown < 100%
+            ['Extra Shots',    `+${p.lvlExtraProjectiles}`],
+        ];
+
+        // Measure column widths — value slot wide enough for 4-digit % or flat strings
+        const maxValW  = Math.max(ctx.measureText(' 9999%').width, ctx.measureText('+99.9/s').width);
+        const maxNameA = colA.reduce((m, [n]) => Math.max(m, ctx.measureText(n).width), 0);
+        const maxNameB = colB.reduce((m, [n]) => Math.max(m, ctx.measureText(n).width), 0);
+        const colAW    = maxNameA + ipad + maxValW;
+        const colBW    = maxNameB + ipad + maxValW;
+
+        const rows   = Math.max(colA.length, colB.length);
+        const panelW = opad + colAW + cGap + colBW + opad;
+        const panelH = opad + headFont + sep + rows * lh + opad;
+
+        // Offset from screen edge
+        const px = Math.floor(20 * us);
+        const py = Math.floor(20 * us);
+
+        // Background
+        ctx.fillStyle   = 'rgba(4, 8, 18, 0.92)';
+        ctx.strokeStyle = '#233040';
+        ctx.lineWidth   = Math.max(1, Math.round(us));
+        ctx.fillRect(px, py, panelW, panelH);
+        ctx.strokeRect(px, py, panelW, panelH);
+
+        // Header
+        ctx.font         = `${headFont}px Astro5x`;
+        ctx.fillStyle    = '#5577aa';
+        ctx.textAlign    = 'left';
+        ctx.textBaseline = 'top';
+        ctx.fillText('SHIP STATS', px + opad, py + Math.floor(opad * 0.6));
+
+        // Divider under header
+        const divY = py + Math.floor(opad * 0.6) + headFont + Math.floor(sep * 0.5);
+        ctx.strokeStyle = '#1e3048';
+        ctx.lineWidth   = 1;
+        ctx.beginPath();
+        ctx.moveTo(px + opad, divY);
+        ctx.lineTo(px + panelW - opad, divY);
+        ctx.stroke();
+
+        ctx.font = `${statFont}px Astro4x`;
+        const startY = divY + Math.floor(sep * 0.5) + Math.floor(lh * 0.5);
+
+        const drawEntry = (colX, y, label, value, colW, lowerIsBetter = false) => {
+            let valStr, color;
+            if (typeof value === 'string') {
+                valStr = value;
+                color  = (value === '+0' || value === '+0.0/s') ? '#556677' : '#33dd66';
+            } else {
+                const pct = Math.round(value * 100);
+                valStr = `${pct}%`;
+                if (lowerIsBetter) {
+                    color = pct < 100 ? '#33dd66' : pct > 100 ? '#dd4422' : '#556677';
+                } else {
+                    color = pct > 100 ? '#33dd66' : pct < 100 ? '#dd4422' : '#556677';
+                }
+            }
+            ctx.textAlign    = 'left';
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle    = '#4a6070';
+            ctx.fillText(label, colX, y);
+            ctx.textAlign = 'right';
+            ctx.fillStyle = color;
+            ctx.fillText(valStr, colX + colW, y);
+        };
+
+        for (let i = 0; i < colA.length; i++) {
+            drawEntry(px + opad, startY + i * lh, colA[i][0], colA[i][1], colAW, colA[i][2]);
+        }
+        for (let i = 0; i < colB.length; i++) {
+            drawEntry(px + opad + colAW + cGap, startY + i * lh, colB[i][0], colB[i][1], colBW, colB[i][2]);
+        }
+
+        // Cache bounds for button positioning in _updatePauseUI
+        this._statsPanelRect = { x: px, y: py, w: panelW, h: panelH };
+
         ctx.restore();
     }
 
@@ -3628,7 +4057,7 @@ export class PlayingState {
         let damageMult = (p.hasRepeater ? 0.5 : 1.0) * (p.hasLaserOverride ? 1.3 : 1.0);
         if (p.hasMultishotGuns) damageMult *= 0.7; // 30% reduction
 
-        const currentBaseDamage = p.shipData.baseDamage * p.obedienceMult + p.permDamageBonus;
+        const currentBaseDamage = (p.shipData.baseDamage * p.obedienceMult + p.permDamageBonus) * p.laserCartridgeMult;
 
         if (p.hasEnergyBlaster) {
             origins.forEach(origin => {

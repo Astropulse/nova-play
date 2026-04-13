@@ -24,6 +24,7 @@ export class DevConsole {
             'boss': (args) => this._cmdBoss(args),
             'hp': () => this._cmdHP(),
             'encounter': (args) => this._cmdEncounter(args),
+            'cache': (args) => this._cmdCache(args),
             'dev': () => this._cmdDev(),
             'fps_uncap': () => this._cmdFPSUncap(),
             'perf': () => this._cmdPerf(),
@@ -159,8 +160,12 @@ export class DevConsole {
                 const cols = parseInt(parts[0]);
                 const rows = parseInt(parts[1]);
                 if (!isNaN(cols) && !isNaN(rows)) {
-                    const ejected = p.inventory.resize(Math.max(1, cols), Math.max(1, rows));
                     const state = this.game.currentState;
+                    if (state) {
+                        state.inventoryCols = Math.max(1, cols);
+                        state.inventoryRows = Math.max(1, rows);
+                    }
+                    const ejected = p.inventory.resize(Math.max(1, cols), Math.max(1, rows));
                     if (state && state._ejectItems && ejected && ejected.length > 0) {
                         state._ejectItems(ejected);
                     }
@@ -184,19 +189,23 @@ export class DevConsole {
             case 'rows':
             case 'cargo_rows':
                 {
+                    const state = this.game.currentState;
+                    if (state) state.inventoryRows = Math.max(1, Math.floor(value));
                     const ejected = p.inventory.resize(p.inventory.cols, Math.max(1, Math.floor(value)));
-                    if (this.game.currentState._ejectItems && ejected && ejected.length > 0) this.game.currentState._ejectItems(ejected);
+                    if (state && state._ejectItems && ejected && ejected.length > 0) state._ejectItems(ejected);
                 }
                 break;
             case 'cols':
             case 'cargo_cols':
                 {
+                    const state = this.game.currentState;
+                    if (state) state.inventoryCols = Math.max(1, Math.floor(value));
                     const ejected = p.inventory.resize(Math.max(1, Math.floor(value)), p.inventory.rows);
-                    if (this.game.currentState._ejectItems && ejected && ejected.length > 0) this.game.currentState._ejectItems(ejected);
+                    if (state && state._ejectItems && ejected && ejected.length > 0) state._ejectItems(ejected);
                 }
                 break;
         }
-        
+
         if (this.game.currentState._onInventoryChanged) {
             this.game.currentState._onInventoryChanged();
         }
@@ -345,8 +354,28 @@ export class DevConsole {
         }
     }
 
+    _cmdCache(args) {
+        const state = this.game.currentState;
+        if (!state || !state.player || !state.cacheSpawner) {
+            console.log('Not in playing state');
+            return;
+        }
+        // Optional: "cache luck 2.5" sets player luck
+        if (args.length >= 2 && args[0].toLowerCase() === 'luck') {
+            const val = parseFloat(args[1]);
+            if (!isNaN(val)) {
+                state.player.luck = val;
+                console.log(`Player luck set to ${val}`);
+            }
+            return;
+        }
+        const cache = state.cacheSpawner.spawnNear(state.player.worldX, state.player.worldY, 200, 400);
+        state.caches.push(cache);
+        console.log(`Spawned cache at ${Math.floor(cache.worldX)}, ${Math.floor(cache.worldY)}`);
+    }
+
     _cmdHelp() {
-        console.log("Available commands: time, spawn, stat, wave, scrap, exp, locate, save, load, record, boss, hp, encounter, dev, perf, help");
+        console.log("Available commands: time, spawn, stat, wave, scrap, exp, locate, save, load, record, boss, hp, encounter, cache, dev, perf, help");
     }
 
     draw(ctx) {

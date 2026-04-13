@@ -659,7 +659,8 @@ export class Asteroid {
         }
 
         // Spawn physical scrap
-        if (Math.random() < 0.8) { // 80% chance to drop scrap
+        const drillMult = this.game.currentState?.player ? this.game.currentState.player.asteroidDrillMult : 1.0;
+        if (Math.random() < 0.8 * drillMult) { // 80% chance to drop scrap * drill multiplier
             let count = 1;
             let forceBig = false;
 

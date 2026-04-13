@@ -37,7 +37,7 @@ export const UPGRADES = [
     {
         id: 'energy_canisters',
         name: 'Energy Canisters',
-        description: 'Increases max health by 1.6x.',
+        description: 'Increases max health by 60%.',
         assetKey: 'energy_canisters_2x2',
         width: 2,
         height: 2,
@@ -138,7 +138,7 @@ export const UPGRADES = [
     {
         id: 'laser_override',
         name: 'Laser Override',
-        description: 'Converts all projectiles into massive versions that deal 1.3x damage.',
+        description: 'Converts all projectiles into massive versions that deal 30% more damage.',
         assetKey: 'laser_override_2x2',
         width: 2,
         height: 2,
@@ -375,6 +375,46 @@ export const UPGRADES = [
         height: 2,
         cost: 80,
         rarity: 'rare'
+    },
+    {
+        id: 'cargo_expansion',
+        name: 'Cargo Expansion',
+        description: 'Expands the ship\'s cargo by one row.',
+        assetKey: 'cargo_expansion_3x1',
+        width: 3,
+        height: 1,
+        cost: 100,
+        rarity: 'rare'
+    },
+    {
+        id: 'experience_condenser',
+        name: 'Experience Condenser',
+        description: 'Increases the value of experience orbs by 20%.',
+        assetKey: 'experience_condenser_1x2',
+        width: 1,
+        height: 2,
+        cost: 70,
+        rarity: 'uncommon'
+    },
+    {
+        id: 'asteroid_drill',
+        name: 'Asteroid Drill',
+        description: 'Increases scrap drop chance from asteroids by 50%.',
+        assetKey: 'asteroid_drill_3x2',
+        width: 3,
+        height: 2,
+        cost: 60,
+        rarity: 'rare'
+    },
+    {
+        id: 'laser_cartridge',
+        name: 'Laser Cartridge',
+        description: 'Increases damage by 10%.',
+        assetKey: 'laser_cartridge_1x1',
+        width: 1,
+        height: 1,
+        cost: 30,
+        rarity: 'common'
     }
 ];
 

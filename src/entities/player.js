@@ -75,6 +75,14 @@ export class Player {
         this.boostFlash = 0;
         this._boostWasOnCooldown = false;
 
+        this.experienceCondenserMult = 1.0;
+        this.asteroidDrillMult = 1.0;
+        this.laserCartridgeMult = 1.0;
+
+        // Luck stat — affects Space Cache roll quality and extra-roll chance
+        // 1.0 = baseline, >1 = luckier rolls, <1 = worse rolls
+        this.luck = 1.0;
+
         // Warp — smooth timed blink (replaces boost for looper/blink engine)
         this.hasTeleport = shipData.special === 'teleport';
         this.teleportDuration = 0.2; // s
@@ -170,9 +178,38 @@ export class Player {
         this.asteroidSpawnMult = 1.0;
 
         // EXP and Leveling
-        this.level = 1;
+        this.level = 0;
         this.exp = 0;
-        this.expNeeded = 25;
+        this.expNeeded = 10;
+
+        // Level-up stat bonuses (accumulated, separate from inventory upgrades)
+        this.lvlDamageMult           = 1.0;
+        this.lvlMaxHpMult            = 1.0;
+        this.lvlMaxShieldMult        = 1.0;
+        this.lvlShieldDrainMult      = 1.0;  // <1 = less drain (positive)
+        this.lvlSpeedMult            = 1.0;
+        this.lvlProjectileSpeedMult  = 1.0;
+        this.lvlBoostCooldownMult    = 1.0;  // <1 = faster recharge (positive)
+        this.lvlFireRateMult         = 1.0;  // <1 = faster fire (positive)
+        this.lvlShieldRechargeMult   = 1.0;
+        this.lvlExpGainMult          = 1.0;
+        this.lvlBoostSpeedMult       = 1.0;
+        this.lvlBoostDurationMult    = 1.0;
+        this.lvlAsteroidResistanceMult = 1.0; // <1 = less damage (positive)
+        this.lvlAsteroidSpawnMult    = 1.0;
+        this.lvlVacuumRangeMult      = 1.0;
+        this.lvlTurnSpeedMult        = 1.0;
+        this.lvlShieldDamageMult     = 1.0;
+        this.lvlFovMult              = 1.0;
+        this.lvlExtraProjectiles     = 0;    // flat integer
+        this.lvlScrapChanceMult      = 1.0;
+        this.lvlCacheFreqMult        = 1.0;
+        this.lvlEncounterFreqMult    = 1.0;
+        this.lvlEnemySpawnMult       = 1.0;
+        this.lvlDifficultyMult       = 1.0;
+        this.lvlWaveCountdownMult    = 1.0;  // <1 = shorter countdown (positive)
+        this.lvlHpRegen              = 0.0;  // HP/sec
+        this._lvlHpRegenAccum        = 0.0;  // for floating text
     }
 
     /**
@@ -225,7 +262,7 @@ export class Player {
         const isRotatingCCW = input.isKeyDown('KeyJ');
         const isRotatingCW = input.isKeyDown('KeyL');
 
-        const currentRotationAccel = this.rotationAcceleration * this.mechanicalEngineTurnMult;
+        const currentRotationAccel = this.rotationAcceleration * this.mechanicalEngineTurnMult * this.lvlTurnSpeedMult;
 
         if (isRotatingCCW) {
             this.rotationVelocity -= currentRotationAccel * dt;
@@ -414,7 +451,7 @@ export class Player {
         } else {
             if (input.isKeyJustPressed('Space') && this.boostCooldownTimer <= 0) {
                 this.isBoosting = true;
-                this.boostTimer = this.boostDuration;
+                this.boostTimer = this.boostDuration * this.lvlBoostDurationMult;
                 this.boostCooldownTimer = this.boostCooldown * this.boostCooldownMult;
                 this.boostIntensity = 1;
                 this._boostWasOnCooldown = true;
@@ -513,6 +550,18 @@ export class Player {
             }
         }
 
+        // --- Level-up HP regen ---
+        if (this.lvlHpRegen > 0 && this.health > 0 && this.health < this.maxHealth) {
+            this.health = Math.min(this.maxHealth, this.health + this.lvlHpRegen * dt);
+            this._lvlHpRegenAccum += this.lvlHpRegen * dt;
+            if (this._lvlHpRegenAccum >= 1) {
+                this._lvlHpRegenAccum -= 1;
+                if (this.game.currentState && this.game.currentState.spawnFloatingText) {
+                    this.game.currentState.spawnFloatingText(this.worldX, this.worldY, '+1', '#44ff88', 0.8);
+                }
+            }
+        }
+
         // --- Shooting (left mouse) ---
         this.shootTimer = Math.max(0, this.shootTimer - dt);
 
@@ -558,7 +607,7 @@ export class Player {
                 let damageMult = (this.hasRepeater ? 0.5 : 1.0) * (this.hasLaserOverride ? 1.3 : 1.0);
                 const spriteKey = this.hasLaserOverride ? 'blue_laser_ball_big' : 'blue_laser_ball';
 
-                let baseProjSpeed = this.projectileSpeed;
+                let baseProjSpeed = this.projectileSpeed * this.lvlProjectileSpeedMult;
                 if (this.hasControlModule) baseProjSpeed *= 1.2;
 
 
@@ -581,7 +630,7 @@ export class Player {
                     origins.push({ px, py });
                 }
 
-                let currentBaseDamage = this.shipData.baseDamage * this.obedienceMult + this.permDamageBonus;
+                let currentBaseDamage = (this.shipData.baseDamage * this.obedienceMult + this.permDamageBonus) * this.laserCartridgeMult;
 
                 if (this.hasEnergyBlaster) {
                     origins.forEach(origin => {
@@ -605,6 +654,17 @@ export class Player {
                             new Projectile(this.game, origin.px, origin.py, fireAngle, baseProjSpeed, spriteKey, this, currentBaseDamage * damageMult)
                         );
                     });
+                    // Extra projectiles from level-up — same origin, increasing spread per shot
+                    if (this.lvlExtraProjectiles > 0) {
+                        for (let ei = 0; ei < this.lvlExtraProjectiles; ei++) {
+                            const spread = (0.08 + ei * 0.06) * (Math.random() < 0.5 ? 1 : -1);
+                            for (const origin of origins) {
+                                this.pendingProjectiles.push(
+                                    new Projectile(this.game, origin.px, origin.py, fireAngle + spread, baseProjSpeed, spriteKey, this, currentBaseDamage * damageMult * 0.7)
+                                );
+                            }
+                        }
+                    }
                     this.shootTimer = this.shootCooldown * this.fireRateMult;
                 }
                 // Lower volume if firing very fast
@@ -1043,17 +1103,23 @@ export class Player {
      * @param {number} amount
      */
     addExp(amount) {
-        this.exp += amount;
+        this.exp += amount * this.lvlExpGainMult;
         while (this.exp >= this.expNeeded) {
             this.exp -= this.expNeeded;
             this.level++;
-            this.expNeeded = Math.floor(this.expNeeded * 1.5);
+            this.expNeeded = Math.floor(this.expNeeded * 1.2);
 
-            // Visual/Audio feedback for level up
+            // Visual feedback
             if (this.game.currentState && this.game.currentState.spawnFloatingText) {
-                this.game.currentState.spawnFloatingText(this.worldX, this.worldY, "LEVEL UP!", "#ffff44", 2.0);
+                this.game.currentState.spawnFloatingText(this.worldX, this.worldY, 'LEVEL UP!', '#ffff44', 2.0);
             }
-            this.game.sounds.play('select', { volume: 1.0, x: this.worldX, y: this.worldY });
+
+            // Queue upgrade dialog (sound plays when dialog opens)
+            if (this.game.currentState && this.game.currentState.queueLevelUp) {
+                this.game.currentState.queueLevelUp(this.level);
+            } else {
+                this.game.sounds.play('select', { volume: 1.0, x: this.worldX, y: this.worldY });
+            }
         }
     }
 
@@ -1097,7 +1163,7 @@ export class Player {
         this.inventoryUpgradeTier = data.inventoryUpgradeTier;
         this.level = data.level || 1;
         this.exp = data.exp || 0;
-        this.expNeeded = data.expNeeded || 25;
+        this.expNeeded = data.expNeeded || 10;
 
         if (data.inventory && this.inventory) {
             await this.inventory.deserialize(data.inventory);

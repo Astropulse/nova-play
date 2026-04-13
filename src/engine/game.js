@@ -162,6 +162,12 @@ export class Game {
                 'Assets/Sounds/Effects/type_2.wav',
                 'Assets/Sounds/Effects/type_3.wav',
                 'Assets/Sounds/Effects/type_4.wav',
+            ]),
+            this.sounds.register('buy', [
+                'Assets/Sounds/Effects/buy.wav',
+            ]),
+            this.sounds.register('level', [
+                'Assets/Sounds/Effects/level.wav',
             ])
         ]);
 
@@ -627,7 +633,16 @@ export class Game {
             'nanite_tank_2x2': 'Assets/Upgrades/nanite_tank_2x2.png',
             'shield_capacitor_1x2': 'Assets/Upgrades/shield_capacitor_1x2.png',
             'asteroid_accumulator_2x2': 'Assets/Upgrades/asteroid_accumulator_2x2.png',
+            'cargo_expansion_3x1': 'Assets/Upgrades/cargo_expansion_3x1.png',
+            'experience_condenser_1x2': 'Assets/Upgrades/experience_condenser_1x2.png',
+            'asteroid_drill_3x2': 'Assets/Upgrades/asteroid_drill_3x2.png',
+            'laser_cartridge_1x1': 'Assets/Upgrades/laser_cartridge_1x1.png',
             // Events
+            'cache':   'Assets/Events/cache/cache.png',
+            'cache_0': 'Assets/Events/cache/cache_0.png',
+            'cache_1': 'Assets/Events/cache/cache_1.png',
+            'cache_2': 'Assets/Events/cache/cache_2.png',
+            'cache_3': 'Assets/Events/cache/cache_3.png',
             'cthulhu': 'Assets/Events/cthulhu.png',
             'cargo_ship': 'Assets/Events/cargo_ship.png',
             'fractured_station_0': 'Assets/Events/fractured_station_0.png',

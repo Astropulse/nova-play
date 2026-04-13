@@ -736,7 +736,7 @@ export class Enemy {
 
         // --- Shield Capacitor Impact Damage ---
         if (player.shielding && player.shieldCapacitorCount > 0) {
-            damage = 20.0 + (player.shieldCapacitorCount * 40.0); // 60.0 for one, 100.0 for two, etc.
+            damage = (20.0 + player.shieldCapacitorCount * 40.0) * (player.lvlShieldDamageMult || 1.0);
         }
 
         this.hit(damage);
@@ -957,12 +957,12 @@ export class EnemySpawner {
             if (this.waveSpawnTimer <= 0) {
                 const toSpawn = Math.min(this.waveQueue, this.waveBatchSize);
                 this.waveQueue -= toSpawn;
-                
+
                 // Add some jitter to the interval
                 this.waveSpawnTimer = this.waveSpawnInterval * (0.8 + Math.random() * 0.4);
 
                 const fov = (this.game.currentState && this.game.currentState.currentFovMult) || 1.0;
-                
+
                 for (let i = 0; i < toSpawn; i++) {
                     // Spawn further out so they arrive staggered (1800-2440)
                     const angle = Math.random() * Math.PI * 2;
