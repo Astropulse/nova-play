@@ -63,6 +63,8 @@ function checkCondition(cond, player, state) {
             return state.events && state.events.some(ev => !ev.revealed && !ev.isFinished);
         case 'has_unrevealed_events_2':
             return state.events && state.events.filter(ev => !ev.revealed && !ev.isFinished).length >= 2;
+        case 'has_unrevealed_cargo_ship':
+            return state.events && state.events.some(ev => !ev.revealed && !ev.isFinished && ev.constructor.name === 'CargoShipEvent');
         case 'player_has_scrap':
             return player.scrap >= 30;
         case 'player_healthy':
@@ -112,7 +114,8 @@ function resolveVars(varDefs, player, state) {
                 break;
             }
             case 'random_unrevealed_event': {
-                const events = state.events.filter(ev => !ev.revealed && !ev.isFinished);
+                let events = state.events.filter(ev => !ev.revealed && !ev.isFinished);
+                if (def.className) events = events.filter(ev => ev.constructor.name === def.className);
                 if (events.length === 0) return null;
                 resolved[key] = pick(events);
                 break;

@@ -125,9 +125,9 @@ export class PlayingState {
 
         // Tunable Difficulty Constants
         this.difficultyRampTime = 240; // 4 minutes (transition to linear)
-        this.difficultyExponent = 1.5; // Starts slow, curves up (convex)
+        this.difficultyExponent = 1.6; // Starts slow, curves up (convex)
         this.difficultyGain = 0.000366; // Calculated for smooth transition at 4m
-        this.difficultySteadyRate = 0.012; // Steady linear growth after ramp
+        this.difficultySteadyRate = 0.015; // Steady linear growth after ramp
 
         this.flashTimer = 0;
 
@@ -1277,7 +1277,7 @@ export class PlayingState {
 
             // Spawn a cache on boss death (always)
             if (this.caches.length < CACHE_CONFIG.maxActiveCaches + 2) {
-                const bossCache = this.cacheSpawner.spawnNear(entity.worldX, entity.worldY, 200, 500);
+                const bossCache = this.cacheSpawner.spawnNear(entity.worldX, entity.worldY, 0, 0);
                 this.caches.push(bossCache);
             }
         }
@@ -2872,9 +2872,9 @@ export class PlayingState {
             }
 
             this._handleRightClickConsumable(mouse, playerLayout, playerInv);
-
-            if (this._updateClaimLevelsButton(mouse, 'cache')) return;
         }
+
+        if (this._updateClaimLevelsButton(mouse, 'cache')) return;
 
         // ── E or ESC closes ───────────────────────────────────────────────────
         if (this.game.input.isKeyJustPressed('KeyE') || this.game.input.isKeyJustPressed('Escape')) {
@@ -3341,7 +3341,7 @@ export class PlayingState {
 
         const targetRows = this.inventoryRows + cargoExpansions;
         if (p.inventory.rows !== targetRows) {
-            const ejected = p.inventory.resize(this.inventoryCols, targetRows);
+            const ejected = p.inventory.resize(p.inventory.cols, targetRows);
             if (ejected && ejected.length > 0) {
                 this._ejectItems(ejected);
             }
@@ -3988,42 +3988,52 @@ export class PlayingState {
         const C = 48;  // corner size in source pixels
         const M = 32;  // middle tile size in source pixels
 
-        // Destination sizes
-        const dc = C * this.game.uiScale;       // corner in screen pixels
-        const dm = M * this.game.uiScale;       // middle in screen pixels
-        const mw = w - dc * 2;  // full middle width to fill
-        const mh = h - dc * 2;  // full middle height to fill
         const canvas = img.canvas || img;
         const prescale = canvas.width / (img.width || canvas.width);
         const sC = C * prescale;
         const sM = M * prescale;
 
+        // Destination sizes - clamp corners so they don't exceed half the panel
+        const dcFull = C * this.game.uiScale;
+        const dcX = Math.min(dcFull, w / 2);
+        const dcY = Math.min(dcFull, h / 2);
+        const dm = M * this.game.uiScale;
+
+        // Source crop ratios (1.0 when full size, <1.0 when cropped)
+        const cropX = dcX / dcFull;
+        const cropY = dcY / dcFull;
+        const sCX = sC * cropX;  // cropped source corner width
+        const sCY = sC * cropY;  // cropped source corner height
+
+        const mw = w - dcX * 2;  // middle width to fill
+        const mh = h - dcY * 2;  // middle height to fill
+
         // Top row
-        ctx.drawImage(canvas, 0, 0, sC, sC, x, y, dc, dc); // TL
+        ctx.drawImage(canvas, 0, 0, sCX, sCY, x, y, dcX, dcY); // TL
         const cols = Math.round(mw / dm);
         for (let i = 0; i < cols; i++) {
-            ctx.drawImage(canvas, sC, 0, sM, sC, x + dc + i * dm, y, dm, dc); // T-edge
+            ctx.drawImage(canvas, sC, 0, sM, sCY, x + dcX + i * dm, y, dm, dcY); // T-edge
         }
-        ctx.drawImage(canvas, sC + sM, 0, sC, sC, x + dc + mw, y, dc, dc); // TR
+        ctx.drawImage(canvas, sC + sM + (sC - sCX), 0, sCX, sCY, x + dcX + mw, y, dcX, dcY); // TR
 
-        // Middle row
+        // Middle rows
         const rows = Math.round(mh / dm);
         for (let j = 0; j < rows; j++) {
-            const ry = y + dc + j * dm;
-            ctx.drawImage(canvas, 0, sC, sC, sM, x, ry, dc, dm); // L-edge
+            const ry = y + dcY + j * dm;
+            ctx.drawImage(canvas, 0, sC, sCX, sM, x, ry, dcX, dm); // L-edge
             for (let i = 0; i < cols; i++) {
-                ctx.drawImage(canvas, sC, sC, sM, sM, x + dc + i * dm, ry, dm, dm); // Center
+                ctx.drawImage(canvas, sC, sC, sM, sM, x + dcX + i * dm, ry, dm, dm); // Center
             }
-            ctx.drawImage(canvas, sC + sM, sC, sC, sM, x + dc + mw, ry, dc, dm); // R-edge
+            ctx.drawImage(canvas, sC + sM + (sC - sCX), sC, sCX, sM, x + dcX + mw, ry, dcX, dm); // R-edge
         }
 
         // Bottom row
-        const by = y + dc + mh;
-        ctx.drawImage(canvas, 0, sC + sM, sC, sC, x, by, dc, dc); // BL
+        const by = y + dcY + mh;
+        ctx.drawImage(canvas, 0, sC + sM + (sC - sCY), sCX, sCY, x, by, dcX, dcY); // BL
         for (let i = 0; i < cols; i++) {
-            ctx.drawImage(canvas, sC, sC + sM, sM, sC, x + dc + i * dm, by, dm, dc); // B-edge
+            ctx.drawImage(canvas, sC, sC + sM + (sC - sCY), sM, sCY, x + dcX + i * dm, by, dm, dcY); // B-edge
         }
-        ctx.drawImage(canvas, sC + sM, sC + sM, sC, sC, x + dc + mw, by, dc, dc); // BR
+        ctx.drawImage(canvas, sC + sM + (sC - sCX), sC + sM + (sC - sCY), sCX, sCY, x + dcX + mw, by, dcX, dcY); // BR
     }
 
     _handlePrimaryWeaponFire() {

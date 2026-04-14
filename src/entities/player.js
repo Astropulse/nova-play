@@ -1142,6 +1142,30 @@ export class Player {
             level: this.level,
             exp: this.exp,
             expNeeded: this.expNeeded,
+            lvlDamageMult: this.lvlDamageMult,
+            lvlMaxHpMult: this.lvlMaxHpMult,
+            lvlMaxShieldMult: this.lvlMaxShieldMult,
+            lvlShieldDrainMult: this.lvlShieldDrainMult,
+            lvlSpeedMult: this.lvlSpeedMult,
+            lvlProjectileSpeedMult: this.lvlProjectileSpeedMult,
+            lvlBoostCooldownMult: this.lvlBoostCooldownMult,
+            lvlFireRateMult: this.lvlFireRateMult,
+            lvlShieldRechargeMult: this.lvlShieldRechargeMult,
+            lvlExpGainMult: this.lvlExpGainMult,
+            lvlBoostSpeedMult: this.lvlBoostSpeedMult,
+            lvlBoostDurationMult: this.lvlBoostDurationMult,
+            lvlAsteroidResistanceMult: this.lvlAsteroidResistanceMult,
+            lvlAsteroidSpawnMult: this.lvlAsteroidSpawnMult,
+            lvlVacuumRangeMult: this.lvlVacuumRangeMult,
+            lvlTurnSpeedMult: this.lvlTurnSpeedMult,
+            lvlShieldDamageMult: this.lvlShieldDamageMult,
+            lvlFovMult: this.lvlFovMult,
+            lvlScrapChanceMult: this.lvlScrapChanceMult,
+            lvlCacheFreqMult: this.lvlCacheFreqMult,
+            lvlEncounterFreqMult: this.lvlEncounterFreqMult,
+            lvlEnemySpawnMult: this.lvlEnemySpawnMult,
+            lvlDifficultyMult: this.lvlDifficultyMult,
+            lvlWaveCountdownMult: this.lvlWaveCountdownMult,
             inventory: this.inventory ? this.inventory.serialize() : null
         };
     }
@@ -1164,6 +1188,34 @@ export class Player {
         this.level = data.level || 1;
         this.exp = data.exp || 0;
         this.expNeeded = data.expNeeded || 10;
+
+        // Restore level-up bonuses
+        if (data.lvlDamageMult !== undefined) {
+            this.lvlDamageMult           = data.lvlDamageMult;
+            this.lvlMaxHpMult            = data.lvlMaxHpMult;
+            this.lvlMaxShieldMult        = data.lvlMaxShieldMult;
+            this.lvlShieldDrainMult      = data.lvlShieldDrainMult;
+            this.lvlSpeedMult            = data.lvlSpeedMult;
+            this.lvlProjectileSpeedMult  = data.lvlProjectileSpeedMult;
+            this.lvlBoostCooldownMult    = data.lvlBoostCooldownMult;
+            this.lvlFireRateMult         = data.lvlFireRateMult;
+            this.lvlShieldRechargeMult   = data.lvlShieldRechargeMult;
+            this.lvlExpGainMult          = data.lvlExpGainMult;
+            this.lvlBoostSpeedMult       = data.lvlBoostSpeedMult;
+            this.lvlBoostDurationMult    = data.lvlBoostDurationMult;
+            this.lvlAsteroidResistanceMult = data.lvlAsteroidResistanceMult;
+            this.lvlAsteroidSpawnMult    = data.lvlAsteroidSpawnMult;
+            this.lvlVacuumRangeMult      = data.lvlVacuumRangeMult;
+            this.lvlTurnSpeedMult        = data.lvlTurnSpeedMult;
+            this.lvlShieldDamageMult     = data.lvlShieldDamageMult;
+            this.lvlFovMult              = data.lvlFovMult;
+            this.lvlScrapChanceMult      = data.lvlScrapChanceMult;
+            this.lvlCacheFreqMult        = data.lvlCacheFreqMult;
+            this.lvlEncounterFreqMult    = data.lvlEncounterFreqMult;
+            this.lvlEnemySpawnMult       = data.lvlEnemySpawnMult;
+            this.lvlDifficultyMult       = data.lvlDifficultyMult;
+            this.lvlWaveCountdownMult    = data.lvlWaveCountdownMult;
+        }
 
         if (data.inventory && this.inventory) {
             await this.inventory.deserialize(data.inventory);

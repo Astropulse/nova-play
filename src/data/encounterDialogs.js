@@ -190,8 +190,8 @@ export const DIALOG_SCENARIOS = [
     {
         type: 'cargo_trader',
         id: 'cargo_ship_lore',
-        condition: 'always',
-        vars: {},
+        condition: 'has_unrevealed_cargo_ship',
+        vars: { targetEvent: { type: 'random_unrevealed_event', className: 'CargoShipEvent' } },
         message: "One of our [scrap]supply ships[/scrap] got taken out somewhere in the [good]+/- 6000 radius[/good]. Whole month's cargo, gone. Never had time to salvage it.",
         steps: {
             coords: {
@@ -199,7 +199,7 @@ export const DIALOG_SCENARIOS = [
                 options: [
                     {
                         label: "Send me the signal",
-                        actions: ['reveal_event'],
+                        actions: ['reveal_event_specific:targetEvent'],
                         response: "Sent. Take whatever's left - we won't be coming back for it."
                     },
                     {
