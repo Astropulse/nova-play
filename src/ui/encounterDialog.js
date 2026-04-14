@@ -32,6 +32,7 @@ export class EncounterDialog {
 
         this.state = DIALOG_STATE.TYPING_MESSAGE;
         this.closed = false;
+        this.forced = dialogData.forced || false;
 
         // Current message
         this.segments = this._parse(dialogData.message);
@@ -137,8 +138,8 @@ export class EncounterDialog {
                     }
                 }
 
-                // Escape to close
-                if (input.isKeyJustPressed('Escape')) {
+                // Escape to close (blocked on forced encounters)
+                if (!this.forced && input.isKeyJustPressed('Escape')) {
                     this.closed = true;
                     this.encounter.shouldStay = true;
                 }

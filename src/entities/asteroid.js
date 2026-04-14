@@ -848,8 +848,8 @@ export class ExpOrb {
         const frame = frameData.canvas || frameData;
 
         const screen = camera.worldToScreen(this.worldX, this.worldY, this.game.width, this.game.height);
-        const w = (frame.width || 12);
-        const h = (frame.height || 12);
+        const w = (frameData.width || 12) * this.game.worldScale;
+        const h = (frameData.height || 12) * this.game.worldScale;
 
         // Simple cull
         if (screen.x + w < -100 || screen.x - w > this.game.width + 100 ||
@@ -890,11 +890,6 @@ export class ExpOrb {
         ctx.globalCompositeOperation = 'lighter';
         
         ctx.drawImage(frame.canvas || frame, -w / 2, -h / 2, w, h);
-        
-        // Pulse effect
-        const pulse = 0.8 + Math.sin(this.time * 10) * 0.2;
-        ctx.globalAlpha = 0.4;
-        ctx.drawImage(frame.canvas || frame, -w * pulse / 2, -h * pulse / 2, w * pulse, h * pulse);
         
         ctx.restore();
     }

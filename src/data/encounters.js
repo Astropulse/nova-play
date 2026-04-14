@@ -50,7 +50,8 @@ function checkCondition(cond, player, state) {
                 e.item.rarity === 'rare' || e.item.rarity === 'epic');
         case 'player_has_any_item':
             return player.inventory && player.inventory.items.some(e =>
-                e.item.rarity !== 'unique');
+                (e.item.rarity === 'common' || e.item.rarity === 'uncommon') &&
+                !(e.item.width >= 2 && e.item.height >= 2));
         case 'player_has_battery':
             return player.inventory && player.inventory.items.some(e =>
                 e.item.id === 'small_battery');
@@ -62,6 +63,10 @@ function checkCondition(cond, player, state) {
             return state.events && state.events.some(ev => !ev.revealed && !ev.isFinished);
         case 'has_unrevealed_events_2':
             return state.events && state.events.filter(ev => !ev.revealed && !ev.isFinished).length >= 2;
+        case 'player_has_scrap':
+            return player.scrap >= 30;
+        case 'player_healthy':
+            return player.health >= player.maxHealth * 0.8;
         default: return true;
     }
 }
@@ -89,7 +94,9 @@ function resolveVars(varDefs, player, state) {
                 break;
             }
             case 'random_any_item': {
-                const items = player.inventory.items.filter(e => e.item.rarity !== 'unique');
+                const items = player.inventory.items.filter(e =>
+                    (e.item.rarity === 'common' || e.item.rarity === 'uncommon') &&
+                    !(e.item.width >= 2 && e.item.height >= 2));
                 if (items.length === 0) return null;
                 resolved[key] = pick(items);
                 break;
@@ -342,86 +349,116 @@ function executeActions(actions, vars, player, state, encounter) {
     return 'ok';
 }
 
-// ── Build runtime dialog from scenario data ──────────────────────
-function buildDialog(scenario, vars, player, state) {
-    const message = substitute(scenario.message, vars);
+// ── Per-option builder (negotiate / gamble / chain / standard) ───
+function buildOption(opt, scenario, vars) {
+    const label = substitute(opt.label, vars);
 
-    const options = scenario.options.map(opt => {
-        const label = substitute(opt.label, vars);
-
-        if (opt.negotiate) {
-            // Negotiate option: produces branching dialog
-            return {
-                label,
-                action: (p, s, enc) => {
-                    const success = Math.random() < opt.negotiate.chance;
-                    if (success) {
-                        const priceVar = opt.negotiate.price;
-                        const price = vars[priceVar];
-                        const result = executeActions(opt.actions, vars, p, s, enc);
-                        if (result === 'not_enough_scrap') return { message: "Not enough scrap.", close: true };
-                        if (result === 'inventory_full') return { message: "Cargo hold is full.", close: true };
-                        const resp = substitute(opt.response || "Deal.", vars);
-                        return { message: resp, close: true };
-                    } else {
-                        const fbPrice = opt.negotiate.fallbackPrice;
-                        let fbPriceVal = vars[fbPrice];
-                        const negPrice = vars[opt.negotiate.price];
-
-                        // Punishment: if failed to get a better deal, the firm price is worse.
-                        const wasBuying = negPrice < fbPriceVal;
-                        if (wasBuying) {
-                            // Buying: player tried lower cost -> price increases
-                            fbPriceVal = Math.floor(fbPriceVal * 1.25);
-                        } else if (negPrice > fbPriceVal) {
-                            // Selling: player tried higher offer -> offer decreases
-                            fbPriceVal = Math.floor(fbPriceVal * 0.8);
-                        }
-                        vars[fbPrice] = fbPriceVal; // Update stored var for the action execution
-
-                        const symbol = wasBuying ? "-" : "+";
-                        const tag = wasBuying ? "cost" : "scrap";
-
-                        return {
-                            message: `You're wasting my time. The price is now firm at [scrap]${fbPriceVal}[/scrap] scrap.`,
-                            options: [
-                                {
-                                    label: `Accept ([${tag}]${symbol}${fbPriceVal} scrap[/${tag}])`,
-                                    action: (p2, s2, enc2) => {
-                                        const r = executeActions(opt.fallbackActions || opt.actions, vars, p2, s2, enc2);
-                                        if (r === 'not_enough_scrap') return { message: "Not enough scrap.", close: true };
-                                        if (r === 'inventory_full') return { message: "Cargo hold is full.", close: true };
-                                        return { message: substitute(opt.response || "Done.", vars), close: true };
-                                    }
-                                },
-                                {
-                                    label: 'Walk away',
-                                    action: () => ({ message: "Your call.", close: true })
-                                }
-                            ]
-                        };
-                    }
-                }
-            };
-        }
-
-        // Standard option
+    // Negotiate: 50/50 branch with price punishment on failure
+    if (opt.negotiate) {
         return {
             label,
             action: (p, s, enc) => {
-                enc.shouldStay = opt.stay;
+                const success = Math.random() < opt.negotiate.chance;
+                if (success) {
+                    const result = executeActions(opt.actions, vars, p, s, enc);
+                    if (result === 'not_enough_scrap') return { message: "Not enough scrap.", close: true };
+                    if (result === 'inventory_full') return { message: "Cargo hold is full.", close: true };
+                    return { message: substitute(opt.response || "Deal.", vars), close: true };
+                } else {
+                    const fbPrice = opt.negotiate.fallbackPrice;
+                    let fbPriceVal = vars[fbPrice];
+                    const negPrice = vars[opt.negotiate.price];
+                    const wasBuying = negPrice < fbPriceVal;
+                    if (wasBuying) { fbPriceVal = Math.floor(fbPriceVal * 1.25); }
+                    else if (negPrice > fbPriceVal) { fbPriceVal = Math.floor(fbPriceVal * 0.8); }
+                    vars[fbPrice] = fbPriceVal;
+                    const symbol = wasBuying ? "-" : "+";
+                    const tag = wasBuying ? "cost" : "scrap";
+                    return {
+                        message: `You're wasting my time. The price is now firm at [scrap]${fbPriceVal}[/scrap] scrap.`,
+                        options: [
+                            {
+                                label: `Accept ([${tag}]${symbol}${fbPriceVal} scrap[/${tag}])`,
+                                action: (p2, s2, enc2) => {
+                                    const r = executeActions(opt.fallbackActions || opt.actions, vars, p2, s2, enc2);
+                                    if (r === 'not_enough_scrap') return { message: "Not enough scrap.", close: true };
+                                    if (r === 'inventory_full') return { message: "Cargo hold is full.", close: true };
+                                    return { message: substitute(opt.response || "Done.", vars), close: true };
+                                }
+                            },
+                            { label: 'Walk away', action: () => ({ message: "Your call.", close: true }) }
+                        ]
+                    };
+                }
+            }
+        };
+    }
+
+    // Gamble: weighted random outcome, runs opt.actions first then rolls
+    if (opt.gamble) {
+        return {
+            label,
+            action: (p, s, enc) => {
                 if (opt.actions && opt.actions.length > 0) {
                     const result = executeActions(opt.actions, vars, p, s, enc);
                     if (result === 'not_enough_scrap') return { message: "Not enough scrap.", close: true };
                     if (result === 'inventory_full') return { message: "Cargo hold is full.", close: true };
                 }
-                const resp = substitute(opt.response || "...", vars);
-                return { message: resp, close: true };
+                const outcomes = opt.gamble;
+                const totalWeight = outcomes.reduce((sum, o) => sum + (o.weight || 1), 0);
+                let roll = Math.random() * totalWeight;
+                let chosen = outcomes[outcomes.length - 1];
+                for (const outcome of outcomes) {
+                    roll -= (outcome.weight || 1);
+                    if (roll <= 0) { chosen = outcome; break; }
+                }
+                if (chosen.actions && chosen.actions.length > 0) executeActions(chosen.actions, vars, p, s, enc);
+                return { message: substitute(chosen.message, vars), close: true };
             }
         };
-    });
+    }
 
-    return { message, options, rawScenario: scenario, vars };
+    // Chain: execute any pre-actions then transition to a named step
+    if (opt.chain) {
+        const step = scenario.steps && scenario.steps[opt.chain];
+        return {
+            label,
+            action: (p, s, enc) => {
+                if (opt.actions && opt.actions.length > 0) {
+                    const result = executeActions(opt.actions, vars, p, s, enc);
+                    if (result === 'not_enough_scrap') return { message: "Not enough scrap.", close: true };
+                    if (result === 'inventory_full') return { message: "Cargo hold is full.", close: true };
+                }
+                if (!step) return { message: '...', close: true };
+                return {
+                    message: substitute(step.message, vars),
+                    options: (step.options || []).map(o => buildOption(o, scenario, vars))
+                };
+            }
+        };
+    }
+
+    // Standard
+    return {
+        label,
+        action: (p, s, enc) => {
+            enc.shouldStay = opt.stay;
+            if (opt.actions && opt.actions.length > 0) {
+                const result = executeActions(opt.actions, vars, p, s, enc);
+                if (result === 'not_enough_scrap') return { message: "Not enough scrap.", close: true };
+                if (result === 'inventory_full') return { message: "Cargo hold is full.", close: true };
+            }
+            const resp = substitute(opt.response || "...", vars);
+            return { message: resp, close: true };
+        }
+    };
+}
+
+// ── Build runtime dialog from scenario data ──────────────────────
+function buildDialog(scenario, vars, player, state) {
+    const message = substitute(scenario.message, vars);
+    const options = scenario.options.map(opt => buildOption(opt, scenario, vars));
+    return { message, options, rawScenario: scenario, vars, forced: scenario.forced || false };
 }
 
 // ── Public API ───────────────────────────────────────────────────

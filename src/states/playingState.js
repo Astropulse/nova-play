@@ -3075,7 +3075,6 @@ export class PlayingState {
         this.pauseButtons.shipSelection.w = shipSelSize.w;
         this.pauseButtons.shipSelection.h = shipSelSize.h;
 
-        // Claim Levels button position (click handled below in the mouse press block)
         this._updateClaimLevelsButton(mouse, 'pause');
 
         if (this.confirmRestart) {
@@ -3119,11 +3118,6 @@ export class PlayingState {
                 if (pb.shipSelection.hovered) {
                     this.game.sounds.play('click', 0.5);
                     this.confirmRestart = true;
-                    return;
-                }
-                if (pb.claimLevels.hovered && pb.claimLevels.w > 0) {
-                    this._levelUpOrigin = 'pause';
-                    this._openLevelUpDialog(this.levelUpQueue.shift());
                     return;
                 }
             }
@@ -3580,8 +3574,11 @@ export class PlayingState {
         const curvedDifficultyScale = Math.pow(this.difficultyScale, 0.6);
         const bossBaseHealth = (220 * curvedDifficultyScale) + 70 * this.difficultyScale;
 
-        // Hostile encounters are strong: 90% of boss health base, scaled by wealth
-        en.health = Math.ceil(bossBaseHealth * 0.9 * wealthBonus);
+        // Forced encounters that turned hostile are weaker than ones the player picked a fight with.
+        // Chosen fights: 90% of boss HP. Forced fights: ~45% (between normal enemy and boss).
+        const forcedFight = !!(encounter.dialogData && encounter.dialogData.forced);
+        const healthMult = forcedFight ? 0.45 : 0.9;
+        en.health = Math.ceil(bossBaseHealth * healthMult * wealthBonus);
         en.maxHealth = en.health;
 
         // Scale other attributes
@@ -3880,9 +3877,12 @@ export class PlayingState {
             ['Proj. Speed',   p.lvlProjectileSpeedMult],
             ['Shld Drain',    p.lvlShieldDrainMult,        true],        // less drain = good, shown < 100%
             ['Shld Regen',    p.lvlShieldRechargeMult],
+            ['Shld Impact',   p.lvlShieldDamageMult],
             ['Asteroid Res.', 1 / Math.max(0.01, p.lvlAsteroidResistanceMult)], // less damage taken = higher resistance
             ['Difficulty',    p.lvlDifficultyMult,         true],        // lower difficulty scaling = good
             ['Hull Regen',    `+${p.lvlHpRegen > 0 ? p.lvlHpRegen.toFixed(1) : '0.0'}/s`],
+            ['Cache Rate',    p.lvlCacheFreqMult],
+            ['Enc. Rate',     p.lvlEncounterFreqMult],
         ];
         const colB = [
             ['Ship Speed',     p.lvlSpeedMult],
@@ -3890,10 +3890,13 @@ export class PlayingState {
             ['Boost Speed',    p.lvlBoostSpeedMult],
             ['Boost Duration', p.lvlBoostDurationMult],
             ['Boost Rech.',    1 / Math.max(0.01, p.lvlBoostCooldownMult)], // shorter cooldown = faster recharge
+            ['Field of View',  p.lvlFovMult],
             ['Vacuum Range',   p.lvlVacuumRangeMult],
             ['Exp Gain',       p.lvlExpGainMult],
             ['Scrap Chance',   p.lvlScrapChanceMult],
+            ['Ast. Density',   p.lvlAsteroidSpawnMult],
             ['Enemy Spawn',    p.lvlEnemySpawnMult,        true],        // fewer enemies = good, shown < 100%
+            ['Wave Speed',     1 / Math.max(0.01, p.lvlWaveCountdownMult)], // shorter countdown = faster waves
             ['Extra Shots',    `+${p.lvlExtraProjectiles}`],
         ];
 
