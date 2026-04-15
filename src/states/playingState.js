@@ -186,6 +186,29 @@ export class PlayingState {
 
         // Performance profiler (dev mode only)
         this.perf = new PerfProfiler();
+
+        // Pre-create ExpOrb glow frames BEFORE the first render frame.
+        // Creating shadowBlur canvases mid-render permanently degrades the
+        // canvas pipeline in both Firefox and Chrome.
+        const expAsset = game.assets.get('exp');
+        if (expAsset && Array.isArray(expAsset)) {
+            for (const frame of expAsset) {
+                const f = frame.canvas || frame;
+                if (f) ExpOrb._getGlowForFrame(f);
+            }
+        }
+
+        // Also pre-create projectile glow sprites for all variants
+        const projGlowKeys = [
+            ['blue_laser_ball', '#1da2c0ff'],
+            ['blue_laser_ball_big', '#1da2c0ff'],
+            ['red_laser_ball', '#ff4444'],
+            ['red_laser_ball_big', '#ff4444'],
+        ];
+        for (const [key, color] of projGlowKeys) {
+            const asset = game.assets.get(key);
+            if (asset) Projectile._getGlowSprite(asset, color);
+        }
     }
 
     _triggerShakeAt(x, y, intensity, minPassDist = 1200, maxDist = 4000) {
@@ -386,7 +409,7 @@ export class PlayingState {
         const nearShop = this.shops.find(s => {
             const dx = s.worldX - this.player.worldX;
             const dy = s.worldY - this.player.worldY;
-            return Math.sqrt(dx * dx + dy * dy) < s.interactRange;
+            return dx * dx + dy * dy < s.interactRange * s.interactRange;
         });
         this.canInteractShop = !!nearShop;
 
@@ -395,7 +418,7 @@ export class PlayingState {
             if (enc.state === ENC_STATE.DEPARTING || enc.state === ENC_STATE.HOSTILE) return false;
             const dx = enc.worldX - this.player.worldX;
             const dy = enc.worldY - this.player.worldY;
-            return Math.sqrt(dx * dx + dy * dy) < enc.interactRange;
+            return dx * dx + dy * dy < enc.interactRange * enc.interactRange;
         });
         this.canInteractEncounter = !!nearEncounter;
 
@@ -404,7 +427,7 @@ export class PlayingState {
             if (!c.canInteract) return false;
             const dx = c.worldX - this.player.worldX;
             const dy = c.worldY - this.player.worldY;
-            return Math.sqrt(dx * dx + dy * dy) < c.interactRange;
+            return dx * dx + dy * dy < c.interactRange * c.interactRange;
         });
         this.canInteractCache = !!nearCache;
 
@@ -479,8 +502,7 @@ export class PlayingState {
             if (ev.isActive) {
                 const edx = ev.worldX - this.player.worldX;
                 const edy = ev.worldY - this.player.worldY;
-                const dist = Math.sqrt(edx * edx + edy * edy);
-                if (dist < 5000) {
+                if (edx * edx + edy * edy < 25000000) { // 5000^2
                     isEventActive = true;
                 }
             }
@@ -497,11 +519,11 @@ export class PlayingState {
             if (ev.popSpawns) {
                 const spawns = ev.popSpawns();
                 for (const s of spawns) {
-                    if (s instanceof Scrap) this.scrapEntities.push(s);
-                    else if (s instanceof Rubble || s instanceof ProceduralDebris) this.rubble.push(s);
+                    if (s instanceof Scrap) { if (this.scrapEntities.length < 200) this.scrapEntities.push(s); }
+                    else if (s instanceof Rubble || s instanceof ProceduralDebris) { if (this.rubble.length < 250) this.rubble.push(s); }
                     else if (s instanceof Asteroid) this.asteroids.push(s);
                     else if (s instanceof ItemPickup) this.itemPickups.push(s);
-                    else if (s instanceof ExpOrb) this.expOrbs.push(s);
+                    else if (s instanceof ExpOrb) { if (this.expOrbs.length < 150) this.expOrbs.push(s); }
                 }
             }
         }
@@ -747,13 +769,15 @@ export class PlayingState {
 
         // --- Freeze spawning if an event is active ---
         if (!isEventActive && this.eventBufferTimer <= 0) {
-            // Spawn asteroids
+            // Spawn asteroids (capped to prevent unbounded growth)
             this.perf.begin('asteroids');
-            const newAsteroids = this.asteroidSpawner.update(
-                dt, this.player.worldX, this.player.worldY,
-                this.player.vx, this.player.vy, this.player.asteroidSpawnMult
-            );
-            this.asteroids.push(...newAsteroids);
+            if (this.asteroids.length < 180) {
+                const newAsteroids = this.asteroidSpawner.update(
+                    dt, this.player.worldX, this.player.worldY,
+                    this.player.vx, this.player.vy, this.player.asteroidSpawnMult
+                );
+                this.asteroids.push(...newAsteroids);
+            }
             this.perf.end('asteroids');
 
             // Spawn caches (rare, distance-accumulator based)
@@ -783,7 +807,8 @@ export class PlayingState {
             this.difficultyScale = timeScale + powerLevel;
 
             // Wave timer: fixed 2-minute interval
-            const bossAlive = this.enemies.some(e => e.isBoss && e.alive);
+            let bossAlive = false;
+            for (const e of this.enemies) { if (e.isBoss && e.alive) { bossAlive = true; break; } }
             if (!bossAlive) {
                 this.waveTimer -= dt;
                 this.postWaveTimer += dt;
@@ -832,12 +857,13 @@ export class PlayingState {
                 this.bossDeathImmunityTimer -= dt;
             }
 
-            // Boss wreckage tracking - clean up when player is close
+            // Boss wreckage tracking - clean up when player is close OR too far
             if (!this.player.isWarping) {
                 for (const wreck of this.bossWrecks) {
                     const dx = wreck.worldX - this.player.worldX;
                     const dy = wreck.worldY - this.player.worldY;
-                    if (dx * dx + dy * dy < 450 * 450) {
+                    const distSq = dx * dx + dy * dy;
+                    if (distSq < 450 * 450 || distSq > 15000 * 15000) {
                         wreck.isFinished = true;
                     }
                 }
@@ -850,11 +876,16 @@ export class PlayingState {
         }
 
         // Update enemies — split into boss vs regular for perf tracking
+        // Pre-filter asteroids near the player for enemy AI avoidance (avoid 30×200 loop)
+        const enemyAvoidAsteroids = this.asteroids.length > 60
+            ? this.asteroids.filter(a => a._nearPlayer)
+            : this.asteroids;
+
         this.perf.begin('enemies');
         this.perf.begin('boss');
         for (const e of this.enemies) {
             if (!e.isBoss) continue;
-            e.update(dt, this.player, this.asteroids, this.projectiles, this.enemies);
+            e.update(dt, this.player, enemyAvoidAsteroids, this.projectiles, this.enemies);
             if (e.pendingProjectiles.length > 0) {
                 this.projectiles.push(...e.pendingProjectiles);
                 e.pendingProjectiles.length = 0;
@@ -863,7 +894,7 @@ export class PlayingState {
         this.perf.end('boss');
         for (const e of this.enemies) {
             if (e.isBoss) continue;
-            e.update(dt, this.player, this.asteroids, this.projectiles, this.enemies);
+            e.update(dt, this.player, enemyAvoidAsteroids, this.projectiles, this.enemies);
             if (e.pendingProjectiles.length > 0) {
                 this.projectiles.push(...e.pendingProjectiles);
                 e.pendingProjectiles.length = 0;
@@ -872,7 +903,8 @@ export class PlayingState {
             // Despawn if way too far
             const dxArr = e.worldX - this.player.worldX;
             const dyArr = e.worldY - this.player.worldY;
-            if (Math.sqrt(dxArr * dxArr + dyArr * dyArr) > 3500 * this.currentFovMult && !e.isBoss) {
+            const despawnR = 3500 * this.currentFovMult;
+            if (dxArr * dxArr + dyArr * dyArr > despawnR * despawnR && !e.isBoss) {
                 e.alive = false;
             }
         }
@@ -892,11 +924,26 @@ export class PlayingState {
             a.update(dt);
             const dx = a.worldX - this.player.worldX;
             const dy = a.worldY - this.player.worldY;
-            if (Math.sqrt(dx * dx + dy * dy) > a.despawnDist) {
+            if (dx * dx + dy * dy > a.despawnDist * a.despawnDist) {
                 a.alive = false;
             }
         }
         this.perf.end('asteroids');
+
+        // Tag entities near the player for broad-phase collision/AI culling
+        {
+            const cpx = this.player.worldX, cpy = this.player.worldY;
+            const cullRange = 3000 * this.currentFovMult;
+            const cullRangeSq = cullRange * cullRange;
+            for (const a of this.asteroids) {
+                const dx = a.worldX - cpx, dy = a.worldY - cpy;
+                a._nearPlayer = (dx * dx + dy * dy < cullRangeSq);
+            }
+            for (const en of this.enemies) {
+                const dx = en.worldX - cpx, dy = en.worldY - cpy;
+                en._nearPlayer = (dx * dx + dy * dy < cullRangeSq);
+            }
+        }
 
         // Update rubble / particles
         this.perf.begin('particles');
@@ -913,16 +960,20 @@ export class PlayingState {
         }
         this.perf.end('particles');
 
-        // Cleanup stale indicator opacities
-        for (const [entity, state] of this.indicatorOpacities) {
-            if (!this.enemies.includes(entity) &&
-                !this.asteroids.includes(entity) &&
-                !this.shops.includes(entity) &&
-                !this.events.includes(entity) &&
-                !this.encounters.includes(entity) &&
-                !this.bossWrecks.includes(entity) &&
-                !this.caches.includes(entity)) {
-                this.indicatorOpacities.delete(entity);
+        // Cleanup stale indicator opacities (throttled — only every 60 frames)
+        this._indicatorCleanupCounter = (this._indicatorCleanupCounter || 0) + 1;
+        if (this._indicatorCleanupCounter >= 60) {
+            this._indicatorCleanupCounter = 0;
+            for (const [entity] of this.indicatorOpacities) {
+                if (!this.enemies.includes(entity) &&
+                    !this.asteroids.includes(entity) &&
+                    !this.shops.includes(entity) &&
+                    !this.events.includes(entity) &&
+                    !this.encounters.includes(entity) &&
+                    !this.bossWrecks.includes(entity) &&
+                    !this.caches.includes(entity)) {
+                    this.indicatorOpacities.delete(entity);
+                }
             }
         }
 
@@ -934,9 +985,8 @@ export class PlayingState {
                 // Collection collision
                 const dx = s.worldX - this.player.worldX;
                 const dy = s.worldY - this.player.worldY;
-                const dist = Math.sqrt(dx * dx + dy * dy);
                 const collectRange = (s.collectRange + this.player.radius);
-                if (dist < collectRange) {
+                if (dx * dx + dy * dy < collectRange * collectRange) {
                     s.alive = false;
                     this.player.scrap += s.value;
                     this.stats.scrapCollected += s.value;
@@ -958,10 +1008,9 @@ export class PlayingState {
                 // Collection collision
                 const dx = it.worldX - this.player.worldX;
                 const dy = it.worldY - this.player.worldY;
-                const dist = Math.sqrt(dx * dx + dy * dy);
                 const collectRange = (it.collectRange + this.player.radius);
 
-                if (dist < collectRange && (it.pickupDelay || 0) <= 0) {
+                if (dx * dx + dy * dy < collectRange * collectRange && (it.pickupDelay || 0) <= 0) {
                     // Try to add to inventory
                     if (this.player.inventory.autoAdd(it.item)) {
                         it.alive = false;
@@ -986,10 +1035,10 @@ export class PlayingState {
             // Collection collision
             const dx = orb.worldX - this.player.worldX;
             const dy = orb.worldY - this.player.worldY;
-            const dist = Math.sqrt(dx * dx + dy * dy);
+            const distSq = dx * dx + dy * dy;
             const collectRange = (orb.collectRange + this.player.radius);
 
-            if (dist < collectRange) {
+            if (distSq < collectRange * collectRange) {
                 orb.alive = false;
                 const finalExp = Math.ceil(orb.amount * (this.player.experienceCondenserMult || 1.0));
                 this.player.addExp(finalExp);
@@ -1002,20 +1051,24 @@ export class PlayingState {
             }
 
             // Despawn check
-            if (dx * dx + dy * dy > 5000 * 5000) orb.alive = false;
+            if (distSq > 25000000) orb.alive = false; // 5000^2
         }
 
         // --- Collision: Projectiles vs Everything ---
         this.perf.begin('collisions');
+
+        // _nearPlayer tags are already computed after asteroid update (used by enemy AI too)
+
         for (const proj of this.projectiles) {
             if (!proj.alive) continue;
 
             // vs Asteroids (All Projectiles)
             for (const ast of this.asteroids) {
-                if (!ast.alive) continue;
+                if (!ast.alive || !ast._nearPlayer) continue;
                 const dx = proj.worldX - ast.worldX;
                 const dy = proj.worldY - ast.worldY;
-                if (Math.sqrt(dx * dx + dy * dy) < proj.radius + ast.radius) {
+                const cr = proj.radius + ast.radius;
+                if (dx * dx + dy * dy < cr * cr) {
                     proj.alive = false;
                     this.game.sounds.play('hit', { volume: 0.4, x: proj.worldX, y: proj.worldY });
                     if (ast.hit(proj.damage)) {
@@ -1039,7 +1092,8 @@ export class PlayingState {
                     if (!ev.alive || ev.blocksProjectiles === false) continue;
                     const dx = proj.worldX - ev.worldX;
                     const dy = proj.worldY - ev.worldY;
-                    if (Math.sqrt(dx * dx + dy * dy) < proj.radius + ev.radius) {
+                    const cr = proj.radius + ev.radius;
+                    if (dx * dx + dy * dy < cr * cr) {
                         proj.alive = false;
                         if (ev.hit(proj.damage)) {
                             this._onEntityDestroyed(ev);
@@ -1062,10 +1116,11 @@ export class PlayingState {
 
                 // vs Enemies
                 for (const en of this.enemies) {
-                    if (!en.alive) continue;
+                    if (!en.alive || !en._nearPlayer) continue;
                     const dx = proj.worldX - en.worldX;
                     const dy = proj.worldY - en.worldY;
-                    if (Math.sqrt(dx * dx + dy * dy) < proj.radius + en.radius) {
+                    const cr = proj.radius + en.radius;
+                    if (dx * dx + dy * dy < cr * cr) {
                         proj.alive = false;
                         this.game.sounds.play('hit', { volume: 0.4, x: proj.worldX, y: proj.worldY });
                         if (en.hit(proj.damage)) {
@@ -1084,16 +1139,17 @@ export class PlayingState {
             else if (proj.owner !== this.player) {
                 const dx = proj.worldX - this.player.worldX;
                 const dy = proj.worldY - this.player.worldY;
-                const dist = Math.sqrt(dx * dx + dy * dy);
+                const cr = proj.radius + this.player.radius;
 
-                // Broad-phase distance check followed by pixel-perfect check
-                if (dist < proj.radius + this.player.radius) {
+                // Broad-phase squared-distance check followed by pixel-perfect check
+                if (dx * dx + dy * dy < cr * cr) {
                     if (this.player.checkPixelCollision(proj.worldX, proj.worldY)) {
                         proj.alive = false;
                         this._damagePlayer(proj.damage); // proj.damage is already scaled in Enemy.shoot
 
                         const kdx = this.player.worldX - proj.worldX;
                         const kdy = this.player.worldY - proj.worldY;
+                        const dist = Math.sqrt(kdx * kdx + kdy * kdy);
                         this._applyKnockback(kdx, kdy, dist, 100);
 
                         // Play shield hit sound if shielding
@@ -1112,8 +1168,9 @@ export class PlayingState {
                 if (!ast.alive) continue;
                 const dx = this.player.worldX - ast.worldX;
                 const dy = this.player.worldY - ast.worldY;
-                const dist = Math.sqrt(dx * dx + dy * dy);
-                if (dist < this.player.radius + ast.radius) {
+                const cr = this.player.radius + ast.radius;
+                if (dx * dx + dy * dy < cr * cr) {
+                    const dist = Math.sqrt(dx * dx + dy * dy);
                     ast.onCollision(this.player);
                     this._damagePlayer(ast.damage * this.player.lvlAsteroidResistanceMult);
                     ast.alive = false;
@@ -1127,8 +1184,9 @@ export class PlayingState {
                 if (!en.alive || en.invulnTimer > 0) continue;
                 const dx = this.player.worldX - en.worldX;
                 const dy = this.player.worldY - en.worldY;
-                const dist = Math.sqrt(dx * dx + dy * dy);
-                if (dist < this.player.radius + en.radius) {
+                const cr = this.player.radius + en.radius;
+                if (dx * dx + dy * dy < cr * cr) {
+                    const dist = Math.sqrt(dx * dx + dy * dy);
                     this._damagePlayer(20); // Ramming hurts!
                     en.onCollision(this.player);
                     if (!en.alive) this._onEntityDestroyed(en);
@@ -1141,8 +1199,9 @@ export class PlayingState {
                 if (!ev.alive || ev.state !== CTHULHU_STATE.DORMANT) continue;
                 const dx = this.player.worldX - ev.worldX;
                 const dy = this.player.worldY - ev.worldY;
-                const dist = Math.sqrt(dx * dx + dy * dy);
-                if (dist < this.player.radius + ev.radius * 0.5) { // Smaller inner radius for waking
+                const cr = this.player.radius + ev.radius * 0.5;
+                if (dx * dx + dy * dy < cr * cr) { // Smaller inner radius for waking
+                    const dist = Math.sqrt(dx * dx + dy * dy);
                     this._damagePlayer(20);
                     ev.hit(1); // Triggers wake
                     this._applyKnockback(dx, dy, dist, 600); // Big knockback from boss
@@ -1153,13 +1212,13 @@ export class PlayingState {
         // --- Collision: Enemies vs Asteroids ---
         // (Note: still inside collisions timing block)
         for (const en of this.enemies) {
-            if (!en.alive) continue;
+            if (!en.alive || !en._nearPlayer) continue;
             for (const ast of this.asteroids) {
-                if (!ast.alive) continue;
+                if (!ast.alive || !ast._nearPlayer) continue;
                 const dx = en.worldX - ast.worldX;
                 const dy = en.worldY - ast.worldY;
-                const dist = Math.sqrt(dx * dx + dy * dy);
-                if (dist < en.radius + ast.radius) {
+                const cr = en.radius + ast.radius;
+                if (dx * dx + dy * dy < cr * cr) {
                     // Bosses take nearly no damage from asteroids (1.0 damage per hit)
                     // AsteroidCrusher takes NO damage from asteroids
                     const damage = (en instanceof AsteroidCrusher) ? 0 : (en.isBoss ? 1.0 : 10);
@@ -1234,15 +1293,25 @@ export class PlayingState {
         }
 
         // Spawn timer — scales with exploration, must have NO combatants visibly attacking
-        const bossAlive = this.enemies.some(e => e.isBoss && e.alive);
-        const enemiesOnScreen = this.enemies.some(e => {
-            if (!e.alive) return false;
-            const screen = this.camera.worldToScreen(e.worldX, e.worldY, this.game.width, this.game.height);
-            const margin = 100 * this.game.worldScale;
-            return (screen.x >= -margin && screen.x <= this.game.width + margin && screen.y >= -margin && screen.y <= this.game.height + margin);
-        });
+        let bossAlive2 = false;
+        let enemiesOnScreen = false;
+        const ws = this.game.worldScale;
+        const halfVW = this.game.width / ws / 2 + 100;
+        const halfVH = this.game.height / ws / 2 + 100;
+        const cx = this.camera.x, cy = this.camera.y;
+        for (const e of this.enemies) {
+            if (!e.alive) continue;
+            if (e.isBoss) bossAlive2 = true;
+            if (!enemiesOnScreen) {
+                const dx = e.worldX - cx, dy = e.worldY - cy;
+                if (dx > -halfVW && dx < halfVW && dy > -halfVH && dy < halfVH) {
+                    enemiesOnScreen = true;
+                }
+            }
+            if (bossAlive2 && enemiesOnScreen) break;
+        }
 
-        if (!bossAlive && !isEventActive && !enemiesOnScreen && this.encounters.length === 0) {
+        if (!bossAlive2 && !isEventActive && !enemiesOnScreen && this.encounters.length === 0) {
             this.encounterSpawnTimer -= dt;
             if (this.encounterSpawnTimer <= 0) {
                 this._spawnEncounter();
@@ -1289,11 +1358,11 @@ export class PlayingState {
         }
         const spawns = entity.getSpawnOnDeath();
         for (const s of spawns) {
-            if (s instanceof Scrap) this.scrapEntities.push(s);
-            else if (s instanceof Rubble || s instanceof ProceduralDebris) this.rubble.push(s);
+            if (s instanceof Scrap) { if (this.scrapEntities.length < 200) this.scrapEntities.push(s); }
+            else if (s instanceof Rubble || s instanceof ProceduralDebris) { if (this.rubble.length < 250) this.rubble.push(s); }
             else if (s instanceof Asteroid) this.asteroids.push(s);
             else if (s instanceof ItemPickup) this.itemPickups.push(s);
-            else if (s instanceof ExpOrb) this.expOrbs.push(s);
+            else if (s instanceof ExpOrb) { if (this.expOrbs.length < 150) this.expOrbs.push(s); }
         }
     }
 
@@ -1554,25 +1623,42 @@ export class PlayingState {
         this.world.draw(ctx, this.camera, this.player, this.totalGameTime);
         this.perf.end('world');
 
+        // --- Pre-compute draw culling bounds ---
+        // Entities outside this radius from the camera center don't need draw calls.
+        // This avoids calling worldToScreen + draw for hundreds of distant entities.
+        const camX = this.camera.x;
+        const camY = this.camera.y;
+        const ws = this.game.worldScale;
+        const drawCullX = this.game.width / ws / 2 + 200;  // half-viewport + margin in world units
+        const drawCullY = this.game.height / ws / 2 + 200;
+
         // --- Particles / rubble / scrap / events / pickups ---
         this.perf.begin('particles');
         for (const r of this.rubble) {
-            r.draw(ctx, this.camera);
+            const dx = r.worldX - camX, dy = r.worldY - camY;
+            if (dx > -drawCullX && dx < drawCullX && dy > -drawCullY && dy < drawCullY)
+                r.draw(ctx, this.camera);
         }
         for (const s of this.scrapEntities) {
-            s.draw(ctx, this.camera);
+            const dx = s.worldX - camX, dy = s.worldY - camY;
+            if (dx > -drawCullX && dx < drawCullX && dy > -drawCullY && dy < drawCullY)
+                s.draw(ctx, this.camera);
         }
         for (const ev of this.events) {
-            ev.draw(ctx, this.camera);
+            ev.draw(ctx, this.camera); // Events are few and may have large visuals
         }
         for (const c of this.caches) {
-            c.draw(ctx, this.camera);
+            c.draw(ctx, this.camera); // Caches are few
         }
         for (const it of this.itemPickups) {
-            it.draw(ctx, this.camera);
+            const dx = it.worldX - camX, dy = it.worldY - camY;
+            if (dx > -drawCullX && dx < drawCullX && dy > -drawCullY && dy < drawCullY)
+                it.draw(ctx, this.camera);
         }
         for (const orb of this.expOrbs) {
-            orb.draw(ctx, this.camera);
+            const dx = orb.worldX - camX, dy = orb.worldY - camY;
+            if (dx > -drawCullX && dx < drawCullX && dy > -drawCullY && dy < drawCullY)
+                orb.draw(ctx, this.camera);
         }
         this.perf.end('particles');
 
@@ -1586,7 +1672,9 @@ export class PlayingState {
         // --- Asteroids draw ---
         this.perf.begin('asteroids');
         for (const a of this.asteroids) {
-            a.draw(ctx, this.camera);
+            const dx = a.worldX - camX, dy = a.worldY - camY;
+            if (dx > -drawCullX && dx < drawCullX && dy > -drawCullY && dy < drawCullY)
+                a.draw(ctx, this.camera);
         }
         this.perf.end('asteroids');
 
@@ -1598,17 +1686,22 @@ export class PlayingState {
         this.perf.end('boss');
         this.perf.begin('enemies');
         for (const e of this.enemies) {
-            if (!e.isBoss) e.draw(ctx, this.camera);
+            if (e.isBoss) continue;
+            const dx = e.worldX - camX, dy = e.worldY - camY;
+            if (dx > -drawCullX && dx < drawCullX && dy > -drawCullY && dy < drawCullY)
+                e.draw(ctx, this.camera);
         }
         for (const enc of this.encounters) {
-            enc.draw(ctx, this.camera);
+            enc.draw(ctx, this.camera); // Encounters are few
         }
         this.perf.end('enemies');
 
         // --- Projectiles draw ---
         this.perf.begin('projectiles');
         for (const p of this.projectiles) {
-            p.draw(ctx, this.camera);
+            const dx = p.worldX - camX, dy = p.worldY - camY;
+            if (dx > -drawCullX && dx < drawCullX && dy > -drawCullY && dy < drawCullY)
+                p.draw(ctx, this.camera);
         }
         this.perf.end('projectiles');
 
@@ -3683,15 +3776,27 @@ export class PlayingState {
         const margin = 15 * this.game.uiScale;
 
         const dt = this.game.lastDt || 0.016;
-        for (const en of this.enemies) {
-            const screen = this.camera.worldToScreen(en.worldX, en.worldY, cw, ch);
+        const maxIndicatorDist = Math.max(cw, ch) * 2;
+        const maxIndicatorDistSq = maxIndicatorDist * maxIndicatorDist;
 
+        for (const en of this.enemies) {
             const dx = en.worldX - this.player.worldX;
             const dy = en.worldY - this.player.worldY;
-            const dist = Math.sqrt(dx * dx + dy * dy);
+            const distSq = dx * dx + dy * dy;
+
+            if (distSq > maxIndicatorDistSq) {
+                const state = this.indicatorOpacities.get(en);
+                if (state && state.opacity > 0) {
+                    state.opacity = Math.max(0, state.opacity - dt * 2.0);
+                }
+                continue;
+            }
+
+            const screen = this.camera.worldToScreen(en.worldX, en.worldY, cw, ch);
+            const dist = Math.sqrt(distSq);
 
             const isOnScreen = screen.x >= 0 && screen.x <= cw && screen.y >= 0 && screen.y <= ch;
-            const isWithinDist = dist <= Math.max(cw, ch) * 2;
+            const isWithinDist = dist <= maxIndicatorDist;
             const opacity = this._getIndicatorOpacity(en, !isOnScreen && isWithinDist, dt);
             if (opacity <= 0) continue;
 
@@ -3720,17 +3825,32 @@ export class PlayingState {
         const margin = 15 * this.game.uiScale;
 
         const dt = this.game.lastDt || 0.016;
+        // Pre-compute max relevant distance squared to skip far asteroids entirely
+        const maxIndicatorDist = Math.max(cw, ch) * 1.5;
+        const maxIndicatorDistSq = maxIndicatorDist * maxIndicatorDist;
+
         for (const ast of this.asteroids) {
             if (!ast.alive) continue;
 
-            const screen = this.camera.worldToScreen(ast.worldX, ast.worldY, cw, ch);
-
             const dx = ast.worldX - this.player.worldX;
             const dy = ast.worldY - this.player.worldY;
-            const dist = Math.sqrt(dx * dx + dy * dy);
+            const distSq = dx * dx + dy * dy;
+
+            // Quick reject: skip asteroids way too far to ever show an indicator
+            if (distSq > maxIndicatorDistSq) {
+                // If it had an opacity, let it fade (but don't compute screen pos)
+                const state = this.indicatorOpacities.get(ast);
+                if (state && state.opacity > 0) {
+                    state.opacity = Math.max(0, state.opacity - dt * 2.0);
+                }
+                continue;
+            }
+
+            const screen = this.camera.worldToScreen(ast.worldX, ast.worldY, cw, ch);
+            const dist = Math.sqrt(distSq);
 
             const isOnScreen = screen.x >= 0 && screen.x <= cw && screen.y >= 0 && screen.y <= ch;
-            const isWithinDist = dist <= Math.max(cw, ch) * 1.5;
+            const isWithinDist = dist <= maxIndicatorDist;
             const opacity = this._getIndicatorOpacity(ast, !isOnScreen && isWithinDist, dt);
             if (opacity <= 0) continue;
 

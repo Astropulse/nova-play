@@ -164,6 +164,7 @@ export class HUD {
 
             const fovMult = (this.game.currentState && this.game.currentState.currentFovMult) || 1.0;
             const radarRange = 2000 * (fovMult * 0.75);
+            const radarRangeSq = radarRange * radarRange;
             const radarSize = (rw / 2) - (2 * uiScale);
 
             const drawDot = (entities, color, size = 1) => {
@@ -179,19 +180,17 @@ export class HUD {
                     const dy = e.worldY - this.player.worldY;
                     const distSq = dx * dx + dy * dy;
 
-                    if (distSq < radarRange * radarRange) {
+                    if (distSq < radarRangeSq) {
                         const dist = Math.sqrt(distSq);
-                        const angle = Math.atan2(dy, dx);
-                        const rDist = (dist / radarRange) * radarSize;
-
-                        const rawX = cx + Math.cos(angle) * rDist;
-                        const rawY = cy + Math.sin(angle) * rDist;
+                        const scale = radarSize / (radarRange * dist || 1);
+                        const rawX = cx + dx * scale;
+                        const rawY = cy + dy * scale;
 
                         // Snap to HUD grid pixels (multiples of uiScale)
                         const snappedX = Math.floor(rawX / uiScale) * uiScale;
                         const snappedY = Math.floor(rawY / uiScale) * uiScale;
 
-                        const isAsteroid = e.constructor.name === 'Asteroid' || (e.size && (e.size === 'tiny' || e.size === 'small' || e.size === 'medium' || e.size === 'big'));
+                        const isAsteroid = e.size !== undefined;
 
                         if (isAsteroid) {
                             if (e.size === 'medium') {
@@ -226,7 +225,7 @@ export class HUD {
             const state = this.game.currentState;
             if (state) {
                 drawDot(state.asteroids, 'rgba(120, 120, 120, 0.5)', 1);
-                drawDot(state.shops.filter(s => s.revealed), '#44aaff', 1);
+                drawDot(state.revealedShops, '#44aaff', 1);
                 drawDot(state.events, '#ffcc00', 1);
                 drawDot(state.enemies, '#ff4444', 1);
                 drawDot(state.encounters, '#44ffaa', 1);
@@ -287,11 +286,18 @@ export class HUD {
                 this.expGlowCtx.restore();
 
                 // 2. SHAPE-ACCURATE BLOOM (Concentrated where the wave is)
-                // We create a temporary masked version of the silhouette for the aura
-                const auraTempCanvas = document.createElement('canvas');
-                auraTempCanvas.width = barW;
-                auraTempCanvas.height = barH;
-                const auraTempCtx = auraTempCanvas.getContext('2d');
+                // Reuse a cached offscreen canvas for the aura
+                if (!this._auraTempCanvas) {
+                    this._auraTempCanvas = document.createElement('canvas');
+                    this._auraTempCtx = this._auraTempCanvas.getContext('2d');
+                }
+                if (this._auraTempCanvas.width !== barW || this._auraTempCanvas.height !== barH) {
+                    this._auraTempCanvas.width = barW;
+                    this._auraTempCanvas.height = barH;
+                }
+                const auraTempCanvas = this._auraTempCanvas;
+                const auraTempCtx = this._auraTempCtx;
+                auraTempCtx.clearRect(0, 0, barW, barH);
                 
                 auraTempCtx.drawImage(this.expGlowCanvas, 0, 0);
                 auraTempCtx.save();
@@ -312,7 +318,7 @@ export class HUD {
                 ctx.filter = `blur(${hudScale * 3.5}px)`;
                 ctx.globalAlpha = 0.75 * pulseIntensity;
                 ctx.drawImage(auraTempCanvas, x, y);
-                
+
                 ctx.filter = `blur(${hudScale * 1.5}px)`;
                 ctx.globalAlpha = 0.5 * pulseIntensity;
                 ctx.drawImage(auraTempCanvas, x, y);
@@ -342,7 +348,7 @@ export class HUD {
                 ctx.beginPath();
                 ctx.rect(x, y, fillW, barH);
                 ctx.clip();
-                ctx.globalCompositeOperation = 'lighter';
+                ctx.globalCompositeOperation = 'screen';
                 ctx.drawImage(this.expGlowCanvas, x, y);
                 ctx.restore();
             }

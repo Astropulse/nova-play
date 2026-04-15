@@ -759,7 +759,7 @@ export class Player {
         // --- Ghost Trail (Ancient Curse) ---
         if (this.hasAncientCurse && this.trailHistory.length > 0) {
             ctx.save();
-            ctx.globalCompositeOperation = 'lighter';
+            ctx.globalCompositeOperation = 'screen';
             for (let i = 0; i < this.trailHistory.length; i++) {
                 const t = this.trailHistory[i];
                 const alpha = t.life * 0.15 * (1 - i / this.maxTrailLength);
@@ -802,7 +802,7 @@ export class Player {
             }
 
             ctx.save();
-            ctx.globalCompositeOperation = 'lighter';
+            ctx.globalCompositeOperation = 'screen';
             ctx.globalAlpha = t.life * 0.8;
             ctx.translate(tScreen.x, tScreen.y);
             ctx.rotate(t.angle + Math.PI / 2);
@@ -831,7 +831,7 @@ export class Player {
             // Blinking if invulnerable
             if (this.invulnTimer > 0) {
                 ctx.drawImage(img.canvas || img, -w / 2, -h / 2, w, h);
-                ctx.globalCompositeOperation = 'lighter';
+                ctx.globalCompositeOperation = 'screen';
                 ctx.globalAlpha = 0.5;
                 ctx.drawImage(img.canvas || img, -w / 2, -h / 2, w, h);
                 ctx.globalAlpha = 1;
@@ -850,7 +850,7 @@ export class Player {
         // Ready flash
         const flash = Math.max(this.boostFlash, this.teleportFlash);
         if (flash > 0.01) {
-            ctx.globalCompositeOperation = 'lighter';
+            ctx.globalCompositeOperation = 'screen';
             ctx.globalAlpha = flash * 0.6;
             ctx.drawImage(img.canvas || img, -w / 2, -h / 2, w, h);
             ctx.globalAlpha = 1;
@@ -859,7 +859,7 @@ export class Player {
 
         // Teleport Outline Phase-in
         if (this.teleportOutlineFade > 0.01) {
-            ctx.globalCompositeOperation = 'lighter';
+            ctx.globalCompositeOperation = 'screen';
             this._drawTinted(ctx, img, -Math.floor(w / 2), -Math.floor(h / 2), w, h, `rgba(0, 150, 255, ${this.teleportOutlineFade * 0.8})`);
             ctx.globalCompositeOperation = 'source-over';
         }

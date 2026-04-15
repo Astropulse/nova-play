@@ -84,6 +84,14 @@ export class Camera {
 
         this.displacementX = this.x - target.worldX;
         this.displacementY = this.y - target.worldY;
+
+        // Precompute transform constants for this frame.
+        // Entities can use: screenX = wx * this.wtsScale + this.wtsOffX
+        // instead of calling worldToScreen() and allocating {x,y} objects.
+        const cw = this.game.width, ch = this.game.height;
+        this.wtsScale = this.game.worldScale;
+        this.wtsOffX = -this.x * this.game.worldScale + cw / 2 + this.shakeX;
+        this.wtsOffY = -this.y * this.game.worldScale + ch / 2 + this.shakeY;
     }
 
     worldToScreen(wx, wy, canvasW, canvasH) {

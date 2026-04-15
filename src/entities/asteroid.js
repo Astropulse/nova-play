@@ -206,14 +206,15 @@ export class Rubble {
 
     draw(ctx, camera) {
         if (!this.alive || !this.img) return;
-        const screen = camera.worldToScreen(this.worldX, this.worldY, this.game.width, this.game.height);
+        const sx = this.worldX * camera.wtsScale + camera.wtsOffX;
+        const sy = this.worldY * camera.wtsScale + camera.wtsOffY;
         const w = this.img.width * this.game.worldScale;
         const h = this.img.height * this.game.worldScale;
 
         const alpha = Math.max(0, this.lifetime / this.maxLifetime);
         ctx.save();
         ctx.globalAlpha = alpha;
-        ctx.translate(screen.x, screen.y);
+        ctx.translate(sx, sy);
         ctx.rotate(this.rotation);
         ctx.drawImage(this.img.canvas || this.img, -w / 2, -h / 2, w, h);
         ctx.restore();
@@ -314,26 +315,29 @@ export class Scrap {
     update(dt, playerX, playerY, magnetMult = 1.0) {
         const dx = playerX - this.worldX;
         const dy = playerY - this.worldY;
-        const dist = Math.sqrt(dx * dx + dy * dy);
+        const distSq = dx * dx + dy * dy;
 
         const activeMagnetRange = this.magnetRange * magnetMult;
 
-        if (dist < activeMagnetRange) {
+        if (distSq < activeMagnetRange * activeMagnetRange) {
+            const dist = Math.sqrt(distSq);
             this.suckTimer += dt;
             const dtFactor = dt * 60;
             const suckFactor = 1.0 + this.suckTimer * 0.8; // Faster growth
 
-            // Magnetize to player
-            const angle = Math.atan2(dy, dx);
+            // Magnetize to player (use normalized dx/dy instead of atan2+cos+sin)
+            const invDist = dist > 0 ? 1 / dist : 0;
+            const nx = dx * invDist;
+            const ny = dy * invDist;
             const force = (1 - dist / activeMagnetRange) * 1500 * suckFactor;
-            this.vx += Math.cos(angle) * force * dt;
-            this.vy += Math.sin(angle) * force * dt;
+            this.vx += nx * force * dt;
+            this.vy += ny * force * dt;
 
             // Steering: Pivot velocity vector toward player to kill orbiting
             const steerWeight = Math.min(0.95, (0.2 + this.suckTimer * 1.2) * dtFactor);
             const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
-            const targetVx = Math.cos(angle) * speed;
-            const targetVy = Math.sin(angle) * speed;
+            const targetVx = nx * speed;
+            const targetVy = ny * speed;
             this.vx = this.vx * (1 - steerWeight) + targetVx * steerWeight;
             this.vy = this.vy * (1 - steerWeight) + targetVy * steerWeight;
 
@@ -373,12 +377,13 @@ export class Scrap {
 
     draw(ctx, camera) {
         if (!this.alive || !this.img) return;
-        const screen = camera.worldToScreen(this.worldX, this.worldY, this.game.width, this.game.height);
+        const sx = this.worldX * camera.wtsScale + camera.wtsOffX;
+        const sy = this.worldY * camera.wtsScale + camera.wtsOffY;
         const w = this.img.width * this.game.worldScale;
         const h = this.img.height * this.game.worldScale;
 
-        if (screen.x + w < -50 || screen.x - w > this.game.width + 50 ||
-            screen.y + h < -50 || screen.y - h > this.game.height + 50) return;
+        if (sx + w < -50 || sx - w > this.game.width + 50 ||
+            sy + h < -50 || sy - h > this.game.height + 50) return;
 
         let alpha = 1.0;
         if (this.lifetime < 5.0) {
@@ -387,7 +392,7 @@ export class Scrap {
 
         ctx.save();
         ctx.globalAlpha = alpha;
-        ctx.translate(screen.x, screen.y);
+        ctx.translate(sx, sy);
         ctx.rotate(this.rotation);
         ctx.drawImage(this.img.canvas || this.img, -w / 2, -h / 2, w, h);
         ctx.restore();
@@ -440,25 +445,28 @@ export class ItemPickup {
 
         const dx = playerX - this.worldX;
         const dy = playerY - this.worldY;
-        const dist = Math.sqrt(dx * dx + dy * dy);
+        const distSq = dx * dx + dy * dy;
 
         const activeMagnetRange = this.magnetRange * magnetMult;
 
-        if (dist < activeMagnetRange) {
+        if (distSq < activeMagnetRange * activeMagnetRange) {
+            const dist = Math.sqrt(distSq);
             this.suckTimer += dt;
             const dtFactor = dt * 60;
             const suckFactor = 1.0 + this.suckTimer * 0.8;
 
-            const angle = Math.atan2(dy, dx);
+            const invDist = dist > 0 ? 1 / dist : 0;
+            const nx = dx * invDist;
+            const ny = dy * invDist;
             const force = (1 - dist / activeMagnetRange) * 1800 * suckFactor;
-            this.vx += Math.cos(angle) * force * dt;
-            this.vy += Math.sin(angle) * force * dt;
+            this.vx += nx * force * dt;
+            this.vy += ny * force * dt;
 
             // Steering Logic
             const steerWeight = Math.min(0.95, (0.2 + this.suckTimer * 1.5) * dtFactor);
             const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
-            const targetVx = Math.cos(angle) * speed;
-            const targetVy = Math.sin(angle) * speed;
+            const targetVx = nx * speed;
+            const targetVy = ny * speed;
             this.vx = this.vx * (1 - steerWeight) + targetVx * steerWeight;
             this.vy = this.vy * (1 - steerWeight) + targetVy * steerWeight;
 
@@ -709,15 +717,16 @@ export class Asteroid {
 
     draw(ctx, camera) {
         if (!this.alive || !this.img) return;
-        const screen = camera.worldToScreen(this.worldX, this.worldY, this.game.width, this.game.height);
+        const sx = this.worldX * camera.wtsScale + camera.wtsOffX;
+        const sy = this.worldY * camera.wtsScale + camera.wtsOffY;
         const w = this.img.width * this.game.worldScale;
         const h = this.img.height * this.game.worldScale;
 
-        if (screen.x + w < -100 || screen.x - w > this.game.width + 100 ||
-            screen.y + h < -100 || screen.y - h > this.game.height + 100) return;
+        if (sx + w < -100 || sx - w > this.game.width + 100 ||
+            sy + h < -100 || sy - h > this.game.height + 100) return;
 
         ctx.save();
-        ctx.translate(screen.x, screen.y);
+        ctx.translate(sx, sy);
         ctx.rotate(this.rotation);
 
         if (this.highlightRed) {
@@ -781,6 +790,10 @@ export class ExpOrb {
 
         const dx = playerX - this.worldX;
         const dy = playerY - this.worldY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const invDist = dist > 0 ? 1 / dist : 0;
+        const nx = dx * invDist;
+        const ny = dy * invDist;
 
         // ExpOrbs vacuum to player after a small delay
         this.suckTimer += dt;
@@ -788,23 +801,20 @@ export class ExpOrb {
         const dtFactor = dt * 60;
         const suckFactor = 1.0 + pullProgress * 2.5;
 
-        const angle = Math.atan2(dy, dx);
         // Base force increases as it gets closer and with time
         const force = 1200 * suckFactor * (this.suckTimer < this.vacuumDelay ? 0.05 : 1.0);
-        
-        // Add wavy movement perpendicular to the pull direction
-        const perpX = -Math.sin(angle);
-        const perpY = Math.cos(angle);
+
+        // Add wavy movement perpendicular to the pull direction (perpX=-ny, perpY=nx)
         const wobble = Math.sin(this.time * this.wobbleFreq + this.wobbleOffset) * this.wobbleAmp;
 
-        this.vx += (Math.cos(angle) * force + perpX * wobble) * dt;
-        this.vy += (Math.sin(angle) * force + perpY * wobble) * dt;
+        this.vx += (nx * force + -ny * wobble) * dt;
+        this.vy += (ny * force + nx * wobble) * dt;
 
         // More aggressive steering to prevent orbiting
         const steerWeight = Math.min(0.98, (0.3 + this.suckTimer * 2.0) * dtFactor);
         const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
-        const targetVx = Math.cos(angle) * speed;
-        const targetVy = Math.sin(angle) * speed;
+        const targetVx = nx * speed;
+        const targetVy = ny * speed;
         this.vx = this.vx * (1 - steerWeight) + targetVx * steerWeight;
         this.vy = this.vy * (1 - steerWeight) + targetVy * steerWeight;
 
@@ -817,9 +827,14 @@ export class ExpOrb {
         this.worldY += this.vy * dt;
         this.rotation += this.rotSpeed * dt;
 
-        // Update trail history
-        this.history.unshift({ x: this.worldX, y: this.worldY, r: this.rotation });
-        if (this.history.length > this.maxHistory) this.history.pop();
+        // Update trail history (ring buffer)
+        if (!this._histHead) this._histHead = 0;
+        this._histHead = (this._histHead + 1) % this.maxHistory;
+        const slot = this.history[this._histHead];
+        if (slot) { slot.x = this.worldX; slot.y = this.worldY; slot.r = this.rotation; }
+        else { this.history[this._histHead] = { x: this.worldX, y: this.worldY, r: this.rotation }; }
+        if (this._histLen === undefined) this._histLen = 0;
+        if (this._histLen < this.maxHistory) this._histLen++;
     }
 
     serialize() {
@@ -836,61 +851,87 @@ export class ExpOrb {
         };
     }
 
+    // Per-frame glow cache: maps each GIF frame canvas to its pre-rendered glow
+    // (avoids thrashing when orbs have different animation offsets)
+    static _glowFrameCache = new Map();
+    static _glowBlur = 15;
+    static _glowPad = 30; // blur * 2
+
+    static _getGlowForFrame(drawFrame) {
+        let entry = ExpOrb._glowFrameCache.get(drawFrame);
+        if (entry) return entry;
+
+        const blur = ExpOrb._glowBlur;
+        const pad = ExpOrb._glowPad;
+        const c = document.createElement('canvas');
+        c.width = drawFrame.width + pad * 2;
+        c.height = drawFrame.height + pad * 2;
+        const gctx = c.getContext('2d');
+        gctx.shadowBlur = blur;
+        gctx.shadowColor = '#915dbf';
+        gctx.drawImage(drawFrame, pad, pad);
+        gctx.shadowBlur = 0;
+        gctx.drawImage(drawFrame, pad, pad);
+
+        entry = { canvas: c, srcW: drawFrame.width };
+        ExpOrb._glowFrameCache.set(drawFrame, entry);
+        return entry;
+    }
+
     draw(ctx, camera) {
         if (!this.alive) return;
-        
+
         const asset = this.game.assets.get(this.assetKey);
         if (!asset || !Array.isArray(asset)) return;
 
-        // Custom animation variety: Random offset and duration
         const frameIndex = Math.floor((this.time * 1000 + this.animOffset) / this.frameDuration) % asset.length;
         const frameData = asset[frameIndex];
         const frame = frameData.canvas || frameData;
 
-        const screen = camera.worldToScreen(this.worldX, this.worldY, this.game.width, this.game.height);
+        const sx = this.worldX * camera.wtsScale + camera.wtsOffX;
+        const sy = this.worldY * camera.wtsScale + camera.wtsOffY;
         const w = (frameData.width || 12) * this.game.worldScale;
         const h = (frameData.height || 12) * this.game.worldScale;
 
-        // Simple cull
-        if (screen.x + w < -100 || screen.x - w > this.game.width + 100 ||
-            screen.y + h < -100 || screen.y - h > this.game.height + 100) return;
+        if (sx + w < -100 || sx - w > this.game.width + 100 ||
+            sy + h < -100 || sy - h > this.game.height + 100) return;
 
         ctx.save();
-        
-        // Screen blending mode + Bloom (Glow)
-        ctx.globalCompositeOperation = 'lighter';
-        ctx.shadowBlur = 12 * this.game.worldScale;
-        ctx.shadowColor = '#915dbf';
+        ctx.globalCompositeOperation = 'screen';
 
-        // Draw Trail (No shadow for performance)
-        ctx.shadowBlur = 0;
-        for (let i = 0; i < this.history.length; i++) {
-            const pos = this.history[i];
-            const tScreen = camera.worldToScreen(pos.x, pos.y, this.game.width, this.game.height);
-            const alpha = 0.4 * (1 - i / this.history.length);
-            const scale = (1 - i / (this.history.length * 1.5));
-            
+        // Draw Trail — inlined worldToScreen
+        const hLen = this._histLen || 0;
+        const hMax = this.maxHistory;
+        const wtsS = camera.wtsScale, wtsOX = camera.wtsOffX, wtsOY = camera.wtsOffY;
+        for (let i = 0; i < hLen; i++) {
+            const idx = (this._histHead - i + hMax) % hMax;
+            const pos = this.history[idx];
+            if (!pos) continue;
+            const tsx = pos.x * wtsS + wtsOX;
+            const tsy = pos.y * wtsS + wtsOY;
+            const alpha = 0.4 * (1 - i / hLen);
+            const scale = (1 - i / (hLen * 1.5));
+
             ctx.save();
             ctx.globalAlpha = alpha;
-            ctx.translate(tScreen.x, tScreen.y);
+            ctx.translate(tsx, tsy);
             ctx.scale(scale, scale);
             ctx.drawImage(frame, -w / 2, -h / 2, w, h);
             ctx.restore();
         }
 
-        // Apply Bloom only to main orb
-        ctx.shadowBlur = 15 * this.game.worldScale;
-        ctx.shadowColor = '#915dbf';
-
-        ctx.translate(screen.x, screen.y);
-        
-        // POP animation: scale from 0 to 1 over first 0.2s
+        // Main orb with pre-rendered glow (cached per GIF frame, shared across all orbs)
+        ctx.translate(sx, sy);
         const spawnScale = Math.min(1.0, this.suckTimer * 5.0);
         ctx.scale(spawnScale, spawnScale);
-        ctx.globalCompositeOperation = 'lighter';
-        
-        ctx.drawImage(frame.canvas || frame, -w / 2, -h / 2, w, h);
-        
+
+        const drawFrame = frame.canvas || frame;
+        const glow = ExpOrb._getGlowForFrame(drawFrame);
+        const pxScale = w / glow.srcW;
+        const glowW = glow.canvas.width * pxScale;
+        const glowH = glow.canvas.height * pxScale;
+        ctx.drawImage(glow.canvas, -glowW / 2, -glowH / 2, glowW, glowH);
+
         ctx.restore();
     }
 }

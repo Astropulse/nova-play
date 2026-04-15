@@ -40,18 +40,43 @@ export class World {
     }
 
     _initWebGL() {
-        this.glCanvas = document.createElement('canvas');
-        this.gl = this.glCanvas.getContext('webgl2', {
-            alpha: true,
-            depth: false,
-            antialias: false,
-            premultipliedAlpha: true
-        });
+        // Only create the canvas once; reuse on context restore
+        if (!this.glCanvas) {
+            this.glCanvas = document.createElement('canvas');
+            this._glContextLost = false;
 
-        if (!this.gl) {
-            console.error("WebGL2 not supported, parallax background will fail to render.");
-            return;
+            // Handle WebGL context loss/restore — prevents persistent slowdowns
+            this.glCanvas.addEventListener('webglcontextlost', (e) => {
+                e.preventDefault(); // Allow restoration
+                this._glContextLost = true;
+                console.warn('[World] WebGL context lost');
+            });
+            this.glCanvas.addEventListener('webglcontextrestored', () => {
+                console.log('[World] WebGL context restored — reinitializing');
+                this._glContextLost = false;
+                this._setupWebGLResources();
+                this._initLayers();
+            });
+
+            this.gl = this.glCanvas.getContext('webgl2', {
+                alpha: true,
+                depth: false,
+                antialias: false,
+                premultipliedAlpha: true,
+                powerPreference: 'high-performance'
+            });
+
+            if (!this.gl) {
+                console.error("WebGL2 not supported, parallax background will fail to render.");
+                return;
+            }
         }
+
+        this._setupWebGLResources();
+    }
+
+    _setupWebGLResources() {
+        if (!this.gl) return;
 
         const gl = this.gl;
         gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
@@ -443,7 +468,7 @@ export class World {
     }
 
     draw(ctx, camera, player, worldTime = 0) {
-        if (!this.gl) return;
+        if (!this.gl || this._glContextLost || this.gl.isContextLost()) return;
         
         const cw = ctx.canvas.width;
         const ch = ctx.canvas.height;

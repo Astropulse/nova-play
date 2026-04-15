@@ -30,37 +30,18 @@ export class SoundManager {
         this.currentMusic = null;
         this.currentExplorationTrack = null;
 
+        // Simple time-based transitions (no FFT/analyser)
         this.isTransitioning = false;
         this.transitionWaitTimer = 0;
-        this.maxTransitionWait = 4.0; // Force transition after 4 seconds
-        this.breakDuration = 0; // Tracks sustained silence
-        this.requiredBreakDuration = 0.2; // 0.2s of sustained silence
-
-        // Advanced Analysis State
-        this.maxHistory = 120; // ~2 seconds at 60fps
-        this.energyHistory = {
-            all: [],
-            bass: [],
-            mids: [],
-            highs: []
-        };
-        this.prevSpectrum = null; // For spectral flux
-        this.fluxHistory = [];
+        this.maxTransitionWait = 4.0;
 
         this.musicVolume = 0.5;
         this.sfxVolume = 0.5;
         this.musicBaseVolume = 0.4;
         this.unlocked = false;
 
-        // Analysis
-        this.analyser = null;
         if (this.ctx) {
-            this.analyser = this.ctx.createAnalyser();
-            this.analyser.fftSize = 1024; // 512 frequency bins (~43Hz resolution)
-            this.analyser.smoothingTimeConstant = 0.5;
-            this.dataArray = new Uint8Array(this.analyser.frequencyBinCount);
-
-            // Main music gain (user volume control)
+            // Main music gain (user volume control) — no analyser node
             this.musicGain = this.ctx.createGain();
             this.musicGain.gain.value = this.musicVolume * this.musicBaseVolume;
             this.musicGain.connect(this.ctx.destination);
@@ -117,9 +98,6 @@ export class SoundManager {
 
             const source = this.ctx.createMediaElementSource(audio);
             source.connect(trackGain);
-            // SIDE-CHAIN: Connect source directly to analyser 
-            // This ensures transitions/fades don't pollute the detection data
-            source.connect(this.analyser);
             trackGain.connect(this.musicGain);
         }
 
@@ -128,110 +106,14 @@ export class SoundManager {
         return audio;
     }
 
-    // Handle state transitions
+    // Simple time-based transition: wait for the cutoff, then switch
     update(dt) {
         if (this.isTransitioning) {
             this.transitionWaitTimer += dt;
-
-            // Calculate progress (0 to 1) and leniency factor (1.0 to 2.0)
-            // As we approach maxTransitionWait, we become more lenient with thresholds
-            const progress = this.maxTransitionWait > 0 ? Math.min(1.0, this.transitionWaitTimer / this.maxTransitionWait) : 1.0;
-            const leniency = 1.0 + progress;
-
-            // Enhanced break detection: looking for SUSTAINED low energy
-            if (this._detectLowEnergy(leniency)) {
-                this.breakDuration += dt;
-            } else {
-                this.breakDuration = 0;
-            }
-
-            const breakFound = this.breakDuration >= this.requiredBreakDuration;
-            const timeoutReached = this.transitionWaitTimer >= this.maxTransitionWait;
-
-            if (breakFound || timeoutReached) {
-                console.log(`[SoundManager] Transition Triggered: timer=${this.transitionWaitTimer.toFixed(2)}, breakFound=${breakFound}, timeoutReached=${timeoutReached}`);
+            if (this.transitionWaitTimer >= this.maxTransitionWait) {
                 this._executeTransition();
             }
         }
-    }
-
-    _detectLowEnergy(leniency = 1.0) {
-        if (!this.analyser || !this.currentMusic || this.currentMusic.paused) return true;
-
-        this.analyser.getByteFrequencyData(this.dataArray);
-        const binCount = this.dataArray.length;
-
-        // 1. ADVANCED SPECTRAL ANALYSIS
-        let eAll = 0, eBass = 0, eMids = 0, eHighs = 0;
-        let flux = 0;
-
-        for (let i = 0; i < binCount; i++) {
-            const amp = this.dataArray[i];
-            const ampSq = amp * amp;
-            eAll += ampSq;
-
-            if (i <= 6) eBass += ampSq; // ~250Hz
-            else if (i <= 70) eMids += ampSq; // ~3kHz
-            else eHighs += ampSq;
-
-            if (this.prevSpectrum) {
-                const diff = amp - this.prevSpectrum[i];
-                if (diff > 0) flux += diff;
-            }
-        }
-
-        if (!this.prevSpectrum) this.prevSpectrum = new Uint8Array(binCount);
-        this.prevSpectrum.set(this.dataArray);
-
-        const rms = Math.sqrt(eAll / binCount);
-
-        // Update History
-        const pushHistory = (arr, val) => {
-            arr.push(val);
-            if (arr.length > this.maxHistory) arr.shift();
-        };
-        pushHistory(this.energyHistory.all, rms);
-        pushHistory(this.energyHistory.bass, Math.sqrt(eBass / 7));
-        pushHistory(this.energyHistory.highs, Math.sqrt(eHighs / (binCount - 71)));
-        pushHistory(this.fluxHistory, flux);
-
-        // 2. MUSICAL BREAK DETECTION (HEURISTICS)
-        // We look for "energy stability" - a period where the song has settled into a quiet tail.
-        const getStats = (arr) => {
-            if (arr.length < 20) return { avg: 1000, var: 1000 };
-            const avg = arr.reduce((a, b) => a + b, 0) / arr.length;
-            const variance = Math.sqrt(arr.reduce((a, b) => a + Math.pow(b - avg, 2), 0) / arr.length);
-            return { avg, variance };
-        };
-
-        const statsAll = getStats(this.energyHistory.all);
-        const statsBass = getStats(this.energyHistory.bass);
-        const statsFlux = getStats(this.fluxHistory);
-
-        // A. Sustained Low Energy: Current volume is significantly below the 2-second average
-        // Leniency increases the threshold (makes it easier to be considered "quiet")
-        const isSustainedQuiet = rms < (statsAll.avg * 0.7 * leniency) && rms < (45 * leniency);
-
-        // B. Rhythm Break: Flux (beats) is low and stable (low variance)
-        const isRhythmBreak = flux < (statsFlux.avg * 0.8 * leniency) && statsFlux.variance < (statsFlux.avg * 0.5 * leniency);
-
-        // C. Bass Drop: Often the best indicator of a phrase end in electronic/game music
-        const isBassDrop = Math.sqrt(eBass / 7) < (statsBass.avg * 0.5 * leniency) && statsBass.avg < (80 * leniency);
-
-        // D. Onset Masking: Never transition if we just hit a peak
-        // Leniency increases the onset threshold (makes it harder to be "masked"/blocked)
-        const isOnset = flux > (statsFlux.avg * 1.5 * leniency);
-
-        // FINAL VERDICT: Trigger if we have a sustained quiet period OR a clear rhythm/bass break,
-        // provided we aren't currently hitting a new note/beat.
-        const signal = isSustainedQuiet || (isRhythmBreak && isBassDrop);
-
-        return signal && !isOnset;
-    }
-
-    _findBreak() {
-        // Redundant with new update logic, but kept for internal clarity
-        return this.breakDuration >= this.requiredBreakDuration;
     }
 
     setTargetState(state, force = false) {
@@ -303,10 +185,8 @@ export class SoundManager {
     }
 
     _playExploration(oldState = null, forceNew = false) {
-        // Only return early if we're not forcing a new track and we're already playing an exploration track
         if (!forceNew && this.currentMusic && this.explorationTracks.includes(this.currentMusic) && this.musicState === MUSIC_STATE.EXPLORATION) return;
 
-        // Reset tracking if we're coming from a non-gameplay state (Restart/Title)
         const isStartup = !this.currentMusic ||
             this.currentMusic === this.titleTrack ||
             this.currentMusic === this.gameOverTrack ||
@@ -320,13 +200,8 @@ export class SoundManager {
             this.currentExplorationTrack = null;
         }
 
-        // Transition handling will now be managed entirely by _switchTrack
-        // which performs the fade-out of the old track and fade-in of the new one.
-
-        // Resume or start new exploration track
         let track = this.currentExplorationTrack;
         if (!track || track.ended || forceNew) {
-            // Filter out current track to avoid immediate repetition if possible
             const candidates = this.explorationTracks.filter(t => t !== track);
             const pool = candidates.length > 0 ? candidates : this.explorationTracks;
             track = pool[Math.floor(Math.random() * pool.length)];
@@ -336,15 +211,12 @@ export class SoundManager {
         this._switchTrack(track, oldState);
         this.currentExplorationTrack = track;
 
-        // Chain next track when this one ends
         track.onended = () => {
-            console.log(`[SoundManager] Exploration track ended, chaining next...`);
             this._playExploration(this.musicState, true);
         };
     }
 
     _playCombat(oldState = null, forceNew = false) {
-        // Combat always starts a fresh track, but if we're chaining we want a DIFFERENT one
         const current = this.currentMusic;
         const candidates = this.combatTracks.filter(t => t !== current);
         const pool = candidates.length > 0 ? candidates : this.combatTracks;
@@ -353,7 +225,6 @@ export class SoundManager {
         if (track) {
             track.currentTime = 0;
             track.onended = () => {
-                console.log(`[SoundManager] Combat track ended, chaining next...`);
                 this._playCombat(this.musicState, true);
             };
         }
@@ -381,18 +252,10 @@ export class SoundManager {
         const fadeTime = isStartup ? 0.2 : (isExitingCombat ? 4.0 : 0.5);
         const now = this.ctx ? this.ctx.currentTime : 0;
 
-        // Reset analysis for new track
-        this.prevSpectrum = null;
-        this.energyHistory.all = [];
-        this.energyHistory.bass = [];
-        this.energyHistory.highs = [];
-        this.fluxHistory = [];
-
         // 1. FADE OUT current track
         if (this.currentMusic && this.currentMusic !== nextTrack) {
             const oldTrack = this.currentMusic;
             if (oldTrack.trackGain && this.ctx) {
-                // Professional: Overlap the fades. Outgoing starts dropping NOW.
                 oldTrack.trackGain.gain.cancelScheduledValues(now);
                 oldTrack.trackGain.gain.setValueAtTime(oldTrack.trackGain.gain.value, now);
                 oldTrack.trackGain.gain.linearRampToValueAtTime(0, now + fadeTime);
@@ -413,7 +276,6 @@ export class SoundManager {
         if (this.currentMusic.trackGain && this.ctx) {
             this.currentMusic.trackGain.gain.cancelScheduledValues(now);
             this.currentMusic.trackGain.gain.setValueAtTime(0, now);
-            // Overlap: Incoming starts rising NOW.
             this.currentMusic.trackGain.gain.linearRampToValueAtTime(1, now + fadeTime);
         }
 
@@ -423,7 +285,6 @@ export class SoundManager {
 
     // LEGACY METHODS (to keep compatibility while refactoring)
     registerMusic(paths) {
-        // Assume these are exploration if not specified
         this.registerExplorationMusic(paths);
     }
 
@@ -477,7 +338,6 @@ export class SoundManager {
     }
 
     restoreMusic() {
-        // Restore to exploration by default, bypass boss protection
         this.setTargetState(MUSIC_STATE.EXPLORATION, true);
     }
 
@@ -548,6 +408,13 @@ export class SoundManager {
 
         source.connect(gainNode);
         gainNode.connect(this.ctx.destination);
+
+        // Disconnect nodes after playback to prevent audio graph leak
+        source.onended = () => {
+            source.disconnect();
+            gainNode.disconnect();
+        };
+
         source.start(0);
     }
 
@@ -557,14 +424,9 @@ export class SoundManager {
             this.ctx.close().catch(err => console.error('Failed to close AudioContext:', err));
             this.ctx = null;
         }
-        
-        this.analyser = null;
-        this.dataArray = null;
-        this.prevSpectrum = null;
-        this.energyHistory = { all: [], bass: [], mids: [], highs: [] };
-        this.fluxHistory = [];
+
         this.sfxBuffers = {};
-        
+
         // Clear references
         this.explorationTracks.forEach(t => { t.pause(); t.src = ""; });
         this.combatTracks.forEach(t => { t.pause(); t.src = ""; });

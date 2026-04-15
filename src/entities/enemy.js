@@ -424,20 +424,24 @@ export class Enemy {
         let maxUrgency = 0;
 
         for (const ast of asteroids) {
+            const adx = ast.worldX - this.worldX;
+            const ady = ast.worldY - this.worldY;
+            const adistSq = adx * adx + ady * ady;
+
+            const safetyRadius = this.radius + ast.radius + 35;
+
+            // Quick broad-phase reject using squared distance with max possible scanDist
             // Predict collision based on relative movement
             const relVx = this.vx - (ast.vx || 0);
             const relVy = this.vy - (ast.vy || 0);
-            const relSpeed = Math.sqrt(relVx * relVx + relVy * relVy);
+            const relSpeedSq = relVx * relVx + relVy * relVy;
+            const relSpeed = Math.sqrt(relSpeedSq);
 
-            const adx = ast.worldX - this.worldX;
-            const ady = ast.worldY - this.worldY;
-            const adist = Math.sqrt(adx * adx + ady * ady);
-
-            const safetyRadius = this.radius + ast.radius + 35;
             // Scan distance scales with RELATIVE speed to catch fast-moving asteroids
             const scanDist = Math.max(baseLookAhead, relSpeed * 1.2) + safetyRadius;
 
-            if (adist < scanDist) {
+            if (adistSq < scanDist * scanDist) {
+                const adist = Math.sqrt(adistSq);
                 const angleToAst = Math.atan2(ady, adx);
                 let currentHeadingDiff = angleToAst - this.angle;
                 while (currentHeadingDiff > Math.PI) currentHeadingDiff -= Math.PI * 2;
@@ -495,13 +499,15 @@ export class Enemy {
 
         // 3. AVOID OTHER ENEMIES (Simpler, closer range)
         const enemyAvoidDist = 120;
+        const enemyAvoidDistSq = 14400; // 120^2
         for (const other of enemies) {
             if (other === this || !other.alive) continue;
             const edx = other.worldX - this.worldX;
             const edy = other.worldY - this.worldY;
-            const edist = Math.sqrt(edx * edx + edy * edy);
+            const edistSq = edx * edx + edy * edy;
 
-            if (edist < enemyAvoidDist) {
+            if (edistSq < enemyAvoidDistSq) {
+                const edist = Math.sqrt(edistSq);
                 const angleToOther = Math.atan2(edy, edx);
                 let diff = angleToOther - this.angle;
                 while (diff > Math.PI) diff -= Math.PI * 2;
@@ -523,12 +529,14 @@ export class Enemy {
 
             const pdx = p.worldX - this.worldX;
             const pdy = p.worldY - this.worldY;
+            // Broad-phase: skip projectiles too far away to reach us in 1.2s
+            if (pdx * pdx + pdy * pdy > 2250000) continue; // ~1500px max range
             const pvx = p.vx;
             const pvy = p.vy;
-            const pSpeed = Math.sqrt(pvx * pvx + pvy * pvy) || 1;
+            const pSpeedSq = pvx * pvx + pvy * pvy || 1;
 
             // Find time to closest point of approach (CPA)
-            const t_impact = (-pdx * pvx + -pdy * pvy) / (pSpeed * pSpeed);
+            const t_impact = (-pdx * pvx + -pdy * pvy) / pSpeedSq;
 
             // Only look at projectiles approaching us in the near future (1.2s)
             if (t_impact <= 0 || t_impact > 1.2) continue;
@@ -537,13 +545,14 @@ export class Enemy {
             const closestY = p.worldY + pvy * t_impact;
             const adx = closestX - this.worldX;
             const ady = closestY - this.worldY;
-            const dist_cpa = Math.sqrt(adx * adx + ady * ady);
+            const dist_cpa_sq = adx * adx + ady * ady;
 
             const shipRadius = this.radius;
             const projRadius = p.radius || 8;
             const requiredClearance = shipRadius + projRadius + 15; // 15px safety margin
 
-            if (dist_cpa < requiredClearance) {
+            if (dist_cpa_sq < requiredClearance * requiredClearance) {
+                const dist_cpa = Math.sqrt(dist_cpa_sq);
                 const threatLevel = (1 - t_impact / 1.2) * (1 - dist_cpa / requiredClearance);
                 const threatData = { p, t_impact, adx, ady, dist_cpa, requiredClearance, threatLevel };
                 activeThreats.push(threatData);
@@ -838,16 +847,35 @@ export class Enemy {
         ctx.save();
         ctx.translate(screen.x, screen.y);
 
-        // Visual distinction for upgraded enemies: Subtle red glow
-        if (this.isUpgraded) {
-            ctx.shadowBlur = 15 * this.game.worldScale;
-            ctx.shadowColor = '#ff4444';
-        }
-
         ctx.rotate(this.angle + Math.PI / 2);
         const w = (this.img.width || this.img.canvas.width) * this.game.worldScale;
         const h = (this.img.height || this.img.canvas.height) * this.game.worldScale;
-        ctx.drawImage(this.img.canvas || this.img, -w / 2, -h / 2, w, h);
+
+        // Upgraded enemies: use pre-rendered glow sprite instead of per-frame shadowBlur
+        if (this.isUpgraded) {
+            if (!this._glowSprite) {
+                const srcImg = this.img.canvas || this.img;
+                const blur = 60; // 15 * prescale(4) — matches shadowBlur=15*worldScale in screen space
+                const pad = blur * 2;
+                const c = document.createElement('canvas');
+                c.width = srcImg.width + pad * 2;
+                c.height = srcImg.height + pad * 2;
+                const gctx = c.getContext('2d');
+                gctx.shadowBlur = blur;
+                gctx.shadowColor = '#ff4444';
+                gctx.drawImage(srcImg, pad, pad);
+                gctx.shadowBlur = 0;
+                gctx.drawImage(srcImg, pad, pad);
+                this._glowSprite = { canvas: c, srcW: srcImg.width };
+            }
+            // Scale so sprite portion matches original w×h exactly
+            const pxScale = w / this._glowSprite.srcW;
+            const gw = this._glowSprite.canvas.width * pxScale;
+            const gh = this._glowSprite.canvas.height * pxScale;
+            ctx.drawImage(this._glowSprite.canvas, -gw / 2, -gh / 2, gw, gh);
+        } else {
+            ctx.drawImage(this.img.canvas || this.img, -w / 2, -h / 2, w, h);
+        }
 
         ctx.restore();
 

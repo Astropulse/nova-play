@@ -206,7 +206,8 @@ export class Game {
 
         this.setState(new MenuState(this));
         this.running = true;
-        this.lastTime = performance.now();
+        // Reset frame time right before first loop to avoid huge dt from asset loading
+        this._lastFrameTime = performance.now();
         this.loop();
     }
 
@@ -285,20 +286,21 @@ export class Game {
         }
 
         // --- Recording Timer ---
+        if (!this._recIndicator) {
+            this._recIndicator = document.getElementById('recordingIndicator');
+            this._recTimer = document.getElementById('recordingTimer');
+        }
         if (this.isRecording) {
             this.recordTimer += dt;
-            const indicator = document.getElementById('recordingIndicator');
-            const timer = document.getElementById('recordingTimer');
-            if (indicator && timer) {
-                indicator.style.display = 'block';
-                timer.innerText = Math.max(0, this.maxRecordTime - this.recordTimer).toFixed(1);
+            if (this._recIndicator && this._recTimer) {
+                this._recIndicator.style.display = 'block';
+                this._recTimer.innerText = Math.max(0, this.maxRecordTime - this.recordTimer).toFixed(1);
             }
             if (this.recordTimer >= this.maxRecordTime) {
                 this.stopRecording();
             }
-        } else {
-            const indicator = document.getElementById('recordingIndicator');
-            if (indicator) indicator.style.display = 'none';
+        } else if (this._recIndicator) {
+            this._recIndicator.style.display = 'none';
         }
 
         // --- Performance Tracking ---
@@ -344,7 +346,8 @@ export class Game {
         if (this.isRecording || this.isEncoding) return;
 
         this.recordedChunks = [];
-        const stream = this.canvas.captureStream(30);
+        this._captureStream = this.canvas.captureStream(30);
+        const stream = this._captureStream;
 
         // Try to find a supported mime type
         const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
@@ -360,6 +363,12 @@ export class Game {
         this.mediaRecorder.onstop = async () => {
             this.isRecording = false;
             document.body.classList.remove('recording');
+
+            // Stop capture stream tracks to release the performance overhead
+            if (this._captureStream) {
+                for (const track of this._captureStream.getTracks()) track.stop();
+                this._captureStream = null;
+            }
 
             // Pause immediately to protect the player
             const wasPaused = this.currentState && this.currentState.paused;
