@@ -172,6 +172,26 @@ function substitute(template, vars) {
 function executeActions(actions, vars, player, state, encounter) {
     if (!actions) return 'ok';
 
+    // Pre-check: if actions will both take scrap and add an upgrade,
+    // verify inventory space before executing anything (prevents paying but getting no item)
+    const hasRemoveScrap = actions.some(a => a.startsWith('remove_scrap'));
+    const upgradeAction = actions.find(a => a.startsWith('add_upgrade'));
+    if (hasRemoveScrap && upgradeAction) {
+        const paramKey = upgradeAction.slice(upgradeAction.indexOf(':') + 1);
+        if (paramKey && vars[paramKey] !== undefined) {
+            const v = vars[paramKey];
+            const upgrade = typeof v === 'object' && v.item ? v.item : v;
+            if (upgrade && upgrade.width && upgrade.height) {
+                let canFit = false;
+                const inv = player.inventory;
+                for (let y = 0; y <= inv.rows - upgrade.height && !canFit; y++)
+                    for (let x = 0; x <= inv.cols - upgrade.width && !canFit; x++)
+                        if (inv.canFit(upgrade, x, y)) canFit = true;
+                if (!canFit) return 'inventory_full';
+            }
+        }
+    }
+
     for (const actionStr of actions) {
         const colonIdx = actionStr.indexOf(':');
         const type = colonIdx >= 0 ? actionStr.slice(0, colonIdx) : actionStr;
@@ -402,6 +422,27 @@ function buildOption(opt, scenario, vars) {
         return {
             label,
             action: (p, s, enc) => {
+                // Pre-check: if pre-actions take scrap and any outcome adds an upgrade,
+                // verify inventory space before taking payment
+                const preActionsRemoveScrap = opt.actions && opt.actions.some(a => a.startsWith('remove_scrap'));
+                if (preActionsRemoveScrap) {
+                    const upgradeAction = opt.gamble.flatMap(o => o.actions || []).find(a => a.startsWith('add_upgrade'));
+                    if (upgradeAction) {
+                        const paramKey = upgradeAction.slice(upgradeAction.indexOf(':') + 1);
+                        if (paramKey && vars[paramKey] !== undefined) {
+                            const v = vars[paramKey];
+                            const upgrade = typeof v === 'object' && v.item ? v.item : v;
+                            if (upgrade && upgrade.width && upgrade.height) {
+                                let canFit = false;
+                                const inv = p.inventory;
+                                for (let y = 0; y <= inv.rows - upgrade.height && !canFit; y++)
+                                    for (let x = 0; x <= inv.cols - upgrade.width && !canFit; x++)
+                                        if (inv.canFit(upgrade, x, y)) canFit = true;
+                                if (!canFit) return { message: "Cargo hold is full.", close: true };
+                            }
+                        }
+                    }
+                }
                 if (opt.actions && opt.actions.length > 0) {
                     const result = executeActions(opt.actions, vars, p, s, enc);
                     if (result === 'not_enough_scrap') return { message: "Not enough scrap.", close: true };
