@@ -572,6 +572,7 @@ export class Player {
                 // Repeater reduces charge time, control module reduces it further
                 let baseCharge = (this.hasRepeater ? 0.1 : 0.25) * this.fireRateMult;
                 if (this.hasControlModule) baseCharge *= 0.5; // 50% faster charge
+                baseCharge /= this.lvlProjectileSpeedMult; // Projectile speed reduces charge time
                 const variance = this.hasEnergyBlaster ? (Math.random() - 0.5) * 0.2 : 0;
                 this.railgunTargetTimer = baseCharge + variance;
                 this.game.sounds.play('railgun_target', { volume: 0.6, x: this.worldX, y: this.worldY });
@@ -1166,6 +1167,8 @@ export class Player {
             lvlEnemySpawnMult: this.lvlEnemySpawnMult,
             lvlDifficultyMult: this.lvlDifficultyMult,
             lvlWaveCountdownMult: this.lvlWaveCountdownMult,
+            lvlExtraProjectiles: this.lvlExtraProjectiles,
+            lvlHpRegen: this.lvlHpRegen,
             inventory: this.inventory ? this.inventory.serialize() : null
         };
     }
@@ -1215,6 +1218,8 @@ export class Player {
             this.lvlEnemySpawnMult       = data.lvlEnemySpawnMult;
             this.lvlDifficultyMult       = data.lvlDifficultyMult;
             this.lvlWaveCountdownMult    = data.lvlWaveCountdownMult;
+            this.lvlExtraProjectiles     = data.lvlExtraProjectiles || 0;
+            this.lvlHpRegen              = data.lvlHpRegen || 0;
         }
 
         if (data.inventory && this.inventory) {

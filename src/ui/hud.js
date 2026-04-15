@@ -350,7 +350,8 @@ export class HUD {
 
         // Draw Level Text
         ctx.save();
-        ctx.fillStyle = '#ffffff';
+        const state = this.game.currentState;
+        const hasUnclaimed = state && state.levelUpQueue && state.levelUpQueue.length > 0;
         ctx.strokeStyle = '#000000';
         ctx.lineWidth = hudScale * 1; // 1 HUD-pixel outline
         ctx.lineJoin = 'round';
@@ -358,8 +359,28 @@ export class HUD {
         ctx.textAlign = 'center';
         ctx.textBaseline = 'bottom';
         const textY = y - hudScale * 1.5;
+
+        if (hasUnclaimed) {
+            // Flash between yellow and white
+            const flash = Math.sin(performance.now() * 0.005) * 0.5 + 0.5;
+            const r = Math.round(255);
+            const g = Math.round(255);
+            const b = Math.round(flash * 255);
+            ctx.fillStyle = `rgb(${r},${g},${b})`;
+        } else {
+            ctx.fillStyle = '#ffffff';
+        }
         ctx.strokeText(`LEVEL ${p.level}`, cw / 2, textY);
         ctx.fillText(`LEVEL ${p.level}`, cw / 2, textY);
+
+        // "CLAIM IN INVENTORY" hint when level-ups are queued
+        if (hasUnclaimed) {
+            const hintAlpha = Math.sin(performance.now() * 0.004) * 0.3 + 0.7;
+            ctx.font = `${4 * hudScale}px Astro4x`;
+            ctx.fillStyle = `rgba(255, 255, 0, ${hintAlpha.toFixed(2)})`;
+            ctx.strokeText('CLAIM IN INVENTORY', cw / 2, textY - hudScale * 7);
+            ctx.fillText('CLAIM IN INVENTORY', cw / 2, textY - hudScale * 7);
+        }
         ctx.restore();
     }
 

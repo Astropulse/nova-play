@@ -1,6 +1,6 @@
 // Scaling is now dynamic via game properties
 import { Projectile } from './projectile.js';
-import { Scrap, Rubble, ItemPickup, ProceduralDebris, VoronoiSlicer, ExpOrb } from './asteroid.js';
+import { Scrap, Rubble, ItemPickup, ProceduralDebris, VoronoiSlicer, ExpOrb, resolveSpawnOverlap } from './asteroid.js';
 import { UPGRADES } from '../data/upgrades.js';
 import { Starcore } from './starcore.js';
 import { AsteroidCrusher } from './asteroidCrusher.js';
@@ -129,9 +129,11 @@ export class Enemy {
         const fovFactor = 1.0 + (fov - 1.0) * 0.25;
 
         // 2. Speed Factor: increase distances as velocity increases to prevent constant collisions
-        // Using a much softer linear ramp: 1.0 at 400 speed, 1.2 at 900 speed.
         const speed = this.baseSpeed * this.speedMult;
-        const speedFactor = 1.0 + Math.max(0, (speed - 400) * 0.0004);
+        // Hostile encounters are much faster and larger — scale distances more aggressively
+        // so they start breaking earlier and don't overshoot into the player.
+        const speedCoeff = this.isHostileEncounter ? 0.001 : 0.0004;
+        const speedFactor = 1.0 + Math.max(0, (speed - 400) * speedCoeff);
 
         return fovFactor * speedFactor;
     }
@@ -204,7 +206,9 @@ export class Enemy {
             currentMaxSpeed = this.baseSpeed * 1.3;
         } else if (this.state === AI_STATE.ATTACK && this.attackPassCount === 0) {
             const closeFactor = Math.max(0.3, Math.min(0.6, dist / activeAttackRange));
-            currentMaxSpeed = this.baseSpeed * closeFactor;
+            // Hostile encounters need harder braking to counteract their high speedMult
+            const encBrake = this.isHostileEncounter ? (1.0 / this.speedMult) : 1.0;
+            currentMaxSpeed = this.baseSpeed * closeFactor * encBrake;
         } else if (dist > 1500) {
             const boostFactor = Math.min(3.0, 1.0 + (dist - 1500) / (2000));
             currentMaxSpeed *= boostFactor;
@@ -321,8 +325,8 @@ export class Enemy {
 
             case AI_STATE.ATTACK:
                 // Stay in attack until burst is done OR we get very close
-                // Hostile encounters are slightly more aggressive but still break for safety
-                const breakMult = this.isHostileEncounter ? 1.8 : 2.5;
+                // Hostile encounters are larger and faster — break further out
+                const breakMult = this.isHostileEncounter ? 4.0 : 2.5;
                 const minBreakDist = this.radius * breakMult + 50;
                 const burstDone = this.burstShotsLeft <= 0;
                 const tooClose = dist < minBreakDist;
@@ -367,7 +371,7 @@ export class Enemy {
                 break;
         }
 
-        if (this.upgradeType === 'kamikaze') {
+        if (this.upgradeType === 'kamikaze' && this.state !== AI_STATE.RECOVERY) {
             this.state = AI_STATE.PURSUIT;
         }
     }
@@ -749,7 +753,7 @@ export class Enemy {
         const currentSpeed = this.baseSpeed * this.speedMult;
         const invulnDuration = Math.max(0.1, 0.6 - Math.max(0, (currentSpeed - 400) * 0.001));
 
-        this.stateTimer = invulnDuration;
+        this.stateTimer = Math.max(0.4, invulnDuration);
         this.invulnTimer = invulnDuration;
 
         // Steer away from player
@@ -930,7 +934,11 @@ export class EnemySpawner {
         const fov = (this.game.currentState && this.game.currentState.currentFovMult) || 1.0;
         const dist = 1600 * fov;
         const angle = Math.random() * Math.PI * 2;
-        return [new BossClass(this.game, playerX + Math.cos(angle) * dist, playerY + Math.sin(angle) * dist, difficultyScale)];
+        const boss = new BossClass(this.game, playerX + Math.cos(angle) * dist, playerY + Math.sin(angle) * dist, difficultyScale);
+        const resolved = resolveSpawnOverlap(this.game, boss.worldX, boss.worldY, boss.radius);
+        boss.worldX = resolved.x;
+        boss.worldY = resolved.y;
+        return [boss];
     }
 
     update(rawDt, playerX, playerY, difficultyScale = 1.0) {
@@ -968,6 +976,9 @@ export class EnemySpawner {
                     const angle = Math.random() * Math.PI * 2;
                     const dist = (1800 + Math.random() * 640) * fov;
                     const en = new Enemy(this.game, playerX + Math.cos(angle) * dist, playerY + Math.sin(angle) * dist, this.waveSpawnScale);
+                    const resolved = resolveSpawnOverlap(this.game, en.worldX, en.worldY, en.radius);
+                    en.worldX = resolved.x;
+                    en.worldY = resolved.y;
                     Enemy.rollUpgrade(en, player);
                     spawned.push(en);
                 }
@@ -1002,6 +1013,9 @@ export class EnemySpawner {
                 const fov = (this.game.currentState && this.game.currentState.currentFovMult) || 1.0;
                 const dist = (1400 + Math.random() * 600) * fov;
                 const en = new Enemy(this.game, playerX + Math.cos(angle) * dist, playerY + Math.sin(angle) * dist, difficultyScale);
+                const resolved = resolveSpawnOverlap(this.game, en.worldX, en.worldY, en.radius);
+                en.worldX = resolved.x;
+                en.worldY = resolved.y;
                 Enemy.rollUpgrade(en, player);
                 spawned.push(en);
             }
@@ -1042,6 +1056,9 @@ export class EnemySpawner {
 
             this.lastBossType = BossClass.name;
             const boss = new BossClass(this.game, playerX + Math.cos(angle) * dist, playerY + Math.sin(angle) * dist, difficultyScale);
+            const bossResolved = resolveSpawnOverlap(this.game, boss.worldX, boss.worldY, boss.radius);
+            boss.worldX = bossResolved.x;
+            boss.worldY = bossResolved.y;
 
             return [boss];
         }
@@ -1122,6 +1139,12 @@ export class KamikazeEnemy extends Enemy {
     }
 
     _updateAIState(dt, dist, angleToPlayer, player) {
+        if (this.state === AI_STATE.RECOVERY) {
+            if (this.stateTimer <= 0) {
+                this.state = AI_STATE.PURSUIT;
+            }
+            return;
+        }
         this.state = AI_STATE.PURSUIT; // Always chase
     }
 
@@ -1191,6 +1214,12 @@ export class CthulhuEnemy extends Enemy {
     }
 
     _updateAIState(dt, dist, angleToPlayer, player) {
+        if (this.state === AI_STATE.RECOVERY) {
+            if (this.stateTimer <= 0) {
+                this.state = AI_STATE.PURSUIT;
+            }
+            return;
+        }
         this.state = AI_STATE.PURSUIT; // Always chase
     }
 

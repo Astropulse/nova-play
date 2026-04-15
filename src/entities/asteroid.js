@@ -895,6 +895,34 @@ export class ExpOrb {
     }
 }
 
+/**
+ * Nudge a spawn position so it doesn't overlap any existing asteroid or enemy.
+ * Mutates and returns {x, y}. Uses the candidate's radius for clearance.
+ */
+export function resolveSpawnOverlap(game, x, y, radius, padding = 20) {
+    const state = game.currentState;
+    if (!state) return { x, y };
+    const entities = [];
+    if (state.asteroids) entities.push(...state.asteroids);
+    if (state.enemies) entities.push(...state.enemies);
+
+    for (const e of entities) {
+        if (!e.alive) continue;
+        const dx = x - e.worldX;
+        const dy = y - e.worldY;
+        const distSq = dx * dx + dy * dy;
+        const minDist = (radius + (e.radius || 0) + padding);
+        if (distSq < minDist * minDist) {
+            // Push candidate away from the overlapping entity
+            const dist = Math.sqrt(distSq) || 1;
+            const push = minDist - dist + 1;
+            x += (dx / dist) * push;
+            y += (dy / dist) * push;
+        }
+    }
+    return { x, y };
+}
+
 // Spawner — creates asteroids ahead of the player in their direction of travel
 export class AsteroidSpawner {
     constructor(game) {
@@ -985,8 +1013,8 @@ export class AsteroidSpawner {
                     }
                 }
 
-                const wx = playerWorldX + ox;
-                const wy = playerWorldY + oy;
+                let wx = playerWorldX + ox;
+                let wy = playerWorldY + oy;
 
                 // Drift velocity
                 let vx = 0, vy = 0;
@@ -997,7 +1025,11 @@ export class AsteroidSpawner {
                     vy = Math.sin(towardAngle) * speed;
                 }
 
-                spawned.push(new Asteroid(this.game, wx, wy, size, vx, vy));
+                const ast = new Asteroid(this.game, wx, wy, size, vx, vy);
+                const resolved = resolveSpawnOverlap(this.game, wx, wy, ast.radius);
+                ast.worldX = resolved.x;
+                ast.worldY = resolved.y;
+                spawned.push(ast);
 
                 this.beltCooldown--;
                 // --- Belt Spawning Logic ---
@@ -1048,7 +1080,11 @@ export class AsteroidSpawner {
                                 vy = Math.sin(driftAngle) * speed;
                             }
 
-                            spawned.push(new Asteroid(this.game, ax, ay, size, vx, vy));
+                            const beltAst = new Asteroid(this.game, ax, ay, size, vx, vy);
+                            const beltResolved = resolveSpawnOverlap(this.game, ax, ay, beltAst.radius);
+                            beltAst.worldX = beltResolved.x;
+                            beltAst.worldY = beltResolved.y;
+                            spawned.push(beltAst);
                         }
                     }
                 }

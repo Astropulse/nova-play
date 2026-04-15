@@ -125,9 +125,9 @@ export class PlayingState {
 
         // Tunable Difficulty Constants
         this.difficultyRampTime = 240; // 4 minutes (transition to linear)
-        this.difficultyExponent = 1.6; // Starts slow, curves up (convex)
+        this.difficultyExponent = 1.55; // Starts slow, curves up (convex)
         this.difficultyGain = 0.000366; // Calculated for smooth transition at 4m
-        this.difficultySteadyRate = 0.015; // Steady linear growth after ramp
+        this.difficultySteadyRate = 0.013; // Steady linear growth after ramp
 
         this.flashTimer = 0;
 
@@ -2840,9 +2840,7 @@ export class PlayingState {
         if (!ui.isAnimating) {
             if (this.game.input.isMouseJustPressed(0) && !this.draggedItem) {
                 if (!this._tryPickUpItem(mouse, cacheInv, cacheLayout, 'cacheScrollX', 'cacheScrollY')) {
-                    if (this._tryPickUpItem(mouse, playerInv, playerLayout, 'playerScrollX', 'playerScrollY')) {
-                        this._onInventoryChanged();
-                    }
+                    this._tryPickUpItem(mouse, playerInv, playerLayout, 'playerScrollX', 'playerScrollY');
                 }
             }
 
@@ -2863,9 +2861,27 @@ export class PlayingState {
                     if (this.draggedItem.originInventory === playerInv) this._onInventoryChanged();
                     this.game.sounds.play('click', 0.5);
                 } else {
-                    this.draggedItem.originInventory.addItem(this.draggedItem.item, this.draggedItem.x, this.draggedItem.y);
-                    if (this.draggedItem.originInventory === playerInv) this._onInventoryChanged();
-                    this.game.sounds.play('click', 0.3);
+                    // Check if mouse is outside both inventory panels → drop into space
+                    const inCache  = mouse.x >= cacheLayout.gridVisX  && mouse.x <= cacheLayout.gridVisX  + cacheLayout.visW  &&
+                                     mouse.y >= cacheLayout.gridVisY  && mouse.y <= cacheLayout.gridVisY  + cacheLayout.visH;
+                    const inPlayer = mouse.x >= playerLayout.gridVisX && mouse.x <= playerLayout.gridVisX + playerLayout.visW &&
+                                     mouse.y >= playerLayout.gridVisY && mouse.y <= playerLayout.gridVisY + playerLayout.visH;
+
+                    if (!inCache && !inPlayer) {
+                        const worldMouse = this.camera.screenToWorld(mouse.x, mouse.y, this.game.width, this.game.height);
+                        const dropOffset  = (Math.random() - 0.5) * 20;
+                        const dropOffset2 = (Math.random() - 0.5) * 20;
+                        this.itemPickups.push(new ItemPickup(this.game, worldMouse.x + dropOffset, worldMouse.y + dropOffset2, this.draggedItem.item));
+                        if (this.draggedItem.originInventory === playerInv) this._onInventoryChanged();
+                        if (this.draggedItem.originInventory === cacheInv && cacheInv.items.length === 0) {
+                            if (this._activeCache) this._activeCache.markEmptied();
+                        }
+                        this.game.sounds.play('click', 0.5);
+                    } else {
+                        this.draggedItem.originInventory.addItem(this.draggedItem.item, this.draggedItem.x, this.draggedItem.y);
+                        if (this.draggedItem.originInventory === playerInv) this._onInventoryChanged();
+                        this.game.sounds.play('click', 0.3);
+                    }
                 }
 
                 this.draggedItem = null;
@@ -2952,9 +2968,7 @@ export class PlayingState {
             }
 
             if (!this._tryPickUpItem(mouse, shopInv, shopLayout, 'shopScrollX', 'shopScrollY')) {
-                if (this._tryPickUpItem(mouse, playerInv, playerLayout, 'playerScrollX', 'playerScrollY')) {
-                    this._onInventoryChanged();
-                }
+                this._tryPickUpItem(mouse, playerInv, playerLayout, 'playerScrollX', 'playerScrollY');
             }
         }
 
@@ -3130,9 +3144,7 @@ export class PlayingState {
                 this.game.sounds.play('click', 0.5);
             }
 
-            if (this._tryPickUpItem(mouse, playerInv, playerLayout, 'playerScrollX', 'playerScrollY')) {
-                this._onInventoryChanged();
-            }
+            this._tryPickUpItem(mouse, playerInv, playerLayout, 'playerScrollX', 'playerScrollY');
         }
 
         this._handleRightClickConsumable(mouse, playerLayout, playerInv);
@@ -4066,7 +4078,7 @@ export class PlayingState {
             });
         }
 
-        const beamLength = 4000;
+        const beamLength = 8000;
         let damageMult = (p.hasRepeater ? 0.5 : 1.0) * (p.hasLaserOverride ? 1.3 : 1.0);
         if (p.hasMultishotGuns) damageMult *= 0.7; // 30% reduction
 
@@ -4237,7 +4249,7 @@ export class PlayingState {
         const canvas = img.canvas || img;
         const tileW = (img.width || img.canvas.width) * game.worldScale;
         const tileH = (img.height || img.canvas.height) * game.worldScale;
-        const count = 40; // Enough to go off screen
+        const count = 80; // Enough to go off screen at high FOV
 
         ctx.save();
         ctx.globalAlpha = alpha;
