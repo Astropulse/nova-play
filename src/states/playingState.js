@@ -209,6 +209,18 @@ export class PlayingState {
         }
     }
 
+    // In-place removal of dead entities — avoids allocating a new array every frame
+    _compactAlive(arr) {
+        let write = 0;
+        for (let read = 0; read < arr.length; read++) {
+            if (arr[read].alive) {
+                if (write !== read) arr[write] = arr[read];
+                write++;
+            }
+        }
+        arr.length = write;
+    }
+
     _triggerShakeAt(x, y, intensity, minPassDist = 1200, maxDist = 4000) {
         const dx = x - this.player.worldX;
         const dy = y - this.player.worldY;
@@ -958,18 +970,18 @@ export class PlayingState {
         }
         this.perf.end('particles');
 
-        // Cleanup stale indicator opacities (throttled — only every 60 frames)
-        this._indicatorCleanupCounter = (this._indicatorCleanupCounter || 0) + 1;
-        if (this._indicatorCleanupCounter >= 60) {
-            this._indicatorCleanupCounter = 0;
-            for (const [entity] of this.indicatorOpacities) {
-                if (!this.enemies.includes(entity) &&
-                    !this.asteroids.includes(entity) &&
-                    !this.shops.includes(entity) &&
-                    !this.events.includes(entity) &&
-                    !this.encounters.includes(entity) &&
-                    !this.bossWrecks.includes(entity) &&
-                    !this.caches.includes(entity)) {
+        // Cleanup stale indicator opacities — build a Set for O(1) lookups
+        if (this.indicatorOpacities.size > 0) {
+            const liveEntities = new Set();
+            for (const e of this.enemies) liveEntities.add(e);
+            for (const a of this.asteroids) liveEntities.add(a);
+            for (const s of this.shops) liveEntities.add(s);
+            for (const ev of this.events) liveEntities.add(ev);
+            for (const enc of this.encounters) liveEntities.add(enc);
+            for (const w of this.bossWrecks) liveEntities.add(w);
+            for (const c of this.caches) liveEntities.add(c);
+            for (const entity of this.indicatorOpacities.keys()) {
+                if (!liveEntities.has(entity)) {
                     this.indicatorOpacities.delete(entity);
                 }
             }
@@ -1237,18 +1249,18 @@ export class PlayingState {
 
         this.perf.end('collisions');
 
-        // Cleanup dead entities
-        this.projectiles = this.projectiles.filter(p => p.alive);
-        this.asteroids = this.asteroids.filter(a => a.alive);
-        this.enemies = this.enemies.filter(e => e.alive);
-        this.rubble = this.rubble.filter(r => r.alive);
-        this.scrapEntities = this.scrapEntities.filter(s => s.alive);
-        this.itemPickups = this.itemPickups.filter(it => it.alive);
-        this.expOrbs = this.expOrbs.filter(orb => orb.alive);
-        this.events = this.events.filter(ev => ev.alive);
-        this.encounters = this.encounters.filter(enc => enc.alive);
-        this.shops = this.shops.filter(s => s.alive);
-        this.caches = this.caches.filter(c => c.alive);
+        // Cleanup dead entities (in-place compaction to avoid allocating new arrays)
+        this._compactAlive(this.projectiles);
+        this._compactAlive(this.asteroids);
+        this._compactAlive(this.enemies);
+        this._compactAlive(this.rubble);
+        this._compactAlive(this.scrapEntities);
+        this._compactAlive(this.itemPickups);
+        this._compactAlive(this.expOrbs);
+        this._compactAlive(this.events);
+        this._compactAlive(this.encounters);
+        this._compactAlive(this.shops);
+        this._compactAlive(this.caches);
 
         // Update caches and discovery
         for (const c of this.caches) {
