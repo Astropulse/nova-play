@@ -187,9 +187,7 @@ export class PlayingState {
         // Performance profiler (dev mode only)
         this.perf = new PerfProfiler();
 
-        // Pre-create ExpOrb glow frames BEFORE the first render frame.
-        // Creating shadowBlur canvases mid-render permanently degrades the
-        // canvas pipeline in both Firefox and Chrome.
+        // Pre-create ExpOrb glow frames so they're ready before first use.
         const expAsset = game.assets.get('exp');
         if (expAsset && Array.isArray(expAsset)) {
             for (const frame of expAsset) {
