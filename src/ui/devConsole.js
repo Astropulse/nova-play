@@ -306,6 +306,20 @@ export class DevConsole {
                     state.triggerFlash('#ffffff', 1.2, 0.5);
                     this.game.sounds.playSpecificMusic(boss.musicKey || 'Asteroid Crusher');
                 });
+            } else if (bossId === 'event_horizon' || bossId === 'horizon') {
+                import('../entities/eventHorizon.js').then(({ EventHorizon }) => {
+                    const angle = Math.random() * Math.PI * 2;
+                    const dist = 1200;
+                    const boss = new EventHorizon(
+                        this.game,
+                        state.player.worldX + Math.cos(angle) * dist,
+                        state.player.worldY + Math.sin(angle) * dist,
+                        state.difficultyScale
+                    );
+                    state.enemies.push(boss);
+                    state.triggerFlash('#ffffff', 1.2, 0.5);
+                    this.game.sounds.playSpecificMusic(boss.musicKey || 'Event Horizon Chase');
+                });
             }
         }
     }

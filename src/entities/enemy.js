@@ -4,6 +4,7 @@ import { Scrap, Rubble, ItemPickup, ProceduralDebris, VoronoiSlicer, ExpOrb, res
 import { UPGRADES } from '../data/upgrades.js';
 import { Starcore } from './starcore.js';
 import { AsteroidCrusher } from './asteroidCrusher.js';
+import { EventHorizon } from './eventHorizon.js';
 
 const AI_STATE = {
     PURSUIT: 'pursuit',   // Move toward player
@@ -955,7 +956,7 @@ export class EnemySpawner {
     }
 
     forceBoss(playerX, playerY, difficultyScale) {
-        const bosses = [Starcore, AsteroidCrusher];
+        const bosses = [Starcore, AsteroidCrusher, EventHorizon];
         const BossClass = bosses[Math.floor(Math.random() * bosses.length)];
         this.lastBossType = BossClass.name;
 
@@ -1075,7 +1076,7 @@ export class EnemySpawner {
             const dist = 1600;
 
             // Randomly choose between available bosses, excluding the last one
-            const bosses = [Starcore, AsteroidCrusher];
+            const bosses = [Starcore, AsteroidCrusher, EventHorizon];
             const availableBosses = bosses.filter(b => b.name !== this.lastBossType);
 
             // Final fallback if all filtered (shouldn't happen with 2+ bosses)

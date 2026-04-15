@@ -16,6 +16,7 @@ import { KnowledgeEvent, KNOWLEDGE_STATE } from '../entities/knowledgeEvent.js';
 import { Projectile } from '../entities/projectile.js';
 import { Starcore } from '../entities/starcore.js';
 import { AsteroidCrusher } from '../entities/asteroidCrusher.js';
+import { EventHorizon } from '../entities/eventHorizon.js';
 import { MenuState } from './menuState.js';
 import { FloatingText } from '../entities/floatingText.js';
 import { MUSIC_STATE } from '../engine/soundManager.js';

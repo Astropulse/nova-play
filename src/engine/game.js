@@ -713,6 +713,7 @@ export class Game {
             // Bosses
             'starcore': 'Assets/Ships/Bosses/Starcore/starcore.png',
             'asteroid_crusher': 'Assets/Ships/Bosses/Asteroid_Crusher/asteroid_crusher.png',
+            'event_horizon': 'Assets/Ships/Bosses/Event_Horizon/event_horizon.png',
             // Shield overlay
             'shield': 'Assets/Ships/shield.png',
             // Asteroids

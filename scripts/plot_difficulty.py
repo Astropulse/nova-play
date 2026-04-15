@@ -10,6 +10,7 @@ ENEMY_PATH = os.path.join(BASE_DIR, 'src', 'entities', 'enemy.js')
 CRUSHER_PATH = os.path.join(BASE_DIR, 'src', 'entities', 'asteroidCrusher.js')
 STARCORE_PATH = os.path.join(BASE_DIR, 'src', 'entities', 'starcore.js')
 KNOWLEDGE_PATH = os.path.join(BASE_DIR, 'src', 'entities', 'knowledgeEvent.js')
+EVENT_HORIZON_PATH = os.path.join(BASE_DIR, 'src', 'entities', 'eventHorizon.js')
 
 class GameDataScanner:
     def __init__(self):
@@ -73,7 +74,14 @@ class GameDataScanner:
             if know_match:
                 self.formulas['knowledge_boss_hp'] = self._clean_formula(know_match.group(1))
 
-        # 5. Base Boss Class
+        # 5. Event Horizon
+        with open(EVENT_HORIZON_PATH, 'r') as f:
+            content = f.read()
+            eh_match = re.search(r'this\.health\s*=\s*(.*?);', content)
+            if eh_match:
+                self.formulas['event_horizon_hp'] = self._clean_formula(eh_match.group(1))
+
+        # 6. Base Boss Class
         BOSS_PATH = os.path.join(BASE_DIR, 'src', 'entities', 'boss.js')
         if os.path.exists(BOSS_PATH):
             with open(BOSS_PATH, 'r') as f:
@@ -186,8 +194,9 @@ def generate_plot():
     ax2.legend(loc='upper left')
 
     # 3. Boss Health Plot
-    boss_map = {'starcore_hp': ('Starcore', '#9C27B0'), 
-                'asteroid_crusher_hp': ('Asteroid Crusher', '#2196F3'), 
+    boss_map = {'starcore_hp': ('Starcore', '#9C27B0'),
+                'asteroid_crusher_hp': ('Asteroid Crusher', '#2196F3'),
+                'event_horizon_hp': ('Event Horizon', '#FF6600'),
                 'knowledge_boss_hp': ('Knowledge Boss', '#F44336'),
                 'generic_boss_hp': ('Generic Boss Base', '#9E9E9E')}
     for key, (label, color) in boss_map.items():
