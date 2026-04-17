@@ -1698,9 +1698,7 @@ export class PlayingState {
         this.perf.begin('enemies');
         for (const e of this.enemies) {
             if (e.isBoss) continue;
-            const dx = e.worldX - camX, dy = e.worldY - camY;
-            if (dx > -drawCullX && dx < drawCullX && dy > -drawCullY && dy < drawCullY)
-                e.draw(ctx, this.camera);
+            e.draw(ctx, this.camera);
         }
         for (const enc of this.encounters) {
             enc.draw(ctx, this.camera); // Encounters are few
@@ -1710,9 +1708,7 @@ export class PlayingState {
         // --- Projectiles draw ---
         this.perf.begin('projectiles');
         for (const p of this.projectiles) {
-            const dx = p.worldX - camX, dy = p.worldY - camY;
-            if (dx > -drawCullX && dx < drawCullX && dy > -drawCullY && dy < drawCullY)
-                p.draw(ctx, this.camera);
+            p.draw(ctx, this.camera);
         }
         this.perf.end('projectiles');
 
