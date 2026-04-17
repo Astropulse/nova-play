@@ -64,6 +64,18 @@ export class Player {
         this.hasSacrifice = false;
         this.hasRadar = false;
         this.obedienceMult = 1.0;
+
+        // Yellow One reward — permanent glow
+        this.hasYellowGlow = false;
+        this.yellowGlowTarget = { x: 0, y: 0 }; // Points toward next boss event
+        this._yellowTrailHistory = [];
+        this._yellowTrailTimer = 0;
+        this._yellowTrailInterval = 0.005; // Match ancient curse speed
+        this._yellowMaxTrail = 10;
+        this._yellowGhostCache = null;
+
+        // Cosmos Engine (inventory item)
+        this.hasCosmosEngine = false;
         this.momentumSpeedMult = 0.5;
         this.momentumMaxSpeedMult = 2 * (0.97 / 0.99);
         this.momentumBoostMult = 0.5;
@@ -727,12 +739,37 @@ export class Player {
             this.trailHistory = [];
         }
 
-        // Age trail life slightly even if not active (for smooth fade out if needed, 
+        // Age trail life slightly even if not active (for smooth fade out if needed,
         // though here we just clear it for simplicity if curse is removed)
         for (let i = 0; i < this.trailHistory.length; i++) {
             this.trailHistory[i].life -= dt * 6; // Fast fade but enough to see the length
         }
         this.trailHistory = this.trailHistory.filter(t => t.life > 0);
+
+        // --- Yellow Glow Trail (post-Yellow One reward) ---
+        // Trail ghosts are all centered on the player but rotated toward the glow target.
+        // Older layers rotate further toward the target, creating a directional "pointing" glow.
+        if (this.hasYellowGlow) {
+            this._yellowTrailTimer -= dt;
+            if (this._yellowTrailTimer <= 0) {
+                this._yellowTrailTimer = this._yellowTrailInterval;
+
+                this._yellowTrailHistory.unshift({
+                    angle: this.angle,
+                    asset: (this.thrusting && this.flyingFrames.length > 0) ? this.flyingFrames[this.currentFrame] : this.stillImg,
+                    life: 1.0
+                });
+
+                if (this._yellowTrailHistory.length > this._yellowMaxTrail) {
+                    this._yellowTrailHistory.pop();
+                }
+            }
+
+            for (let i = 0; i < this._yellowTrailHistory.length; i++) {
+                this._yellowTrailHistory[i].life -= dt * 6;
+            }
+            this._yellowTrailHistory = this._yellowTrailHistory.filter(t => t.life > 0);
+        }
 
         // --- Nanite Tank Regeneration ---
         if (this.naniteRegen > 0 && this.health < this.maxHealth) {
@@ -782,6 +819,45 @@ export class Player {
                 ctx.rotate(t.angle + Math.PI / 2);
                 ctx.globalAlpha = alpha;
                 ctx.drawImage(greenImg, -w / 2, -h / 2, w, h);
+                ctx.restore();
+            }
+            ctx.restore();
+        }
+
+        // --- Yellow Glow Trail (post-Yellow One) ---
+        // Ghosts trail from the player toward the glow target, like a comet tail pointing at the destination
+        if (this.hasYellowGlow && this._yellowTrailHistory.length > 0) {
+            const toTargetAngle = Math.atan2(
+                this.yellowGlowTarget.y - this.worldY,
+                this.yellowGlowTarget.x - this.worldX
+            );
+
+            ctx.save();
+            ctx.globalCompositeOperation = 'screen';
+            for (let i = 0; i < this._yellowTrailHistory.length; i++) {
+                const t = this._yellowTrailHistory[i];
+                const alpha = t.life * 0.15 * (1 - i / this._yellowMaxTrail);
+                if (alpha <= 0) continue;
+
+                const asset = t.asset;
+                const tImg = asset.canvas || asset;
+                const w = (asset.width || tImg.width) * this.game.worldScale;
+                const h = (asset.height || tImg.height) * this.game.worldScale;
+
+                if (!this._yellowGhostCache) {
+                    this._yellowGhostCache = this._createYellowGhost(tImg);
+                }
+
+                // Position each ghost further along the direction toward the target
+                const trailDist = ((i + 1) / this._yellowMaxTrail) * 30 * this.game.worldScale;
+                const gx = screen.x + Math.cos(toTargetAngle) * trailDist;
+                const gy = screen.y + Math.sin(toTargetAngle) * trailDist;
+
+                ctx.save();
+                ctx.translate(gx, gy);
+                ctx.rotate(t.angle + Math.PI / 2);
+                ctx.globalAlpha = alpha;
+                ctx.drawImage(this._yellowGhostCache, -w / 2, -h / 2, w, h);
                 ctx.restore();
             }
             ctx.restore();
@@ -877,6 +953,8 @@ export class Player {
             ctx.drawImage(this.shieldImg.canvas || this.shieldImg, -sw / 2, -sh / 2, sw, sh);
             ctx.restore();
         }
+
+        // (Yellow glow trail is drawn above, before the ship sprite)
 
         // Shield bar dimming when broken
         // (HUD handles visual, but we expose state via shieldBroken)
@@ -1079,6 +1157,33 @@ export class Player {
         return ghostCanvas;
     }
 
+    _createYellowGhost(img) {
+        const canvas = img.canvas || img;
+        const aw = img.width || canvas.width;
+        const ah = img.height || canvas.height;
+        const ghostCanvas = document.createElement('canvas');
+        ghostCanvas.width = aw;
+        ghostCanvas.height = ah;
+        const tCtx = ghostCanvas.getContext('2d');
+        tCtx.imageSmoothingEnabled = false;
+
+        tCtx.filter = 'blur(4px)';
+        tCtx.drawImage(canvas, 0, 0);
+
+        tCtx.globalCompositeOperation = 'source-atop';
+        tCtx.fillStyle = 'rgba(255, 230, 80, 1)';
+        tCtx.fillRect(0, 0, aw, ah);
+
+        // Draw again without blur for a bright core
+        tCtx.globalCompositeOperation = 'source-atop';
+        tCtx.filter = 'none';
+        tCtx.globalAlpha = 0.5;
+        tCtx.fillStyle = 'rgba(255, 255, 180, 1)';
+        tCtx.fillRect(0, 0, aw, ah);
+
+        return ghostCanvas;
+    }
+
     _createBlueGhost(img) {
         const canvas = img.canvas || img;
         const aw = img.width || canvas.width;
@@ -1169,6 +1274,7 @@ export class Player {
             lvlWaveCountdownMult: this.lvlWaveCountdownMult,
             lvlExtraProjectiles: this.lvlExtraProjectiles,
             lvlHpRegen: this.lvlHpRegen,
+            hasYellowGlow: this.hasYellowGlow,
             inventory: this.inventory ? this.inventory.serialize() : null
         };
     }
@@ -1220,6 +1326,7 @@ export class Player {
             this.lvlWaveCountdownMult    = data.lvlWaveCountdownMult;
             this.lvlExtraProjectiles     = data.lvlExtraProjectiles || 0;
             this.lvlHpRegen              = data.lvlHpRegen || 0;
+            this.hasYellowGlow           = data.hasYellowGlow || false;
         }
 
         if (data.inventory && this.inventory) {

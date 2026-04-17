@@ -17,6 +17,7 @@ import { Projectile } from '../entities/projectile.js';
 import { Starcore } from '../entities/starcore.js';
 import { AsteroidCrusher } from '../entities/asteroidCrusher.js';
 import { EventHorizon } from '../entities/eventHorizon.js';
+import { YellowOne, YO_STATE } from '../entities/yellowOne.js';
 import { MenuState } from './menuState.js';
 import { FloatingText } from '../entities/floatingText.js';
 import { MUSIC_STATE } from '../engine/soundManager.js';
@@ -29,7 +30,7 @@ import { CacheUI } from '../ui/cacheUI.js';
 import { LevelUpDialog } from '../ui/levelUpDialog.js';
 
 export class PlayingState {
-    constructor(game, shipData) {
+    constructor(game, shipData, { skipInit = false } = {}) {
         this.game = game;
         this.shipData = shipData;
         this.paused = false;
@@ -99,9 +100,11 @@ export class PlayingState {
         // Shops
         this.shops = [];
         this.revealedShops = []; // Queue for radar limit (max 3)
-        this._spawnInitialShops();
-        this._spawnEvents();
-        this._spawnInitialAsteroids();
+        if (!skipInit) {
+            this._spawnInitialShops();
+            this._spawnEvents();
+            this._spawnInitialAsteroids();
+        }
 
         // Player Inventory instance
         this.player.inventory = new Inventory(this.inventoryCols, this.inventoryRows);
@@ -149,6 +152,12 @@ export class PlayingState {
 
         this.lastIsEventActive = false;
         this.eventBufferTimer = 0;
+
+        // Yellow One boss fight state
+        this.yellowOneFightActive = false;
+        this.yellowOneScriptActive = false;
+        this.yellowOneDeathScreen = false;
+        this.yellowOneEnraged = false;
 
         // Death state
         this.isDead = false;
@@ -308,6 +317,13 @@ export class PlayingState {
         const kx = Math.cos(kAngle) * kDist;
         const ky = Math.sin(kAngle) * kDist;
         this.events.push(new KnowledgeEvent(this.game, kx, ky));
+
+        // Spawn Yellow One (Extreme distance, opposite direction from Knowledge)
+        const yoAngle = kAngle + Math.PI + (Math.random() - 0.5) * 1.0;
+        const yoDist = 35000 + Math.random() * 15000;
+        const yox = Math.cos(yoAngle) * yoDist;
+        const yoy = Math.sin(yoAngle) * yoDist;
+        this.events.push(new YellowOne(this.game, yox, yoy));
     }
 
     _spawnInitialAsteroids() {
@@ -351,8 +367,20 @@ export class PlayingState {
 
         // --- Death sequence ---
         if (this.isDead) {
+            // Keep Yellow One updating during its scripted death sequence
+            if (this.yellowOneDeathScreen) {
+                for (const ev of this.events) {
+                    if (ev instanceof YellowOne && ev.state === YO_STATE.SCRIPTED) {
+                        ev.update(dt, this.player);
+                    }
+                }
+            }
+
             if (this.showDeathScreen) {
-                this._updateDeathScreen(dt);
+                if (!this.yellowOneDeathScreen) {
+                    this._updateDeathScreen(dt);
+                }
+                // During Yellow One death: show the screen but block button clicks
             } else {
                 this.deathTimer += dt;
                 // Update debris drift
@@ -361,7 +389,9 @@ export class PlayingState {
                 for (const r of this.rubble) r.update(dt);
                 if (this.deathTimer >= 3.0) {
                     this.showDeathScreen = true;
-                    this.game.sounds.playGameOverMusic();
+                    if (!this.yellowOneDeathScreen) {
+                        this.game.sounds.playGameOverMusic();
+                    }
                 }
             }
             return;
@@ -495,9 +525,11 @@ export class PlayingState {
             return;
         }
 
-        // Update player
+        // Update player (freeze during Yellow One scripted sequence)
         this.perf.begin('player');
-        this.player.update(dt);
+        if (!this.yellowOneScriptActive) {
+            this.player.update(dt);
+        }
         this.perf.end('player');
         this.game.sounds.setListenerPosition(this.player.worldX, this.player.worldY);
 
@@ -715,7 +747,12 @@ export class PlayingState {
             }
         }
         this.perf.begin('misc');
-        this.camera.update(dt, this.player);
+        if (this.yellowOneScriptActive) {
+            // Hard lock camera centered on player during cutscene
+            this.camera.snapTo(this.player);
+        } else {
+            this.camera.update(dt, this.player);
+        }
 
         // --- Dynamic FOV Scaling ---
         const currentSpeed = Math.sqrt(this.player.vx * this.player.vx + this.player.vy * this.player.vy);
@@ -778,18 +815,19 @@ export class PlayingState {
             this.eventBufferTimer -= dt;
         }
 
+        // Spawn asteroids always (not frozen by events)
+        this.perf.begin('asteroids');
+        if (this.asteroids.length < 180) {
+            const newAsteroids = this.asteroidSpawner.update(
+                dt, this.player.worldX, this.player.worldY,
+                this.player.vx, this.player.vy, this.player.asteroidSpawnMult
+            );
+            this.asteroids.push(...newAsteroids);
+        }
+        this.perf.end('asteroids');
+
         // --- Freeze spawning if an event is active ---
         if (!isEventActive && this.eventBufferTimer <= 0) {
-            // Spawn asteroids (capped to prevent unbounded growth)
-            this.perf.begin('asteroids');
-            if (this.asteroids.length < 180) {
-                const newAsteroids = this.asteroidSpawner.update(
-                    dt, this.player.worldX, this.player.worldY,
-                    this.player.vx, this.player.vy, this.player.asteroidSpawnMult
-                );
-                this.asteroids.push(...newAsteroids);
-            }
-            this.perf.end('asteroids');
 
             // Spawn caches (rare, distance-accumulator based)
             const newCaches = this.cacheSpawner.update(
@@ -820,7 +858,7 @@ export class PlayingState {
             // Wave timer: fixed 2-minute interval
             let bossAlive = false;
             for (const e of this.enemies) { if (e.isBoss && e.alive) { bossAlive = true; break; } }
-            if (!bossAlive) {
+            if (!bossAlive && !this.yellowOneFightActive) {
                 this.waveTimer -= dt;
                 this.postWaveTimer += dt;
             }
@@ -835,7 +873,7 @@ export class PlayingState {
             // 2. Post-wave exploration return
             // 10 seconds after wave start (1:50 on 2min timer), start checking for enemies
             // (Only if we are in the combat state and the countdown isn't active)
-            if (this.musicCombatTriggered && this.postWaveTimer >= 10 && this.waveTimer > 10) {
+            if (this.musicCombatTriggered && this.postWaveTimer >= 10 && this.waveTimer > 10 && !this.yellowOneScriptActive) {
                 if (this.enemies.length === 0) {
                     this.quietTimer += dt;
                     if (this.quietTimer >= 3.0) { // 3s of continuous silence
@@ -1404,7 +1442,7 @@ export class PlayingState {
             this.game.sounds.play('ship_explode', { volume: 0.5, x: this.player.worldX, y: this.player.worldY });
 
             if (this.player.health <= 0) {
-                if (this.player.hasSacrifice) {
+                if (this.player.hasSacrifice && !this.yellowOneEnraged) {
                     this.player.hasSacrifice = false; // Consume it
                     this.spawnFloatingText(this.player.worldX, this.player.worldY, `+${Math.ceil(this.player.maxHealth)}`, '#44ff44');
                     this.player.health = this.player.maxHealth;
@@ -1416,6 +1454,9 @@ export class PlayingState {
 
                     // Also need to remove the Sacrifice item from inventory
                     this._removeSacrificeItem();
+                } else if (this.yellowOneFightActive) {
+                    // Yellow One fight: don't trigger normal death
+                    this.player.health = 0;
                 } else {
                     this.player.health = 0;
                     this._triggerDeath();
@@ -1459,7 +1500,14 @@ export class PlayingState {
                 wave: ev.wave, // Cthulhu
                 spawnedInitialScrap: ev.spawnedInitialScrap, // CargoShip
                 positions: ev.positions, // FracturedStation
-                angles: ev.angles // FracturedStation
+                angles: ev.angles, // FracturedStation
+                // YellowOne
+                health: ev.health,
+                maxHealth: ev.maxHealth,
+                isFinished: ev.isFinished,
+                invulnerable: ev.invulnerable,
+                musicPlaying: ev.musicPlaying,
+                phase1Triggered: ev.phase1Triggered
             })),
             itemPickups: this.itemPickups.map(i => i.serialize()),
             scrapEntities: this.scrapEntities.map(s => s.serialize()),
@@ -1508,7 +1556,8 @@ export class PlayingState {
             'CthulhuEvent': CthulhuEvent,
             'CargoShipEvent': CargoShipEvent,
             'FracturedStationEvent': FracturedStationEvent,
-            'KnowledgeEvent': KnowledgeEvent
+            'KnowledgeEvent': KnowledgeEvent,
+            'YellowOne': YellowOne
         };
 
         for (const evData of data.events) {
@@ -1524,6 +1573,20 @@ export class PlayingState {
                     ev.state = evData.state;
                     if (evData.type === 'CthulhuEvent') ev.wave = evData.wave;
                     if (evData.type === 'CargoShipEvent') ev.spawnedInitialScrap = evData.spawnedInitialScrap;
+                    if (evData.type === 'YellowOne') {
+                        ev.health = evData.health;
+                        ev.maxHealth = evData.maxHealth;
+                        ev.isFinished = evData.isFinished || false;
+                        ev.invulnerable = evData.invulnerable;
+                        ev.musicPlaying = evData.musicPlaying || false;
+                        ev.phase1Triggered = evData.phase1Triggered || false;
+                        // If the fight was already finished, mark it done
+                        if (ev.isFinished || ev.state === 'finished' || ev.state === 'scripted') {
+                            ev.state = 'finished';
+                            ev.isFinished = true;
+                            ev.alive = true;
+                        }
+                    }
                 }
                 ev.revealed = evData.revealed;
                 ev.discovered = evData.discovered;
@@ -1728,6 +1791,20 @@ export class PlayingState {
             if (this.showDeathScreen) {
                 this._drawDeathScreen(ctx);
             }
+
+            // Draw Yellow One fade overlays on top of death screen
+            for (const ev of this.events) {
+                if (ev instanceof YellowOne) {
+                    if (ev.fadeToWhite > 0) {
+                        ctx.save();
+                        ctx.globalAlpha = ev.fadeToWhite;
+                        ctx.fillStyle = '#ffffff';
+                        ctx.fillRect(0, 0, this.game.width, this.game.height);
+                        ctx.restore();
+                    }
+                    break;
+                }
+            }
             return;
         }
 
@@ -1749,34 +1826,37 @@ export class PlayingState {
         }
         this.perf.end('particles');
 
-        this.hud.draw(ctx);
+        // Hide HUD and all indicators during Yellow One cutscene
+        if (!this.yellowOneScriptActive) {
+            this.hud.draw(ctx);
 
-        // --- Total Game Timer ---
-        this._drawTotalGameTimer(ctx);
+            // --- Total Game Timer ---
+            this._drawTotalGameTimer(ctx);
 
-        // --- Off-screen Enemy Indicators ---
-        this._drawEnemyIndicators(ctx);
+            // --- Off-screen Enemy Indicators ---
+            this._drawEnemyIndicators(ctx);
 
-        // --- Health Indicators (Dev Command) ---
-        this._drawHealthIndicators(ctx);
+            // --- Health Indicators (Dev Command) ---
+            this._drawHealthIndicators(ctx);
 
-        // --- Off-screen Asteroid Warnings ---
-        if (this.player.hasWarningSystem) {
-            this._drawAsteroidWarnings(ctx);
+            // --- Off-screen Asteroid Warnings ---
+            if (this.player.hasWarningSystem) {
+                this._drawAsteroidWarnings(ctx);
+            }
+
+            // --- Shop Indicators ---
+            this._drawShopIndicators(ctx);
+
+            // --- Cache Indicators ---
+            this._drawCacheIndicators(ctx);
+
+            // --- Event Indicators ---
+            this._drawEventIndicators(ctx);
+            this._drawBossWreckIndicators(ctx);
+
+            // --- Encounter Indicators ---
+            this._drawEncounterIndicators(ctx);
         }
-
-        // --- Shop Indicators ---
-        this._drawShopIndicators(ctx);
-
-        // --- Cache Indicators ---
-        this._drawCacheIndicators(ctx);
-
-        // --- Event Indicators ---
-        this._drawEventIndicators(ctx);
-        this._drawBossWreckIndicators(ctx);
-
-        // --- Encounter Indicators ---
-        this._drawEncounterIndicators(ctx);
 
         if (this.isLevelUpOpen && this.activeLevelUpDialog) {
             this.activeLevelUpDialog.draw(ctx);
@@ -1816,6 +1896,27 @@ export class PlayingState {
             ctx.fillStyle = this._vignetteGrad;
             ctx.fillRect(0, 0, this.game.width, this.game.height);
             ctx.restore();
+        }
+
+        // --- Yellow One scripted fade overlays ---
+        for (const ev of this.events) {
+            if (ev instanceof YellowOne) {
+                if (ev.fadeToWhite > 0) {
+                    ctx.save();
+                    ctx.globalAlpha = ev.fadeToWhite;
+                    ctx.fillStyle = '#ffffff';
+                    ctx.fillRect(0, 0, this.game.width, this.game.height);
+                    ctx.restore();
+                }
+                if (ev.fadeFromWhite > 0) {
+                    ctx.save();
+                    ctx.globalAlpha = ev.fadeFromWhite;
+                    ctx.fillStyle = '#ffffff';
+                    ctx.fillRect(0, 0, this.game.width, this.game.height);
+                    ctx.restore();
+                }
+                break;
+            }
         }
 
         if (this.game.devMode) {
@@ -3366,6 +3467,8 @@ export class PlayingState {
         p.hasSacrifice = false;
         p.hasRadar = false;
         p.obedienceMult = 1.0;
+        p.hasCosmosEngine = false;
+        p.luck = 1.0;
 
         this.hasAutoTurret = false;
         this.hasMechanicalClaw = false;
@@ -3445,6 +3548,12 @@ export class PlayingState {
             if (item.id === 'sacrifice') p.hasSacrifice = true;
             if (item.id === 'knowledge') p.hasRadar = true;
 
+            if (item.id === 'cosmos_engine') {
+                p.hasCosmosEngine = true;
+                // 10% boost to main stats applied via multipliers below
+                // 20% boost to luck
+                p.luck += 0.2;
+            }
             if (item.id === 'cargo_expansion') cargoExpansions++;
             if (item.id === 'experience_condenser') p.experienceCondenserMult += 0.2;
             if (item.id === 'asteroid_drill') p.asteroidDrillMult += 0.5;
@@ -3477,6 +3586,13 @@ export class PlayingState {
             boostCooldownMult *= Math.max(0.3, 1.0 - (blinkEngines - 1) * 0.2);
         }
 
+        // Apply Cosmos Engine 10% stat boost
+        if (p.hasCosmosEngine) {
+            fireRateMult *= 0.9; // 10% faster (lower mult = faster)
+            maxHealthMult *= 1.1;
+            shieldRegenMult *= 1.1;
+        }
+
         // Apply calculated multipliers to player
         // Apply encounter bonuses before assigning to player
         fireRateMult *= this.encounterBonuses.fireRateMult;
@@ -3507,8 +3623,16 @@ export class PlayingState {
         p.maxShieldEnergy *= p.lvlMaxShieldMult;
         p.shieldEnergy = Math.min(p.shieldEnergy, p.maxShieldEnergy);
 
+        // Apply Cosmos Engine shield capacity boost
+        if (p.hasCosmosEngine) {
+            p.maxShieldEnergy *= 1.1;
+            p.shieldEnergy = Math.min(p.shieldEnergy, p.maxShieldEnergy);
+            p.laserCartridgeMult *= 1.1; // 10% damage boost
+        }
+
         // Update base speed and acceleration
-        p.baseSpeed = p.shipData.speed * 100 * p.obedienceMult * p.momentumSpeedMult * this.encounterBonuses.speedMult;
+        const cosmosSpeedMult = p.hasCosmosEngine ? 1.1 : 1.0;
+        p.baseSpeed = p.shipData.speed * 100 * p.obedienceMult * p.momentumSpeedMult * this.encounterBonuses.speedMult * cosmosSpeedMult;
         p.baseSpeed *= p.lvlSpeedMult;
         p.acceleration = p.baseSpeed * 3;
 
@@ -4601,12 +4725,14 @@ export class PlayingState {
             ctx.fillText(String(s.value), cw / 2 + uiScale * 4, y);
         }
 
-        // Buttons
-        const fa = this.deathScreenButtons.flyAgain;
-        const ss = this.deathScreenButtons.shipSelection;
+        // Buttons (hidden during Yellow One scripted death)
+        if (!this.yellowOneDeathScreen) {
+            const fa = this.deathScreenButtons.flyAgain;
+            const ss = this.deathScreenButtons.shipSelection;
 
-        this.game.drawSprite(ctx, fa.hovered ? 'fly_again_on' : 'fly_again_off', fa.x, fa.y, uiScale);
-        this.game.drawSprite(ctx, ss.hovered ? 'ship_selection_on' : 'ship_selection_off', ss.x, ss.y, uiScale);
+            this.game.drawSprite(ctx, fa.hovered ? 'fly_again_on' : 'fly_again_off', fa.x, fa.y, uiScale);
+            this.game.drawSprite(ctx, ss.hovered ? 'ship_selection_on' : 'ship_selection_off', ss.x, ss.y, uiScale);
+        }
     }
 
     _drawDevOverlay(ctx) {

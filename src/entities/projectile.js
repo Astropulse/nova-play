@@ -29,7 +29,8 @@ export class Projectile {
 
         // Map sprite keys to glow colors
         this.glowColor = '#1da2c0ff'; // Default Blue
-        if (spriteKey.includes('red')) this.glowColor = '#ff4444';
+        if (spriteKey.includes('yellow')) this.glowColor = '#ffdd44';
+        else if (spriteKey.includes('red')) this.glowColor = '#ff4444';
         else if (spriteKey.includes('green')) this.glowColor = '#44ff44';
 
         // Pre-render glow sprite (eliminates per-frame shadowBlur — massive perf win)

@@ -40,6 +40,9 @@ export class SoundManager {
         this.musicBaseVolume = 0.4;
         this.unlocked = false;
 
+        // Hard lock — when true, NO music changes are allowed (setTargetState, playSpecific, restore, stop all blocked)
+        this.musicLocked = false;
+
         if (this.ctx) {
             // Main music gain (user volume control) — no analyser node
             this.musicGain = this.ctx.createGain();
@@ -108,6 +111,10 @@ export class SoundManager {
 
     // Simple time-based transition: wait for the cutoff, then switch
     update(dt) {
+        if (this.musicLocked) {
+            this.isTransitioning = false;
+            return;
+        }
         if (this.isTransitioning) {
             this.transitionWaitTimer += dt;
             if (this.transitionWaitTimer >= this.maxTransitionWait) {
@@ -117,6 +124,7 @@ export class SoundManager {
     }
 
     setTargetState(state, force = false) {
+        if (this.musicLocked) return;
         if (this.targetMusicState === state) return;
 
         // Protection: Don't allow normal transitions to override BOSS state unless forced
@@ -156,6 +164,7 @@ export class SoundManager {
 
     _executeTransition() {
         this.isTransitioning = false;
+        if (this.musicLocked) return;
         const oldState = this.musicState;
         this.musicState = this.targetMusicState;
 
@@ -244,6 +253,7 @@ export class SoundManager {
 
     _switchTrack(nextTrack, oldState = null) {
         if (!nextTrack) return;
+        if (this.musicLocked) return;
 
         const isExitingCombat = oldState === MUSIC_STATE.COMBAT && this.musicState === MUSIC_STATE.EXPLORATION;
         const isStartup = !oldState || oldState === MUSIC_STATE.TITLE || oldState === MUSIC_STATE.GAMEOVER || oldState === MUSIC_STATE.NONE;
@@ -289,6 +299,7 @@ export class SoundManager {
     }
 
     startMusic(volume = null) {
+        this.musicLocked = false; // New game — always unlock
         if (volume !== null) this.setMusicVolume(volume);
         this.setTargetState(MUSIC_STATE.EXPLORATION);
     }
@@ -311,6 +322,7 @@ export class SoundManager {
     }
 
     stopMusic() {
+        if (this.musicLocked) return;
         if (this.currentMusic) {
             this.currentMusic.pause();
             this.currentMusic.onended = null;
@@ -321,11 +333,15 @@ export class SoundManager {
     }
 
     playTitleMusic() {
+        this.musicLocked = false;
         this.setTargetState(MUSIC_STATE.TITLE, true);
     }
 
     playSpecificMusic(key) {
+        this.musicLocked = false; // Boss music always overrides
         if (this.bossTracks && this.bossTracks[key]) {
+            // Cancel any pending transition so it can't override this track
+            this.isTransitioning = false;
             const oldState = this.musicState;
             this.musicState = MUSIC_STATE.BOSS;
             this.targetMusicState = MUSIC_STATE.BOSS;
@@ -334,6 +350,7 @@ export class SoundManager {
     }
 
     playMusicByLabel(key) {
+        this.musicLocked = false;
         this.playSpecificMusic(key);
     }
 

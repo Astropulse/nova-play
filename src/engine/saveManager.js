@@ -46,7 +46,7 @@ export class SaveManager {
                     console.error('Saved ship ID not found:', shipId);
                     return;
                 }
-                targetState = new PlayingState(game, shipData);
+                targetState = new PlayingState(game, shipData, { skipInit: true });
                 game.setState(targetState);
             }
 

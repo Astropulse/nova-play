@@ -121,8 +121,30 @@ export class DevConsole {
     _cmdTime(args) {
         if (args.length < 1) return;
         const time = parseFloat(args[0]);
-        if (!isNaN(time) && this.game.currentState && this.game.currentState.totalGameTime !== undefined) {
-            this.game.currentState.totalGameTime = time;
+        const state = this.game.currentState;
+        if (!isNaN(time) && state && state.totalGameTime !== undefined) {
+            state.totalGameTime = time;
+            state.trueTotalTime = time;
+
+            // Recalculate difficultyScale immediately
+            let timeScale = 1.0;
+            if (time <= state.difficultyRampTime) {
+                timeScale += (state.difficultyGain * (state.player?.lvlDifficultyMult || 1) * Math.pow(time, state.difficultyExponent));
+            } else {
+                const rampMax = state.difficultyGain * Math.pow(state.difficultyRampTime, state.difficultyExponent);
+                const steadyTime = time - state.difficultyRampTime;
+                timeScale += rampMax + (state.difficultySteadyRate * steadyTime);
+            }
+            const powerLevel = state._calculatePlayerPowerLevel ? state._calculatePlayerPowerLevel() : 0;
+            state.difficultyScale = timeScale + powerLevel;
+
+            // Reset wave state to match new time
+            const waveInterval = 120 * (state.player?.lvlWaveCountdownMult || 1);
+            const expectedWaves = Math.floor(time / waveInterval);
+            if (state.enemySpawner) {
+                state.enemySpawner.waveNumber = expectedWaves;
+            }
+            state.waveTimer = waveInterval - (time % waveInterval);
         }
     }
 
@@ -242,7 +264,7 @@ export class DevConsole {
         if (!state || !state.events) return;
 
         if (args.length < 1) {
-            console.log("Locate requires an event type: knowledge, cthulhu, station, cargo");
+            console.log("Locate requires an event type: knowledge, cthulhu, station, cargo, yellowone");
             return;
         }
 
@@ -255,6 +277,7 @@ export class DevConsole {
             else if (type === 'cthulhu' && name.includes('cthulhu')) targetEvent = ev;
             else if (type === 'station' && name.includes('station')) targetEvent = ev;
             else if (type === 'cargo' && name.includes('cargo')) targetEvent = ev;
+            else if ((type === 'yellowone' || type === 'yellow') && name.includes('yellow')) targetEvent = ev;
         }
 
         if (targetEvent) {

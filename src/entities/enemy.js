@@ -852,6 +852,28 @@ export class Enemy {
         const w = (this.img.width || this.img.canvas.width) * this.game.worldScale;
         const h = (this.img.height || this.img.canvas.height) * this.game.worldScale;
 
+        // Yellow Armada: use yellow glow sprite
+        if (this.yellowArmada) {
+            if (!this._yellowGlowSprite) {
+                const srcImg = this.img.canvas || this.img;
+                const blur = 60;
+                const pad = blur * 2;
+                const c = document.createElement('canvas');
+                c.width = srcImg.width + pad * 2;
+                c.height = srcImg.height + pad * 2;
+                const gctx = c.getContext('2d');
+                gctx.shadowBlur = blur;
+                gctx.shadowColor = '#ffdd44';
+                gctx.drawImage(srcImg, pad, pad);
+                gctx.shadowBlur = 0;
+                gctx.drawImage(srcImg, pad, pad);
+                this._yellowGlowSprite = { canvas: c, srcW: srcImg.width };
+            }
+            const pxScale = w / this._yellowGlowSprite.srcW;
+            const gw = this._yellowGlowSprite.canvas.width * pxScale;
+            const gh = this._yellowGlowSprite.canvas.height * pxScale;
+            ctx.drawImage(this._yellowGlowSprite.canvas, -gw / 2, -gh / 2, gw, gh);
+        } else
         // Upgraded enemies: use pre-rendered glow sprite instead of per-frame shadowBlur
         if (this.isUpgraded) {
             if (!this._glowSprite) {
@@ -1321,6 +1343,11 @@ export class HostileEncounter extends Enemy {
     hit(damage) {
         if (this.invulnTimer > 0 || this.isDying) return false;
         this.health -= damage;
+
+        if (this.game.currentState && this.game.currentState.spawnFloatingText) {
+            this.game.currentState.spawnFloatingText(this.worldX, this.worldY, `-${Math.ceil(damage)}`, '#ff4444');
+        }
+
         if (this.health <= 0) {
             this._triggerDeathSequence();
             return false;

@@ -415,6 +415,16 @@ export const UPGRADES = [
         height: 1,
         cost: 30,
         rarity: 'common'
+    },
+    {
+        id: 'cosmos_engine',
+        name: 'Cosmos Engine',
+        description: 'A divine engine. Boosts HP, shield, speed, fire rate, and damage by 10%, and luck by 20%. Emits a guiding glow.',
+        assetKey: 'cosmos_engine_1x1',
+        width: 1,
+        height: 1,
+        cost: 0,
+        rarity: 'unique'
     }
 ];
 
