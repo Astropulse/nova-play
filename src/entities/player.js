@@ -1,5 +1,6 @@
 // Dynamic scaling is now handled via game properties
 import { Projectile } from './projectile.js';
+import { GP } from '../engine/inputManager.js';
 
 export class Player {
     constructor(game, shipData) {
@@ -172,6 +173,11 @@ export class Player {
         this.lastMouseX = 0;
         this.lastMouseY = 0;
         this.mouseThreshold = 20;
+        // Gamepad flick-aim: set by any stick deflection, persists until the
+        // ship rotates into alignment, another stick flick, or a mouse/key
+        // input overrides it. Lets a quick stick flick commit a new heading
+        // without the player having to hold the stick while the ship turns.
+        this.gpTargetAngle = null;
 
         // Rotation physics
         this.rotationVelocity = 0;
@@ -270,6 +276,19 @@ export class Player {
         const centerX = this.game.width / 2;
         const centerY = this.game.height / 2;
 
+        // --- Gamepad sample ---
+        // Right stick: aim. Left stick: rotate-and-thrust (or direct move
+        // under the Ancient Curse). D-pad up/down: forward/back (or 8-way
+        // movement under the curse).
+        const rsMag = Math.sqrt(input.rightStickX * input.rightStickX + input.rightStickY * input.rightStickY);
+        const lsMag = Math.sqrt(input.leftStickX * input.leftStickX + input.leftStickY * input.leftStickY);
+        const rightStickActive = rsMag > 0.1;
+        const leftStickActive  = lsMag > 0.1;
+        const dpUp    = input.isGamepadDown(GP.DUP);
+        const dpDown  = input.isGamepadDown(GP.DDOWN);
+        const dpLeft  = input.isGamepadDown(GP.DLEFT);
+        const dpRight = input.isGamepadDown(GP.DRIGHT);
+
         // Angle toward mouse (only if not using keyboard rotation)
         const isRotatingCCW = input.isKeyDown('KeyJ');
         const isRotatingCW = input.isKeyDown('KeyL');
@@ -281,11 +300,13 @@ export class Player {
             this.useKeyboardAim = true;
             this.lastMouseX = mouse.x;
             this.lastMouseY = mouse.y;
+            this.gpTargetAngle = null; // keyboard spin overrides flick target
         } else if (isRotatingCW) {
             this.rotationVelocity += currentRotationAccel * dt;
             this.useKeyboardAim = true;
             this.lastMouseX = mouse.x;
             this.lastMouseY = mouse.y;
+            this.gpTargetAngle = null;
         } else {
             // Apply friction only when not accelerating (dt-compensated)
             this.rotationVelocity *= Math.pow(this.rotationFriction, dt * 60);
@@ -300,27 +321,55 @@ export class Player {
         // Apply velocity to angle
         this.angle += this.rotationVelocity * dt;
 
-        // Mouse aiming logic (only if keyboard hasn't taken over or mouse moved substantially)
-        if (!isRotatingCCW && !isRotatingCW) {
-            // Check if mouse has moved enough to regain control
-            if (this.useKeyboardAim) {
-                const dx = mouse.x - this.lastMouseX;
-                const dy = mouse.y - this.lastMouseY;
-                const dist = Math.sqrt(dx * dx + dy * dy);
-                if (dist > this.mouseThreshold) {
-                    this.useKeyboardAim = false;
-                }
-            }
+        // Any active stick flick (re)sets the persistent aim target. The
+        // right stick wins; the left stick only aims when there's no right-
+        // stick input AND the Ancient Curse isn't swapping the scheme.
+        if (rightStickActive) {
+            this.gpTargetAngle = Math.atan2(input.rightStickY, input.rightStickX);
+        } else if (leftStickActive && !this.hasAncientCurse) {
+            this.gpTargetAngle = Math.atan2(input.leftStickY, input.leftStickX);
+        }
 
-            if (!this.useKeyboardAim && Math.abs(this.rotationVelocity) < 0.1) {
-                const dx = mouse.x - centerX;
-                const dy = mouse.y - centerY;
-                if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
-                    const targetAngle = Math.atan2(dy, dx);
-                    let diff = targetAngle - this.angle;
-                    while (diff < -Math.PI) diff += Math.PI * 2;
-                    while (diff > Math.PI) diff -= Math.PI * 2;
-                    this.angle += diff * Math.min(1, 12 * dt * this.mechanicalEngineTurnMult);
+        // Aim resolution priority: gamepad target (persists between flicks) →
+        // mouse (only when keyboard hasn't taken over).
+        if (!isRotatingCCW && !isRotatingCW) {
+            if (this.gpTargetAngle !== null) {
+                let diff = this.gpTargetAngle - this.angle;
+                while (diff < -Math.PI) diff += Math.PI * 2;
+                while (diff > Math.PI) diff -= Math.PI * 2;
+                this.angle += diff * Math.min(1, 12 * dt * this.mechanicalEngineTurnMult);
+                // Clear the target once the ship has arrived, so the stored
+                // angle doesn't fight a later mouse input (we'd otherwise
+                // immediately rotate back).
+                if (Math.abs(diff) < 0.01) {
+                    this.angle = this.gpTargetAngle;
+                    this.gpTargetAngle = null;
+                }
+                // Suppress mouse-aim fallback while a flick target is active.
+                this.useKeyboardAim = true;
+                this.lastMouseX = mouse.x;
+                this.lastMouseY = mouse.y;
+            } else {
+                // Mouse aiming logic (only if keyboard hasn't taken over or mouse moved substantially)
+                if (this.useKeyboardAim) {
+                    const dx = mouse.x - this.lastMouseX;
+                    const dy = mouse.y - this.lastMouseY;
+                    const dist = Math.sqrt(dx * dx + dy * dy);
+                    if (dist > this.mouseThreshold) {
+                        this.useKeyboardAim = false;
+                    }
+                }
+
+                if (!this.useKeyboardAim && Math.abs(this.rotationVelocity) < 0.1) {
+                    const dx = mouse.x - centerX;
+                    const dy = mouse.y - centerY;
+                    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
+                        const targetAngle = Math.atan2(dy, dx);
+                        let diff = targetAngle - this.angle;
+                        while (diff < -Math.PI) diff += Math.PI * 2;
+                        while (diff > Math.PI) diff -= Math.PI * 2;
+                        this.angle += diff * Math.min(1, 12 * dt * this.mechanicalEngineTurnMult);
+                    }
                 }
             }
         }
@@ -334,33 +383,73 @@ export class Player {
 
         if (this.hasAncientCurse) {
             // Free WASD movement independent of ship angle
-            if (input.isKeyDown('KeyW') || input.isKeyDown('ArrowUp')) {
+            if (input.isKeyDown('KeyW') || input.isKeyDown('ArrowUp') || dpUp) {
                 accelY -= currentAccel;
                 this.thrusting = true;
             }
-            if (input.isKeyDown('KeyS') || input.isKeyDown('ArrowDown')) {
+            if (input.isKeyDown('KeyS') || input.isKeyDown('ArrowDown') || dpDown) {
                 accelY += currentAccel;
                 this.thrusting = true;
             }
-            if (input.isKeyDown('KeyA') || input.isKeyDown('ArrowLeft')) {
+            if (input.isKeyDown('KeyA') || input.isKeyDown('ArrowLeft') || dpLeft) {
                 accelX -= currentAccel;
                 this.thrusting = true;
             }
-            if (input.isKeyDown('KeyD') || input.isKeyDown('ArrowRight')) {
+            if (input.isKeyDown('KeyD') || input.isKeyDown('ArrowRight') || dpRight) {
                 accelX += currentAccel;
+                this.thrusting = true;
+            }
+            // Under the curse the left stick is pure directional movement.
+            if (leftStickActive) {
+                const scale = Math.min(1, lsMag);
+                accelX += input.leftStickX * currentAccel * scale;
+                accelY += input.leftStickY * currentAccel * scale;
                 this.thrusting = true;
             }
         } else {
             // Standard thrusting along the nose angle
-            if (input.isKeyDown('KeyW') || input.isKeyDown('ArrowUp')) {
+            if (input.isKeyDown('KeyW') || input.isKeyDown('ArrowUp') || dpUp) {
                 accelX = Math.cos(this.angle) * currentAccel;
                 accelY = Math.sin(this.angle) * currentAccel;
                 this.thrusting = true;
             }
-            if (input.isKeyDown('KeyS') || input.isKeyDown('ArrowDown')) {
+            if (input.isKeyDown('KeyS') || input.isKeyDown('ArrowDown') || dpDown) {
                 accelX = -Math.cos(this.angle) * currentAccel * 0.5;
                 accelY = -Math.sin(this.angle) * currentAccel * 0.5;
                 this.thrusting = true;
+            }
+            // Left stick thrust, under two modes:
+            //
+            //   • Right stick idle: classic "point-and-go" — the ship has
+            //     already been rotated toward the left stick direction, so
+            //     forward thrust along the nose, scaled by deflection.
+            //
+            //   • Right stick active: right stick owns aim. The left stick
+            //     becomes a pure throttle — its vector is projected onto the
+            //     ship's nose direction (= right stick direction). A left
+            //     stick pointed opposite the aim yields reverse thrust;
+            //     perpendicular yields zero. A ship can't move sideways, so
+            //     only the forward/back component of the stick is used.
+            if (leftStickActive) {
+                if (rightStickActive) {
+                    const cosA = Math.cos(this.angle);
+                    const sinA = Math.sin(this.angle);
+                    let projection = input.leftStickX * cosA + input.leftStickY * sinA;
+                    if (projection > 1) projection = 1;
+                    else if (projection < -1) projection = -1;
+                    if (Math.abs(projection) > 0.01) {
+                        // Reverse is half power to match the KeyS back-thrust.
+                        const throttle = projection >= 0 ? projection : projection * 0.5;
+                        accelX += cosA * currentAccel * throttle;
+                        accelY += sinA * currentAccel * throttle;
+                        this.thrusting = true;
+                    }
+                } else {
+                    const throttle = Math.min(1, lsMag);
+                    accelX += Math.cos(this.angle) * currentAccel * throttle;
+                    accelY += Math.sin(this.angle) * currentAccel * throttle;
+                    this.thrusting = true;
+                }
             }
         }
 
@@ -376,8 +465,11 @@ export class Player {
             }
         }
 
+        const boostJustPressed = input.isKeyJustPressed('Space') || input.isTriggerJustPressed('left');
+        const boostDown        = input.isKeyDown('Space')        || input.isTriggerDown('left');
+
         if (this.hasTeleport) {
-            if (input.isKeyJustPressed('Space') && this.boostCooldownTimer <= 0 && !this.isWarping) {
+            if (boostJustPressed && this.boostCooldownTimer <= 0 && !this.isWarping) {
                 // Record Ghost at start
                 this.teleportGhost = {
                     x: this.worldX,
@@ -438,7 +530,7 @@ export class Player {
                 this.vy = Math.sin(this.warpAngle) * exitSpeed;
             }
         } else if (this.hasBoostDrive) {
-            if (input.isKeyDown('Space')) {
+            if (boostDown) {
                 // Play sound once when starting
                 if (!this.isBoosting) {
                     this.game.sounds.play('boost', { volume: 0.5, x: this.worldX, y: this.worldY });
@@ -461,7 +553,7 @@ export class Player {
                 this.boostIntensity = 0;
             }
         } else {
-            if (input.isKeyJustPressed('Space') && this.boostCooldownTimer <= 0) {
+            if (boostJustPressed && this.boostCooldownTimer <= 0) {
                 this.isBoosting = true;
                 this.boostTimer = this.boostDuration * this.lvlBoostDurationMult;
                 this.boostCooldownTimer = this.boostCooldown * this.boostCooldownMult;
@@ -536,7 +628,8 @@ export class Player {
 
         // --- Shield ---
         const isShiftDown = input.isKeyDown('ShiftLeft') || input.isKeyDown('ShiftRight');
-        const wantShield = (input.isMouseDown(2) || isShiftDown) && !this.shieldBroken && this.shieldEnergy > 0;
+        const isBumperDown = input.isGamepadDown(GP.LB) || input.isGamepadDown(GP.RB);
+        const wantShield = (input.isMouseDown(2) || isShiftDown || isBumperDown) && !this.shieldBroken && this.shieldEnergy > 0;
 
         // Sound: Shield activation
         if (wantShield && !this.shielding) {
@@ -577,8 +670,10 @@ export class Player {
         // --- Shooting (left mouse) ---
         this.shootTimer = Math.max(0, this.shootTimer - dt);
 
+        const shootDown = input.isMouseDown(0) || input.isKeyDown('KeyI') || input.isTriggerDown('right');
+
         if (this.hasRailgun) {
-            const isShooting = input.isMouseDown(0) || input.isKeyDown('KeyI');
+            const isShooting = shootDown;
             if (isShooting && this.shootTimer <= 0 && !this.isRailgunTargeting) {
                 this.isRailgunTargeting = true;
                 // Repeater reduces charge time, control module reduces it further
@@ -612,7 +707,7 @@ export class Player {
                 this.railgunTargetTimer = 0;
             }
         } else {
-            if ((input.isMouseDown(0) || input.isKeyDown('KeyI')) && this.shootTimer <= 0) {
+            if (shootDown && this.shootTimer <= 0) {
                 const noseOffset = 30;
                 const px = this.worldX + Math.cos(this.angle) * noseOffset;
                 const py = this.worldY + Math.sin(this.angle) * noseOffset;

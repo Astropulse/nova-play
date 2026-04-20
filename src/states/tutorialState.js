@@ -1,6 +1,7 @@
 import { TUTORIAL_CATEGORIES } from '../data/tutorials.js';
 import { TUTORIAL_DESCRIPTIONS } from '../data/tutorialDescriptions.js';
 import { MenuState } from './menuState.js';
+import { GP } from '../engine/inputManager.js';
 
 const TAG_COLORS = {
     scrap:   '#ffff44',
@@ -44,6 +45,12 @@ export class TutorialState {
         // Sidebar scroll state for long titles
         this._hoveredVidKey = null;  // 'catIdx_vidIdx' of currently hovered item
         this._hoverTime = 0;         // how long we've been hovering
+
+        // Gamepad focus index into a dynamic spatial list (sidebar items +
+        // home button + playback arrows). Rebuilt each frame after draw so
+        // rects are current.
+        this._gpFocusId = null;
+        this._gpStickLatched = false;
 
         this.time = 0;
     }
@@ -206,6 +213,158 @@ export class TutorialState {
                 this._navigateVideo(1);
             }
         }
+
+        // ── Gamepad ──────────────────────────────────────────────────────
+        const input = this.game.input;
+
+        // Back / B / Start — return to main menu.
+        if (input.isGamepadJustPressed(GP.BACK) || input.isGamepadJustPressed(GP.B) || input.isGamepadJustPressed(GP.START)) {
+            this.game.sounds.play('click', 1.0);
+            this.game.setState(new MenuState(this.game));
+            return;
+        }
+
+        // LB / RB step between videos in playback mode.
+        if (this.view === 'PLAYBACK') {
+            if (input.isGamepadJustPressed(GP.LB)) { this.game.sounds.play('click', 1.0); this._navigateVideo(-1); }
+            if (input.isGamepadJustPressed(GP.RB)) { this.game.sounds.play('click', 1.0); this._navigateVideo(1); }
+        }
+
+        // Build a stable logical list of sidebar entries (categories + the
+        // videos of whichever category is currently expanded), in draw order.
+        // This doesn't depend on the expand animation — focus won't jitter.
+        const sidebar = [];
+        for (let ci = 0; ci < TUTORIAL_CATEGORIES.length; ci++) {
+            sidebar.push({ id: `cat_${ci}`, kind: 'category', catIdx: ci });
+            if (this.expandedCategoryIdx === ci) {
+                const cat = TUTORIAL_CATEGORIES[ci];
+                for (let vi = 0; vi < cat.videos.length; vi++) {
+                    sidebar.push({ id: `vid_${ci}_${vi}`, kind: 'video', catIdx: ci, vidIdx: vi });
+                }
+            }
+        }
+
+        // Zones: 'sidebar' (index into `sidebar`), 'home', 'prev', 'next'.
+        // Initialise focus to the currently-playing video's sidebar row on
+        // the first frame, so pressing up/down feels right immediately.
+        if (!this._gpZone) {
+            const liveIdx = sidebar.findIndex(e => e.kind === 'video'
+                && e.catIdx === this.selectedCategoryIdx && e.vidIdx === this.selectedVideoIdx);
+            this._gpZone = 'sidebar';
+            this._gpSidebarIdx = liveIdx >= 0 ? liveIdx : 0;
+        }
+
+        // If focus is pointing at a sidebar entry that no longer exists
+        // (e.g. the user collapsed its category), clamp to the nearest
+        // surviving row by matching on id when possible.
+        if (this._gpZone === 'sidebar') {
+            const id = this._gpSidebarId;
+            const idx = id ? sidebar.findIndex(e => e.id === id) : -1;
+            if (idx >= 0) this._gpSidebarIdx = idx;
+            else if (this._gpSidebarIdx >= sidebar.length) this._gpSidebarIdx = sidebar.length - 1;
+            if (this._gpSidebarIdx < 0) this._gpSidebarIdx = 0;
+        }
+
+        const arrowsAvailable = this.view === 'PLAYBACK' && this.leftBtn.w > 0 && this.rightBtn.w > 0;
+        const homeAvailable   = this.homeBtn.w > 0;
+
+        // If the focus sits in a zone that disappeared (arrows when we left
+        // playback, home button during layout reset), kick it back to the
+        // sidebar so the player isn't stuck in nowhere.
+        if ((this._gpZone === 'prev' || this._gpZone === 'next') && !arrowsAvailable) this._gpZone = 'sidebar';
+        if (this._gpZone === 'home' && !homeAvailable) this._gpZone = 'sidebar';
+
+        const stepUp = () => {
+            if (this._gpZone === 'sidebar') {
+                if (this._gpSidebarIdx > 0) { this._gpSidebarIdx--; this.game.sounds.play('click', 0.4); }
+            } else if (this._gpZone === 'home') {
+                // Up from home → last sidebar entry.
+                if (sidebar.length) { this._gpZone = 'sidebar'; this._gpSidebarIdx = sidebar.length - 1; this.game.sounds.play('click', 0.4); }
+            }
+        };
+        const stepDown = () => {
+            if (this._gpZone === 'sidebar') {
+                if (this._gpSidebarIdx < sidebar.length - 1) { this._gpSidebarIdx++; this.game.sounds.play('click', 0.4); }
+                else if (homeAvailable) { this._gpZone = 'home'; this.game.sounds.play('click', 0.4); }
+            }
+        };
+        const stepLeft = () => {
+            if (this._gpZone === 'prev' || this._gpZone === 'next') {
+                this._gpZone = 'sidebar';
+                this.game.sounds.play('click', 0.4);
+            }
+        };
+        const stepRight = () => {
+            if (this._gpZone === 'sidebar' && arrowsAvailable) {
+                this._gpZone = 'prev';
+                this.game.sounds.play('click', 0.4);
+            } else if (this._gpZone === 'prev') {
+                this._gpZone = 'next';
+                this.game.sounds.play('click', 0.4);
+            }
+        };
+
+        if (input.isGamepadJustPressed(GP.DUP))    stepUp();
+        if (input.isGamepadJustPressed(GP.DDOWN))  stepDown();
+        if (input.isGamepadJustPressed(GP.DLEFT))  stepLeft();
+        if (input.isGamepadJustPressed(GP.DRIGHT)) stepRight();
+
+        const lx = input.leftStickX;
+        const ly = input.leftStickY;
+        const stickMag = Math.max(Math.abs(lx), Math.abs(ly));
+        if (stickMag > 0.55) {
+            if (!this._gpStickLatched) {
+                this._gpStickLatched = true;
+                if (Math.abs(lx) > Math.abs(ly)) (lx < 0 ? stepLeft() : stepRight());
+                else                             (ly < 0 ? stepUp()   : stepDown());
+            }
+        } else if (stickMag < 0.25) {
+            this._gpStickLatched = false;
+        }
+
+        // Store the sidebar entry id so collapses/expansions preserve focus.
+        this._gpSidebarId = (this._gpZone === 'sidebar' && sidebar[this._gpSidebarIdx])
+            ? sidebar[this._gpSidebarIdx].id : null;
+
+        // Light up the focused item's "hovered" flag so the existing draw
+        // path shows the correct highlight for gamepad users.
+        if (input.isGamepadActive()) {
+            this.homeBtn.hovered  = this._gpZone === 'home';
+            this.leftBtn.hovered  = this._gpZone === 'prev';
+            this.rightBtn.hovered = this._gpZone === 'next';
+            // Sidebar items are rebuilt during draw; stash the focused id so
+            // _drawSidebar can flip the matching rect's hovered flag.
+            this._gpFocusedSidebarId = this._gpSidebarId;
+        } else {
+            this._gpFocusedSidebarId = null;
+        }
+
+        // A activates the focused element.
+        if (input.isGamepadJustPressed(GP.A)) {
+            if (this._gpZone === 'home') {
+                this.game.sounds.play('click', 1.0);
+                this.game.setState(new MenuState(this.game));
+                return;
+            }
+            if (this._gpZone === 'prev') { this.game.sounds.play('click', 1.0); this._navigateVideo(-1); return; }
+            if (this._gpZone === 'next') { this.game.sounds.play('click', 1.0); this._navigateVideo(1);  return; }
+            if (this._gpZone === 'sidebar') {
+                const entry = sidebar[this._gpSidebarIdx];
+                if (!entry) return;
+                if (entry.kind === 'category') {
+                    this.game.sounds.play('click', 1.0);
+                    this.expandedCategoryIdx = (this.expandedCategoryIdx === entry.catIdx) ? -1 : entry.catIdx;
+                    // After expanding, leave focus on the category header so
+                    // pressing down lands on its first video.
+                    return;
+                }
+                if (entry.kind === 'video') {
+                    this.game.sounds.play('select', 1.0);
+                    this._startVideo(entry.catIdx, entry.vidIdx);
+                    return;
+                }
+            }
+        }
     }
 
     draw(ctx) {
@@ -304,6 +463,7 @@ export class TutorialState {
                 type: 'category', catIdx: ci, hovered: false
             };
             catItem.hovered = this._isInside(mouse, catItem);
+            if (this._gpFocusedSidebarId === `cat_${ci}`) catItem.hovered = true;
             this.sidebarItems.push(catItem);
 
             // Draw category
@@ -363,6 +523,7 @@ export class TutorialState {
                         type: 'video', catIdx: ci, vidIdx: vi, hovered: false
                     };
                     vidItem.hovered = this._isInside(mouse, vidItem);
+                    if (this._gpFocusedSidebarId === `vid_${ci}_${vi}`) vidItem.hovered = true;
                     this.sidebarItems.push(vidItem);
 
                     const vidHovered = vidItem.hovered;

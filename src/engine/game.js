@@ -237,7 +237,7 @@ export class Game {
         this._lastFrameTime = now;
 
         // --- Logic Updates ---
-        this.input.update();
+        this.input.update(dt);
 
         // Hotkeys
         const devPressed = this.input.isKeyDown('KeyD') && this.input.isKeyDown('KeyE') && this.input.isKeyDown('KeyV');
@@ -582,6 +582,10 @@ export class Game {
             'shield_bar_full': 'Assets/UI/shield_bar_full.png',
             '9_slice_inventory': 'Assets/UI/9_slice_inventory.png',
             '9_slice_inventory_border': 'Assets/UI/9_slice_inventory_border.png',
+            'corner_tl': 'Assets/UI/corner_tl.png',
+            'corner_tr': 'Assets/UI/corner_tr.png',
+            'corner_bl': 'Assets/UI/corner_bl.png',
+            'corner_br': 'Assets/UI/corner_br.png',
             '3_slice_exp_bar_empty': 'Assets/UI/3_slice_exp_bar_empty.png',
             '3_slice_exp_bar_full': 'Assets/UI/3_slice_exp_bar_full.png',
             'blue_laser_ball': 'Assets/VFX/blue_laser_ball.png',

@@ -7,6 +7,7 @@
  */
 
 import { UPGRADES, RARITY_COLORS } from '../data/upgrades.js';
+import { GP } from '../engine/inputManager.js';
 
 const TAG_COLORS = {
     scrap: '#ffff44',
@@ -44,6 +45,10 @@ export class EncounterDialog {
         // Options
         this.options = dialogData.options || [];
         this.hoveredOption = -1;
+        // Gamepad/keyboard selected option (independent of mouse hover so the
+        // player can pick with the stick without moving the mouse off-screen).
+        this.keyboardSelected = 0;
+        this._stickLatched = false;
 
         // Response state (after choosing an option)
         this.responseSegments = null;
@@ -117,8 +122,9 @@ export class EncounterDialog {
                     this.state = DIALOG_STATE.SHOWING_OPTIONS;
                 }
 
-                // Click to skip
-                if (input.isMouseJustPressed(0) || input.isKeyJustPressed('Space')) {
+                // Click / Space / gamepad A or X to skip typing
+                if (input.isMouseJustPressed(0) || input.isKeyJustPressed('Space')
+                    || input.isGamepadJustPressed(GP.A) || input.isGamepadJustPressed(GP.X)) {
                     this.revealedChars = this.totalChars;
                     this.state = DIALOG_STATE.SHOWING_OPTIONS;
                 }
@@ -138,8 +144,36 @@ export class EncounterDialog {
                     }
                 }
 
-                // Escape to close (blocked on forced encounters)
-                if (!this.forced && input.isKeyJustPressed('Escape')) {
+                // Keyboard arrow navigation.
+                if (input.isKeyJustPressed('ArrowUp') || input.isKeyJustPressed('KeyW')) {
+                    this._stepSelection(-1);
+                }
+                if (input.isKeyJustPressed('ArrowDown') || input.isKeyJustPressed('KeyS')) {
+                    this._stepSelection(1);
+                }
+
+                // Gamepad: d-pad / left stick cycle, A confirms, B closes.
+                if (input.isGamepadJustPressed(GP.DUP))   this._stepSelection(-1);
+                if (input.isGamepadJustPressed(GP.DDOWN)) this._stepSelection(1);
+
+                const stickY = input.leftStickY;
+                if (Math.abs(stickY) > 0.55) {
+                    if (!this._stickLatched) {
+                        this._stickLatched = true;
+                        this._stepSelection(stickY < 0 ? -1 : 1);
+                    }
+                } else if (Math.abs(stickY) < 0.25) {
+                    this._stickLatched = false;
+                }
+
+                if (input.isGamepadJustPressed(GP.A) || input.isKeyJustPressed('Enter')) {
+                    if (this.keyboardSelected >= 0 && this.keyboardSelected < this.options.length) {
+                        this._selectOption(this.keyboardSelected);
+                    }
+                }
+
+                // Escape or B to close (blocked on forced encounters)
+                if (!this.forced && (input.isKeyJustPressed('Escape') || input.isGamepadJustPressed(GP.B))) {
                     this.closed = true;
                     this.encounter.shouldStay = true;
                 }
@@ -170,8 +204,9 @@ export class EncounterDialog {
                     }
                 }
 
-                // Click to skip response typing
-                if (input.isMouseJustPressed(0) || input.isKeyJustPressed('Space')) {
+                // Click / Space / gamepad A or X to skip response typing
+                if (input.isMouseJustPressed(0) || input.isKeyJustPressed('Space')
+                    || input.isGamepadJustPressed(GP.A) || input.isGamepadJustPressed(GP.X)) {
                     this.responseRevealedChars = this.responseTotalChars;
                     if (this.options.length === 0) {
                         this.responseCloseTimer = 0.5;
@@ -193,6 +228,13 @@ export class EncounterDialog {
                 }
             }
         }
+    }
+
+    _stepSelection(dir) {
+        if (this.options.length === 0) return;
+        const n = this.options.length;
+        this.keyboardSelected = ((this.keyboardSelected + dir) % n + n) % n;
+        this.game.sounds.play('click', 0.5);
     }
 
     _selectOption(index) {
@@ -227,6 +269,7 @@ export class EncounterDialog {
         } else if (result.options) {
             this.options = result.options;
             this.hoveredOption = -1;
+            this.keyboardSelected = 0;
             this.state = DIALOG_STATE.TYPING_RESPONSE;
         } else {
             this.options = [];
@@ -354,14 +397,19 @@ export class EncounterDialog {
             const optFontSize = Math.floor(6 * uiScale);
             ctx.font = `${optFontSize}px Astro4x`;
 
+            const gamepadActive = this.game.input.isGamepadActive();
+
             for (let i = 0; i < this.options.length; i++) {
                 const optY = textY + i * lineHeight;
                 const optH = lineHeight;
 
                 // Hit test
-                const inBounds = mouse.x >= panelX + pad && mouse.x <= panelX + panelW - pad &&
+                const mouseInBounds = mouse.x >= panelX + pad && mouse.x <= panelX + panelW - pad &&
                     mouse.y >= optY && mouse.y <= optY + optH;
-                if (inBounds) this.hoveredOption = i;
+                if (mouseInBounds) this.hoveredOption = i;
+                // When the gamepad is the active device, the keyboard-selected
+                // index drives highlight instead of the mouse.
+                const inBounds = gamepadActive ? (this.keyboardSelected === i) : mouseInBounds;
 
                 // Number prefix
                 const prefix = `[${i + 1}] `;

@@ -28,6 +28,7 @@ import { EncounterDialog } from '../ui/encounterDialog.js';
 import { SpaceCache, CacheSpawner, CACHE_STATE, CACHE_CONFIG } from '../entities/spaceCache.js';
 import { CacheUI } from '../ui/cacheUI.js';
 import { LevelUpDialog } from '../ui/levelUpDialog.js';
+import { GP } from '../engine/inputManager.js';
 
 export class PlayingState {
     constructor(game, shipData, { skipInit = false } = {}) {
@@ -472,7 +473,20 @@ export class PlayingState {
         });
         this.canInteractCache = !!nearCache;
 
-        if (this.game.input.isKeyJustPressed('Escape')) {
+        // Gamepad shortcuts in gameplay:
+        //   BACK / START → pause-toggle (Escape equivalent)
+        //   X            → interact with whatever is nearby; falls back to
+        //                  opening the pause menu if nothing is interactable.
+        //                  In-UI consume-on-X is handled separately in the
+        //                  pause / cache / shop paths, which return early
+        //                  before this block runs.
+        const gpInput = this.game.input;
+        const gpPauseToggle = gpInput.isGamepadJustPressed(GP.BACK)
+                           || gpInput.isGamepadJustPressed(GP.START)
+                           || gpInput.isGamepadJustPressed(GP.B);
+        const gpInteract    = gpInput.isGamepadJustPressed(GP.X);
+
+        if (this.game.input.isKeyJustPressed('Escape') || gpPauseToggle) {
             if (this.paused) {
                 // About to unpause, return dragged item
                 if (this.draggedItem) {
@@ -480,12 +494,14 @@ export class PlayingState {
                     this._onInventoryChanged();
                     this.draggedItem = null;
                 }
+                this._releaseGamepadCursor();
             }
             this.paused = !this.paused;
             this.game.sounds.play('click', 0.5);
         }
 
-        if (this.game.input.isKeyJustPressed('KeyE')) {
+        const interactTriggered = this.game.input.isKeyJustPressed('KeyE') || gpInteract;
+        if (interactTriggered) {
             if (nearEncounter) {
                 // Prioritize encounter interaction
                 this._openEncounterDialog(nearEncounter);
@@ -506,14 +522,14 @@ export class PlayingState {
                 this.paused = true;
                 this.game.sounds.play('click', 0.5);
             } else {
-                // Otherwise toggle pause
+                // Nothing in range — fall back to toggling the pause menu.
                 if (this.paused) {
-                    // About to unpause, return dragged item
                     if (this.draggedItem) {
                         this.draggedItem.originInventory.addItem(this.draggedItem.item, this.draggedItem.x, this.draggedItem.y);
                         this._onInventoryChanged();
                         this.draggedItem = null;
                     }
+                    this._releaseGamepadCursor();
                 }
                 this.paused = !this.paused;
                 this.game.sounds.play('click', 0.5);
@@ -2286,21 +2302,21 @@ export class PlayingState {
         this._draw9Slice(ctx, this.inventoryBorderImg, playerLayout.panelX, playerLayout.panelY, playerLayout.totalW, playerLayout.totalH);
         this._drawScrollbars(ctx, playerLayout, this.playerScrollX, this.playerScrollY);
 
-        this._drawDraggedItem(ctx, slotSize);
-
         // ── Hint text ─────────────────────────────────────────────────────────
         if (ui.isAnimating) {
             ctx.fillStyle = 'rgba(255, 204, 68, 0.6)';
             ctx.font = `${6 * uiScale}px Astro4x`;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.fillText('CLICK TO SKIP', cw / 2, cacheLayout.panelY + cacheLayout.totalH + uiScale * 12);
+            const skipHint = this.game.input.isGamepadActive() ? 'A TO SKIP' : 'CLICK TO SKIP';
+            ctx.fillText(skipHint, cw / 2, cacheLayout.panelY + cacheLayout.totalH + uiScale * 12);
         }
         ctx.fillStyle = '#667788';
         ctx.font = `${6 * uiScale}px Astro4x`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'alphabetic';
-        ctx.fillText('Drag to move  •  E to close', cw / 2, ch - uiScale * 10);
+        const cacheCloseHint = this.game.input.isGamepadActive() ? 'A to move  •  B to close' : 'Drag to move  •  E to close';
+        ctx.fillText(cacheCloseHint, cw / 2, ch - uiScale * 10);
 
         if (!ui.isAnimating) {
             this._drawInventoryTooltip(ctx, [
@@ -2311,6 +2327,16 @@ export class PlayingState {
 
         this._drawStatsPanel(ctx);
         this._drawClaimLevelsButton(ctx);
+
+        // Gamepad selection corners draw over all static UI (including the
+        // claim-levels button) but beneath the dragged item which follows the
+        // cursor.
+        this._drawGamepadSelection(ctx, [
+            { inv: cacheInv,  layout: cacheLayout,  scrollXKey: 'cacheScrollX',  scrollYKey: 'cacheScrollY',  panelKey: 'cache' },
+            { inv: playerInv, layout: playerLayout, scrollXKey: 'playerScrollX', scrollYKey: 'playerScrollY', panelKey: 'player' }
+        ]);
+
+        this._drawDraggedItem(ctx, slotSize);
 
         ctx.restore();
     }
@@ -2410,13 +2436,12 @@ export class PlayingState {
         ctx.font = `${10 * uiScale}px Astro5x`;
         ctx.fillText(`SCRAP: ${this.player.scrap}`, cw / 2, playerLayout.panelY - 30 * uiScale);
 
-        this._drawDraggedItem(ctx, slotSize, shopInv);
-
         ctx.fillStyle = '#667788';
         ctx.font = `${6 * uiScale}px Astro4x`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'alphabetic';
-        ctx.fillText('Drag to buy/sell/move • E to close', cw / 2, ch - uiScale * 10);
+        const shopCloseHint = this.game.input.isGamepadActive() ? 'A to buy/sell/move • B to close' : 'Drag to buy/sell/move • E to close';
+        ctx.fillText(shopCloseHint, cw / 2, ch - uiScale * 10);
 
         this._drawInventoryTooltip(ctx, [
             { inv: shopInv,   layout: shopLayout,   scrollX: this.shopScrollX,   scrollY: this.shopScrollY },
@@ -2425,6 +2450,14 @@ export class PlayingState {
 
         this._drawStatsPanel(ctx);
         this._drawClaimLevelsButton(ctx);
+
+        // Selection corners go above static UI so they frame the focused
+        // slot, perm-upgrade button, or claim-levels button cleanly.
+        this._drawGamepadSelection(ctx, [
+            { inv: shopInv,   layout: shopLayout,   scrollXKey: 'shopScrollX',   scrollYKey: 'shopScrollY',   panelKey: 'shop' },
+            { inv: playerInv, layout: playerLayout, scrollXKey: 'playerScrollX', scrollYKey: 'playerScrollY', panelKey: 'player' }
+        ]);
+        this._drawDraggedItem(ctx, slotSize, shopInv);
     }
 
     _drawTotalGameTimer(ctx) {
@@ -2751,6 +2784,382 @@ export class PlayingState {
     }
     // ── Shared inventory UI helpers ────────────────────────────────────────────
 
+    // Called once any inventory UI finishes closing, so the cursor mode
+    // doesn't linger into plain mouse gameplay.
+    _releaseGamepadCursor() {
+        this.game.input.setGamepadCursorEnabled(false);
+        this._gamepadUICursorInitialized = false;
+        this._gpFocus = null;
+        this._gpFocusablesCache = null;
+    }
+
+    // Draws four corner sprites framing a rectangular region.
+    _drawSelectionCorners(ctx, x, y, w, h) {
+        const uiScale = this.game.uiScale;
+        const tl = this.game.assets.get('corner_tl');
+        const tr = this.game.assets.get('corner_tr');
+        const bl = this.game.assets.get('corner_bl');
+        const br = this.game.assets.get('corner_br');
+        if (!tl || !tr || !bl || !br) return;
+        const cw = Math.round((tl.width || tl.canvas.width) * uiScale);
+        const ch = Math.round((tl.height || tl.canvas.height) * uiScale);
+        const prevSmooth = ctx.imageSmoothingEnabled;
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(tl.canvas || tl, Math.round(x),          Math.round(y),          cw, ch);
+        ctx.drawImage(tr.canvas || tr, Math.round(x + w - cw), Math.round(y),          cw, ch);
+        ctx.drawImage(bl.canvas || bl, Math.round(x),          Math.round(y + h - ch), cw, ch);
+        ctx.drawImage(br.canvas || br, Math.round(x + w - cw), Math.round(y + h - ch), cw, ch);
+        ctx.imageSmoothingEnabled = prevSmooth;
+    }
+
+    // Builds the current frame's focus-candidate list: every visible slot in
+    // each panel, plus any extra buttons provided by the caller. A multi-cell
+    // item collapses into a single focusable whose rect covers the whole
+    // item, so directional stepping treats the item as one block (e.g. a 2x2
+    // takes one press to step past, not two).
+    //
+    // panels: [{ inv, layout, scrollXKey, scrollYKey, panelKey }]
+    // extraButtons: [{ rect, id }]
+    _buildFocusables(panels, extraButtons = []) {
+        const out = [];
+        for (const p of panels) {
+            const l = p.layout;
+            const seen = new Set();
+            for (let r = 0; r < p.inv.rows; r++) {
+                for (let c = 0; c < p.inv.cols; c++) {
+                    const entry = p.inv.getItemAt(c, r);
+                    if (entry) {
+                        if (seen.has(entry)) continue; // already emitted this item
+                        seen.add(entry);
+                        const ix = l.gridVisX + entry.x * l.slotSize - this[p.scrollXKey];
+                        const iy = l.gridVisY + entry.y * l.slotSize - this[p.scrollYKey];
+                        const iw = entry.item.width  * l.slotSize;
+                        const ih = entry.item.height * l.slotSize;
+                        // Include the item if any part of it is visible.
+                        if (ix + iw <= l.gridVisX || ix >= l.gridVisX + l.visW) continue;
+                        if (iy + ih <= l.gridVisY || iy >= l.gridVisY + l.visH) continue;
+                        out.push({
+                            kind: 'slot',
+                            panelKey: p.panelKey,
+                            col: entry.x, row: entry.y,
+                            rect: { x: ix, y: iy, w: iw, h: ih },
+                            hasItem: true
+                        });
+                    } else {
+                        const sx = l.gridVisX + c * l.slotSize - this[p.scrollXKey];
+                        const sy = l.gridVisY + r * l.slotSize - this[p.scrollYKey];
+                        if (sx + l.slotSize <= l.gridVisX || sx >= l.gridVisX + l.visW) continue;
+                        if (sy + l.slotSize <= l.gridVisY || sy >= l.gridVisY + l.visH) continue;
+                        out.push({
+                            kind: 'slot',
+                            panelKey: p.panelKey,
+                            col: c, row: r,
+                            rect: { x: sx, y: sy, w: l.slotSize, h: l.slotSize },
+                            hasItem: false
+                        });
+                    }
+                }
+            }
+        }
+        for (const b of extraButtons) {
+            if (!b.rect || b.rect.w <= 0 || b.rect.h <= 0) continue;
+            out.push({ kind: 'button', id: b.id, rect: b.rect, onActivate: b.onActivate });
+        }
+        return out;
+    }
+
+    // Finds the index in `focusables` that best matches `this._gpFocus`,
+    // falling back to a sensible starting focus when nothing was stored:
+    // prefer a slot that actually contains an item (so e.g. a freshly-
+    // rolled cache lands the cursor on loot, not an empty cell), then any
+    // slot, then any button. Nearest to (fallbackX, fallbackY) breaks ties.
+    _resolveFocusIndex(focusables, fallbackX, fallbackY) {
+        if (focusables.length === 0) return -1;
+        const f = this._gpFocus;
+        if (f) {
+            for (let i = 0; i < focusables.length; i++) {
+                const e = focusables[i];
+                if (f.kind === 'slot' && e.kind === 'slot'
+                    && f.panelKey === e.panelKey && f.col === e.col && f.row === e.row) return i;
+                if (f.kind === 'button' && e.kind === 'button' && f.id === e.id) return i;
+            }
+        }
+        const nearest = (predicate) => {
+            let bestIdx = -1;
+            let bestDist = Infinity;
+            for (let i = 0; i < focusables.length; i++) {
+                if (!predicate(focusables[i])) continue;
+                const r = focusables[i].rect;
+                const cx = r.x + r.w / 2;
+                const cy = r.y + r.h / 2;
+                const d = (cx - fallbackX) ** 2 + (cy - fallbackY) ** 2;
+                if (d < bestDist) { bestDist = d; bestIdx = i; }
+            }
+            return bestIdx;
+        };
+        let idx = nearest(e => e.kind === 'slot' && e.hasItem);
+        if (idx < 0) idx = nearest(e => e.kind === 'slot');
+        if (idx < 0) idx = nearest(() => true);
+        return idx < 0 ? 0 : idx;
+    }
+
+    // Spatial directional step. Compares whole rects so that a multi-cell
+    // item directly above/below the cursor wins over a single cell that is
+    // only diagonal. The score favours: (a) candidates that overlap the
+    // cursor on the cross-axis, (b) the smallest primary-axis distance.
+    _stepFocusSpatial(focusables, curIdx, dirX, dirY) {
+        if (curIdx < 0 || curIdx >= focusables.length) return curIdx;
+        const cur = focusables[curIdx].rect;
+        const curCx = cur.x + cur.w / 2;
+        const curCy = cur.y + cur.h / 2;
+        let bestIdx = -1;
+        let bestScore = Infinity;
+        for (let i = 0; i < focusables.length; i++) {
+            if (i === curIdx) continue;
+            const r = focusables[i].rect;
+            const rCx = r.x + r.w / 2;
+            const rCy = r.y + r.h / 2;
+
+            // Must be in the pressed direction (compared by center).
+            if (dirX !== 0 && Math.sign(rCx - curCx) !== dirX) continue;
+            if (dirY !== 0 && Math.sign(rCy - curCy) !== dirY) continue;
+
+            let primary, crossOverlapping;
+            if (dirX !== 0) {
+                // Primary distance: edge-to-edge gap when there's clear
+                // separation, falls back to center distance when rects
+                // overlap in the primary axis.
+                primary = dirX > 0
+                    ? Math.max(r.x - (cur.x + cur.w), rCx - curCx)
+                    : Math.max(cur.x - (r.x + r.w), curCx - rCx);
+                const yInter = Math.min(r.y + r.h, cur.y + cur.h) - Math.max(r.y, cur.y);
+                crossOverlapping = yInter > 0;
+            } else {
+                primary = dirY > 0
+                    ? Math.max(r.y - (cur.y + cur.h), rCy - curCy)
+                    : Math.max(cur.y - (r.y + r.h), curCy - rCy);
+                const xInter = Math.min(r.x + r.w, cur.x + cur.w) - Math.max(r.x, cur.x);
+                crossOverlapping = xInter > 0;
+            }
+
+            // Heavy penalty for candidates that aren't aligned on the cross-
+            // axis — guarantees that a multi-cell item covering the cursor's
+            // column/row beats any diagonal neighbour.
+            const alignmentPenalty = crossOverlapping ? 0 : (cur.w + cur.h + r.w + r.h);
+            const score = primary + alignmentPenalty;
+            if (score < bestScore) { bestScore = score; bestIdx = i; }
+        }
+        return bestIdx >= 0 ? bestIdx : curIdx;
+    }
+
+    // Writes a focusable back into `_gpFocus` so the next frame can find it
+    // again even if the focusables array is rebuilt (scroll, stock change).
+    _recordFocus(f) {
+        if (!f) { this._gpFocus = null; return; }
+        if (f.kind === 'slot') {
+            this._gpFocus = { kind: 'slot', panelKey: f.panelKey, col: f.col, row: f.row };
+        } else {
+            this._gpFocus = { kind: 'button', id: f.id };
+        }
+    }
+
+    // Drives the inventory UI with the gamepad:
+    //   - When idle, the left stick / d-pad snap-navigates between focusables
+    //     (slots + buttons) and the virtual mouse sits at the current focus
+    //     center so existing mouse-driven click handlers fire.
+    //   - When an item is held, smooth-cursor mode takes over (InputManager)
+    //     so the player can fine-position the drop.
+    //   - A always synthesises a left-mouse press (pickup/place/click).
+    //
+    // panels: [{ inv, layout, scrollXKey, scrollYKey, panelKey }]
+    // extraButtons: [{ rect, id }]  -- typically perm upgrades, claim levels
+    _gamepadInventoryUpdate(dt, panels, extraButtons = []) {
+        const input = this.game.input;
+        if (!input.gamepadConnected) {
+            input.setGamepadCursorEnabled(false);
+            return;
+        }
+
+        // While holding an item, smooth stick-driven cursor wins so the
+        // player can position the drop freely.
+        if (this.draggedItem) {
+            input.setGamepadCursorEnabled(true);
+            return;
+        }
+
+        // Idle snap mode: no smooth cursor, focus jumps slot-to-slot.
+        input.setGamepadCursorEnabled(false);
+
+        if (!input.isGamepadActive()) {
+            // Gamepad connected but user is using mouse — leave focus alone
+            // so we don't fight them.
+            this._gpFocusablesCache = null;
+            return;
+        }
+
+        const focusables = this._buildFocusables(panels, extraButtons);
+        this._gpFocusablesCache = focusables;
+        if (focusables.length === 0) return;
+
+        const fallbackPanel = panels[0] && panels[0].layout;
+        const fbX = fallbackPanel ? fallbackPanel.gridVisX + fallbackPanel.visW / 2 : 0;
+        const fbY = fallbackPanel ? fallbackPanel.gridVisY + fallbackPanel.visH / 2 : 0;
+        let idx = this._resolveFocusIndex(focusables, fbX, fbY);
+
+        const step = (dx, dy) => {
+            const next = this._stepFocusSpatial(focusables, idx, dx, dy);
+            if (next !== idx) {
+                idx = next;
+                this.game.sounds.play('click', 0.4);
+            }
+        };
+
+        // Hold-to-repeat: a direction fires immediately, then after an
+        // initial delay it auto-repeats at an accelerating cadence so the
+        // player can rip across a big inventory without mashing the stick.
+        let dx = 0, dy = 0;
+        if (input.isGamepadDown(GP.DRIGHT)) dx += 1;
+        if (input.isGamepadDown(GP.DLEFT))  dx -= 1;
+        if (input.isGamepadDown(GP.DDOWN))  dy += 1;
+        if (input.isGamepadDown(GP.DUP))    dy -= 1;
+        if (dx === 0 && dy === 0) {
+            // Fall through to left stick — only the dominant axis counts so
+            // held diagonals don't cause zigzag stepping.
+            const lx = input.leftStickX;
+            const ly = input.leftStickY;
+            if (Math.abs(lx) > 0.5 || Math.abs(ly) > 0.5) {
+                if (Math.abs(lx) > Math.abs(ly)) dx = lx > 0 ? 1 : -1;
+                else                             dy = ly > 0 ? 1 : -1;
+            }
+        }
+
+        const dirChanged = dx !== this._gpHeldDx || dy !== this._gpHeldDy;
+        if (dirChanged) {
+            this._gpHeldDx = dx;
+            this._gpHeldDy = dy;
+            this._gpHeldTime = 0;
+            if (dx !== 0 || dy !== 0) {
+                step(dx, dy);
+                this._gpRepeatDelay = 0.35; // initial delay before auto-repeat
+            }
+        } else if (dx !== 0 || dy !== 0) {
+            this._gpHeldTime = (this._gpHeldTime || 0) + dt;
+            this._gpRepeatDelay -= dt;
+            if (this._gpRepeatDelay <= 0) {
+                step(dx, dy);
+                // Accelerate from ~10 steps/sec down to a minimum of ~18
+                // steps/sec the longer the direction is held.
+                const rate = Math.max(0.055, 0.11 - this._gpHeldTime * 0.04);
+                this._gpRepeatDelay = rate;
+            }
+        }
+
+        const focused = focusables[idx];
+        this._recordFocus(focused);
+
+        // Snap the virtual mouse onto the current focus center so existing
+        // hover-state rendering and tooltip code light up the right thing.
+        input.mouseScreenX = focused.rect.x + focused.rect.w / 2;
+        input.mouseScreenY = focused.rect.y + focused.rect.h / 2;
+
+        // A activates the focus. Buttons run their action directly. Slots
+        // trigger an in-place pickup and transition into smooth-cursor drag
+        // mode (the InputManager's cursor code handles the A press that
+        // releases the drag on the next press, wired via _gpVirtualMouseDown).
+        if (input.isGamepadJustPressed(GP.A)) {
+            if (focused.kind === 'button' && typeof focused.onActivate === 'function') {
+                focused.onActivate();
+            } else if (focused.kind === 'slot') {
+                const panel = panels.find(p => p.panelKey === focused.panelKey);
+                if (panel) {
+                    const slotCenter = {
+                        x: focused.rect.x + focused.rect.w / 2,
+                        y: focused.rect.y + focused.rect.h / 2
+                    };
+                    if (this._tryPickUpItem(slotCenter, panel.inv, panel.layout, panel.scrollXKey, panel.scrollYKey)) {
+                        // Keep mouse-button-0 synthetically held so the drop
+                        // code (which waits for !isMouseDown(0)) doesn't fire
+                        // instantly, and the cursor-mode A handler can flip
+                        // it off on the player's next A press.
+                        input.mouseButtons.add(0);
+                        input._gpVirtualMouseDown = true;
+                    }
+                }
+            }
+        }
+
+        // Y consumes the item in the focused player slot (same semantics as
+        // right-click on mouse).
+        if (input.isGamepadJustPressed(GP.Y)
+            && focused.kind === 'slot'
+            && focused.panelKey === 'player') {
+            const panel = panels.find(p => p.panelKey === 'player');
+            if (panel) {
+                const entry = panel.inv.getItemAt(focused.col, focused.row);
+                if (entry) this._tryUseConsumable(entry, panel.inv);
+            }
+        }
+    }
+
+    // Renders selection corners for the current gamepad focus. When dragging,
+    // shows the snapped drop position on whichever panel the cursor is over.
+    _drawGamepadSelection(ctx, panels) {
+        const input = this.game.input;
+        if (!input.isGamepadActive()) return;
+
+        if (this.draggedItem) {
+            // Smooth-cursor mode — corners frame the snapped drop cell.
+            const mouse = this.game.getMousePos();
+            const item = this.draggedItem.item;
+            for (const p of panels) {
+                const l = p.layout;
+                if (mouse.x < l.gridVisX || mouse.x > l.gridVisX + l.visW) continue;
+                if (mouse.y < l.gridVisY || mouse.y > l.gridVisY + l.visH) continue;
+                const { col, row } = this._getDropPosition(mouse, l, p.scrollXKey, p.scrollYKey);
+                const fits = p.inv.canFit(item, col, row);
+                const sx = l.gridVisX + col * l.slotSize - this[p.scrollXKey];
+                const sy = l.gridVisY + row * l.slotSize - this[p.scrollYKey];
+                const w  = item.width  * l.slotSize;
+                const h  = item.height * l.slotSize;
+                ctx.save();
+                if (!fits) ctx.globalAlpha = 0.4;
+                this._drawSelectionCorners(ctx, sx, sy, w, h);
+                ctx.restore();
+                return;
+            }
+            return;
+        }
+
+        // Idle — corners around the focused slot or button.
+        const focusables = this._gpFocusablesCache;
+        const f = this._gpFocus;
+        if (!focusables || !f) return;
+        let focused = null;
+        for (const e of focusables) {
+            if (f.kind === 'slot' && e.kind === 'slot'
+                && f.panelKey === e.panelKey && f.col === e.col && f.row === e.row) { focused = e; break; }
+            if (f.kind === 'button' && e.kind === 'button' && f.id === e.id) { focused = e; break; }
+        }
+        if (!focused) return;
+
+        if (focused.kind === 'slot') {
+            // Widen the corners to frame the whole item if one is under this
+            // slot (the focus point might be any cell within a multi-cell item).
+            const panel = panels.find(p => p.panelKey === focused.panelKey);
+            if (panel) {
+                const entry = panel.inv.getItemAt(focused.col, focused.row);
+                if (entry) {
+                    const l = panel.layout;
+                    const sx = l.gridVisX + entry.x * l.slotSize - this[panel.scrollXKey];
+                    const sy = l.gridVisY + entry.y * l.slotSize - this[panel.scrollYKey];
+                    this._drawSelectionCorners(ctx, sx, sy, entry.item.width * l.slotSize, entry.item.height * l.slotSize);
+                    return;
+                }
+            }
+        }
+        this._drawSelectionCorners(ctx, focused.rect.x, focused.rect.y, focused.rect.w, focused.rect.h);
+    }
+
     // Renders the currently-dragged item under the cursor.
     // Pass shopInv to show a cost indicator when dragging from the shop.
     _drawDraggedItem(ctx, slotSize, shopInv = null) {
@@ -2868,6 +3277,32 @@ export class PlayingState {
         }
     }
 
+    // Applies a perm-upgrade purchase given the bounds descriptor. Shared by
+    // the mouse click handler and the gamepad A-button focus path.
+    _applyPermUpgrade(bounds) {
+        if (bounds.canBuy) {
+            this.player.scrap -= bounds.cost;
+            this.activeShop.permUpgrades[bounds.id].stock--;
+
+            if (bounds.id === 'health') {
+                this.player.permHealthBonus += 30;
+                this._onInventoryChanged(true);
+            } else if (bounds.id === 'shield') {
+                this.player.updateMaxShield(100);
+            } else if (bounds.id === 'damage') {
+                this.player.permDamageBonus += 5.0;
+                this.game.sounds.play('laser', 0.2);
+            } else if (bounds.id === 'inventory') {
+                this.player.inventoryUpgradeTier++;
+                const ejected = this.player.inventory.resize(this.player.inventory.cols + 1, this.player.inventory.rows);
+                if (ejected && ejected.length > 0) this._ejectItems(ejected);
+            }
+            this.game.sounds.play('select', 0.8);
+        } else if (!bounds.maxed && this.activeShop.permUpgrades[bounds.id].stock > 0) {
+            this.game.sounds.play('asteroid_break', 0.3);
+        }
+    }
+
     // Tries to pick up an item from inv at the mouse position. Returns true if successful.
     // scrollXKey / scrollYKey are property names on `this`.
     _tryPickUpItem(mouse, inv, layout, scrollXKey, scrollYKey) {
@@ -2880,8 +3315,16 @@ export class PlayingState {
             Math.floor((vy + this[scrollYKey]) / slotSize)
         );
         if (!entry) return false;
-        const offsetX = mouse.x - (layout.gridVisX - this[scrollXKey] + entry.x * slotSize);
-        const offsetY = mouse.y - (layout.gridVisY - this[scrollYKey] + entry.y * slotSize);
+        let offsetX, offsetY;
+        if (this.game.input.isGamepadActive()) {
+            // Centre the item on the virtual cursor so stick-driven dragging
+            // lines up with the selection corners.
+            offsetX = entry.item.width  * slotSize / 2;
+            offsetY = entry.item.height * slotSize / 2;
+        } else {
+            offsetX = mouse.x - (layout.gridVisX - this[scrollXKey] + entry.x * slotSize);
+            offsetY = mouse.y - (layout.gridVisY - this[scrollYKey] + entry.y * slotSize);
+        }
         inv.removeItemAt(entry.x, entry.y);
         this.draggedItem = { ...entry, entry, originInventory: inv, offsetX, offsetY };
         this.game.sounds.play('click', 0.5);
@@ -3023,7 +3466,6 @@ export class PlayingState {
 
         ui.update(dt);
 
-        const mouse     = this.game.getMousePos();
         const cacheInv  = ui.cacheInventory;
         const playerInv = this.player.inventory;
 
@@ -3031,14 +3473,42 @@ export class PlayingState {
         const playerLayout = this._getInventoryLayout(playerInv, 'player');
 
         const panels = [
-            { layout: cacheLayout,  scrollXKey: 'cacheScrollX',  scrollYKey: 'cacheScrollY' },
-            { layout: playerLayout, scrollXKey: 'playerScrollX', scrollYKey: 'playerScrollY' }
+            { layout: cacheLayout,  scrollXKey: 'cacheScrollX',  scrollYKey: 'cacheScrollY', inv: cacheInv,  panelKey: 'cache' },
+            { layout: playerLayout, scrollXKey: 'playerScrollX', scrollYKey: 'playerScrollY', inv: playerInv, panelKey: 'player' }
         ];
+
+        const extraButtons = [];
+        const cl = this.pauseButtons.claimLevels;
+        if (this.levelUpQueue.length > 0 && cl.w > 0) {
+            extraButtons.push({
+                id: 'claimLevels',
+                rect: cl,
+                onActivate: () => {
+                    this._levelUpOrigin = 'cache';
+                    this._openLevelUpDialog(this.levelUpQueue.shift());
+                }
+            });
+        }
+
+        // Skip gamepad focus during the rolling animation — only the skip
+        // input matters in that state.
+        if (!ui.isAnimating) {
+            this._gamepadInventoryUpdate(dt, panels, extraButtons);
+        }
+
+        // Re-read mouse in case gamepad focus snapped the virtual cursor to
+        // a slot or button center.
+        const mouse = this.game.getMousePos();
 
         if (this._applyScrollPanels(dt, mouse, panels)) return;
 
-        // ── Skip animation on click ──────────────────────────────────────────
-        if (this.game.input.isMouseJustPressed(0) && ui.isAnimating) {
+        // ── Skip animation on click / Space / A / X (matches dialog skip) ────
+        if (ui.isAnimating && (
+            this.game.input.isMouseJustPressed(0) ||
+            this.game.input.isKeyJustPressed('Space') ||
+            this.game.input.isGamepadJustPressed(GP.A) ||
+            this.game.input.isGamepadJustPressed(GP.X)
+        )) {
             ui.skipRequested = true;
         }
 
@@ -3062,10 +3532,12 @@ export class PlayingState {
                     if (this.draggedItem.originInventory === cacheInv && cacheInv.items.length === 0) {
                         if (this._activeCache) this._activeCache.markEmptied();
                     }
+                    this._gpFocus = { kind: 'slot', panelKey: 'player', col: pCol, row: pRow };
                 } else if (cacheInv.canFit(this.draggedItem.item, cCol, cRow)) {
                     cacheInv.addItem(this.draggedItem.item, cCol, cRow);
                     if (this.draggedItem.originInventory === playerInv) this._onInventoryChanged();
                     this.game.sounds.play('click', 0.5);
+                    this._gpFocus = { kind: 'slot', panelKey: 'cache', col: cCol, row: cRow };
                 } else {
                     // Check if mouse is outside both inventory panels → drop into space
                     const inCache  = mouse.x >= cacheLayout.gridVisX  && mouse.x <= cacheLayout.gridVisX  + cacheLayout.visW  &&
@@ -3098,8 +3570,16 @@ export class PlayingState {
 
         if (this._updateClaimLevelsButton(mouse, 'cache')) return;
 
-        // ── E or ESC closes ───────────────────────────────────────────────────
-        if (this.game.input.isKeyJustPressed('KeyE') || this.game.input.isKeyJustPressed('Escape')) {
+        // ── E / ESC / gamepad B / X / Back / Start close ─────────────────────
+        const input = this.game.input;
+        const closePressed =
+            input.isKeyJustPressed('KeyE') ||
+            input.isKeyJustPressed('Escape') ||
+            input.isGamepadJustPressed(GP.B) ||
+            input.isGamepadJustPressed(GP.X) ||
+            input.isGamepadJustPressed(GP.BACK) ||
+            input.isGamepadJustPressed(GP.START);
+        if (closePressed) {
             if (this.draggedItem) {
                 this.draggedItem.originInventory.addItem(this.draggedItem.item, this.draggedItem.x, this.draggedItem.y);
                 if (this.draggedItem.originInventory === playerInv) this._onInventoryChanged();
@@ -3117,21 +3597,46 @@ export class PlayingState {
             this._activeCache   = null;
             this.cacheScrollX   = 0;
             this.cacheScrollY   = 0;
+            this._releaseGamepadCursor();
         }
     }
 
     _updateShopUI(dt) {
-        const mouse = this.game.getMousePos();
-
         const shopInv    = this.activeShop.inventory;
         const shopLayout = this._getInventoryLayout(shopInv, 'shop');
         const playerInv  = this.player.inventory;
         const playerLayout = this._getInventoryLayout(playerInv, 'player');
 
         const panels = [
-            { layout: shopLayout,   scrollXKey: 'shopScrollX',   scrollYKey: 'shopScrollY' },
-            { layout: playerLayout, scrollXKey: 'playerScrollX', scrollYKey: 'playerScrollY' }
+            { layout: shopLayout,   scrollXKey: 'shopScrollX',   scrollYKey: 'shopScrollY',   inv: shopInv,   panelKey: 'shop' },
+            { layout: playerLayout, scrollXKey: 'playerScrollX', scrollYKey: 'playerScrollY', inv: playerInv, panelKey: 'player' }
         ];
+
+        const extraButtons = [];
+        if (this._currentPermButtons) {
+            for (const btn of this._currentPermButtons) {
+                extraButtons.push({
+                    id: 'perm_' + btn.bounds.id,
+                    rect: { x: btn.bounds.x, y: btn.bounds.y, w: btn.bounds.w, h: btn.bounds.h },
+                    onActivate: () => this._applyPermUpgrade(btn.bounds)
+                });
+            }
+        }
+        const cl = this.pauseButtons.claimLevels;
+        if (this.levelUpQueue.length > 0 && cl.w > 0) {
+            extraButtons.push({
+                id: 'claimLevels',
+                rect: cl,
+                onActivate: () => {
+                    this._levelUpOrigin = 'shop';
+                    this._openLevelUpDialog(this.levelUpQueue.shift());
+                }
+            });
+        }
+
+        this._gamepadInventoryUpdate(dt, panels, extraButtons);
+
+        const mouse = this.game.getMousePos();
 
         if (this._applyScrollPanels(dt, mouse, panels)) return;
 
@@ -3142,31 +3647,8 @@ export class PlayingState {
                 for (const btn of this._currentPermButtons) {
                     if (mouse.x >= btn.bounds.x && mouse.x <= btn.bounds.x + btn.bounds.w &&
                         mouse.y >= btn.bounds.y && mouse.y <= btn.bounds.y + btn.bounds.h) {
-
                         clickedPerm = true;
-                        if (btn.bounds.canBuy) {
-                            this.player.scrap -= btn.bounds.cost;
-                            this.activeShop.permUpgrades[btn.bounds.id].stock--;
-
-                            if (btn.bounds.id === 'health') {
-                                this.player.permHealthBonus += 30;
-                                this._onInventoryChanged(true);
-                            } else if (btn.bounds.id === 'shield') {
-                                this.player.updateMaxShield(100);
-                            } else if (btn.bounds.id === 'damage') {
-                                this.player.permDamageBonus += 5.0;
-                                this.game.sounds.play('laser', 0.2);
-                            } else if (btn.bounds.id === 'inventory') {
-                                this.player.inventoryUpgradeTier++;
-                                const ejected = this.player.inventory.resize(this.player.inventory.cols + 1, this.player.inventory.rows);
-                                if (ejected && ejected.length > 0) this._ejectItems(ejected);
-                            }
-                            this.game.sounds.play('select', 0.8);
-                        } else {
-                            if (!btn.bounds.maxed && this.activeShop.permUpgrades[btn.bounds.id].stock > 0) {
-                                this.game.sounds.play('asteroid_break', 0.3);
-                            }
-                        }
+                        this._applyPermUpgrade(btn.bounds);
                         break;
                     }
                 }
@@ -3192,6 +3674,7 @@ export class PlayingState {
                         playerInv.addItem(this.draggedItem.item, pCol, pRow);
                         this.game.sounds.play('select', 0.8);
                         this._onInventoryChanged(true);
+                        this._gpFocus = { kind: 'slot', panelKey: 'player', col: pCol, row: pRow };
                     } else {
                         shopInv.addItem(this.draggedItem.item, this.draggedItem.x, this.draggedItem.y);
                         this.game.sounds.play('asteroid_break', 0.5);
@@ -3200,6 +3683,7 @@ export class PlayingState {
                     playerInv.addItem(this.draggedItem.item, pCol, pRow);
                     this.game.sounds.play('click', 0.5);
                     this._onInventoryChanged();
+                    this._gpFocus = { kind: 'slot', panelKey: 'player', col: pCol, row: pRow };
                 }
             }
             // 2. Try Drop in Shop Inventory (Sell/Return)
@@ -3213,6 +3697,7 @@ export class PlayingState {
                     shopInv.addItem(this.draggedItem.item, sCol, sRow);
                     this.game.sounds.play('click', 0.5);
                 }
+                this._gpFocus = { kind: 'slot', panelKey: 'shop', col: sCol, row: sRow };
             }
             // 3. Drop failed
             else {
@@ -3234,7 +3719,14 @@ export class PlayingState {
 
         if (this._updateClaimLevelsButton(mouse, 'shop')) return;
 
-        if (this.game.input.isKeyJustPressed('KeyE') || this.game.input.isKeyJustPressed('Escape')) {
+        const input = this.game.input;
+        const closePressed =
+            input.isKeyJustPressed('KeyE') ||
+            input.isKeyJustPressed('Escape') ||
+            input.isGamepadJustPressed(GP.B) ||
+            input.isGamepadJustPressed(GP.BACK) ||
+            input.isGamepadJustPressed(GP.START);
+        if (closePressed) {
             if (this.draggedItem) {
                 this.draggedItem.originInventory.addItem(this.draggedItem.item, this.draggedItem.x, this.draggedItem.y);
                 if (this.draggedItem.originInventory === playerInv) this._onInventoryChanged();
@@ -3244,11 +3736,11 @@ export class PlayingState {
             this.paused = false;
             this.activeShop = null;
             this.game.sounds.play('click', 0.5);
+            this._releaseGamepadCursor();
         }
     }
 
     _updatePauseUI(dt) {
-        const mouse = this.game.getMousePos();
         const uiScale = this.game.uiScale;
         const cw = this.game.width;
         const ch = this.game.height;
@@ -3256,9 +3748,7 @@ export class PlayingState {
         const playerInv    = this.player.inventory;
         const playerLayout = this._getInventoryLayout(playerInv, 'pause');
 
-        const panels = [{ layout: playerLayout, scrollXKey: 'playerScrollX', scrollYKey: 'playerScrollY' }];
-
-        if (this._applyScrollPanels(dt, mouse, panels, 500)) return;
+        const panels = [{ layout: playerLayout, scrollXKey: 'playerScrollX', scrollYKey: 'playerScrollY', inv: playerInv, panelKey: 'player' }];
 
         // Volume Buttons Layout (MUST match menuState.js exactly)
         const volMargin  = Math.floor(uiScale * 8);
@@ -3295,8 +3785,6 @@ export class PlayingState {
         this.pauseButtons.shipSelection.w = shipSelSize.w;
         this.pauseButtons.shipSelection.h = shipSelSize.h;
 
-        this._updateClaimLevelsButton(mouse, 'pause');
-
         if (this.confirmRestart) {
             this.confirmRestartButtons.yes = {
                 x: Math.floor(cw / 2 - 40 * uiScale), y: ch / 2 + 20 * uiScale,
@@ -3308,7 +3796,67 @@ export class PlayingState {
             };
         }
 
-        // Hover checks
+        // ── Build gamepad focusables once all button rects are known ────────
+        const pauseExtraButtons = [];
+        const addBtn = (id, rect, activate) => {
+            if (!rect || rect.w <= 0 || rect.h <= 0) return;
+            pauseExtraButtons.push({ id, rect, onActivate: activate });
+        };
+        if (this.confirmRestart) {
+            addBtn('confirmYes', this.confirmRestartButtons.yes, () => {
+                this.game.sounds.play('select', 1.0);
+                this.game.setState(new MenuState(this.game));
+            });
+            addBtn('confirmNo', this.confirmRestartButtons.no, () => {
+                this.game.sounds.play('click', 0.5);
+                this.confirmRestart = false;
+                this._gpFocus = { kind: 'button', id: 'shipSelection' };
+            });
+        } else {
+            addBtn('shipSelection', this.pauseButtons.shipSelection, () => {
+                this.game.sounds.play('click', 0.5);
+                this.confirmRestart = true;
+            });
+            addBtn('musicDec', this.pauseButtons.musicDec, () => {
+                this.game.sounds.setMusicVolume(this.game.sounds.musicVolume - 0.1);
+                this.game.sounds.play('click', 0.5);
+            });
+            addBtn('musicInc', this.pauseButtons.musicInc, () => {
+                this.game.sounds.setMusicVolume(this.game.sounds.musicVolume + 0.1);
+                this.game.sounds.play('click', 0.5);
+            });
+            addBtn('sfxDec', this.pauseButtons.sfxDec, () => {
+                this.game.sounds.setSfxVolume(this.game.sounds.sfxVolume - 0.1);
+                this.game.sounds.play('click', 0.5);
+            });
+            addBtn('sfxInc', this.pauseButtons.sfxInc, () => {
+                this.game.sounds.setSfxVolume(this.game.sounds.sfxVolume + 0.1);
+                this.game.sounds.play('click', 0.5);
+            });
+            if (this.levelUpQueue.length > 0 && this.pauseButtons.claimLevels.w > 0) {
+                addBtn('claimLevels', this.pauseButtons.claimLevels, () => {
+                    this._levelUpOrigin = 'pause';
+                    this._openLevelUpDialog(this.levelUpQueue.shift());
+                });
+            }
+        }
+
+        // While the confirm-restart modal is open, the only valid focus
+        // targets are Yes/No — suppress the inventory panels so stick
+        // navigation can't fall back into cargo slots.
+        const gamepadPanels = this.confirmRestart ? [] : panels;
+        this._gamepadInventoryUpdate(dt, gamepadPanels, pauseExtraButtons);
+
+        const mouse = this.game.getMousePos();
+
+        if (this._applyScrollPanels(dt, mouse, panels, 500)) return;
+
+        // Now run the original claim-levels button update with the live mouse
+        // (this also handles the mouse-click fallback path).
+        this._updateClaimLevelsButton(mouse, 'pause');
+
+        // Hover checks (use current mouse position — which may have been
+        // snapped by the gamepad focus code above)
         const pb = this.pauseButtons;
         for (const k in pb) {
             const b = pb[k];
@@ -3362,6 +3910,7 @@ export class PlayingState {
                 playerInv.addItem(this.draggedItem.item, pCol, pRow);
                 this.game.sounds.play('click', 0.5);
                 this._onInventoryChanged();
+                this._gpFocus = { kind: 'slot', panelKey: 'player', col: pCol, row: pRow };
             } else {
                 const worldMouse = this.camera.screenToWorld(mouse.x, mouse.y, this.game.width, this.game.height);
                 const dropOffset  = (Math.random() - 0.5) * 20;
@@ -3385,7 +3934,8 @@ export class PlayingState {
         ctx.textAlign = 'center';
         ctx.textBaseline = 'bottom';
         // Above player (player is centered at cw/2, ch/2) - Increased height
-        ctx.fillText('E', cw / 2, ch / 2 - 60 * this.game.worldScale);
+        const label = this.game.input.isGamepadActive() ? 'X' : 'E';
+        ctx.fillText(label, cw / 2, ch / 2 - 60 * this.game.worldScale);
         ctx.restore();
     }
 
@@ -4071,11 +4621,12 @@ export class PlayingState {
         ctx.fillText(`SHIELD: ${Math.floor(p.shieldEnergy)}/${Math.round(p.maxShieldEnergy)}${p.shieldBroken ? ' [BROKEN]' : ''}`, cw / 2, statsY + uiScale * 10);
         ctx.fillText(`SCRAP: ${p.scrap}`, cw / 2, statsY + uiScale * 20);
 
-        this._drawDraggedItem(ctx, playerLayout.slotSize);
-
         ctx.textAlign = 'center';
         ctx.fillStyle = '#445566';
-        ctx.fillText('Drag to move | Right-click to use | ESC to resume', cw / 2, ch - uiScale * 8);
+        const pauseHint = this.game.input.isGamepadActive()
+            ? 'A to pick up/place | Y to use | B to resume'
+            : 'Drag to move | Right-click to use | ESC to resume';
+        ctx.fillText(pauseHint, cw / 2, ch - uiScale * 8);
 
         this._drawInventoryTooltip(ctx, [
             { inv: playerInv, layout: playerLayout, scrollX: this.playerScrollX, scrollY: this.playerScrollY }
@@ -4113,6 +4664,14 @@ export class PlayingState {
 
         this._drawStatsPanel(ctx);
         if (!this.confirmRestart) this._drawClaimLevelsButton(ctx);
+
+        // Selection corners render above all static pause UI so they frame
+        // the focused button or inventory slot.
+        this._drawGamepadSelection(ctx, [
+            { inv: playerInv, layout: playerLayout, scrollXKey: 'playerScrollX', scrollYKey: 'playerScrollY', panelKey: 'player' }
+        ]);
+
+        this._drawDraggedItem(ctx, playerLayout.slotSize);
 
         ctx.restore();
     }

@@ -16,6 +16,7 @@
  */
 
 import { RARITY_COLORS } from '../data/upgrades.js';
+import { GP } from '../engine/inputManager.js';
 
 // ─── Stat definitions by category ────────────────────────────────────────────
 const STAT_DEFS = {
@@ -255,6 +256,16 @@ export class LevelUpDialog {
         this.appearTimer = 0;
         this.appearDuration = 0.25;
         this._cardRects  = [];
+        // Gamepad/keyboard-driven selection, independent of mouse hover.
+        this.keyboardSelected = 0;
+        this._stickLatched = false;
+    }
+
+    _stepSelection(dir) {
+        if (this.choices.length === 0) return;
+        const n = this.choices.length;
+        this.keyboardSelected = ((this.keyboardSelected + dir) % n + n) % n;
+        this.game.sounds.play('click', 0.4);
     }
 
     update(dt) {
@@ -274,6 +285,30 @@ export class LevelUpDialog {
         // Mouse click (hit-test uses rects from previous draw)
         if (input.isMouseJustPressed(0) && this.hoveredChoice >= 0) {
             this._selectChoice(this.hoveredChoice);
+            return;
+        }
+
+        // Keyboard navigation
+        if (input.isKeyJustPressed('ArrowUp')   || input.isKeyJustPressed('KeyW')) this._stepSelection(-1);
+        if (input.isKeyJustPressed('ArrowDown') || input.isKeyJustPressed('KeyS')) this._stepSelection(1);
+
+        // Gamepad navigation
+        if (input.isGamepadJustPressed(GP.DUP))   this._stepSelection(-1);
+        if (input.isGamepadJustPressed(GP.DDOWN)) this._stepSelection(1);
+        const stickY = input.leftStickY;
+        if (Math.abs(stickY) > 0.55) {
+            if (!this._stickLatched) {
+                this._stickLatched = true;
+                this._stepSelection(stickY < 0 ? -1 : 1);
+            }
+        } else if (Math.abs(stickY) < 0.25) {
+            this._stickLatched = false;
+        }
+
+        if (input.isGamepadJustPressed(GP.A) || input.isKeyJustPressed('Enter')) {
+            if (this.keyboardSelected >= 0 && this.keyboardSelected < this.choices.length) {
+                this._selectChoice(this.keyboardSelected);
+            }
         }
     }
 
@@ -352,6 +387,8 @@ export class LevelUpDialog {
         this.hoveredChoice = -1;
         this._cardRects    = [];
 
+        const gamepadActive = this.game.input.isGamepadActive();
+
         for (let i = 0; i < this.choices.length; i++) {
             const ch2    = this.choices[i];
             const cardX  = panelX + pad;
@@ -359,9 +396,10 @@ export class LevelUpDialog {
             const cardY  = panelY + headerH + i * (cardH + cardGap);
             this._cardRects.push({ x: cardX, y: cardY, w: cardW, h: cardH });
 
-            const hovered = mouse.x >= cardX && mouse.x <= cardX + cardW &&
-                            mouse.y >= cardY && mouse.y <= cardY + cardH;
-            if (hovered) this.hoveredChoice = i;
+            const mouseHover = mouse.x >= cardX && mouse.x <= cardX + cardW &&
+                               mouse.y >= cardY && mouse.y <= cardY + cardH;
+            if (mouseHover) this.hoveredChoice = i;
+            const hovered = gamepadActive ? (this.keyboardSelected === i) : mouseHover;
 
             // Card background
             ctx.fillStyle   = hovered ? '#12202e' : '#0d1820';
@@ -421,6 +459,31 @@ export class LevelUpDialog {
             );
         }
 
+        // Draw selection corners around the gamepad-focused card so the
+        // highlight matches the rest of the inventory UI.
+        if (gamepadActive && this.keyboardSelected >= 0 && this.keyboardSelected < this._cardRects.length) {
+            const card = this._cardRects[this.keyboardSelected];
+            this._drawCorners(ctx, card.x, card.y, card.w, card.h);
+        }
+
         ctx.restore();
+    }
+
+    _drawCorners(ctx, x, y, w, h) {
+        const uiScale = this.game.uiScale;
+        const tl = this.game.assets.get('corner_tl');
+        const tr = this.game.assets.get('corner_tr');
+        const bl = this.game.assets.get('corner_bl');
+        const br = this.game.assets.get('corner_br');
+        if (!tl || !tr || !bl || !br) return;
+        const cw = Math.round((tl.width  || tl.canvas.width)  * uiScale);
+        const ch = Math.round((tl.height || tl.canvas.height) * uiScale);
+        const prev = ctx.imageSmoothingEnabled;
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(tl.canvas || tl, Math.round(x),          Math.round(y),          cw, ch);
+        ctx.drawImage(tr.canvas || tr, Math.round(x + w - cw), Math.round(y),          cw, ch);
+        ctx.drawImage(bl.canvas || bl, Math.round(x),          Math.round(y + h - ch), cw, ch);
+        ctx.drawImage(br.canvas || br, Math.round(x + w - cw), Math.round(y + h - ch), cw, ch);
+        ctx.imageSmoothingEnabled = prev;
     }
 }

@@ -1,6 +1,7 @@
 import { SHIPS } from '../data/ships.js';
 import { PlayingState } from './playingState.js';
 import { TutorialState } from './tutorialState.js';
+import { GP } from '../engine/inputManager.js';
 
 // Scaling is now dynamic via game properties
 
@@ -70,6 +71,15 @@ export class MenuState {
         }
 
         this.time = 0;
+
+        // Gamepad focus. Directional input walks the buttons spatially — the
+        // closest button in the pressed direction wins — so the layout on
+        // screen dictates navigation rather than list order.
+        //   0 ship-left   1 ship-right   2 start   3 tutorial
+        //   4 sfx-dec     5 sfx-inc      6 music-dec   7 music-inc
+        this.focusIndex = 2; // default to START FLIGHT
+        this._stickXLatched = false;
+        this._rsXLatched = false;
 
         // Direct event listener to bypass any framework/loop delay for sounds
         this._onMouseDown = (e) => {
@@ -194,6 +204,146 @@ export class MenuState {
         if (this.game.input.isKeyJustPressed('ArrowRight') || this.game.input.isKeyJustPressed('KeyD')) {
             this.selectedShipIndex = (this.selectedShipIndex + 1) % SHIPS.length;
             this.game.sounds.play('select', 1.0);
+        }
+
+        // --- Gamepad ---
+        const input = this.game.input;
+
+        const changeShip = (dir) => {
+            this.selectedShipIndex = (this.selectedShipIndex + dir + SHIPS.length) % SHIPS.length;
+            this.game.sounds.play('select', 1.0);
+        };
+
+        // Spatial focus map — pair each id with its live button rect so
+        // directional navigation can pick whichever button is actually
+        // closest in the pressed direction.
+        const focusables = [
+            { id: 'shipLeft',  rect: this.leftArrowBtn },
+            { id: 'shipRight', rect: this.rightArrowBtn },
+            { id: 'start',     rect: this.startBtn },
+            { id: 'tutorial',  rect: this.tutorialBtn },
+            { id: 'sfxDec',    rect: this.sfxDecBtn },
+            { id: 'sfxInc',    rect: this.sfxIncBtn },
+            { id: 'musicDec',  rect: this.musicDecBtn },
+            { id: 'musicInc',  rect: this.musicIncBtn },
+        ];
+        if (this.focusIndex >= focusables.length) this.focusIndex = 0;
+
+        const moveFocusSpatial = (dirX, dirY) => {
+            const cur = focusables[this.focusIndex].rect;
+            const cx = cur.x + cur.w / 2;
+            const cy = cur.y + cur.h / 2;
+            let bestIdx = -1;
+            let bestScore = Infinity;
+            // Penalty on the cross-axis keeps us from jumping diagonally when
+            // an on-axis neighbour exists.
+            const CROSS_PENALTY = 2.0;
+            for (let i = 0; i < focusables.length; i++) {
+                if (i === this.focusIndex) continue;
+                const r = focusables[i].rect;
+                const rx = r.x + r.w / 2;
+                const ry = r.y + r.h / 2;
+                const dx = rx - cx;
+                const dy = ry - cy;
+                // The candidate must lie strictly in the pressed direction.
+                if (dirX !== 0) {
+                    if (Math.sign(dx) !== dirX) continue;
+                    // Also require the primary axis motion to dominate so
+                    // "right" doesn't snap to something that is mostly below.
+                    if (Math.abs(dy) > Math.abs(dx) * 2.5) continue;
+                }
+                if (dirY !== 0) {
+                    if (Math.sign(dy) !== dirY) continue;
+                    if (Math.abs(dx) > Math.abs(dy) * 2.5) continue;
+                }
+                const primary   = dirX !== 0 ? Math.abs(dx) : Math.abs(dy);
+                const secondary = dirX !== 0 ? Math.abs(dy) : Math.abs(dx);
+                const score = primary + secondary * CROSS_PENALTY;
+                if (score < bestScore) {
+                    bestScore = score;
+                    bestIdx = i;
+                }
+            }
+            if (bestIdx >= 0 && bestIdx !== this.focusIndex) {
+                this.focusIndex = bestIdx;
+                this.game.sounds.play('click', 0.5);
+            }
+        };
+
+        const activateFocus = () => {
+            const id = focusables[this.focusIndex].id;
+            switch (id) {
+                case 'shipLeft':  changeShip(-1); break;
+                case 'shipRight': changeShip(1); break;
+                case 'start':
+                    this.game.setState(new PlayingState(this.game, SHIPS[this.selectedShipIndex]));
+                    return 'transition';
+                case 'tutorial':
+                    this.game.setState(new TutorialState(this.game));
+                    return 'transition';
+                case 'sfxDec':   this.game.sounds.setSfxVolume(this.game.sounds.sfxVolume - 0.1); break;
+                case 'sfxInc':   this.game.sounds.setSfxVolume(this.game.sounds.sfxVolume + 0.1); break;
+                case 'musicDec': this.game.sounds.setMusicVolume(this.game.sounds.musicVolume - 0.1); break;
+                case 'musicInc': this.game.sounds.setMusicVolume(this.game.sounds.musicVolume + 0.1); break;
+            }
+            this.game.sounds.play('select', 0.8);
+            return null;
+        };
+
+        // D-pad: one spatial step per press.
+        if (input.isGamepadJustPressed(GP.DLEFT))  moveFocusSpatial(-1, 0);
+        if (input.isGamepadJustPressed(GP.DRIGHT)) moveFocusSpatial(1, 0);
+        if (input.isGamepadJustPressed(GP.DUP))    moveFocusSpatial(0, -1);
+        if (input.isGamepadJustPressed(GP.DDOWN))  moveFocusSpatial(0, 1);
+
+        // Left stick: flick-latched so a held tilt doesn't autoscroll. When
+        // the stick is tilted past threshold, pick the dominant axis and take
+        // one spatial step in that direction.
+        const lx = input.leftStickX;
+        const ly = input.leftStickY;
+        const stickMag = Math.max(Math.abs(lx), Math.abs(ly));
+        if (stickMag > 0.55) {
+            if (!this._stickXLatched) {
+                this._stickXLatched = true;
+                if (Math.abs(lx) > Math.abs(ly)) moveFocusSpatial(lx < 0 ? -1 : 1, 0);
+                else                             moveFocusSpatial(0, ly < 0 ? -1 : 1);
+            }
+        } else if (stickMag < 0.25) {
+            this._stickXLatched = false;
+        }
+
+        // Right stick is reserved for ship change — independent of focus.
+        const rx = input.rightStickX;
+        if (Math.abs(rx) > 0.55) {
+            if (!this._rsXLatched) {
+                this._rsXLatched = true;
+                changeShip(rx < 0 ? -1 : 1);
+            }
+        } else if (Math.abs(rx) < 0.25) {
+            this._rsXLatched = false;
+        }
+
+        // A clicks the focused button. Start is a shortcut straight to game.
+        if (input.isGamepadJustPressed(GP.A)) {
+            if (activateFocus() === 'transition') return;
+        }
+        if (input.isGamepadJustPressed(GP.START)) {
+            this.game.sounds.play('select', 1.0);
+            this.game.setState(new PlayingState(this.game, SHIPS[this.selectedShipIndex]));
+            return;
+        }
+
+        // Light up the existing _on sprite for whichever button is focused.
+        if (input.isGamepadActive()) {
+            const id = focusables[this.focusIndex].id;
+            this.leftArrowBtn.hovered  = id === 'shipLeft';
+            this.rightArrowBtn.hovered = id === 'shipRight';
+            this.startBtn.hovered      = id === 'start';
+            this.tutorialBtn.hovered   = id === 'tutorial';
+            this.sfxDecBtn.hovered     = id === 'sfxDec';
+            this.sfxIncBtn.hovered     = id === 'sfxInc';
+            this.musicDecBtn.hovered   = id === 'musicDec';
+            this.musicIncBtn.hovered   = id === 'musicInc';
         }
     }
 
@@ -479,11 +629,20 @@ export class MenuState {
         const margin = Math.floor(uiScale * 12);
         const x = margin;
 
-        const controls = [
+        const controls = game.input.gamepadConnected ? [
+            { key: 'L-STICK',  desc: 'ROTATE + THRUST' },
+            { key: 'R-STICK',  desc: 'AIM' },
+            { key: 'D-PAD',    desc: 'FORWARDS / BACK' },
+            { key: 'LT',       desc: 'BOOST / TELEPORT' },
+            { key: 'RT',       desc: 'SHOOT' },
+            { key: 'LB / RB',  desc: 'SHIELD' },
+            { key: 'X',        desc: 'INTERACT' },
+            { key: 'Y',        desc: 'USE ITEM' },
+            { key: 'START',    desc: 'PAUSE / INVENTORY' }
+        ] : [
             { key: 'W/S', desc: 'FORWARDS / BACK' },
             { key: 'J/L', desc: 'ROTATE CCW / CW' },
-            { key: 'A/D', desc: 'DODGE (IF CAPABLE)' },
-            { key: 'SPACE', desc: 'BOOST' },
+            { key: 'SPACE', desc: 'BOOST/TELEPORT' },
             { key: 'L-MB/I', desc: 'SHOOT' },
             { key: 'R-MB/SHIFT', desc: 'SHIELD' },
             { key: 'E', desc: 'INTERACT' },
