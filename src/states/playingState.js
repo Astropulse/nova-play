@@ -1454,8 +1454,8 @@ export class PlayingState {
 
                     // Also need to remove the Sacrifice item from inventory
                     this._removeSacrificeItem();
-                } else if (this.yellowOneFightActive) {
-                    // Yellow One fight: don't trigger normal death
+                } else if (this.yellowOneEnraged) {
+                    // Yellow One enraged phase: cutscene handles death, don't trigger normal death
                     this.player.health = 0;
                 } else {
                     this.player.health = 0;
@@ -1661,6 +1661,11 @@ export class PlayingState {
         this.rubble = [];
         this.encounters = [];
 
+        // Reset level-up queue / dialog so prior session's pending level-ups don't carry over
+        this.levelUpQueue = [];
+        this.isLevelUpOpen = false;
+        this.activeLevelUpDialog = null;
+
         // Restore encounter bonuses
         if (data.encounterBonuses) this.encounterBonuses = { ...data.encounterBonuses };
         if (data.playerDistanceTraveled) this.playerDistanceTraveled = data.playerDistanceTraveled;
@@ -1833,13 +1838,10 @@ export class PlayingState {
             // --- Total Game Timer ---
             this._drawTotalGameTimer(ctx);
 
-            // --- Off-screen Enemy Indicators ---
-            this._drawEnemyIndicators(ctx);
-
             // --- Health Indicators (Dev Command) ---
             this._drawHealthIndicators(ctx);
 
-            // --- Off-screen Asteroid Warnings ---
+            // --- Off-screen Asteroid Warnings (under enemy/boss markers) ---
             if (this.player.hasWarningSystem) {
                 this._drawAsteroidWarnings(ctx);
             }
@@ -1853,6 +1855,9 @@ export class PlayingState {
             // --- Event Indicators ---
             this._drawEventIndicators(ctx);
             this._drawBossWreckIndicators(ctx);
+
+            // --- Off-screen Enemy Indicators (drawn last so they're on top) ---
+            this._drawEnemyIndicators(ctx);
 
             // --- Encounter Indicators ---
             this._drawEncounterIndicators(ctx);

@@ -543,7 +543,7 @@ export class Game {
     }
 
     _getAssetManifest() {
-        return {
+        const manifest = {
             // Ships - still
             'cruiser_still': 'Assets/Ships/Cruiser/cruiser_still.png',
             'bruiser_still': 'Assets/Ships/Bruiser/bruiser_still.png',
@@ -814,6 +814,25 @@ export class Game {
             'scrap_27': 'Assets/Scrap/scrap_27.png',
             'scrap_28': 'Assets/Scrap/scrap_28.png',
         };
+
+        // Encounter portraits (64x64 each)
+        const portraitSpecs = [
+            { type: 'black_market',    folder: 'Black Market',    count: 24 },
+            { type: 'cargo_trader',    folder: 'Cargo Trader',    count: 20 },
+            { type: 'civilian',        folder: 'Civilian',        count: 27 },
+            { type: 'colony',          folder: 'Colony',          count: 24 },
+            { type: 'engineer',        folder: 'Engineer',        count: 16 },
+            { type: 'explorer',        folder: 'Explorer',        count: 20 },
+            { type: 'junker',          folder: 'Junker',          count: 20 },
+            { type: 'law_enforcement', folder: 'Law Enforcement', count: 21 },
+            { type: 'tuner',           folder: 'Tuner',           count: 16 }
+        ];
+        for (const spec of portraitSpecs) {
+            for (let i = 0; i < spec.count; i++) {
+                manifest[`portrait_${spec.type}_${i}`] = `Assets/Portraits/${spec.folder}/${spec.type}_${i}.png`;
+            }
+        }
+        return manifest;
     }
 
     _getGifManifest() {

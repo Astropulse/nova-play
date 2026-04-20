@@ -256,8 +256,11 @@ export class EncounterDialog {
         const headerFontSize = Math.floor(8 * uiScale);
         const lineHeight = Math.floor(fontSize * 1.6);
 
-        // Ship avatar area
-        const avatarSize = 40 * uiScale;
+        // Portrait area (64x64 source, integer-scaled, with colored 1-pixel border)
+        const portraitLogicalSize = 64;
+        const portraitScale = Math.max(1, Math.round(40 * uiScale / portraitLogicalSize));
+        const portraitDrawSize = portraitLogicalSize * portraitScale;
+        const avatarSize = portraitDrawSize + portraitScale * 2;
         const avatarX = panelX + pad;
         const avatarY = panelTop + pad;
 
@@ -292,21 +295,21 @@ export class EncounterDialog {
         ctx.fillRect(panelX, panelTop, panelW, panelH);
         ctx.strokeRect(panelX, panelTop, panelW, panelH);
 
-        // Draw ship avatar
-        if (this.encounter.img) {
-            const asset = this.encounter.img;
+        // Draw encounter portrait with colored 1-pixel border
+        if (this.encounter.portraitImg) {
+            const asset = this.encounter.portraitImg;
             const img = asset.canvas || asset;
-            const logicalW = asset.width || img.width;
-            const logicalH = asset.height || img.height;
-            const aspect = logicalW / logicalH;
-            let drawW = avatarSize;
-            let drawH = avatarSize;
-            if (aspect > 1) { drawH = avatarSize / aspect; }
-            else { drawW = avatarSize * aspect; }
+
+            ctx.fillStyle = this.encounter.indicatorColor || '#44ffaa';
+            ctx.fillRect(avatarX, avatarY, avatarSize, avatarSize);
+
+            const prevSmoothing = ctx.imageSmoothingEnabled;
+            ctx.imageSmoothingEnabled = false;
             ctx.drawImage(img,
-                avatarX + (avatarSize - drawW) / 2,
-                avatarY + (avatarSize - drawH) / 2,
-                drawW, drawH);
+                avatarX + portraitScale,
+                avatarY + portraitScale,
+                portraitDrawSize, portraitDrawSize);
+            ctx.imageSmoothingEnabled = prevSmoothing;
         }
 
         // Draw ship type name

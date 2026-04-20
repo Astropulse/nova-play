@@ -19,6 +19,22 @@ export const ENCOUNTER_ASSETS = {
     tuner: ['encounter_tuner_1', 'encounter_tuner_2']
 };
 
+// ── Portrait asset mappings (for dialog) ─────────────────────────
+const portraitRange = (type, count) =>
+    Array.from({ length: count }, (_, i) => `portrait_${type}_${i}`);
+
+export const PORTRAIT_ASSETS = {
+    cargo_trader:    portraitRange('cargo_trader', 20),
+    civilian:        portraitRange('civilian', 27),
+    colony:          portraitRange('colony', 24),
+    engineer:        portraitRange('engineer', 16),
+    explorer:        portraitRange('explorer', 20),
+    junker:          portraitRange('junker', 20),
+    law_enforcement: portraitRange('law_enforcement', 21),
+    black_market:    portraitRange('black_market', 24),
+    tuner:           portraitRange('tuner', 16)
+};
+
 // ── Display info ─────────────────────────────────────────────────
 export const ENCOUNTER_INFO = {
     cargo_trader: { name: 'CARGO TRADER', color: '#44ffaa' },

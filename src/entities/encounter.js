@@ -3,7 +3,7 @@
  * Immune to all world projectiles/collisions. Only becomes hostile via dialog option.
  */
 
-import { ENCOUNTER_ASSETS, ENCOUNTER_INFO } from '../data/encounters.js';
+import { ENCOUNTER_ASSETS, ENCOUNTER_INFO, PORTRAIT_ASSETS } from '../data/encounters.js';
 
 const ENC_STATE = {
     APPROACHING: 0,
@@ -29,6 +29,17 @@ export class EncounterShip {
         const assetKey = assets[Math.floor(Math.random() * assets.length)];
         this.assetKey = assetKey;
         this.img = game.assets.get(assetKey);
+
+        // Pick random portrait (shown in dialog)
+        const portraits = PORTRAIT_ASSETS[encounterType];
+        if (portraits && portraits.length > 0) {
+            const portraitKey = portraits[Math.floor(Math.random() * portraits.length)];
+            this.portraitKey = portraitKey;
+            this.portraitImg = game.assets.get(portraitKey);
+        } else {
+            this.portraitKey = null;
+            this.portraitImg = null;
+        }
 
         // Display info
         const info = ENCOUNTER_INFO[encounterType] || { name: 'UNKNOWN', color: '#44ffaa' };
