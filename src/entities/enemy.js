@@ -1433,44 +1433,47 @@ export class HostileEncounter extends Enemy {
 
         const abstractActions = ['reveal_shop', 'reveal_event', 'reveal_event_2', 'heal', 'add_perm_health', 'add_scrap', 'add_upgrade'];
 
+        // Only options that paired with convert_hostile contribute rewards on death.
+        // Iterating every option dropped add_upgrade items from buy/haggle options
+        // the player never selected (e.g. killing a cargo trader yielded the items
+        // they were offering for sale).
         for (const opt of this.rawScenario.options) {
-            if (opt.actions) {
-                for (const act of opt.actions) {
-                    const colonIdx = act.indexOf(':');
-                    const type = colonIdx >= 0 ? act.slice(0, colonIdx) : act;
+            if (!opt.actions || !opt.actions.includes('convert_hostile')) continue;
+            for (const act of opt.actions) {
+                const colonIdx = act.indexOf(':');
+                const type = colonIdx >= 0 ? act.slice(0, colonIdx) : act;
 
-                    if (abstractActions.includes(type)) {
-                        switch (type) {
-                            case 'reveal_shop':
-                                state.spawnDistantShop();
-                                break;
-                            case 'reveal_event':
-                                const events1 = state.events.filter(ev => !ev.revealed && !ev.isFinished);
-                                if (events1.length > 0) events1[0].revealed = true;
-                                break;
-                            case 'reveal_event_2':
-                                const events2 = state.events.filter(ev => !ev.revealed && !ev.isFinished);
-                                if (events2.length > 0) events2[0].revealed = true;
-                                if (events2.length > 1) events2[1].revealed = true;
-                                break;
-                            case 'heal':
-                                state.player.heal(0.3);
-                                break;
-                            case 'add_perm_health':
-                                state.player.permHealthBonus += 10;
-                                break;
-                            case 'add_scrap':
-                                const scrapAmount = parseInt(act.split(':')[1]) || 0;
-                                state.player.scrap += scrapAmount;
-                                break;
-                            case 'add_upgrade':
-                                const upgVar = act.split(':')[1];
-                                const upgrade = this.encounterVars[upgVar];
-                                if (upgrade && state.itemPickups) {
-                                    state.itemPickups.push(new ItemPickup(this.game, this.worldX, this.worldY, upgrade));
-                                }
-                                break;
-                        }
+                if (abstractActions.includes(type)) {
+                    switch (type) {
+                        case 'reveal_shop':
+                            state.spawnDistantShop();
+                            break;
+                        case 'reveal_event':
+                            const events1 = state.events.filter(ev => !ev.revealed && !ev.isFinished);
+                            if (events1.length > 0) events1[0].revealed = true;
+                            break;
+                        case 'reveal_event_2':
+                            const events2 = state.events.filter(ev => !ev.revealed && !ev.isFinished);
+                            if (events2.length > 0) events2[0].revealed = true;
+                            if (events2.length > 1) events2[1].revealed = true;
+                            break;
+                        case 'heal':
+                            state.player.heal(0.3);
+                            break;
+                        case 'add_perm_health':
+                            state.player.permHealthBonus += 10;
+                            break;
+                        case 'add_scrap':
+                            const scrapAmount = parseInt(act.split(':')[1]) || 0;
+                            state.player.scrap += scrapAmount;
+                            break;
+                        case 'add_upgrade':
+                            const upgVar = act.split(':')[1];
+                            const upgrade = this.encounterVars[upgVar];
+                            if (upgrade && state.itemPickups) {
+                                state.itemPickups.push(new ItemPickup(this.game, this.worldX, this.worldY, upgrade));
+                            }
+                            break;
                     }
                 }
             }

@@ -317,6 +317,24 @@ export class CacheUI {
         this.game.sounds.play('click', 0.5);
     }
 
+    // Finalize an in-progress roll so the pre-determined item is preserved
+    // when the player closes the cache mid-spin. Item lands in the cache
+    // inventory; the player can re-open the cache later to claim it.
+    forceFinalize() {
+        if (this.uiState === CUI_STATE.ROLLING) {
+            this._beginReveal();
+        }
+        if (this.uiState === CUI_STATE.REVEALING) {
+            this.slideT = 1.0;
+            this.revealFlash = 0;
+            this._finalizeReveal();
+        }
+        // Don't attempt extra rolls when force-finalizing — just exit to idle.
+        if (this.uiState === CUI_STATE.WAIT_EXTRA) {
+            this.uiState = CUI_STATE.IDLE;
+        }
+    }
+
     // ─── Draw — ONLY the animation overlay on top of the cache grid ──────────
     // Called by PlayingState._drawCacheOverlay() with the exact grid coords.
     draw(ctx, gx, gy, gw, gh, slotSize, us) {

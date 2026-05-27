@@ -78,8 +78,9 @@ export class PlayingState {
         this._levelUpOrigin      = null; // 'pause' | 'cache' | 'shop'
 
         // Skip-and-stack: skipping a level-up banks a multiplier for the next
-        // roll. Up to LEVELUP_MAX_SKIPS consecutive skips before forced to pick;
-        // picking resets both counters.
+        // roll. Picking cashes in the multiplier. The skip budget
+        // (LEVELUP_MAX_SKIPS) is a per-run pool — it persists across picks
+        // and only refills on new game.
         this.LEVELUP_MAX_SKIPS       = 2;
         this.LEVELUP_SKIP_MULT_STEP  = 1.8;
         this.levelUpSkipsRemaining   = this.LEVELUP_MAX_SKIPS;
@@ -1103,15 +1104,22 @@ export class PlayingState {
                         it.alive = false;
                         this.game.sounds.play('select', 0.5);
                         this._onInventoryChanged(true);
+                    } else {
+                        // Inventory full — engage the follow-leash so the item
+                        // stops bouncing around the player and eventually despawns.
+                        it.markEncountered(this.player.worldX, this.player.worldY);
                     }
                 }
             } else {
                 it.update(dt, -99999, -99999); // Pass dummy coords to prevent magnetization
             }
-            // Despawn check
-            const ddx = it.worldX - this.player.worldX;
-            const ddy = it.worldY - this.player.worldY;
-            if (ddx * ddx + ddy * ddy > 4000 * 4000) it.alive = false;
+            // Despawn check (only for non-encountered items — encountered ones
+            // ride the follow-leash and despawn on their own timer)
+            if (!it.encountered) {
+                const ddx = it.worldX - this.player.worldX;
+                const ddy = it.worldY - this.player.worldY;
+                if (ddx * ddx + ddy * ddy > 4000 * 4000) it.alive = false;
+            }
         }
 
         // Update ExpOrbs
@@ -1447,7 +1455,12 @@ export class PlayingState {
         for (const s of spawns) {
             if (s instanceof Scrap) { if (this.scrapEntities.length < 200) this.scrapEntities.push(s); }
             else if (s instanceof Rubble || s instanceof ProceduralDebris) { if (this.rubble.length < 250) this.rubble.push(s); }
-            else if (s instanceof Asteroid) this.asteroids.push(s);
+            else if (s instanceof Asteroid) {
+                // Mid-tick spawns won't have _nearPlayer set yet, which would cause
+                // projectiles fired this frame to skip them via the broad-phase filter.
+                s._nearPlayer = true;
+                this.asteroids.push(s);
+            }
             else if (s instanceof ItemPickup) this.itemPickups.push(s);
             else if (s instanceof ExpOrb) { if (this.expOrbs.length < 150) this.expOrbs.push(s); }
         }
@@ -1552,6 +1565,8 @@ export class PlayingState {
             asteroids: this.asteroids.map(a => a.serialize()),
             shops: this.shops.map(s => s.serialize()),
             encounterBonuses: { ...this.encounterBonuses },
+            levelUpSkipsRemaining: this.levelUpSkipsRemaining,
+            pendingLevelUpMult: this.pendingLevelUpMult,
             playerDistanceTraveled: this.playerDistanceTraveled,
             expOrbs: this.expOrbs.map(orb => orb.serialize())
         };
@@ -1703,8 +1718,12 @@ export class PlayingState {
         this.levelUpQueue = [];
         this.isLevelUpOpen = false;
         this.activeLevelUpDialog = null;
-        this.levelUpSkipsRemaining = this.LEVELUP_MAX_SKIPS;
-        this.pendingLevelUpMult    = 1;
+        this.levelUpSkipsRemaining = data.levelUpSkipsRemaining != null
+            ? data.levelUpSkipsRemaining
+            : this.LEVELUP_MAX_SKIPS;
+        this.pendingLevelUpMult = data.pendingLevelUpMult != null
+            ? data.pendingLevelUpMult
+            : 1;
 
         // Restore encounter bonuses
         if (data.encounterBonuses) this.encounterBonuses = { ...data.encounterBonuses };
@@ -3614,6 +3633,10 @@ export class PlayingState {
                 if (this.draggedItem.originInventory === playerInv) this._onInventoryChanged();
                 this.draggedItem = null;
             }
+            // Preserve any in-progress roll so the player doesn't lose loot
+            // by closing mid-spin — the item lands in the cache and can be
+            // claimed by re-opening it.
+            if (ui.isAnimating) ui.forceFinalize();
             ui.close();
         }
 

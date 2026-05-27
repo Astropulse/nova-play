@@ -2,10 +2,11 @@
  * LevelUpDialog — modal stat-upgrade picker shown on each level-up.
  *
  * 4 choices are rolled per level. The player either picks one, or skips
- * (up to LEVELUP_MAX_SKIPS consecutive skips, default 2) to bank a
- * stacking bonus multiplier (LEVELUP_SKIP_MULT_STEP, default 1.8x per skip)
- * applied to the *next* roll's % and flat values. Picking cashes in the
- * banked multiplier and refreshes the skip budget.
+ * to bank a stacking bonus multiplier (LEVELUP_SKIP_MULT_STEP, default
+ * 1.8x per skip) applied to the *next* roll's % and flat values. Picking
+ * cashes in the banked multiplier. The skip budget (LEVELUP_MAX_SKIPS,
+ * default 2) is a per-run pool — skips persist across level-ups and only
+ * refill on new game.
  *
  * Roll diversity:
  *   • Max 2 choices of the same TYPE (offense/defense/mobility/utility/
@@ -458,10 +459,10 @@ export class LevelUpDialog {
             this.player.upgradeTypeCounts[t] = (this.player.upgradeTypeCounts[t] || 0) + 1;
         }
 
-        // Picking cashes in the banked multiplier and refreshes skip budget.
+        // Picking cashes in the banked multiplier. The skip budget is a
+        // per-run pool — it persists across picks and only refills on new game.
         if (this.playingState) {
-            this.playingState.pendingLevelUpMult    = 1;
-            this.playingState.levelUpSkipsRemaining = this.playingState.LEVELUP_MAX_SKIPS;
+            this.playingState.pendingLevelUpMult = 1;
         }
         this.game.sounds.play('select', 0.7);
         this.closed = true;

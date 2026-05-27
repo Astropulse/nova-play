@@ -402,6 +402,11 @@ export class Scrap {
 /**
  * Physical item pickup that drifts and magnetizes to player
  */
+// Items the player has already touched but couldn't accept (full inventory)
+// stop vacuuming and instead follow the player on a short leash, then despawn.
+const ITEM_FOLLOW_DESPAWN = 30.0;
+const ITEM_FOLLOW_FLASH_START = 10.0; // seconds before despawn to begin flashing
+
 export class ItemPickup {
     constructor(game, worldX, worldY, item, pickupDelay = 0) {
         if (!item) {
@@ -429,6 +434,36 @@ export class ItemPickup {
         this.collectRange = 30;
         this.suckTimer = 0;
         this.pickupDelay = pickupDelay;
+
+        // Follow-leash state (engaged once the player touches the item but
+        // can't pick it up — e.g. inventory full)
+        this.encountered = false;
+        this.followTimer = 0;
+        this.followOffsetX = 0;
+        this.followOffsetY = 0;
+    }
+
+    // Engage the follow-leash + despawn timer. Capture a stable offset so the
+    // item trails the player from roughly where it was when contact happened.
+    markEncountered(playerX, playerY) {
+        if (this.encountered) return;
+        this.encountered = true;
+        this.followTimer = 0;
+        // Clamp offset to a sensible leash distance so it stays visible
+        let ox = this.worldX - playerX;
+        let oy = this.worldY - playerY;
+        const len = Math.sqrt(ox * ox + oy * oy);
+        const leash = 40;
+        if (len > leash && len > 0) {
+            ox = (ox / len) * leash;
+            oy = (oy / len) * leash;
+        } else if (len < 1) {
+            const a = Math.random() * Math.PI * 2;
+            ox = Math.cos(a) * leash;
+            oy = Math.sin(a) * leash;
+        }
+        this.followOffsetX = ox;
+        this.followOffsetY = oy;
     }
 
     update(dt, playerX, playerY, magnetMult = 1.0) {
@@ -441,6 +476,36 @@ export class ItemPickup {
             this.worldY += this.vy * dt;
             this.rotation += this.rotSpeed * dt;
             return;
+        }
+
+        if (this.encountered) {
+            // If the player breaks the leash (e.g. boosts away), drop follow
+            // mode so the item returns to a normal vacuum-able pickup.
+            const ldx = playerX - this.worldX;
+            const ldy = playerY - this.worldY;
+            const breakDist = 200;
+            if (ldx * ldx + ldy * ldy > breakDist * breakDist) {
+                this.encountered = false;
+                this.followTimer = 0;
+                this.suckTimer = 0;
+                // Fall through to vacuum logic below.
+            } else {
+                this.followTimer += dt;
+                if (this.followTimer >= ITEM_FOLLOW_DESPAWN) {
+                    this.alive = false;
+                    return;
+                }
+                // Soft follow at fixed offset — no vacuum forces, no orbit/bounce.
+                const targetX = playerX + this.followOffsetX;
+                const targetY = playerY + this.followOffsetY;
+                const lerp = 1 - Math.pow(0.001, dt);
+                this.worldX += (targetX - this.worldX) * lerp;
+                this.worldY += (targetY - this.worldY) * lerp;
+                this.vx = 0;
+                this.vy = 0;
+                this.rotation += this.rotSpeed * dt;
+                return;
+            }
         }
 
         const dx = playerX - this.worldX;
@@ -486,6 +551,19 @@ export class ItemPickup {
         this.rotation += this.rotSpeed * dt;
     }
 
+    // Returns true if the item should be hidden this frame because it's
+    // mid-flash during the pre-despawn warning window.
+    _isFlashOff() {
+        if (!this.encountered) return false;
+        const remaining = ITEM_FOLLOW_DESPAWN - this.followTimer;
+        if (remaining > ITEM_FOLLOW_FLASH_START) return false;
+        // Accelerate flash rate as we approach despawn: ~0.5 Hz at 10s out
+        // (one slow blink every 2s), ramping up to ~3 Hz at zero.
+        const t = 1 - remaining / ITEM_FOLLOW_FLASH_START;
+        const hz = 0.5 + t * 2.5;
+        return Math.floor(this.followTimer * hz * 2) % 2 === 1;
+    }
+
     serialize() {
         return {
             worldX: this.worldX,
@@ -501,6 +579,7 @@ export class ItemPickup {
 
     draw(ctx, camera) {
         if (!this.alive) return;
+        if (this._isFlashOff()) return;
         const frame = this.game.getAnimationFrame(this.assetKey);
         if (!frame) return;
 
@@ -519,7 +598,7 @@ export class ItemPickup {
         const renderScale = 1.2;
         ctx.drawImage(frame.canvas || frame, -w * renderScale / 2, -h * renderScale / 2, w * renderScale, h * renderScale);
 
-        // Subtle glow or highlight? 
+        // Subtle glow or highlight?
         ctx.beginPath();
         ctx.arc(0, 0, Math.max(w, h) * 0.7, 0, Math.PI * 2);
         ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
