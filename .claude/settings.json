@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(node --check src/states/menuState.js)"
+    ]
+  }
+}

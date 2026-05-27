@@ -2,6 +2,10 @@ import { SHIPS } from '../data/ships.js';
 import { PlayingState } from './playingState.js';
 import { TutorialState } from './tutorialState.js';
 import { GP } from '../engine/inputManager.js';
+import { World } from '../world/world.js';
+import { Camera } from '../world/camera.js';
+import { Player } from '../entities/player.js';
+import { HUD } from '../ui/hud.js';
 
 // Scaling is now dynamic via game properties
 
@@ -26,51 +30,32 @@ export class MenuState {
         this.lastHovered = { left: false, right: false, start: false, tutorial: false, mDec: false, mInc: false, sDec: false, sInc: false };
 
 
-        // Star animation for background
-        this.stars = [];
-        for (let i = 0; i < 80; i++) {
-            this.stars.push({
-                x: Math.random(),
-                y: Math.random(),
-                spriteIdx: Math.floor(Math.random() * 11),
-                brightness: Math.random() * 0.5 + 0.3,
-                twinkleSpeed: Math.random() * 2 + 1,
-                twinkleOffset: Math.random() * Math.PI * 2
-            });
-        }
-
-        // Starfield clusters for menu background
-        this.starfields = [];
-        for (let i = 0; i < 6; i++) {
-            this.starfields.push({
-                x: Math.random(),
-                y: Math.random(),
-                spriteIdx: Math.floor(Math.random() * 8),
-                rotation: Math.floor(Math.random() * 4) * (Math.PI / 2),
-                alpha: 0.15 + Math.random() * 0.2
-            });
-        }
-
-        this.showConstellation = Math.random() < 0.01;
-        if (this.showConstellation) {
-            const safeSpots = [
-                { x: 0.15, y: 0.45 }, // Left Middle
-                { x: 0.15, y: 0.65 }, // Left Bottom/Middle
-                { x: 0.8, y: 0.25 },  // Top Right
-                { x: 0.85, y: 0.5 },  // Right Middle
-                { x: 0.8, y: 0.7 }    // Right Bottom/Middle
-            ];
-            const spot = safeSpots[Math.floor(Math.random() * safeSpots.length)];
-            this.constellation = {
-                // Pick a spot, then add a little random offset (+/- 5% of screen)
-                x: spot.x + (Math.random() - 0.5) * 0.1,
-                y: spot.y + (Math.random() - 0.5) * 0.1,
-                alpha: 0.4 + Math.random() * 0.3,
-                pulseSpeed: 0.5 + Math.random() * 0.5
-            };
-        }
+        // Reuse the in-game starfield renderer so the background is literally
+        // the same code the playing state uses. On Start Flight we hand this
+        // World + Camera off to the new PlayingState, making the transition
+        // visually seamless. Seeded randomly per visit so the title isn't
+        // always the same patch of space.
+        this.world = new World(this.game, Math.floor(Math.random() * 1000000));
+        this.camera = new Camera(this.game);
 
         this.time = 0;
+
+        // Mouse / stick offset (-1..1 each axis), smoothed; converted to a
+        // small camera displacement in world units so the World renderer's
+        // own per-layer parallax handles the depth feel.
+        this.parallaxX = 0;
+        this.parallaxY = 0;
+
+        // Transition state used when Start Flight is pressed: fades menu UI,
+        // slides the ship preview to screen center, drifts the camera back to
+        // (0,0), then hands off to PlayingState. Null while idle.
+        this.transition = null;
+
+        // Mirror the PlayingState default so HUD.draw's wave-timer block
+        // (which reads `game.currentState.waveTimer`) shows the "NEXT WAVE"
+        // counter during the transition handoff. PlayingState seeds its own
+        // waveTimer to the same value, so there's no jump.
+        this.waveTimer = 120;
 
         // Gamepad focus. Directional input walks the buttons spatially — the
         // closest button in the pressed direction wins — so the layout on
@@ -102,13 +87,7 @@ export class MenuState {
     enter() {
         document.body.classList.remove('playing');
         this._computeLayout();
-
-        if (this.constellation) {
-            this.game.sounds.playMusicByLabel("King's Victory");
-        } else {
-            this.game.sounds.playTitleMusic();
-        }
-
+        this.game.sounds.playTitleMusic();
         window.addEventListener('mousedown', this._onMouseDown);
     }
 
@@ -121,6 +100,60 @@ export class MenuState {
         const mouse = this.game.getMousePos();
 
         this._computeLayout();
+
+        // --- Background parallax target ---
+        // Gamepad: use stick tilt directly (right stick preferred; falls back
+        // to left). Mouse: normalize position around screen center to -1..1.
+        // During transition both targets are forced to 0 so the camera drifts
+        // back to where PlayingState's player will spawn.
+        let targetX = 0, targetY = 0;
+        if (!this.transition) {
+            if (this.game.input.isGamepadActive()) {
+                const rx = this.game.input.rightStickX;
+                const ry = this.game.input.rightStickY;
+                const lx = this.game.input.leftStickX;
+                const ly = this.game.input.leftStickY;
+                targetX = Math.abs(rx) > Math.abs(lx) ? rx : lx;
+                targetY = Math.abs(ry) > Math.abs(ly) ? ry : ly;
+            } else {
+                const cwHalf = this.game.width / 2;
+                const chHalf = this.game.height / 2;
+                targetX = Math.max(-1, Math.min(1, (mouse.x - cwHalf) / cwHalf));
+                targetY = Math.max(-1, Math.min(1, (mouse.y - chHalf) / chHalf));
+            }
+        }
+        // Critically-damped-ish smoothing so motion is gentle and responsive.
+        const k = 1 - Math.exp(-dt * 5);
+        this.parallaxX += (targetX - this.parallaxX) * k;
+        this.parallaxY += (targetY - this.parallaxY) * k;
+
+        // Drive the World camera. Max displacement is small in world units so
+        // the closest in-game parallax layer (0.55) only sweeps a few pixels —
+        // enough to feel alive, not enough to feel like player motion.
+        const CAM_MAX = 60;
+        this.camera.x = this.parallaxX * CAM_MAX;
+        this.camera.y = this.parallaxY * CAM_MAX;
+
+        // --- Transition tick ---
+        // While transitioning we suppress all input and just count down.
+        if (this.transition) {
+            this.transition.time += dt;
+            if (this.transition.time >= this.transition.duration) {
+                this.game.setState(new PlayingState(
+                    this.game,
+                    SHIPS[this.selectedShipIndex],
+                    {
+                        handoff: {
+                            world: this.world,
+                            camera: this.camera,
+                            player: this.transition.player,
+                            hud: this.transition.hud,
+                        },
+                    }
+                ));
+            }
+            return;
+        }
 
         this.leftArrowBtn.hovered = this._isInside(mouse, this.leftArrowBtn);
         this.rightArrowBtn.hovered = this._isInside(mouse, this.rightArrowBtn);
@@ -173,7 +206,7 @@ export class MenuState {
             }
             if (this.startBtn.hovered) {
                 this.game.input.consumeMouseButton(0);
-                this.game.setState(new PlayingState(this.game, SHIPS[this.selectedShipIndex]));
+                this._beginStartTransition();
             }
             if (this.tutorialBtn.hovered) {
                 this.game.input.consumeMouseButton(0);
@@ -276,7 +309,7 @@ export class MenuState {
                 case 'shipLeft':  changeShip(-1); break;
                 case 'shipRight': changeShip(1); break;
                 case 'start':
-                    this.game.setState(new PlayingState(this.game, SHIPS[this.selectedShipIndex]));
+                    this._beginStartTransition();
                     return 'transition';
                 case 'tutorial':
                     this.game.setState(new TutorialState(this.game));
@@ -329,7 +362,7 @@ export class MenuState {
         }
         if (input.isGamepadJustPressed(GP.START)) {
             this.game.sounds.play('select', 1.0);
-            this.game.setState(new PlayingState(this.game, SHIPS[this.selectedShipIndex]));
+            this._beginStartTransition();
             return;
         }
 
@@ -345,6 +378,42 @@ export class MenuState {
             this.musicDecBtn.hovered   = id === 'musicDec';
             this.musicIncBtn.hovered   = id === 'musicInc';
         }
+    }
+
+    // Snapshot the ship-preview center where the menu draws it, then enter
+    // the transition. draw() lerps the world+ship out from uiScale to
+    // worldScale and slides the ship to screen center over `duration`,
+    // drawing the HUD inside the same zoom transform so it scales with the
+    // world. The Player+HUD pair we build here gets handed to PlayingState
+    // so the visual is literally continuous (same objects, same state).
+    _beginStartTransition() {
+        if (this.transition) return;
+        const shipCenter = this._currentShipCenter();
+        const transitionPlayer = new Player(this.game, SHIPS[this.selectedShipIndex]);
+        const transitionHud = new HUD(this.game, transitionPlayer);
+        this.transition = {
+            time: 0,
+            duration: 0.85,
+            shipFromX: shipCenter.x,
+            shipFromY: shipCenter.y,
+            player: transitionPlayer,
+            hud: transitionHud,
+        };
+    }
+
+    _currentShipCenter() {
+        const game = this.game;
+        const ship = SHIPS[this.selectedShipIndex];
+        const shipSize = game.spriteSize(ship.assets.still, game.uiScale);
+        const leftSize = game.spriteSize('left_arrow_off', game.uiScale);
+        const arrowGap = Math.floor(game.uiScale * 4);
+        const shipX = Math.floor(this.leftArrowBtn.x + leftSize.w + arrowGap);
+        // shipY is the top-left used by drawSprite; mirror that math here.
+        const titleSize = game.spriteSize('title', game.uiScale);
+        const titleY = Math.floor(game.uiScale * 12);
+        const nameY = Math.floor(titleY + titleSize.h + game.uiScale * 14);
+        const shipY = Math.floor(nameY + game.uiScale * 6);
+        return { x: shipX + shipSize.w / 2, y: shipY + shipSize.h / 2 };
     }
 
     _computeLayout() {
@@ -443,98 +512,48 @@ export class MenuState {
         const ch = game.height;
         const cx = cw / 2;
 
-        // Draw starfield clusters
-        ctx.save();
-        ctx.globalCompositeOperation = 'screen';
-        for (const sf of this.starfields) {
-            ctx.globalAlpha = sf.alpha;
-            const key = `starfield_${sf.spriteIdx}`;
-            const img = game.assets.get(key);
-            if (img) {
-                const w = Math.round((img.width || img.canvas.width) * game.uiScale);
-                const h = Math.round((img.height || img.canvas.height) * game.uiScale);
-                const x = sf.x * cw;
-                const y = sf.y * ch;
-                const rx = Math.round(x);
-                const ry = Math.round(y);
-
-                if (sf.rotation === 0) {
-                    ctx.drawImage(img.canvas || img, Math.round(rx - w / 2), Math.round(ry - h / 2), w, h);
-                } else {
-                    ctx.save();
-                    ctx.translate(rx, ry);
-                    ctx.rotate(sf.rotation);
-                    ctx.drawImage(img.canvas || img, Math.round(-w / 2), Math.round(-h / 2), w, h);
-                    ctx.restore();
-                }
-            }
-        }
-        ctx.restore();
-
-        // Draw Christus Victor constellation if active
-        if (this.constellation) {
-            const key = 'christus_victor_constellation';
-            const asset = game.assets.get(key);
-            if (asset) {
-                ctx.save();
-                const pulse = Math.sin(this.time * this.constellation.pulseSpeed);
-                ctx.globalAlpha = this.constellation.alpha + pulse * 0.15;
-                ctx.globalCompositeOperation = 'screen';
-
-                // Razor sharpness for this specific asset without global impact
-                ctx.imageSmoothingEnabled = false;
-
-                const img = asset.canvas || asset;
-                const scale = game.uiScale;
-                const w = Math.round((asset.width || img.width) * scale);
-                const h = Math.round((asset.height || img.height) * scale);
-                const cx = this.constellation.x * cw;
-                const cy = this.constellation.y * ch;
-
-                ctx.drawImage(img, Math.round(cx - w / 2), Math.round(cy - h / 2), w, h);
-                ctx.restore();
-            }
+        // Transition progress 0..1 and easings. UI fades during the first
+        // half of the transition; the world+ship zoom out together on
+        // ease-out-cubic so the effect reads as the camera pulling back from
+        // the ship rather than the ship shrinking on its own.
+        let uiAlpha = 1;
+        let animT = 0;
+        if (this.transition) {
+            const t = Math.min(1, this.transition.time / this.transition.duration);
+            uiAlpha = Math.max(0, 1 - t * 2);
+            animT = 1 - Math.pow(1 - t, 3);
         }
 
-        // Render menu stars with pixel-perfect sharpness
-        ctx.save();
-        ctx.imageSmoothingEnabled = false;
-        for (const star of this.stars) {
-            const key = `star_${star.spriteIdx}`;
-            const asset = game.assets.get(key);
-            if (!asset) continue;
-
-            const alpha = star.brightness + Math.sin(this.time * star.twinkleSpeed + star.twinkleOffset) * 0.2;
-            const img = asset.canvas || asset;
-            const scale = game.uiScale;
-            const w = Math.round((asset.width || img.width) * scale);
-            const h = Math.round((asset.height || img.height) * scale);
-            const cx = star.x * cw;
-            const cy = star.y * ch;
-
-            ctx.globalAlpha = Math.max(0.1, Math.min(1, alpha));
-            ctx.drawImage(img, Math.round(cx - w / 2), Math.round(cy - h / 2), w, h);
-        }
-        ctx.restore();
-
-        const titleSize = game.spriteSize('title', game.uiScale);
-        const titleY = Math.floor(game.uiScale * 12);
-        game.drawSpriteCentered(ctx, 'title', Math.round(cx), Math.round(titleY + titleSize.h / 2), game.uiScale);
+        // While in the menu, the world renders zoomed-in to uiScale so the
+        // background lines up with the menu's ship size. During the
+        // transition it lerps back to the real worldScale. Temporarily swap
+        // game.worldScale because the World shader and the ship draw both
+        // read it directly.
+        const baseWorldScale = game.worldScale;
+        const renderScale = game.uiScale + (baseWorldScale - game.uiScale) * animT;
+        game.worldScale = renderScale;
+        this.world.draw(ctx, this.camera, null, this.time);
 
         const ship = SHIPS[this.selectedShipIndex];
+        const shipSize = game.spriteSize(ship.assets.still, game.uiScale);
+        const titleSize = game.spriteSize('title', game.uiScale);
+        const titleY = Math.floor(game.uiScale * 12);
         const nameY = Math.floor(titleY + titleSize.h + game.uiScale * 14);
+        const shipY = Math.floor(nameY + game.uiScale * 6);
+        const leftSize = game.spriteSize('left_arrow_off', game.uiScale);
+        const arrowGap = Math.floor(game.uiScale * 4);
+        const shipX = Math.floor(this.leftArrowBtn.x + leftSize.w + arrowGap);
+
+        // --- UI layer (everything except the ship) — wrapped in uiAlpha ---
+        ctx.save();
+        ctx.globalAlpha *= uiAlpha;
+
+        game.drawSpriteCentered(ctx, 'title', Math.round(cx), Math.round(titleY + titleSize.h / 2), game.uiScale);
 
         ctx.fillStyle = '#ffffff';
         ctx.font = `${8 * game.uiScale}px Astro5x`;
         ctx.textAlign = 'center';
         ctx.fillText(ship.name.toUpperCase(), cx, nameY);
-
-        const shipSize = game.spriteSize(ship.assets.still, game.uiScale);
-        const shipY = Math.floor(nameY + game.uiScale * 6);
-        const leftSize = game.spriteSize('left_arrow_off', game.uiScale);
-        const arrowGap = Math.floor(game.uiScale * 4);
-        const shipX = Math.floor(this.leftArrowBtn.x + leftSize.w + arrowGap);
-        game.drawSprite(ctx, ship.assets.still, shipX, shipY, game.uiScale);
 
         game.drawSprite(ctx, this.leftArrowBtn.hovered ? 'left_arrow_on' : 'left_arrow_off', this.leftArrowBtn.x, this.leftArrowBtn.y, game.uiScale);
         game.drawSprite(ctx, this.rightArrowBtn.hovered ? 'right_arrow_on' : 'right_arrow_off', this.rightArrowBtn.x, this.rightArrowBtn.y, game.uiScale);
@@ -563,8 +582,6 @@ export class MenuState {
         game.drawSprite(ctx, this.startBtn.hovered ? 'start_flight_on' : 'start_flight_off', this.startBtn.x, this.startBtn.y, game.uiScale);
         game.drawSprite(ctx, this.tutorialBtn.hovered ? 'tutorial_on' : 'tutorial_off', this.tutorialBtn.x, this.tutorialBtn.y, game.uiScale);
 
-
-        // "Made with" Wordmark (Top Left)
         const marginTL = Math.floor(game.uiScale * 12);
         ctx.fillStyle = '#8899aa';
         ctx.font = `${8 * game.uiScale}px Astro4x`;
@@ -575,6 +592,44 @@ export class MenuState {
         this._drawControls(ctx);
         this._drawVolumeControls(ctx);
 
+        ctx.restore();
+
+        // --- Ship sprite (not faded; slides during transition) ---
+        // Drawn at the current renderScale (== game.worldScale right now), so
+        // it shrinks together with the world — the visual ratio between ship
+        // and stars stays constant, selling the camera-pullback.
+        const fromCx = shipX + shipSize.w / 2;
+        const fromCy = shipY + shipSize.h / 2;
+        const sFromX = this.transition ? this.transition.shipFromX : fromCx;
+        const sFromY = this.transition ? this.transition.shipFromY : fromCy;
+        const sCenterX = sFromX + (cx - sFromX) * animT;
+        const sCenterY = sFromY + (ch / 2 - sFromY) * animT;
+        const stillAsset = game.assets.get(ship.assets.still);
+        if (stillAsset) {
+            const img = stillAsset.canvas || stillAsset;
+            const w = (stillAsset.width || img.width) * renderScale;
+            const h = (stillAsset.height || img.height) * renderScale;
+            ctx.drawImage(img, Math.round(sCenterX - w / 2), Math.round(sCenterY - h / 2), w, h);
+        }
+
+        // HUD layered inside the world's zoom. Because every HUD element is
+        // pinned to a screen edge, scaling the whole layer around screen
+        // center by (renderScale / baseWorldScale) sells the HUD as if it
+        // were frozen at the world's scale — it sits off-screen while the
+        // world is zoomed-in and slides to its corners as the world zooms
+        // back out. Alpha fades in over the transition so it doesn't pop on.
+        if (this.transition && this.transition.hud) {
+            const hudScaleFactor = renderScale / baseWorldScale;
+            ctx.save();
+            ctx.translate(cx, ch / 2);
+            ctx.scale(hudScaleFactor, hudScaleFactor);
+            ctx.translate(-cx, -ch / 2);
+            ctx.globalAlpha *= animT;
+            this.transition.hud.draw(ctx);
+            ctx.restore();
+        }
+
+        game.worldScale = baseWorldScale;
         ctx.restore();
     }
 

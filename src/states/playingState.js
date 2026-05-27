@@ -31,16 +31,25 @@ import { LevelUpDialog } from '../ui/levelUpDialog.js';
 import { GP } from '../engine/inputManager.js';
 
 export class PlayingState {
-    constructor(game, shipData, { skipInit = false } = {}) {
+    constructor(game, shipData, { skipInit = false, handoff = null } = {}) {
         this.game = game;
         this.shipData = shipData;
         this.paused = false;
         this.skipClear = false;
 
-        this.camera = new Camera(game);
-        this.world = new World(game, Math.floor(Math.random() * 1000000));
-        this.player = new Player(game, shipData);
-        this.hud = new HUD(game, this.player);
+        // Optional handoff from the menu state — reuse the same World/Camera
+        // and the Player+HUD pair the menu built so every drawn pixel is
+        // continuous across the state boundary.
+        this.camera = handoff && handoff.camera ? handoff.camera : new Camera(game);
+        this.world = handoff && handoff.world ? handoff.world : new World(game, Math.floor(Math.random() * 1000000));
+        this.player = handoff && handoff.player ? handoff.player : new Player(game, shipData);
+        if (handoff && handoff.camera && !handoff.player) {
+            // Align a fresh player's spawn with the menu camera position;
+            // a handed-off player already sits at the right spot.
+            this.player.worldX = handoff.camera.x;
+            this.player.worldY = handoff.camera.y;
+        }
+        this.hud = handoff && handoff.hud ? handoff.hud : new HUD(game, this.player);
 
         // Entity lists
         this.projectiles = [];
