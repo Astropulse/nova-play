@@ -77,6 +77,14 @@ export class PlayingState {
         this.activeLevelUpDialog = null;
         this._levelUpOrigin      = null; // 'pause' | 'cache' | 'shop'
 
+        // Skip-and-stack: skipping a level-up banks a multiplier for the next
+        // roll. Up to LEVELUP_MAX_SKIPS consecutive skips before forced to pick;
+        // picking resets both counters.
+        this.LEVELUP_MAX_SKIPS       = 2;
+        this.LEVELUP_SKIP_MULT_STEP  = 1.8;
+        this.levelUpSkipsRemaining   = this.LEVELUP_MAX_SKIPS;
+        this.pendingLevelUpMult      = 1;
+
         // Space Caches
         this.caches = [];
         this.activeCacheUI  = null;
@@ -1695,6 +1703,8 @@ export class PlayingState {
         this.levelUpQueue = [];
         this.isLevelUpOpen = false;
         this.activeLevelUpDialog = null;
+        this.levelUpSkipsRemaining = this.LEVELUP_MAX_SKIPS;
+        this.pendingLevelUpMult    = 1;
 
         // Restore encounter bonuses
         if (data.encounterBonuses) this.encounterBonuses = { ...data.encounterBonuses };
@@ -3200,6 +3210,8 @@ export class PlayingState {
         if (cl.w <= 0) return;
         const count = this.levelUpQueue.length;
         const us = this.game.uiScale;
+        const mult = this.pendingLevelUpMult || 1;
+        const hasMult = mult > 1.00001;
         ctx.fillStyle   = cl.hovered ? '#333300' : '#1a1a00';
         ctx.strokeStyle = cl.hovered ? '#ffff55' : '#aaaa00';
         ctx.lineWidth = 1;
@@ -3209,7 +3221,10 @@ export class PlayingState {
         ctx.font = `${6 * us}px Astro4x`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(`CLAIM ${count} LEVEL${count !== 1 ? 'S' : ''}`, cl.x + cl.w / 2, cl.y + cl.h / 2);
+        const label = hasMult
+            ? `CLAIM ${count} LEVEL${count !== 1 ? 'S' : ''}  (x${mult.toFixed(2)})`
+            : `CLAIM ${count} LEVEL${count !== 1 ? 'S' : ''}`;
+        ctx.fillText(label, cl.x + cl.w / 2, cl.y + cl.h / 2);
     }
 
     // Draws a tooltip for the first item found under the mouse across all given panels.

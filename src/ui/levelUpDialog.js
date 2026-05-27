@@ -1,8 +1,17 @@
 /**
  * LevelUpDialog — modal stat-upgrade picker shown on each level-up.
  *
- * 4 choices are rolled per level; player must pick one.
- * Multiple level-ups queue additional dialogs that open in sequence.
+ * 4 choices are rolled per level. The player either picks one, or skips
+ * (up to LEVELUP_MAX_SKIPS consecutive skips, default 2) to bank a
+ * stacking bonus multiplier (LEVELUP_SKIP_MULT_STEP, default 1.8x per skip)
+ * applied to the *next* roll's % and flat values. Picking cashes in the
+ * banked multiplier and refreshes the skip budget.
+ *
+ * Roll diversity:
+ *   • Max 2 choices of the same TYPE (offense/defense/mobility/utility/
+ *     difficulty) per roll, when the pool can support it.
+ *   • Each pick is softly biased away from types the player has already
+ *     invested in (weight = 1 / (1 + BIAS_K * typeCount)).
  *
  * Bonus % ranges (also determine the highlight colour):
  *   Common    0.5 – 1.5 %
@@ -60,6 +69,48 @@ for (const [cat, defs] of Object.entries(STAT_DEFS)) {
     for (const def of defs) STAT_CAT[def.id] = cat;
 }
 
+// ─── Stat TYPE grouping (independent of rarity tier) ─────────────────────────
+// Used to enforce per-roll diversity and to softly bias future rolls away from
+// over-picked types. Every stat must appear exactly once below.
+export const STAT_TYPE = {
+    // Offense
+    damage:           'offense',
+    firerate:         'offense',
+    extra_projectile: 'offense',
+    projectile_speed: 'offense',
+    shield_damage:    'offense',
+    // Defense
+    max_hp:              'defense',
+    max_shield:          'defense',
+    shield_drain:        'defense',
+    shield_recharge:     'defense',
+    asteroid_resistance: 'defense',
+    hp_regen:            'defense',
+    // Mobility
+    ship_speed:     'mobility',
+    boost_recharge: 'mobility',
+    boost_speed:    'mobility',
+    boost_duration: 'mobility',
+    turn_speed:     'mobility',
+    // Utility / economy / vision
+    exp_gain:       'utility',
+    vacuum_range:   'utility',
+    fov:            'utility',
+    scrap_chance:   'utility',
+    cache_freq:     'utility',
+    encounter_freq: 'utility',
+    // Difficulty / world-density
+    asteroid_spawn:  'difficulty',
+    enemy_spawn:     'difficulty',
+    difficulty_gain: 'difficulty',
+    wave_countdown:  'difficulty',
+};
+
+const MAX_PER_TYPE_PER_ROLL = 2;
+// Per-pick bias strength: weight = 1 / (1 + BIAS_K * typeCount).
+// At BIAS_K=0.12, 5 picks of one type drops its relative weight to ~0.625x.
+const BIAS_K = 0.12;
+
 // ─── Bonus tier ranges [min%, max%] ──────────────────────────────────────────
 const BONUS_TIERS = {
     common:    { min: 0.5,  max: 1.5  },
@@ -95,7 +146,9 @@ function _bonusRarity(pct) {
 }
 
 // ─── Choice generation ────────────────────────────────────────────────────────
-function rollChoices(luck) {
+// typePickCounts: { offense: n, defense: n, ... } — accumulated across the run.
+// bonusMult: scalar applied to the rolled %/flat (from the skip-stacking system).
+function rollChoices(luck, typePickCounts = {}, bonusMult = 1) {
     const lk = Math.max(0.1, luck);
 
     const catW = {
@@ -118,58 +171,113 @@ function rollChoices(luck) {
         ...STAT_DEFS.uncommon,
         ...STAT_DEFS.rare,
     ];
+    const rollTypeCounts = {}; // types already represented in THIS roll
     const choices = [];
+
+    const _filterByDiversity = (pool) =>
+        pool.filter(s => (rollTypeCounts[STAT_TYPE[s.id]] || 0) < MAX_PER_TYPE_PER_ROLL);
+
+    const _pickFromPool = (pool) => {
+        // Weight each stat by 1 / (1 + BIAS_K * accumulated picks of its type).
+        // Soft bias: heavily-picked types are less likely but never excluded.
+        const weights = pool.map(s => {
+            const t = STAT_TYPE[s.id];
+            const c = (typePickCounts[t] || 0);
+            return 1 / (1 + BIAS_K * c);
+        });
+        let total = 0;
+        for (const w of weights) total += w;
+        let r = Math.random() * total;
+        for (let i = 0; i < pool.length; i++) {
+            r -= weights[i];
+            if (r <= 0) return pool[i];
+        }
+        return pool[pool.length - 1];
+    };
 
     for (let i = 0; i < 4; i++) {
         let cat = _wrand(catW);
         const isCursed = cat === 'cursed';
         if (isCursed) cat = _wrand({ common: 60, uncommon: 25, rare: 15 });
 
-        let pool = STAT_DEFS[cat].filter(s => !used.has(s.id));
-        if (pool.length === 0) pool = allDefs.filter(s => !used.has(s.id));
+        // Prefer pool that satisfies diversity cap; fall back to broader pools.
+        let pool = _filterByDiversity(STAT_DEFS[cat].filter(s => !used.has(s.id)));
+        if (pool.length === 0) {
+            pool = _filterByDiversity(allDefs.filter(s => !used.has(s.id)));
+        }
+        if (pool.length === 0) {
+            // Cap saturated — relax diversity so we can still fill slots.
+            pool = allDefs.filter(s => !used.has(s.id));
+        }
         if (pool.length === 0) break;
 
-        const stat = pool[Math.floor(Math.random() * pool.length)];
+        const stat = _pickFromPool(pool);
         used.add(stat.id);
-        choices.push(_makeChoice(stat, isCursed, bonusW));
+        rollTypeCounts[STAT_TYPE[stat.id]] = (rollTypeCounts[STAT_TYPE[stat.id]] || 0) + 1;
+        choices.push(_makeChoice(stat, isCursed, bonusW, bonusMult));
     }
     return choices;
 }
 
-function _makeChoice(stat, isCursed, bonusW) {
+function _makeChoice(stat, isCursed, bonusW, bonusMult = 1) {
     if (stat.flat) {
-        let flatDisplay = stat.flat;
-        if (isCursed) {
-            flatDisplay = stat.id === 'extra_projectile' ? '-1 SHOT' : '-0.1 HP/S';
+        // Flat upgrades: scale the count by bonusMult.
+        // extra_projectile is integer (round), hp_regen is float (0.1 * mult).
+        const baseFlatStr = stat.flat;
+        let flatMag, flatUnit, flatBase;
+        if (stat.id === 'extra_projectile') {
+            flatBase = 1;
+            flatMag  = Math.max(1, Math.round(flatBase * bonusMult));
+            flatUnit = 'SHOT' + (flatMag === 1 ? '' : 'S');
+        } else { // hp_regen
+            flatBase = 0.1;
+            flatMag  = flatBase * bonusMult;
+            flatUnit = 'HP/S';
         }
+        const sign = isCursed ? '-' : '+';
+        const flatDisplay = stat.id === 'extra_projectile'
+            ? `${sign}${flatMag} ${flatUnit}`
+            : `${sign}${flatMag.toFixed(2)} ${flatUnit}`;
+        // baseFlatDisplay: what it would have been at 1x — used for the strikethrough UI.
+        const baseFlatDisplay = bonusMult > 1.00001 ? (isCursed ? baseFlatStr.replace('+', '-') : baseFlatStr) : null;
+
         return {
             stat, isCursed,
             pct: 0,
             flatDisplay,
+            baseFlatDisplay,
+            flatValue: flatMag,
+            bonusMult,
             bonusRarity: 'rare',
             bonusColor: isCursed ? '#664433' : RARITY_COLORS.rare,
             category: STAT_CAT[stat.id] || 'rare',
+            type: STAT_TYPE[stat.id] || 'utility',
         };
     }
 
     const tierName   = _wrand(bonusW);
     const tier       = BONUS_TIERS[tierName];
-    const pct        = tier.min + Math.random() * (tier.max - tier.min);
+    const basePct    = tier.min + Math.random() * (tier.max - tier.min);
+    const pct        = basePct * bonusMult;
     const bonusRarity = _bonusRarity(pct);
 
     return {
         stat, isCursed,
         pct: isCursed ? -pct : pct,
+        basePct: isCursed ? -basePct : basePct,
+        bonusMult,
         flatDisplay: null,
+        baseFlatDisplay: null,
         bonusRarity,
         bonusColor: isCursed ? '#664433' : RARITY_COLORS[bonusRarity],
         category: STAT_CAT[stat.id] || 'common',
+        type: STAT_TYPE[stat.id] || 'utility',
     };
 }
 
 // ─── Apply a chosen upgrade to the player ────────────────────────────────────
 export function applyLevelUpChoice(choice, player, playingState) {
-    const { stat, isCursed, pct } = choice;
+    const { stat, isCursed, pct, flatValue } = choice;
     const absPct = Math.abs(pct) / 100;
 
     switch (stat.id) {
@@ -218,8 +326,11 @@ export function applyLevelUpChoice(choice, player, playingState) {
             player.lvlFovMult *= isCursed ? (1 - absPct) : (1 + absPct); break;
 
         // ── Rare ────────────────────────────────────────────────────────────
-        case 'extra_projectile':
-            player.lvlExtraProjectiles = Math.max(0, player.lvlExtraProjectiles + (isCursed ? -1 : 1)); break;
+        case 'extra_projectile': {
+            const delta = (flatValue != null ? flatValue : 1) * (isCursed ? -1 : 1);
+            player.lvlExtraProjectiles = Math.max(0, player.lvlExtraProjectiles + delta);
+            break;
+        }
         case 'scrap_chance':
             player.lvlScrapChanceMult *= isCursed ? (1 - absPct) : (1 + absPct); break;
         case 'cache_freq':
@@ -233,8 +344,11 @@ export function applyLevelUpChoice(choice, player, playingState) {
         case 'wave_countdown':
             // Positive: shorter wave timer  →  mult goes DOWN
             player.lvlWaveCountdownMult *= isCursed ? (1 + absPct) : (1 - absPct); break;
-        case 'hp_regen':
-            player.lvlHpRegen += isCursed ? -0.1 : 0.1; break;
+        case 'hp_regen': {
+            const delta = (flatValue != null ? flatValue : 0.1) * (isCursed ? -1 : 1);
+            player.lvlHpRegen += delta;
+            break;
+        }
     }
 
     // Resync inventory-derived stats (max hp, speed, fire rate, etc.)
@@ -252,18 +366,27 @@ export class LevelUpDialog {
         this.level       = level;
         this.closed      = false;
         this.hoveredChoice = -1;
-        this.choices     = rollChoices(player.luck);
+        this.bonusMult   = playingState ? (playingState.pendingLevelUpMult || 1) : 1;
+        this.choices     = rollChoices(player.luck, player.upgradeTypeCounts || {}, this.bonusMult);
+        this.skipsRemaining = playingState ? (playingState.levelUpSkipsRemaining || 0) : 0;
+        this.canSkip     = this.skipsRemaining > 0;
         this.appearTimer = 0;
         this.appearDuration = 0.25;
         this._cardRects  = [];
+        this._skipRect   = null;
         // Gamepad/keyboard-driven selection, independent of mouse hover.
+        // Index range: [0, choices.length) for stat cards, choices.length for skip.
         this.keyboardSelected = 0;
         this._stickLatched = false;
     }
 
+    _selectableCount() {
+        return this.choices.length + (this.canSkip ? 1 : 0);
+    }
+
     _stepSelection(dir) {
-        if (this.choices.length === 0) return;
-        const n = this.choices.length;
+        const n = this._selectableCount();
+        if (n === 0) return;
         this.keyboardSelected = ((this.keyboardSelected + dir) % n + n) % n;
         this.game.sounds.play('click', 0.4);
     }
@@ -274,17 +397,25 @@ export class LevelUpDialog {
 
         const input = this.game.input;
 
-        // Number key shortcuts 1–4
+        // Number key shortcuts 1–4 (choices), 5 (skip)
         for (let i = 0; i < this.choices.length; i++) {
             if (input.isKeyJustPressed(`Digit${i + 1}`)) {
                 this._selectChoice(i);
                 return;
             }
         }
+        if (this.canSkip && input.isKeyJustPressed(`Digit${this.choices.length + 1}`)) {
+            this._skipChoice();
+            return;
+        }
 
         // Mouse click (hit-test uses rects from previous draw)
         if (input.isMouseJustPressed(0) && this.hoveredChoice >= 0) {
-            this._selectChoice(this.hoveredChoice);
+            if (this.hoveredChoice === this.choices.length) {
+                if (this.canSkip) this._skipChoice();
+            } else {
+                this._selectChoice(this.hoveredChoice);
+            }
             return;
         }
 
@@ -306,16 +437,43 @@ export class LevelUpDialog {
         }
 
         if (input.isGamepadJustPressed(GP.A) || input.isKeyJustPressed('Enter')) {
-            if (this.keyboardSelected >= 0 && this.keyboardSelected < this.choices.length) {
-                this._selectChoice(this.keyboardSelected);
+            const idx = this.keyboardSelected;
+            if (idx >= 0 && idx < this.choices.length) {
+                this._selectChoice(idx);
+            } else if (this.canSkip && idx === this.choices.length) {
+                this._skipChoice();
             }
         }
     }
 
     _selectChoice(index) {
         if (index < 0 || index >= this.choices.length) return;
-        applyLevelUpChoice(this.choices[index], this.player, this.playingState);
+        const choice = this.choices[index];
+        applyLevelUpChoice(choice, this.player, this.playingState);
+
+        // Track per-type pick history (positive picks only — cursed picks were
+        // chosen too, so they still count as the player "investing" in that type).
+        const t = STAT_TYPE[choice.stat.id];
+        if (t && this.player.upgradeTypeCounts) {
+            this.player.upgradeTypeCounts[t] = (this.player.upgradeTypeCounts[t] || 0) + 1;
+        }
+
+        // Picking cashes in the banked multiplier and refreshes skip budget.
+        if (this.playingState) {
+            this.playingState.pendingLevelUpMult    = 1;
+            this.playingState.levelUpSkipsRemaining = this.playingState.LEVELUP_MAX_SKIPS;
+        }
         this.game.sounds.play('select', 0.7);
+        this.closed = true;
+    }
+
+    _skipChoice() {
+        if (!this.canSkip || !this.playingState) return;
+        // Decrement skips and bank the next-roll multiplier.
+        this.playingState.levelUpSkipsRemaining = Math.max(0, this.playingState.levelUpSkipsRemaining - 1);
+        this.playingState.pendingLevelUpMult    = (this.playingState.pendingLevelUpMult || 1)
+            * (this.playingState.LEVELUP_SKIP_MULT_STEP || 1.8);
+        this.game.sounds.play('click', 0.6);
         this.closed = true;
     }
 
@@ -343,13 +501,15 @@ export class LevelUpDialog {
         const descSize  = Math.floor(5  * us);
         const lh        = Math.floor(fontSize * 1.55);
 
-        const panelW  = Math.min(cw * 0.65, Math.floor(180 * us));
-        const cardH   = Math.floor(40 * us);
-        const cardGap = Math.floor(3  * us);
-        const headerH = titleSize + subSize + pad * 2;
-        const panelH  = headerH + this.choices.length * (cardH + cardGap) + pad;
-        const panelX  = Math.floor((cw - panelW) / 2);
-        const panelY  = Math.floor((ch - panelH) / 2);
+        const panelW   = Math.min(cw * 0.65, Math.floor(180 * us));
+        const cardH    = Math.floor(40 * us);
+        const cardGap  = Math.floor(3  * us);
+        const skipCardH = Math.floor(18 * us);
+        const headerH  = titleSize + subSize + pad * 2;
+        const skipBlockH = this.canSkip ? (skipCardH + cardGap) : 0;
+        const panelH   = headerH + this.choices.length * (cardH + cardGap) + skipBlockH + pad;
+        const panelX   = Math.floor((cw - panelW) / 2);
+        const panelY   = Math.floor((ch - panelH) / 2);
 
         // ── Panel ──────────────────────────────────────────────────────────
         ctx.fillStyle   = '#0a101a';
@@ -359,16 +519,23 @@ export class LevelUpDialog {
         ctx.strokeRect(panelX, panelY, panelW, panelH);
 
         // ── Title ──────────────────────────────────────────────────────────
+        const hasMult = this.bonusMult > 1.00001;
         ctx.font         = `${titleSize}px Astro5x`;
-        ctx.fillStyle    = '#ffff44';
+        ctx.fillStyle    = hasMult ? '#ffd866' : '#ffff44';
         ctx.textAlign    = 'center';
         ctx.textBaseline = 'top';
-        ctx.fillText('LEVEL UP!', cw / 2, panelY + pad);
+        const titleStr = hasMult
+            ? `LEVEL UP!  x${this.bonusMult.toFixed(2)}`
+            : 'LEVEL UP!';
+        ctx.fillText(titleStr, cw / 2, panelY + pad);
 
         ctx.font      = `${subSize}px Astro4x`;
-        ctx.fillStyle = '#778899';
+        ctx.fillStyle = hasMult ? '#aa8844' : '#778899';
+        const subStr = hasMult
+            ? `LEVEL ${this.level}  -  BONUS FROM SKIPS`
+            : `LEVEL ${this.level}  -  CHOOSE A STAT UPGRADE`;
         ctx.fillText(
-            `LEVEL ${this.level}  —  CHOOSE A STAT UPGRADE`,
+            subStr,
             cw / 2,
             panelY + pad + titleSize + Math.floor(2 * us)
         );
@@ -430,14 +597,46 @@ export class LevelUpDialog {
                 : ch2.stat.name.toUpperCase();
             ctx.fillText(displayName, nameX, topLineY);
 
-            // Bonus value — right-aligned, rarity-coloured
+            // Bonus value — right-aligned, rarity-coloured.
+            // When a skip multiplier is banked, draw the un-multiplied value
+            // crossed out before the boosted value (e.g. "+1.4%  +2.5%").
             const bonusStr = ch2.flatDisplay
                 ? ch2.flatDisplay
                 : `${ch2.pct >= 0 ? '+' : ''}${ch2.pct.toFixed(1)}%`;
             ctx.font      = `${fontSize}px Astro5x`;
             ctx.textAlign = 'right';
-            ctx.fillStyle = ch2.bonusColor;
-            ctx.fillText(bonusStr, cardX + cardW - ip, topLineY);
+            const bonusRightX = cardX + cardW - ip;
+
+            const showBase = hasMult && !ch2.isCursed && (
+                (ch2.baseFlatDisplay != null) ||
+                (ch2.basePct != null && Math.abs(ch2.basePct) > 0.001)
+            );
+
+            if (showBase) {
+                const baseStr = ch2.baseFlatDisplay
+                    ? ch2.baseFlatDisplay
+                    : `${ch2.basePct >= 0 ? '+' : ''}${ch2.basePct.toFixed(1)}%`;
+                const gap = Math.floor(4 * us);
+                const bonusW = ctx.measureText(bonusStr).width;
+                // Draw boosted value (right-aligned).
+                ctx.fillStyle = ch2.bonusColor;
+                ctx.fillText(bonusStr, bonusRightX, topLineY);
+                // Draw base value to the left, dimmer, with strikethrough.
+                const baseRightX = bonusRightX - bonusW - gap;
+                ctx.fillStyle = hovered ? '#667788' : '#445566';
+                ctx.fillText(baseStr, baseRightX, topLineY);
+                const baseW = ctx.measureText(baseStr).width;
+                ctx.strokeStyle = ctx.fillStyle;
+                ctx.lineWidth = Math.max(1, Math.floor(us));
+                const strikeY = topLineY;
+                ctx.beginPath();
+                ctx.moveTo(baseRightX - baseW, strikeY);
+                ctx.lineTo(baseRightX,         strikeY);
+                ctx.stroke();
+            } else {
+                ctx.fillStyle = ch2.bonusColor;
+                ctx.fillText(bonusStr, bonusRightX, topLineY);
+            }
 
             // Description
             ctx.font         = `${descSize}px Astro4x`;
@@ -449,21 +648,73 @@ export class LevelUpDialog {
                 : ch2.stat.desc;
             ctx.fillText(descStr, nameX, botLineY);
 
-            // Category label — right-aligned, very subtle
+            // Type label — right-aligned, very subtle (offense/defense/...)
             ctx.font      = `${descSize}px Astro4x`;
             ctx.textAlign = 'right';
             ctx.fillStyle = ch2.isCursed ? '#664433' : (hovered ? '#445566' : '#1e2e3e');
             ctx.fillText(
-                (ch2.isCursed ? 'CURSED' : ch2.category).toUpperCase(),
+                (ch2.isCursed ? 'CURSED' : ch2.type).toUpperCase(),
                 cardX + cardW - ip, botLineY
+            );
+        }
+
+        // ── Skip card ─────────────────────────────────────────────────────
+        this._skipRect = null;
+        if (this.canSkip) {
+            const skipIdx = this.choices.length;
+            const skipX = panelX + pad;
+            const skipW = panelW - pad * 2;
+            const skipY = panelY + headerH + this.choices.length * (cardH + cardGap);
+            this._skipRect = { x: skipX, y: skipY, w: skipW, h: skipCardH };
+
+            const skipMouseHover = mouse.x >= skipX && mouse.x <= skipX + skipW &&
+                                   mouse.y >= skipY && mouse.y <= skipY + skipCardH;
+            if (skipMouseHover) this.hoveredChoice = skipIdx;
+            const skipHovered = gamepadActive ? (this.keyboardSelected === skipIdx) : skipMouseHover;
+
+            ctx.fillStyle   = skipHovered ? '#22281a' : '#161a10';
+            ctx.strokeStyle = skipHovered ? '#998844' : '#3e4422';
+            ctx.lineWidth   = 1;
+            ctx.fillRect(skipX, skipY, skipW, skipCardH);
+            ctx.strokeRect(skipX, skipY, skipW, skipCardH);
+
+            const ip = Math.floor(pad * 0.7);
+            const midY = skipY + Math.floor(skipCardH / 2);
+
+            ctx.font         = `${fontSize}px Astro5x`;
+            ctx.textBaseline = 'middle';
+
+            ctx.textAlign = 'left';
+            ctx.fillStyle = skipHovered ? '#aabbcc' : '#556677';
+            const skipNum = `[${skipIdx + 1}]`;
+            const skipNumW = ctx.measureText(skipNum + ' ').width;
+            ctx.fillText(skipNum, skipX + ip, midY);
+
+            ctx.fillStyle = skipHovered ? '#ffe088' : '#bba844';
+            const nextMult = (this.bonusMult || 1) * (this.playingState
+                ? (this.playingState.LEVELUP_SKIP_MULT_STEP || 1.8)
+                : 1.8);
+            const skipLabel = `SKIP  -  x${nextMult.toFixed(2)} ON NEXT ROLL`;
+            ctx.fillText(skipLabel, skipX + ip + skipNumW, midY);
+
+            ctx.textAlign = 'right';
+            ctx.fillStyle = skipHovered ? '#bbaa66' : '#776633';
+            ctx.fillText(
+                `${this.skipsRemaining} SKIP${this.skipsRemaining === 1 ? '' : 'S'} LEFT`,
+                skipX + skipW - ip, midY
             );
         }
 
         // Draw selection corners around the gamepad-focused card so the
         // highlight matches the rest of the inventory UI.
-        if (gamepadActive && this.keyboardSelected >= 0 && this.keyboardSelected < this._cardRects.length) {
-            const card = this._cardRects[this.keyboardSelected];
-            this._drawCorners(ctx, card.x, card.y, card.w, card.h);
+        if (gamepadActive && this.keyboardSelected >= 0) {
+            if (this.keyboardSelected < this._cardRects.length) {
+                const card = this._cardRects[this.keyboardSelected];
+                this._drawCorners(ctx, card.x, card.y, card.w, card.h);
+            } else if (this._skipRect && this.keyboardSelected === this.choices.length) {
+                const sr = this._skipRect;
+                this._drawCorners(ctx, sr.x, sr.y, sr.w, sr.h);
+            }
         }
 
         ctx.restore();

@@ -228,6 +228,11 @@ export class Player {
         this.lvlWaveCountdownMult    = 1.0;  // <1 = shorter countdown (positive)
         this.lvlHpRegen              = 0.0;  // HP/sec
         this._lvlHpRegenAccum        = 0.0;  // for floating text
+
+        // Per-type pick history used by the level-up roller to softly bias
+        // future rolls away from over-picked types (offense/defense/mobility/
+        // utility/difficulty). Accumulates over the run.
+        this.upgradeTypeCounts       = {};
     }
 
     /**
@@ -571,7 +576,7 @@ export class Player {
             this.boostFlash = 1;
             this._boostWasOnCooldown = false;
         }
-        this.boostFlash = Math.max(0, this.boostFlash - dt * 4);
+        this.boostFlash = Math.max(0, this.boostFlash - dt * 2);
 
         if (this._teleportWasOnCooldown && this.boostCooldownTimer <= 0) {
             this.teleportFlash = 1;
@@ -1022,7 +1027,8 @@ export class Player {
         const flash = Math.max(this.boostFlash, this.teleportFlash);
         if (flash > 0.01) {
             ctx.globalCompositeOperation = 'screen';
-            ctx.globalAlpha = flash * 0.6;
+            ctx.globalAlpha = flash;
+            ctx.drawImage(img.canvas || img, -w / 2, -h / 2, w, h);
             ctx.drawImage(img.canvas || img, -w / 2, -h / 2, w, h);
             ctx.globalAlpha = 1;
             ctx.globalCompositeOperation = 'source-over';
@@ -1369,6 +1375,7 @@ export class Player {
             lvlWaveCountdownMult: this.lvlWaveCountdownMult,
             lvlExtraProjectiles: this.lvlExtraProjectiles,
             lvlHpRegen: this.lvlHpRegen,
+            upgradeTypeCounts: { ...this.upgradeTypeCounts },
             hasYellowGlow: this.hasYellowGlow,
             inventory: this.inventory ? this.inventory.serialize() : null
         };
@@ -1421,6 +1428,7 @@ export class Player {
             this.lvlWaveCountdownMult    = data.lvlWaveCountdownMult;
             this.lvlExtraProjectiles     = data.lvlExtraProjectiles || 0;
             this.lvlHpRegen              = data.lvlHpRegen || 0;
+            this.upgradeTypeCounts       = data.upgradeTypeCounts ? { ...data.upgradeTypeCounts } : {};
             this.hasYellowGlow           = data.hasYellowGlow || false;
         }
 
