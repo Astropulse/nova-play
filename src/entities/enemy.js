@@ -958,14 +958,13 @@ export class EnemySpawner {
         this.burstQueue = 0;        // How many enemies left to spawn in this burst
         this.burstSpawnTimer = 0;   // Timer between individual spawns within a burst
 
-        // Wave stagger queue
-        this.waveQueue = 0;         // Enemies remaining to spawn from a wave
-        this.waveSpawnTimer = 0;    // Timer between staggered wave spawns
-        this.waveDelay = 0;         // Delay before the FIRST enemy of a wave spawns
-        this.waveSpawnScale = 1.0;  // Difficulty at time wave was triggered
-        this.waveNumber = 0;        // Tracks which wave we're on
-        this.waveSpawnInterval = 1.5; // Seconds between wave spawns (scales)
-        this.waveBatchSize = 1;      // How many enemies per wave spawn tick
+        // Wave burst queue (dynamic: burst sizes rolled at fire time, can overshoot)
+        this.waveQueue = 0;          // Intended enemies remaining; may go to 0 (or negative on overshoot)
+        this.waveSpawnedTotal = 0;   // Enemies actually spawned this wave (basis for 90%-cleared check)
+        this.waveMaxBurstSize = 3;   // Upper bound for this wave's burst-size roll
+        this.waveBurstTimer = 0;     // Time until next burst fires
+        this.waveSpawnScale = 1.0;   // Difficulty at time wave was triggered
+        this.waveNumber = 0;         // Tracks which wave we're on
         this.lastBossType = null;
 
         this.spawnRateMult = 1.0;
@@ -1003,27 +1002,28 @@ export class EnemySpawner {
         const spawned = [];
         const player = this.game.currentState.player;
 
-        // --- Drain wave stagger queue first ---
+        // --- Drain wave bursts (dynamic sizing) ---
         if (this.waveQueue > 0) {
-            // Initial delay before first spawn to separate from wave-start effects
-            if (this.waveDelay > 0) {
-                this.waveDelay -= dt;
-                return [];
-            }
+            this.waveBurstTimer -= dt;
 
-            this.waveSpawnTimer -= dt;
+            if (this.waveBurstTimer <= 0) {
+                const minBurst = 3;
+                let burstSize;
+                if (this.waveQueue < minBurst) {
+                    // Final dump: leftover smaller than a normal burst
+                    burstSize = this.waveQueue;
+                } else {
+                    // Random size in [minBurst, waveMaxBurstSize]. May overshoot the
+                    // queue — that's intentional: harder wave, no normalization.
+                    burstSize = minBurst + Math.floor(Math.random() * (this.waveMaxBurstSize - minBurst + 1));
+                }
 
-            if (this.waveSpawnTimer <= 0) {
-                const toSpawn = Math.min(this.waveQueue, this.waveBatchSize);
-                this.waveQueue -= toSpawn;
-
-                // Add some jitter to the interval
-                this.waveSpawnTimer = this.waveSpawnInterval * (0.8 + Math.random() * 0.4);
+                this.waveQueue -= burstSize;
+                this.waveSpawnedTotal += burstSize;
 
                 const fov = (this.game.currentState && this.game.currentState.currentFovMult) || 1.0;
 
-                for (let i = 0; i < toSpawn; i++) {
-                    // Spawn further out so they arrive staggered (1800-2440)
+                for (let i = 0; i < burstSize; i++) {
                     const angle = Math.random() * Math.PI * 2;
                     const dist = (1800 + Math.random() * 640) * fov;
                     const en = new Enemy(this.game, playerX + Math.cos(angle) * dist, playerY + Math.sin(angle) * dist, this.waveSpawnScale);
@@ -1031,7 +1031,13 @@ export class EnemySpawner {
                     en.worldX = resolved.x;
                     en.worldY = resolved.y;
                     Enemy.rollUpgrade(en, player);
+                    en.waveTag = this.waveNumber;
                     spawned.push(en);
+                }
+
+                // Schedule next burst (7-12s) if queue still has enemies
+                if (this.waveQueue > 0) {
+                    this.waveBurstTimer = 7 + Math.random() * 5;
                 }
             }
             return spawned;  // Don't run ambient burst spawns during a wave
@@ -1089,8 +1095,9 @@ export class EnemySpawner {
         // Boss wave every 4 waves
         if (this.waveNumber % 4 === 0) {
             this.waveQueue = 0;
-            this.waveSpawnTimer = 0;
-            this.waveDelay = 0.5;
+            this.waveSpawnedTotal = 0;
+            this.waveMaxBurstSize = 3;
+            this.waveBurstTimer = 0;
             this.waveSpawnScale = difficultyScale;
 
             // Spawn boss at a distance
@@ -1121,18 +1128,18 @@ export class EnemySpawner {
         } else {
             count = Math.floor(2 + difficultyScale);
         }
-        // Queue them for staggered spawning
+
+        // Burst sizing is fully dynamic now: each burst rolls its size at fire time,
+        // can overshoot the queue (harder wave), and a sub-minimum remainder gets
+        // dumped as the final small burst. Cache the per-wave max here.
+        // Max grows 3 → 8 across waves: ~3 at wave 1, ~8 by wave 11+.
+        this.waveMaxBurstSize = Math.min(8, 3 + Math.floor(this.waveNumber / 2));
         this.waveQueue = count;
-        this.waveSpawnTimer = 0; // First enemy spawns after initial delay
-        this.waveDelay = 0.5;    // Give the flash/hud half a second to breathe
+        this.waveSpawnedTotal = 0;
+        this.waveBurstTimer = 0.8; // First burst delay — let the wave-start flash breathe
         this.waveSpawnScale = difficultyScale;
 
-        // Compression: all enemies should spawn within 10-20s (Target 15s)
-        const targetTime = 15;
-        // Interval floor 0.4s for visual spacing, cap 2.0s for responsiveness
-        this.waveSpawnInterval = Math.max(0.4, Math.min(2.0, targetTime / count));
-        this.waveBatchSize = Math.max(1, Math.ceil((count * this.waveSpawnInterval) / targetTime));
-        // Return empty — enemies will be spawned via update() over time
+        // Return empty — enemies will be spawned via update() in bursts
         return [];
     }
 
@@ -1143,12 +1150,11 @@ export class EnemySpawner {
             burstQueue: this.burstQueue,
             burstSpawnTimer: this.burstSpawnTimer,
             waveQueue: this.waveQueue,
-            waveSpawnTimer: this.waveSpawnTimer,
-            waveDelay: this.waveDelay,
+            waveSpawnedTotal: this.waveSpawnedTotal,
+            waveMaxBurstSize: this.waveMaxBurstSize,
+            waveBurstTimer: this.waveBurstTimer,
             waveSpawnScale: this.waveSpawnScale,
             waveNumber: this.waveNumber,
-            waveSpawnInterval: this.waveSpawnInterval,
-            waveBatchSize: this.waveBatchSize,
             lastBossType: this.lastBossType
         };
     }
@@ -1160,12 +1166,11 @@ export class EnemySpawner {
         this.burstQueue = data.burstQueue;
         this.burstSpawnTimer = data.burstSpawnTimer;
         this.waveQueue = data.waveQueue;
-        this.waveSpawnTimer = data.waveSpawnTimer;
-        this.waveDelay = data.waveDelay;
+        this.waveSpawnedTotal = data.waveSpawnedTotal || 0;
+        this.waveMaxBurstSize = data.waveMaxBurstSize || 3;
+        this.waveBurstTimer = data.waveBurstTimer || 0;
         this.waveSpawnScale = data.waveSpawnScale;
         this.waveNumber = data.waveNumber;
-        this.waveSpawnInterval = data.waveSpawnInterval || 1.5;
-        this.waveBatchSize = data.waveBatchSize || 1;
         this.lastBossType = data.lastBossType || null;
     }
 }

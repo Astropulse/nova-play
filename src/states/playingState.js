@@ -871,12 +871,26 @@ export class PlayingState {
             const powerLevel = this._calculatePlayerPowerLevel();
             this.difficultyScale = timeScale + powerLevel;
 
-            // Wave timer: fixed 2-minute interval
+            // Wave timer: fixed 2-minute interval, but pauses while a wave is still
+            // in flight so waves don't bleed into one another. Wave is "active" until
+            // 90% of its spawned enemies are destroyed.
             let bossAlive = false;
-            for (const e of this.enemies) { if (e.isBoss && e.alive) { bossAlive = true; break; } }
+            let currentWaveAlive = 0;
+            const currentWaveNum = this.enemySpawner.waveNumber;
+            for (const e of this.enemies) {
+                if (e.isBoss && e.alive) bossAlive = true;
+                if (e.alive && e.waveTag === currentWaveNum) currentWaveAlive++;
+            }
+            const waveSpawned = this.enemySpawner.waveSpawnedTotal || 0;
+            const waveStillSpawning = this.enemySpawner.waveQueue > 0;
+            const waveClearedPct = waveSpawned > 0 ? 1 - (currentWaveAlive / waveSpawned) : 1;
+            const waveActive = waveStillSpawning || (waveSpawned > 0 && waveClearedPct < 0.9);
+
             if (!bossAlive && !this.yellowOneFightActive) {
-                this.waveTimer -= dt;
                 this.postWaveTimer += dt;
+                if (!waveActive) {
+                    this.waveTimer -= dt;
+                }
             }
 
             // --- Music System Logic ---
