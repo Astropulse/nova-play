@@ -127,6 +127,17 @@ export class HUD {
         this._drawExpBar(ctx, cw, ch);
 
         ctx.restore();
+
+        // Note: the achievement toast is intentionally NOT drawn here. The
+        // shop/pause/cache overlays paint over the HUD after this, which
+        // would hide unlocks behind them. PlayingState calls drawToast()
+        // separately, after the overlay pass, so toasts sit on top.
+    }
+
+    // Public draw for the achievement toast. Called from PlayingState after
+    // the overlay/dialog pass so unlocks aren't hidden by the dark backdrop.
+    drawToast(ctx) {
+        this._drawAchievementToast(ctx);
     }
 
 
@@ -388,6 +399,107 @@ export class HUD {
             ctx.fillText('CLAIM IN INVENTORY', cw / 2, textY - hudScale * 7);
         }
         ctx.restore();
+    }
+
+    _drawAchievementToast(ctx) {
+        const mgr = this.game.achievements;
+        if (!mgr) return;
+
+        // Self-clock so we don't need PlayingState to thread dt through draw.
+        const now = performance.now();
+        const dt = this._toastLastNow ? Math.min(0.1, (now - this._toastLastNow) / 1000) : 0.016;
+        this._toastLastNow = now;
+
+        const state = mgr.updateToast(dt);
+        if (!state) return;
+
+        const { ach, t } = state;
+        const cw = this.game.width;
+        const ch = this.game.height;
+        const hudScale = this.game.hudScale;
+
+        // Slide in over the first 12%, hold, slide out over the last 18%.
+        let slide = 1;
+        if (t < 0.12)      slide = t / 0.12;
+        else if (t > 0.82) slide = Math.max(0, 1 - (t - 0.82) / 0.18);
+        const eased = 1 - Math.pow(1 - slide, 3);
+
+        // Box anchored bottom-right. Slides in horizontally from off-screen
+        // (right edge) so the panel doesn't briefly cover the shield bar on
+        // the left or the level text in the middle.
+        const margin = Math.floor(hudScale * 6);
+        const iconSize = Math.floor(hudScale * 14);
+        const boxW = Math.floor(hudScale * 110);
+        const boxH = Math.floor(hudScale * 22);
+        const restingX = cw - margin - boxW;
+        const offRightMax = boxW + margin;
+        const boxX = Math.floor(restingX + (1 - eased) * offRightMax);
+        const boxY = ch - margin - boxH;
+
+        ctx.save();
+        ctx.globalAlpha = eased;
+
+        // Panel
+        ctx.fillStyle = 'rgba(8, 16, 28, 0.94)';
+        ctx.fillRect(boxX, boxY, boxW, boxH);
+        ctx.strokeStyle = '#44ddff';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(boxX + 0.5, boxY + 0.5, boxW - 1, boxH - 1);
+
+        // Left accent bar
+        ctx.fillStyle = '#44ddff';
+        ctx.fillRect(boxX, boxY, Math.max(1, Math.floor(hudScale * 0.75)), boxH);
+
+        // Icon box — placeholder when achievement has no icon asset. Sits
+        // flush against the left edge of the panel.
+        const iconX = boxX + Math.floor(hudScale * 3);
+        const iconY = boxY + Math.floor((boxH - iconSize) / 2);
+        const asset = ach.icon ? this.game.assets.get(ach.icon) : null;
+        if (asset) {
+            const img = asset.canvas || asset;
+            const aw = asset.width || img.width;
+            const ah = asset.height || img.height;
+            const scale = Math.min(iconSize / aw, iconSize / ah);
+            const dw = aw * scale;
+            const dh = ah * scale;
+            ctx.drawImage(img, Math.floor(iconX + (iconSize - dw) / 2), Math.floor(iconY + (iconSize - dh) / 2), dw, dh);
+        } else {
+            ctx.fillStyle = 'rgba(20, 40, 60, 0.9)';
+            ctx.fillRect(iconX, iconY, iconSize, iconSize);
+            ctx.strokeStyle = 'rgba(68, 221, 255, 0.5)';
+            ctx.strokeRect(iconX + 0.5, iconY + 0.5, iconSize - 1, iconSize - 1);
+        }
+
+        const textX = iconX + iconSize + Math.floor(hudScale * 3);
+
+        // Header
+        ctx.fillStyle = '#44ddff';
+        ctx.font = `${Math.floor(3 * hudScale)}px Astro4x`;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+        ctx.fillText('ACHIEVEMENT UNLOCKED', textX, boxY + hudScale * 2);
+
+        // Title — truncate with ellipsis if it overruns the panel.
+        ctx.fillStyle = '#ffffff';
+        ctx.font = `${Math.floor(4.5 * hudScale)}px Astro5x`;
+        const titleMaxW = boxX + boxW - textX - Math.floor(hudScale * 3);
+        const title = this._truncateText(ctx, ach.name.toUpperCase(), titleMaxW);
+        ctx.fillText(title, textX, boxY + hudScale * 9);
+
+        ctx.restore();
+    }
+
+    _truncateText(ctx, text, maxWidth) {
+        if (ctx.measureText(text).width <= maxWidth) return text;
+        const ellipsis = '…';
+        let lo = 0;
+        let hi = text.length;
+        while (lo < hi) {
+            const mid = (lo + hi + 1) >> 1;
+            if (ctx.measureText(text.slice(0, mid) + ellipsis).width <= maxWidth) lo = mid;
+            else hi = mid - 1;
+        }
+        return text.slice(0, lo) + ellipsis;
     }
 
     /**

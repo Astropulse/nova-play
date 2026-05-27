@@ -1256,7 +1256,10 @@ export const DIALOG_SCENARIOS = [
                     },
                     {
                         label: "That sounds like it hurts performance. Pass.",
-                        response: "Your loss. I'll find a more willing test subject."
+                        response: "Your loss. I'll find a more willing test subject.",
+                        // Player asked the right question THEN declined — the only
+                        // path through saboteur_tune that avoids a turn debuff.
+                        optimal: true
                     }
                 ]
             },
@@ -1334,7 +1337,10 @@ export const DIALOG_SCENARIOS = [
                     },
                     {
                         label: "Still not worth it",
-                        response: "Fair enough. Stay lucky."
+                        response: "Fair enough. Stay lucky.",
+                        // Asked the odds THEN walked away — only path through
+                        // void_gamble that avoids the 40% mines roll.
+                        optimal: true
                     }
                 ]
             }

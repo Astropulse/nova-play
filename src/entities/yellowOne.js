@@ -600,6 +600,13 @@ export class YellowOne {
                 this.game.currentState.quietTimer = 0;
             }
 
+            // YellowOne lives in the events list, not enemies, so the
+            // enemy_killed achievement notify never fires for it. Emit a
+            // boss_defeated notify here so The Yellow Crown unlocks.
+            if (this.game.achievements) {
+                this.game.achievements.notify('boss_defeated', { bossId: 'YellowOne' });
+            }
+
             // Drop loot at yellow one's position
             this._dropLoot();
             this.game.sounds.play('scrap', { volume: 0.6, x: this.worldX, y: this.worldY });

@@ -1321,6 +1321,10 @@ export class Player {
                 this.game.currentState.spawnFloatingText(this.worldX, this.worldY, 'LEVEL UP!', '#ffff44', 2.0);
             }
 
+            if (this.game.achievements) {
+                this.game.achievements.notify('level_up', { level: this.level });
+            }
+
             // Queue upgrade dialog (sound plays when dialog opens)
             if (this.game.currentState && this.game.currentState.queueLevelUp) {
                 this.game.currentState.queueLevelUp(this.level);

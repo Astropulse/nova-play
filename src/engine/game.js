@@ -1,6 +1,7 @@
 import { AssetLoader } from './assetLoader.js';
 import { InputManager } from './inputManager.js';
 import { SoundManager } from './soundManager.js';
+import { AchievementManager } from './achievementManager.js';
 import { MenuState } from '../states/menuState.js';
 import { DevConsole } from '../ui/devConsole.js';
 
@@ -23,6 +24,7 @@ export class Game {
         this.assets = new AssetLoader();
         this.input = new InputManager(canvas);
         this.sounds = new SoundManager();
+        this.achievements = new AchievementManager(this);
         this.devConsole = new DevConsole(this);
 
         // State
@@ -168,6 +170,11 @@ export class Game {
             ]),
             this.sounds.register('level', [
                 'Assets/Sounds/Effects/level.wav',
+            ]),
+            this.sounds.register('achievement', [
+                'Assets/Sounds/Effects/achievement_1.wav',
+                'Assets/Sounds/Effects/achievement_2.wav',
+                'Assets/Sounds/Effects/achievement_3.wav',
             ])
         ]);
 

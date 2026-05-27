@@ -37,6 +37,16 @@ export class PlayingState {
         this.paused = false;
         this.skipClear = false;
 
+        // Reset per-run achievement counters before any side effects that
+        // could record into them — _onInventoryChanged in particular fires
+        // a player_stats notify, which would otherwise write into the
+        // previous run's state and then get clobbered. Save-resume goes
+        // through deserialize (skipInit=true), so leave the run state alone
+        // for loads.
+        if (!skipInit && game.achievements) {
+            game.achievements.notify('run_started');
+        }
+
         // Optional handoff from the menu state — reuse the same World/Camera
         // and the Player+HUD pair the menu built so every drawn pixel is
         // continuous across the state boundary.
@@ -532,6 +542,9 @@ export class PlayingState {
                     // The UI will appear once the animation completes.
                     nearCache.open();
                     this._pendingCache = nearCache;
+                    if (this.game.achievements) {
+                        this.game.achievements.notify('cache_opened', { cache: nearCache });
+                    }
                 }
             } else if (nearShop) {
                 // Shop interaction
@@ -575,6 +588,9 @@ export class PlayingState {
             if (!wasRevealed && ev.revealed && !ev.discovered) {
                 ev.discovered = true;
                 this.stats.eventsDiscovered++;
+                if (this.game.achievements) {
+                    this.game.achievements.notify('event_discovered', { event: ev });
+                }
             }
             if (ev.isActive) {
                 const edx = ev.worldX - this.player.worldX;
@@ -1087,6 +1103,9 @@ export class PlayingState {
                     s.alive = false;
                     this.player.scrap += s.value;
                     this.stats.scrapCollected += s.value;
+                    if (this.game.achievements) {
+                        this.game.achievements.notify('scrap_collected', { amount: s.value });
+                    }
                     this.game.sounds.play('scrap', { volume: 0.4, x: s.worldX, y: s.worldY });
                     this.spawnFloatingText(s.worldX, s.worldY, `+${s.value}`, '#ffff00');
                 }
@@ -1112,6 +1131,9 @@ export class PlayingState {
                     if (this.player.inventory.autoAdd(it.item)) {
                         it.alive = false;
                         this.game.sounds.play('select', 0.5);
+                        if (this.game.achievements) {
+                            this.game.achievements.notify('upgrade_collected', { item: it.item });
+                        }
                         this._onInventoryChanged(true);
                     } else {
                         // Inventory full — engage the follow-leash so the item
@@ -1457,8 +1479,14 @@ export class PlayingState {
         // Track stats
         if (entity instanceof Asteroid) {
             this.stats.asteroidsDestroyed++;
+            if (this.game.achievements) {
+                this.game.achievements.notify('asteroid_destroyed', { entity });
+            }
         } else if (!(entity instanceof CthulhuEvent) && !(entity instanceof CargoShipEvent)) {
             this.stats.enemiesDefeated++;
+            if (this.game.achievements) {
+                this.game.achievements.notify('enemy_killed', { entity });
+            }
         }
         const spawns = entity.getSpawnOnDeath();
         for (const s of spawns) {
@@ -1480,6 +1508,13 @@ export class PlayingState {
 
         // Cap damage at 1/5th of max health per instance
         const finalAmount = Math.min(amount, this.player.maxHealth / 5);
+
+        if (this.game.achievements) {
+            this.game.achievements.notify('player_damaged', {
+                amount: finalAmount,
+                shielded: !!this.player.shielding
+            });
+        }
 
         if (this.player.shielding) {
             this.spawnFloatingText(this.player.worldX, this.player.worldY, `-${Math.ceil(finalAmount)}`, '#44ddff');
@@ -1943,6 +1978,13 @@ export class PlayingState {
             this._drawPauseOverlay(ctx);
         }
 
+        // Achievement toast sits on top of overlays/dialogs so an unlock
+        // popping mid-shop or mid-pause is still visible. Suppressed during
+        // the Yellow One cutscene to match how the rest of the HUD behaves.
+        if (!this.yellowOneScriptActive) {
+            this.hud.drawToast(ctx);
+        }
+
         // Screen Flash Effect (Vignette Pulse)
         if (this.flashTimer > 0) {
             const pulse = Math.sin(this.flashTimer * 6) * 0.5 + 0.5;
@@ -2062,6 +2104,9 @@ export class PlayingState {
 
     _triggerWave() {
         this.stats.wavesCleared++;
+        if (this.game.achievements) {
+            this.game.achievements.notify('wave_cleared');
+        }
         const waveEnemies = this.enemySpawner.spawnWave(this.player.worldX, this.player.worldY, this.difficultyScale);
 
         // Check if a boss was spawned
@@ -3583,11 +3628,15 @@ export class PlayingState {
                 const { col: cCol, row: cRow } = this._getDropPosition(mouse, cacheLayout,  'cacheScrollX',  'cacheScrollY');
 
                 if (playerInv.canFit(this.draggedItem.item, pCol, pRow)) {
+                    const fromCache = this.draggedItem.originInventory === cacheInv;
                     playerInv.addItem(this.draggedItem.item, pCol, pRow);
                     this._onInventoryChanged(true);
                     this.game.sounds.play('select', 0.8);
-                    if (this.draggedItem.originInventory === cacheInv && cacheInv.items.length === 0) {
-                        if (this._activeCache) this._activeCache.markEmptied();
+                    if (fromCache) {
+                        if (this.game.achievements) {
+                            this.game.achievements.notify('upgrade_collected', { item: this.draggedItem.item });
+                        }
+                        if (cacheInv.items.length === 0 && this._activeCache) this._activeCache.markEmptied();
                     }
                     this._gpFocus = { kind: 'slot', panelKey: 'player', col: pCol, row: pRow };
                 } else if (cacheInv.canFit(this.draggedItem.item, cCol, cRow)) {
@@ -3735,6 +3784,9 @@ export class PlayingState {
                         playerInv.addItem(this.draggedItem.item, pCol, pRow);
                         this.game.sounds.play('select', 0.8);
                         this._onInventoryChanged(true);
+                        if (this.game.achievements) {
+                            this.game.achievements.notify('upgrade_collected', { item: this.draggedItem.item });
+                        }
                         this._gpFocus = { kind: 'slot', panelKey: 'player', col: pCol, row: pRow };
                     } else {
                         shopInv.addItem(this.draggedItem.item, this.draggedItem.x, this.draggedItem.y);
@@ -4256,6 +4308,10 @@ export class PlayingState {
             const diff = p.maxHealth - oldMax;
             if (diff > 0) p.health += diff;
         }
+
+        if (this.game.achievements) {
+            this.game.achievements.notify('player_stats', { player: p });
+        }
     }
 
     _removeSacrificeItem() {
@@ -4389,10 +4445,28 @@ export class PlayingState {
         this.isEncounterOpen = true;
         this.paused = true;
         this.game.sounds.play('click', 0.5);
+
+        if (this.game.achievements) {
+            this.game.achievements.notify('encounter_dialog_opened', {
+                type: encounter.encounterType,
+                scenarioId: encounter.dialogData && encounter.dialogData.rawScenario
+                    ? encounter.dialogData.rawScenario.id
+                    : null
+            });
+        }
     }
 
     _convertEncounterToEnemy(encounter) {
         const en = new HostileEncounter(this.game, encounter.worldX, encounter.worldY, this.difficultyScale, encounter.dialogData);
+
+        if (this.game.achievements) {
+            this.game.achievements.notify('encounter_converted_hostile', {
+                type: encounter.encounterType,
+                scenarioId: encounter.dialogData && encounter.dialogData.rawScenario
+                    ? encounter.dialogData.rawScenario.id
+                    : null
+            });
+        }
 
         // --- Wealth-based scaling ---
         let maxScrap = 0;
@@ -5214,6 +5288,10 @@ export class PlayingState {
         this.deathTimer = 0;
         this.game.sounds.stopMusic();
         this.game.sounds.play('ship_explode', 0.8);
+
+        if (this.game.achievements) {
+            this.game.achievements.notify('run_ended', { time: this.trueTotalTime, stats: this.stats });
+        }
 
         // Generate debris from ship sprite
         this.shipDebris = this._generateShipDebris();

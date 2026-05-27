@@ -258,6 +258,9 @@ function executeActions(actions, vars, player, state, encounter) {
                 const upgrade = resolveParam();
                 if (!upgrade) break;
                 if (!player.inventory.autoAdd(upgrade)) return 'inventory_full';
+                if (state.game.achievements) {
+                    state.game.achievements.notify('upgrade_collected', { item: upgrade });
+                }
                 break;
             }
             case 'add_perm_health': {
@@ -340,6 +343,8 @@ function executeActions(actions, vars, player, state, encounter) {
                 if (battery) {
                     if (!player.inventory.autoAdd(battery)) {
                         player.heal(0.3);
+                    } else if (state.game.achievements) {
+                        state.game.achievements.notify('upgrade_collected', { item: battery });
                     }
                 }
                 break;
@@ -507,6 +512,13 @@ function buildOption(opt, scenario, vars) {
                 const result = executeActions(opt.actions, vars, p, s, enc);
                 if (result === 'not_enough_scrap') return { message: "Not enough scrap.", close: true };
                 if (result === 'inventory_full') return { message: "Cargo hold is full.", close: true };
+            }
+            // Options flagged optimal:true in scenario data unlock per-scenario
+            // achievements. Scenario.id keys the lifetime.optimalChoices map.
+            if (opt.optimal && s && s.game && s.game.achievements) {
+                s.game.achievements.notify('encounter_optimal_choice', {
+                    scenarioId: scenario.id
+                });
             }
             const resp = substitute(opt.response || "...", vars);
             return { message: resp, close: true };

@@ -1,6 +1,8 @@
 import { SHIPS } from '../data/ships.js';
 import { PlayingState } from './playingState.js';
 import { TutorialState } from './tutorialState.js';
+import { AchievementsState } from './achievementsState.js';
+import { ACHIEVEMENTS } from '../data/achievements.js';
 import { GP } from '../engine/inputManager.js';
 import { World } from '../world/world.js';
 import { Camera } from '../world/camera.js';
@@ -25,6 +27,9 @@ export class MenuState {
         this.sfxDecBtn = { x: 0, y: 0, w: 0, h: 0, hovered: false };
         this.sfxIncBtn = { x: 0, y: 0, w: 0, h: 0, hovered: false };
         this.wordmarkBtn = { x: 0, y: 0, w: 0, h: 0, hovered: false };
+        // Text-only button — no sprite asset. Layout + hit rect computed each
+        // frame in _computeLayout below.
+        this.achievementsBtn = { x: 0, y: 0, w: 0, h: 0, hovered: false };
 
         // Track last hover state for click sound
         this.lastHovered = { left: false, right: false, start: false, tutorial: false, mDec: false, mInc: false, sDec: false, sInc: false };
@@ -78,7 +83,8 @@ export class MenuState {
 
             } else if (this._isInside(mouse, this.musicDecBtn) || this._isInside(mouse, this.musicIncBtn) ||
                 this._isInside(mouse, this.sfxDecBtn) || this._isInside(mouse, this.sfxIncBtn) ||
-                this._isInside(mouse, this.wordmarkBtn)) {
+                this._isInside(mouse, this.wordmarkBtn) ||
+                this._isInside(mouse, this.achievementsBtn)) {
                 this.game.sounds.play('click', 1.0);
             }
         };
@@ -165,6 +171,7 @@ export class MenuState {
         this.sfxDecBtn.hovered = this._isInside(mouse, this.sfxDecBtn);
         this.sfxIncBtn.hovered = this._isInside(mouse, this.sfxIncBtn);
         this.wordmarkBtn.hovered = this._isInside(mouse, this.wordmarkBtn);
+        this.achievementsBtn.hovered = this._isInside(mouse, this.achievementsBtn);
 
         // Hover sounds - literal "play once on hover start" logic
         if (this.leftArrowBtn.hovered && !this.lastHovered.left) {
@@ -228,6 +235,11 @@ export class MenuState {
             if (this.wordmarkBtn.hovered) {
                 window.open('https://www.retrodiffusion.ai/', '_blank');
             }
+            if (this.achievementsBtn.hovered) {
+                this.game.input.consumeMouseButton(0);
+                this.game.setState(new AchievementsState(this.game));
+                return;
+            }
         }
 
         if (this.game.input.isKeyJustPressed('ArrowLeft') || this.game.input.isKeyJustPressed('KeyA')) {
@@ -259,6 +271,7 @@ export class MenuState {
             { id: 'sfxInc',    rect: this.sfxIncBtn },
             { id: 'musicDec',  rect: this.musicDecBtn },
             { id: 'musicInc',  rect: this.musicIncBtn },
+            { id: 'achievements', rect: this.achievementsBtn },
         ];
         if (this.focusIndex >= focusables.length) this.focusIndex = 0;
 
@@ -313,6 +326,9 @@ export class MenuState {
                     return 'transition';
                 case 'tutorial':
                     this.game.setState(new TutorialState(this.game));
+                    return 'transition';
+                case 'achievements':
+                    this.game.setState(new AchievementsState(this.game));
                     return 'transition';
                 case 'sfxDec':   this.game.sounds.setSfxVolume(this.game.sounds.sfxVolume - 0.1); break;
                 case 'sfxInc':   this.game.sounds.setSfxVolume(this.game.sounds.sfxVolume + 0.1); break;
@@ -377,6 +393,7 @@ export class MenuState {
             this.sfxIncBtn.hovered     = id === 'sfxInc';
             this.musicDecBtn.hovered   = id === 'musicDec';
             this.musicIncBtn.hovered   = id === 'musicInc';
+            this.achievementsBtn.hovered = id === 'achievements';
         }
     }
 
@@ -500,6 +517,16 @@ export class MenuState {
         this.wordmarkBtn.y = marginTL + 7 * game.uiScale;
         this.wordmarkBtn.w = wordmarkSize.w;
         this.wordmarkBtn.h = wordmarkSize.h;
+
+        // Achievements text button — top-right, mirroring the wordmark's
+        // top-left margin so it reads as a paired UI element.
+        const marginTR = Math.floor(game.uiScale * 12);
+        const labelW = Math.floor(game.uiScale * 80);
+        const labelH = Math.floor(game.uiScale * 22);
+        this.achievementsBtn.x = cw - marginTR - labelW;
+        this.achievementsBtn.y = marginTR;
+        this.achievementsBtn.w = labelW;
+        this.achievementsBtn.h = labelH;
     }
 
     draw(ctx) {
@@ -588,6 +615,23 @@ export class MenuState {
         ctx.textAlign = 'left';
         ctx.fillText('Made with', marginTL, marginTL + 4 * game.uiScale);
         game.drawSprite(ctx, 'pixel_wordmark', marginTL - (1 * game.uiScale), marginTL + 7 * game.uiScale, game.uiScale);
+
+        // Achievements text button — text-only since no sprite asset exists.
+        // Hover state mirrors the in-game UI palette (white = active).
+        {
+            const btn = this.achievementsBtn;
+            ctx.font = `${8 * game.uiScale}px Astro5x`;
+            ctx.textAlign = 'right';
+            ctx.fillStyle = btn.hovered ? '#ffffff' : '#44ddff';
+            ctx.fillText('ACHIEVEMENTS ►', btn.x + btn.w, btn.y + Math.floor(game.uiScale * 8));
+            // Subtle unlock-count hint
+            const mgr = game.achievements;
+            if (mgr) {
+                ctx.font = `${5 * game.uiScale}px Astro4x`;
+                ctx.fillStyle = '#667788';
+                ctx.fillText(`${mgr.unlocked.size} / ${ACHIEVEMENTS.length}`, btn.x + btn.w, btn.y + Math.floor(game.uiScale * 16));
+            }
+        }
 
         this._drawControls(ctx);
         this._drawVolumeControls(ctx);
