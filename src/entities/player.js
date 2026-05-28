@@ -88,6 +88,34 @@ export class Player {
         this.boostFlash = 0;
         this._boostWasOnCooldown = false;
 
+        // Dodge detection — blink-only.
+        // The instant the blink fires, draw the line segment from the
+        // pre-warp position (A) to the warp target (B). For each enemy
+        // projectile, sweep its trajectory forward DODGE_TRAJ_LOOKAHEAD
+        // seconds and check if that projectile sweep intersects the A→B
+        // segment (within a small thickness). Those are the candidates —
+        // the shots that would have hit the player at some point along
+        // the blink line had they not blinked.
+        // Then wait DODGE_GRACE seconds. If the player takes ANY damage
+        // during the grace, the batch is voided (you didn't actually
+        // dodge). Survivors score one dodge each.
+        this.DODGE_GRACE = 0.4;             // s — damage-veto window post-blink
+        this.DODGE_TRAJ_LOOKAHEAD = 0.2;    // s — projectile trajectory horizon
+        this.dodgeWindowTimer = 0;
+        this.dodgeCandidates = new Set();
+        this.dodgeDamaged = false;
+
+        // Distance tracking — running total of world-units flown this run,
+        // pushed to the achievement manager every half second.
+        this._runDistance = 0;
+        this._distNotifyTimer = 0;
+
+        // Belly Flop: armed when a warp ends inside an asteroid. The
+        // playingState collision handler checks this in the same frame —
+        // if the resulting damage kills the player, the achievement fires.
+        // Otherwise it lapses harmlessly after the brief grace window.
+        this._pendingBellyFlop = 0;
+
         this.experienceCondenserMult = 1.0;
         this.asteroidDrillMult = 1.0;
         this.laserCartridgeMult = 1.0;
@@ -500,6 +528,17 @@ export class Player {
 
                 this.boostCooldownTimer = this.teleportCooldown * this.boostCooldownMult;
                 this._teleportWasOnCooldown = true;
+
+                this._armDodgeWindow(this.warpStartX, this.warpStartY,
+                                     this.warpTargetX, this.warpTargetY);
+
+                if (this.game.achievements) {
+                    const bdx = this.warpTargetX - this.warpStartX;
+                    const bdy = this.warpTargetY - this.warpStartY;
+                    this.game.achievements.notify('blink_used', {
+                        distance: Math.sqrt(bdx * bdx + bdy * bdy)
+                    });
+                }
             }
         }
 
@@ -533,6 +572,25 @@ export class Player {
                 const exitSpeed = 800; // Average warp speed (3500) + Kick (1200)
                 this.vx = Math.cos(this.warpAngle) * exitSpeed;
                 this.vy = Math.sin(this.warpAngle) * exitSpeed;
+
+                // Belly Flop arming — did we land inside an asteroid? Don't
+                // notify yet; we want to count this only if the impending
+                // collision damage actually kills us. PlayingState checks
+                // _pendingBellyFlop in its player-vs-asteroid handler.
+                const ps = this.game.currentState;
+                if (ps && ps.asteroids) {
+                    for (let i = 0; i < ps.asteroids.length; i++) {
+                        const ast = ps.asteroids[i];
+                        if (!ast || !ast.alive) continue;
+                        const adx = ast.worldX - this.worldX;
+                        const ady = ast.worldY - this.worldY;
+                        const ar = ast.radius || 0;
+                        if (adx * adx + ady * ady < ar * ar) {
+                            this._pendingBellyFlop = 0.25;
+                            break;
+                        }
+                    }
+                }
             }
         } else if (this.hasBoostDrive) {
             if (boostDown) {
@@ -595,6 +653,28 @@ export class Player {
             this.teleportOutlineFade -= dt * 4.0;
         }
 
+        // Belly Flop pending — lapses harmlessly if no fatal collision
+        // lands within the grace window. Cleared by playingState when it
+        // fires the achievement notify.
+        if (this._pendingBellyFlop > 0) {
+            this._pendingBellyFlop -= dt;
+            if (this._pendingBellyFlop < 0) this._pendingBellyFlop = 0;
+        }
+
+        // Dodge: candidates were captured at the activation instant by
+        // _scanDodgeCandidates. Here we only watch for damage during the
+        // grace window — if anything lands, the batch is voided. Commit
+        // when the window ends.
+        if (this.dodgeWindowTimer > 0) {
+            this.dodgeWindowTimer -= dt;
+            if (this.invulnTimer > 0) this.dodgeDamaged = true;
+            if (this.dodgeWindowTimer <= 0) {
+                this._commitDodges();
+                this.dodgeCandidates.clear();
+                this.dodgeDamaged = false;
+            }
+        }
+
         // --- Physics ---
         this.vx += accelX * dt;
         this.vy += accelY * dt;
@@ -616,8 +696,24 @@ export class Player {
             this.vy = 0;
         }
 
+        const _prevPosX = this.worldX;
+        const _prevPosY = this.worldY;
         this.worldX += this.vx * dt;
         this.worldY += this.vy * dt;
+
+        // Distance tracking — accumulates each frame, pushed to the
+        // achievement manager every 0.5s so the Frequent Flyer check ticks
+        // forward steadily without spamming notifies every frame.
+        const _ddx = this.worldX - _prevPosX;
+        const _ddy = this.worldY - _prevPosY;
+        this._runDistance += Math.sqrt(_ddx * _ddx + _ddy * _ddy);
+        this._distNotifyTimer += dt;
+        if (this._distNotifyTimer >= 0.5) {
+            this._distNotifyTimer = 0;
+            if (this.game.achievements) {
+                this.game.achievements.notify('player_traveled', { distance: this._runDistance });
+            }
+        }
 
         // --- Thruster sound (speed-based overlapping) ---
         if (this.thrusting && currentSpeed > 50) {
@@ -1303,6 +1399,97 @@ export class Player {
         tCtx.fillRect(0, 0, aw, ah);
 
         return ghostCanvas;
+    }
+
+    // Blink-only dodge candidate scan.
+    // (ax, ay) is the pre-warp position; (bx, by) is the warp target.
+    // For each enemy projectile, sweep its trajectory forward
+    // DODGE_TRAJ_LOOKAHEAD seconds and check if that swept segment passes
+    // within the player's body radius of the A→B blink segment. Those are
+    // the projectiles that "would have hit" the player along the line.
+    _armDodgeWindow(ax, ay, bx, by) {
+        this.dodgeCandidates.clear();
+        this.dodgeDamaged = false;
+        this.dodgeWindowTimer = this.DODGE_GRACE;
+        if (this.invulnTimer > 0) {
+            // Just got hit — the blink is reactive, not a dodge.
+            this.dodgeWindowTimer = 0;
+            return;
+        }
+
+        const state = this.game.currentState;
+        const list = state && state.projectiles;
+        if (!list || !list.length) return;
+
+        const lookahead = this.DODGE_TRAJ_LOOKAHEAD;
+        const thickness = this.radius;
+        const thickSq = thickness * thickness;
+
+        for (let i = 0; i < list.length; i++) {
+            const proj = list[i];
+            if (!proj || !proj.alive) continue;
+            if (proj.owner === this) continue;
+            const vx = proj.vx || 0;
+            const vy = proj.vy || 0;
+            const speedSq = vx * vx + vy * vy;
+            if (speedSq < 100) continue; // Stationary — not a threat
+            const cx = proj.worldX + vx * lookahead;
+            const cy = proj.worldY + vy * lookahead;
+            // Closest distance² between projectile sweep [P → C] and blink
+            // line [A → B]. Within one body radius = "would have hit".
+            if (this._segSegDistSq(proj.worldX, proj.worldY, cx, cy, ax, ay, bx, by) <= thickSq) {
+                this.dodgeCandidates.add(proj);
+            }
+        }
+    }
+
+    // Commit dodges at the end of the grace window. If ANY damage landed
+    // in the past DODGE_GRACE seconds, the whole batch voids — the player
+    // got hit, so they didn't successfully dodge.
+    _commitDodges() {
+        if (this.dodgeDamaged) return;
+        if (this.dodgeCandidates.size === 0) return;
+        if (!this.game.achievements) return;
+        for (let i = 0; i < this.dodgeCandidates.size; i++) {
+            this.game.achievements.notify('dodge_performed');
+        }
+    }
+
+    // Squared minimum distance between two line segments [P1→P2] and
+    // [P3→P4] in 2D. Standard algorithm — parameterize each segment,
+    // solve for the closest pair, clamp parameters to [0, 1].
+    _segSegDistSq(p1x, p1y, p2x, p2y, p3x, p3y, p4x, p4y) {
+        const d1x = p2x - p1x, d1y = p2y - p1y;
+        const d2x = p4x - p3x, d2y = p4y - p3y;
+        const rx  = p1x - p3x, ry  = p1y - p3y;
+        const a = d1x * d1x + d1y * d1y;
+        const e = d2x * d2x + d2y * d2y;
+        const f = d2x * rx + d2y * ry;
+        let s, t;
+        if (a <= 1e-6 && e <= 1e-6) {
+            return rx * rx + ry * ry;
+        }
+        if (a <= 1e-6) {
+            s = 0;
+            t = Math.max(0, Math.min(1, f / e));
+        } else {
+            const c = d1x * rx + d1y * ry;
+            if (e <= 1e-6) {
+                t = 0;
+                s = Math.max(0, Math.min(1, -c / a));
+            } else {
+                const b = d1x * d2x + d1y * d2y;
+                const denom = a * e - b * b;
+                s = denom !== 0 ? Math.max(0, Math.min(1, (b * f - c * e) / denom)) : 0;
+                t = (b * s + f) / e;
+                if (t < 0) { t = 0; s = Math.max(0, Math.min(1, -c / a)); }
+                else if (t > 1) { t = 1; s = Math.max(0, Math.min(1, (b - c) / a)); }
+            }
+        }
+        const c1x = p1x + d1x * s, c1y = p1y + d1y * s;
+        const c2x = p3x + d2x * t, c2y = p3y + d2y * t;
+        const dx = c1x - c2x, dy = c1y - c2y;
+        return dx * dx + dy * dy;
     }
 
     /**

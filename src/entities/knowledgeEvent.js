@@ -302,6 +302,10 @@ export class KnowledgeEvent {
         this.game.sounds.restoreMusic();
         this.game.sounds.play('asteroid_break', { volume: 1.0, x: this.worldX, y: this.worldY });
 
+        if (this.game.achievements) {
+            this.game.achievements.notify('knowledge_event_resolved', { method: 'item' });
+        }
+
         // Drop Obedience upgrade
         const up = UPGRADES.find(u => u.id === 'obedience');
         if (up) {
@@ -328,6 +332,10 @@ export class KnowledgeEvent {
         this.game.sounds.restoreMusic();
         this.game.sounds.play('asteroid_break', { volume: 1.0, x: this.worldX, y: this.worldY });
         this.game.sounds.play('ship_explode', { volume: 0.8, x: this.worldX, y: this.worldY });
+
+        if (this.game.achievements) {
+            this.game.achievements.notify('knowledge_event_resolved', { method: 'enemy' });
+        }
 
         // Drop Sacrifice upgrade
         const up = UPGRADES.find(u => u.id === 'sacrifice');
@@ -523,6 +531,10 @@ export class KnowledgeEvent {
 
         this.defeatTimer = 0;
         this.explosionCount = 0;
+
+        if (this.game.achievements) {
+            this.game.achievements.notify('knowledge_event_resolved', { method: 'combat' });
+        }
 
         // Spawn rewards immediately since we aren't calling PlayingState._onEntityDestroyed via alive=false
         const rewards = this.getSpawnOnDeath();

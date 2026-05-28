@@ -852,19 +852,34 @@ export class Game {
             'storm_front', 'first_wave', 'wave_breaker', 'untouched',
             'starcore_slain', 'crusher_slain', 'horizon_slain', 'trifecta',
             'single_run_trifecta', 'yellow_one_slain',
-            'asteroid_taste', 'asteroid_hundred', 'asteroid_thousand',
-            'single_run_asteroid_hundred', 'boulder_smasher', 'dust_devil',
+            'asteroid_taste', 'asteroid_1000', 'asteroid_10000',
+            'single_run_asteroid_200', 'boulder_smasher', 'dust_devil',
             'cartographer', 'true_explorer', 'salvager', 'strange_galaxy',
+            'offering_to_the_void', 'gift_to_the_void', 'lidless_sleeping',
             'derelict_orbit', 'frozen_god',
             'lockbreaker', 'treasure_hunter', 'hoarder',
+            'bargain_hunter', 'chasing_the_dragon',
             'tinkerer', 'collector', 'armory', 'connoisseur',
             'ancient_bargain', 'obedience', 'sacrifice', 'knowledge', 'cosmos_engine',
             'ludicrous_speed', 'plaid', 'trigger_discipline', 'cannonade',
-            'wide_angle', 'magnetic_personality', 'spread_shot', 'fortunate_son'
+            'wide_angle', 'magnetic_personality', 'spread_shot', 'fortunate_son',
+            // Newly wired batch (53-90):
+            'ascendant', 'apex', 'skip_artist', 'one_trick_pony', 'legendary_roll',
+            'salvage_king', 'hoard', 'magnate', 'empire', 'scrap_storm',
+            'first_handshake', 'unknown_vessel', 'on_the_record', 'local_celebrity',
+            'diplomat', 'shoot_the_messenger', 'provoker', 'see_through',
+            'calibration_skeptic',
+            'workhorse', 'hauler', 'heavy_hitter', 'blink_and_miss',
+            'photo_finish', 'lightyears', 'battering_ram', 'frequent_flyer',
+            'variety_pack', 'belly_flop',
+            'veteran_pilot', 'tenured', 'career_pilot', 'clock_watcher',
+            'personal_best', 'hangar_tour', 'punching_bag', 'catalog', 'boss_hunter'
         ];
         for (const id of achievementIcons) {
             manifest[`ach_${id}`] = `Assets/Achievements/ach_${id}.png`;
         }
+        // Lock overlay rendered on top of locked achievement icons.
+        manifest['ach_lock'] = 'Assets/Achievements/lock.png';
 
         return manifest;
     }

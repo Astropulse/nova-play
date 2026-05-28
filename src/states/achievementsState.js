@@ -439,6 +439,21 @@ export class AchievementsState {
             const dh = ah * scale;
             ctx.drawImage(img, Math.floor(x + (size - dw) / 2), Math.floor(y + (size - dh) / 2), dw, dh);
             ctx.restore();
+
+            // Lock overlay sits on top of the dimmed icon at full opacity so
+            // the padlock reads clearly even though the art behind it is faded.
+            if (!unlocked) {
+                const lock = this.game.assets.get('ach_lock');
+                if (lock) {
+                    const lImg = lock.canvas || lock;
+                    const lw = lock.width || lImg.width;
+                    const lh = lock.height || lImg.height;
+                    const lScale = Math.min(size / lw, size / lh);
+                    const ldw = lw * lScale;
+                    const ldh = lh * lScale;
+                    ctx.drawImage(lImg, Math.floor(x + (size - ldw) / 2), Math.floor(y + (size - ldh) / 2), ldw, ldh);
+                }
+            }
         } else {
             ctx.fillStyle = unlocked ? '#0e1c2a' : '#0a0f18';
             ctx.fillRect(x, y, size, size);

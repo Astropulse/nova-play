@@ -43,7 +43,16 @@ export class AchievementManager {
             shopsVisited: 0,
             levelUps: 0,
             peakLevel: 0,
+            peakRunTime: 0,             // longest single-run timeAlive (seconds)
+            shipsUsed: {},              // {fighter:true, cruiser:true, ...} for Hangar Tour
             hostilesConverted: 0,
+            // KnowledgeEvent (Strange Galaxy) resolutions, keyed by method:
+            //   'item'   — fed it an item pickup (drops Obedience)
+            //   'enemy'  — lured an enemy into it (drops Sacrifice)
+            //   'combat' — defeated it in boss form (drops Knowledge)
+            // Each interaction is mutually exclusive per instance of the event,
+            // so these counters double as "ways you've resolved this event".
+            knowledgeEventResolutions: { item: 0, enemy: 0, combat: 0 },
             bossesDefeated: {},
             eventTypes: {},
             asteroidsByType: { big: 0, medium: 0, small: 0, tiny: 0 },
@@ -84,6 +93,23 @@ export class AchievementManager {
             kamikazesKilled: 0,
             cthulhuKilled: 0,
             damageless: true,            // flips false the first hit that lands
+            shipId: null,                // set on first player_stats — tags ship-specific achievements
+            dodgesPerformed: 0,          // boost/teleport pre-position dodges (see Player.dodgeScored)
+            peakCargoSlots: 0,
+            blinkDistanceTotal: 0,       // sum of all teleport distances this run
+            peakBlinkDistance: 0,        // longest single teleport distance this run
+            asteroidsBrokenShield: 0,    // asteroids killed while shield was broken
+            asteroidsRammed: 0,          // asteroids destroyed by player body collision
+            distanceTraveled: 0,         // total world-units flown this run
+            bellyFlopDeaths: 0,          // runs ended by blinking into an asteroid and dying to the impact
+            distinctStatTypesPicked: new Set(), // 'offense'/'defense'/'mobility'/'utility'/'difficulty'
+            levelUpsSkipped: 0,
+            lastStatPicked: null,        // for "same stat N times in a row" streak
+            currentStatStreak: 0,
+            maxSameStatStreak: 0,
+            naturalLegendaryPicked: 0,   // natural legendary rolls actually selected
+            scrapTimestamps: [],         // {t, amt} entries within the last 3s for burst detection
+            scrapBurstPeak: 0,           // peak rolling 3-second sum
             hostilesConverted: 0,
             eventsDiscovered: new Set(),
             bossesDefeated: new Set(),
@@ -110,6 +136,14 @@ export class AchievementManager {
                 this.lifetime.runsCompleted++;
                 if (payload && typeof payload.time === 'number') {
                     this.lifetime.timeAlive += payload.time;
+                }
+                // Longest single run — true in-game seconds, not wall time.
+                if (this.run.timeAlive > this.lifetime.peakRunTime) {
+                    this.lifetime.peakRunTime = this.run.timeAlive;
+                }
+                // Mark this run's ship as used (Hangar Tour).
+                if (this.run.shipId) {
+                    this.lifetime.shipsUsed[this.run.shipId] = true;
                 }
                 break;
 
@@ -142,6 +176,14 @@ export class AchievementManager {
                 if (payload && payload.bossId) this._recordBoss(payload.bossId);
                 break;
 
+            case 'knowledge_event_resolved': {
+                const method = payload && payload.method;
+                if (method && this.lifetime.knowledgeEventResolutions[method] !== undefined) {
+                    this.lifetime.knowledgeEventResolutions[method]++;
+                }
+                break;
+            }
+
             case 'encounter_dialog_opened': {
                 const t = payload && payload.type;
                 if (t) {
@@ -173,13 +215,73 @@ export class AchievementManager {
                     this.lifetime.asteroidsByType[size]++;
                     this.run.asteroidsByType[size]++;
                 }
+                if (payload && payload.playerShieldBroken) {
+                    this.run.asteroidsBrokenShield++;
+                }
                 break;
             }
 
+            case 'asteroid_rammed':
+                this.run.asteroidsRammed++;
+                break;
+
+            case 'player_traveled':
+                if (payload && typeof payload.distance === 'number') {
+                    // The player sends the running total — store the max we've
+                    // seen rather than incrementing, so we're robust against
+                    // out-of-order notifies.
+                    if (payload.distance > this.run.distanceTraveled) {
+                        this.run.distanceTraveled = payload.distance;
+                    }
+                }
+                break;
+
+            case 'belly_flop_death':
+                this.run.bellyFlopDeaths++;
+                break;
+
             case 'scrap_collected': {
                 const amt = (payload && payload.amount) || 0;
-                this.lifetime.scrapCollected += amt;
-                this.run.scrapCollected += amt;
+                if (amt > 0) {
+                    this.lifetime.scrapCollected += amt;
+                    this.run.scrapCollected += amt;
+                    // Rolling 3-second window for burst-collection achievement.
+                    // Use run.timeAlive as the clock so pauses don't inflate.
+                    const t = this.run.timeAlive;
+                    const ts = this.run.scrapTimestamps;
+                    ts.push({ t, amt });
+                    const cutoff = t - 3.0;
+                    while (ts.length > 0 && ts[0].t < cutoff) ts.shift();
+                    let sum = 0;
+                    for (let i = 0; i < ts.length; i++) sum += ts[i].amt;
+                    if (sum > this.run.scrapBurstPeak) this.run.scrapBurstPeak = sum;
+                }
+                break;
+            }
+
+            case 'level_skipped':
+                this.run.levelUpsSkipped++;
+                break;
+
+            case 'level_up_chosen': {
+                const statId = payload && payload.statId;
+                if (statId) {
+                    if (statId === this.run.lastStatPicked) {
+                        this.run.currentStatStreak++;
+                    } else {
+                        this.run.currentStatStreak = 1;
+                        this.run.lastStatPicked = statId;
+                    }
+                    if (this.run.currentStatStreak > this.run.maxSameStatStreak) {
+                        this.run.maxSameStatStreak = this.run.currentStatStreak;
+                    }
+                }
+                if (payload && payload.naturalLegendary) {
+                    this.run.naturalLegendaryPicked++;
+                }
+                if (payload && payload.statType) {
+                    this.run.distinctStatTypesPicked.add(payload.statType);
+                }
                 break;
             }
 
@@ -216,6 +318,19 @@ export class AchievementManager {
                 this.lifetime.cachesOpened++;
                 this.run.cachesOpened++;
                 break;
+
+            case 'dodge_performed':
+                this.run.dodgesPerformed++;
+                break;
+
+            case 'blink_used': {
+                const d = (payload && payload.distance) || 0;
+                if (d > 0) {
+                    this.run.blinkDistanceTotal += d;
+                    if (d > this.run.peakBlinkDistance) this.run.peakBlinkDistance = d;
+                }
+                break;
+            }
 
             case 'shop_opened': {
                 // Dedupe by shop reference within a run so a player can't pad
@@ -273,6 +388,13 @@ export class AchievementManager {
                     if (typeof p.level === 'number' && p.level > r.peakLevel) {
                         r.peakLevel = p.level;
                         if (p.level > this.lifetime.peakLevel) this.lifetime.peakLevel = p.level;
+                    }
+                    if (!r.shipId && p.shipData && p.shipData.id) {
+                        r.shipId = p.shipData.id;
+                    }
+                    if (p.inventory) {
+                        const slots = (p.inventory.cols || 0) * (p.inventory.rows || 0);
+                        if (slots > r.peakCargoSlots) r.peakCargoSlots = slots;
                     }
                 }
                 break;

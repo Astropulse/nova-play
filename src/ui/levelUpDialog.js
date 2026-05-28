@@ -465,6 +465,21 @@ export class LevelUpDialog {
             this.playingState.pendingLevelUpMult = 1;
         }
         this.game.sounds.play('select', 0.7);
+
+        if (this.game.achievements) {
+            // "Natural legendary" = base roll landed in the legendary tier
+            // (basePct >= 10) BEFORE any skip-stacking multiplier. Cursed
+            // picks aren't a "bonus" — exclude them.
+            const naturalLegendary = !choice.isCursed
+                && typeof choice.basePct === 'number'
+                && choice.basePct >= 10;
+            this.game.achievements.notify('level_up_chosen', {
+                statId: choice.stat.id,
+                statType: STAT_TYPE[choice.stat.id] || 'utility',
+                naturalLegendary
+            });
+        }
+
         this.closed = true;
     }
 
@@ -475,6 +490,11 @@ export class LevelUpDialog {
         this.playingState.pendingLevelUpMult    = (this.playingState.pendingLevelUpMult || 1)
             * (this.playingState.LEVELUP_SKIP_MULT_STEP || 1.8);
         this.game.sounds.play('click', 0.6);
+
+        if (this.game.achievements) {
+            this.game.achievements.notify('level_skipped');
+        }
+
         this.closed = true;
     }
 

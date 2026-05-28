@@ -586,13 +586,28 @@ export class PlayingState {
         // --- Event Update ---
         let isEventActive = false;
         for (const ev of this.events) {
-            const wasRevealed = ev.revealed;
             ev.update(dt, this.player);
-            if (!wasRevealed && ev.revealed && !ev.discovered) {
-                ev.discovered = true;
-                this.stats.eventsDiscovered++;
-                if (this.game.achievements) {
-                    this.game.achievements.notify('event_discovered', { event: ev });
+            // Discovery fires when the event physically enters the player's
+            // viewport — either by exploration or by following a signal to
+            // the event's actual location. `revealed` (radar/locator pings)
+            // intentionally does NOT count as discovery; the player has to
+            // reach the event itself. Viewport bounds in world units are
+            // `width / worldScale` × `height / worldScale`, centered on the
+            // camera which tracks the player. Event radius pads the test so
+            // discovery fires the moment any of the event is on screen.
+            if (!ev.discovered && !ev.isFinished) {
+                const edx = ev.worldX - this.player.worldX;
+                const edy = ev.worldY - this.player.worldY;
+                const halfViewW = (this.game.width / 2) / this.game.worldScale;
+                const halfViewH = (this.game.height / 2) / this.game.worldScale;
+                const radius = ev.radius || 100;
+                if (Math.abs(edx) < halfViewW + radius
+                    && Math.abs(edy) < halfViewH + radius) {
+                    ev.discovered = true;
+                    this.stats.eventsDiscovered++;
+                    if (this.game.achievements) {
+                        this.game.achievements.notify('event_discovered', { event: ev });
+                    }
                 }
             }
             if (ev.isActive) {
@@ -1299,12 +1314,22 @@ export class PlayingState {
                 const dy = this.player.worldY - ast.worldY;
                 const cr = this.player.radius + ast.radius;
                 if (dx * dx + dy * dy < cr * cr) {
+                    const wasPendingBellyFlop = this.player._pendingBellyFlop > 0;
                     const dist = Math.sqrt(dx * dx + dy * dy);
                     ast.onCollision(this.player);
                     this._damagePlayer(ast.damage * this.player.lvlAsteroidResistanceMult);
                     ast.alive = false;
                     this._onEntityDestroyed(ast);
                     this._applyKnockback(dx, dy, dist, 200);
+                    if (this.game.achievements) {
+                        this.game.achievements.notify('asteroid_rammed');
+                        // Belly Flop: this collision happened right after a
+                        // blink landed inside an asteroid, AND it killed us.
+                        if (wasPendingBellyFlop && this.isDead) {
+                            this.game.achievements.notify('belly_flop_death');
+                            this.player._pendingBellyFlop = 0;
+                        }
+                    }
                 }
             }
 
@@ -1483,7 +1508,10 @@ export class PlayingState {
         if (entity instanceof Asteroid) {
             this.stats.asteroidsDestroyed++;
             if (this.game.achievements) {
-                this.game.achievements.notify('asteroid_destroyed', { entity });
+                this.game.achievements.notify('asteroid_destroyed', {
+                    entity,
+                    playerShieldBroken: this.player.shieldBroken && !this.player.shielding
+                });
             }
         } else if (!(entity instanceof CthulhuEvent) && !(entity instanceof CargoShipEvent)) {
             this.stats.enemiesDefeated++;
