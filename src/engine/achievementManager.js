@@ -40,6 +40,7 @@ export class AchievementManager {
             timeAlive: 0,
             damageTaken: 0,
             cachesOpened: 0,
+            shopsVisited: 0,
             levelUps: 0,
             peakLevel: 0,
             hostilesConverted: 0,
@@ -66,6 +67,7 @@ export class AchievementManager {
             wavesCleared: 0,
             damageTaken: 0,
             cachesOpened: 0,
+            shopsVisited: 0,
             peakLevel: 0,
             peakSpeedMult: 0,
             peakFireRateMult: 0,
@@ -88,6 +90,7 @@ export class AchievementManager {
             uniqueUpgradeIds: new Set(),
             encounterTypesMet: new Set(),
             optimalChoicesMade: new Set(),
+            visitedShops: new Set(),     // shop refs visited this run — dedupes re-opens
             asteroidsByType: { big: 0, medium: 0, small: 0, tiny: 0 },
             upgradesByRarity: { common: 0, uncommon: 0, rare: 0, epic: 0, legendary: 0, unique: 0 },
             killTimestamps: []
@@ -213,6 +216,19 @@ export class AchievementManager {
                 this.lifetime.cachesOpened++;
                 this.run.cachesOpened++;
                 break;
+
+            case 'shop_opened': {
+                // Dedupe by shop reference within a run so a player can't pad
+                // the count by closing and re-opening the same shop. Lifetime
+                // total ticks once per first-time visit within each run.
+                const shop = payload && payload.shop;
+                if (shop && !this.run.visitedShops.has(shop)) {
+                    this.run.visitedShops.add(shop);
+                    this.run.shopsVisited++;
+                    this.lifetime.shopsVisited++;
+                }
+                break;
+            }
 
             case 'level_up': {
                 this.lifetime.levelUps++;

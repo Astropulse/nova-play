@@ -843,6 +843,29 @@ export class Game {
                 manifest[`portrait_${spec.type}_${i}`] = `Assets/Portraits/${spec.folder}/${spec.type}_${i}.png`;
             }
         }
+
+        // Achievement icons — keyed as `ach_<achievement_id>` so the icon
+        // field on each ACHIEVEMENTS entry can reference them directly. Add
+        // a new id here whenever a new ach_*.png is dropped into the folder.
+        const achievementIcons = [
+            'first_blood', 'centurion', 'thousand_cuts', 'butcher', 'blitz',
+            'storm_front', 'first_wave', 'wave_breaker', 'untouched',
+            'starcore_slain', 'crusher_slain', 'horizon_slain', 'trifecta',
+            'single_run_trifecta', 'yellow_one_slain',
+            'asteroid_taste', 'asteroid_hundred', 'asteroid_thousand',
+            'single_run_asteroid_hundred', 'boulder_smasher', 'dust_devil',
+            'cartographer', 'true_explorer', 'salvager', 'strange_galaxy',
+            'derelict_orbit', 'frozen_god',
+            'lockbreaker', 'treasure_hunter', 'hoarder',
+            'tinkerer', 'collector', 'armory', 'connoisseur',
+            'ancient_bargain', 'obedience', 'sacrifice', 'knowledge', 'cosmos_engine',
+            'ludicrous_speed', 'plaid', 'trigger_discipline', 'cannonade',
+            'wide_angle', 'magnetic_personality', 'spread_shot', 'fortunate_son'
+        ];
+        for (const id of achievementIcons) {
+            manifest[`ach_${id}`] = `Assets/Achievements/ach_${id}.png`;
+        }
+
         return manifest;
     }
 

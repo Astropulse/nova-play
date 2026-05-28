@@ -552,6 +552,9 @@ export class PlayingState {
                 this.isShopOpen = true;
                 this.paused = true;
                 this.game.sounds.play('click', 0.5);
+                if (this.game.achievements) {
+                    this.game.achievements.notify('shop_opened', { shop: nearShop });
+                }
             } else {
                 // Nothing in range — fall back to toggling the pause menu.
                 if (this.paused) {

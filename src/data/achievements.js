@@ -29,7 +29,7 @@ export const ACHIEVEMENTS = [
         name: 'First Blood',
         description: 'Destroy your first enemy ship.',
         flavor: 'Yes good job, that is how you use your lasers.',
-        icon: null,
+        icon: 'ach_first_blood',
         check: (m) => m.lifetime.enemiesKilled >= 1
     },
     {
@@ -37,7 +37,7 @@ export const ACHIEVEMENTS = [
         name: 'Centurion',
         description: 'Destroy 100 enemy ships across all runs.',
         flavor: 'Barely a dent.',
-        icon: null,
+        icon: 'ach_centurion',
         check: (m) => m.lifetime.enemiesKilled >= 100
     },
     {
@@ -45,7 +45,7 @@ export const ACHIEVEMENTS = [
         name: 'Death by a Thousand Cuts',
         description: 'Destroy 1000 enemy ships across all runs.',
         flavor: 'You stopped counting somewhere around three hundred.',
-        icon: null,
+        icon: 'ach_thousand_cuts',
         check: (m) => m.lifetime.enemiesKilled >= 1000
     },
 
@@ -55,7 +55,7 @@ export const ACHIEVEMENTS = [
         name: 'Butcher',
         description: 'Destroy 100 enemy ships in a single run.',
         flavor: "All in one go, nice.",
-        icon: null,
+        icon: 'ach_butcher',
         check: (m) => m.run.enemiesKilled >= 100
     },
     {
@@ -63,7 +63,7 @@ export const ACHIEVEMENTS = [
         name: 'Blitz',
         description: 'Destroy 10 enemies within 10 seconds.',
         flavor: 'Just try holding down the trigger and spinning around.',
-        icon: null,
+        icon: 'ach_blitz',
         check: (m) => m.run.maxKillStreak >= 10
     },
     {
@@ -72,7 +72,7 @@ export const ACHIEVEMENTS = [
         description: 'Destroy 30 enemies within 10 seconds.',
         flavor: 'Going to have to kill a lot of ships real fast.',
         hidden: true,
-        icon: null,
+        icon: 'ach_storm_front',
         check: (m) => m.run.maxKillStreak >= 30
     },
 
@@ -82,7 +82,7 @@ export const ACHIEVEMENTS = [
         name: 'Baby\'s First Wave',
         description: 'Clear your first wave.',
         flavor: 'The first of many.',
-        icon: null,
+        icon: 'ach_first_wave',
         check: (m) => m.run.wavesCleared >= 1
     },
     {
@@ -90,7 +90,7 @@ export const ACHIEVEMENTS = [
         name: 'Wave Breaker',
         description: 'Clear 50 enemy waves across all runs.',
         flavor: 'Wave after unending wave.',
-        icon: null,
+        icon: 'ach_wave_breaker',
         check: (m) => m.lifetime.wavesCleared >= 50
     },
     {
@@ -98,7 +98,7 @@ export const ACHIEVEMENTS = [
         name: 'Untouched',
         description: 'Clear 4 waves in a single run without taking any damage.',
         flavor: 'Their lasers are fast, but you\'re faster.',
-        icon: null,
+        icon: 'ach_untouched',
         check: (m) => m.run.wavesCleared >= 4 && m.run.damageless
     },
 
@@ -108,7 +108,7 @@ export const ACHIEVEMENTS = [
         name: 'Dying Star',
         description: 'Defeat the Starcore.',
         flavor: 'He\'s got so many guns please make it stop.',
-        icon: null,
+        icon: 'ach_starcore_slain',
         check: (m) => !!m.lifetime.bossesDefeated['Starcore']
     },
     {
@@ -116,7 +116,7 @@ export const ACHIEVEMENTS = [
         name: 'Rubble',
         description: 'Defeat the Asteroid Crusher.',
         flavor: 'All he does is throw rocks, it can\'t be that hard.',
-        icon: null,
+        icon: 'ach_crusher_slain',
         check: (m) => !!m.lifetime.bossesDefeated['AsteroidCrusher']
     },
     {
@@ -124,7 +124,7 @@ export const ACHIEVEMENTS = [
         name: 'Outpaced',
         description: 'Defeat the Event Horizon.',
         flavor: "It thought it was the fastest thing out here.",
-        icon: null,
+        icon: 'ach_horizon_slain',
         check: (m) => !!m.lifetime.bossesDefeated['EventHorizon']
     },
     {
@@ -132,7 +132,7 @@ export const ACHIEVEMENTS = [
         name: 'Hat Trick',
         description: 'Defeat all three major bosses across your runs.',
         flavor: 'The difficult one is my favorite.',
-        icon: null,
+        icon: 'ach_trifecta',
         check: (m) => !!m.lifetime.bossesDefeated['Starcore']
             && !!m.lifetime.bossesDefeated['AsteroidCrusher']
             && !!m.lifetime.bossesDefeated['EventHorizon']
@@ -143,7 +143,7 @@ export const ACHIEVEMENTS = [
         description: 'Defeat all three major bosses in a single run.',
         flavor: 'Nice killstreak bro.',
         hidden: true,
-        icon: null,
+        icon: 'ach_single_run_trifecta',
         check: (m) => m.run.bossesDefeated.has('Starcore')
             && m.run.bossesDefeated.has('AsteroidCrusher')
             && m.run.bossesDefeated.has('EventHorizon')
@@ -154,7 +154,7 @@ export const ACHIEVEMENTS = [
         description: 'Defeat The Yellow One.',
         flavor: 'YELLOW YELLOW YELLOW YELLOW YELLOW YELLOW',
         hidden: true,
-        icon: null,
+        icon: 'ach_yellow_one_slain',
         check: (m) => !!m.lifetime.bossesDefeated['YellowOne']
     },
 
@@ -164,7 +164,7 @@ export const ACHIEVEMENTS = [
         name: 'Tastes Like Rocks',
         description: 'Destroy 5 asteroids in a single run.',
         flavor: 'Minerals. Yum.',
-        icon: null,
+        icon: 'ach_asteroid_taste',
         check: (m) => m.run.asteroidsDestroyed >= 5
     },
     {
@@ -172,7 +172,7 @@ export const ACHIEVEMENTS = [
         name: 'Pebble Hunter',
         description: 'Destroy 100 asteroids across all runs.',
         flavor: 'Easy pickings.',
-        icon: null,
+        icon: 'ach_asteroid_hundred',
         check: (m) => m.lifetime.asteroidsDestroyed >= 100
     },
     {
@@ -180,7 +180,7 @@ export const ACHIEVEMENTS = [
         name: 'Belt Wrecker',
         description: 'Destroy 1000 asteroids across all runs.',
         flavor: 'Somewhere, a geologist is weeping.',
-        icon: null,
+        icon: 'ach_asteroid_thousand',
         check: (m) => m.lifetime.asteroidsDestroyed >= 1000
     },
     {
@@ -188,7 +188,7 @@ export const ACHIEVEMENTS = [
         name: 'Field Day',
         description: 'Destroy 100 asteroids in a single run.',
         flavor: 'Give me all the scrap.',
-        icon: null,
+        icon: 'ach_single_run_asteroid_hundred',
         check: (m) => m.run.asteroidsDestroyed >= 100
     },
     {
@@ -196,7 +196,7 @@ export const ACHIEVEMENTS = [
         name: 'Boulder Smasher',
         description: 'Destroy 50 large asteroids across all runs.',
         flavor: 'Big rocks give big rewards.',
-        icon: null,
+        icon: 'ach_boulder_smasher',
         check: (m) => m.lifetime.asteroidsByType.big >= 50
     },
     {
@@ -204,7 +204,7 @@ export const ACHIEVEMENTS = [
         name: 'Dust Devil',
         description: 'Destroy 500 tiny asteroids across all runs.',
         flavor: 'They really start to add up.',
-        icon: null,
+        icon: 'ach_dust_devil',
         check: (m) => m.lifetime.asteroidsByType.tiny >= 500
     },
 
@@ -214,7 +214,7 @@ export const ACHIEVEMENTS = [
         name: 'Cartographer of the Black',
         description: 'Discover three different event types in a single run.',
         flavor: 'They call it space because its mostly empty.',
-        icon: null,
+        icon: 'ach_cartographer',
         check: (m) => m.run.eventsDiscovered.size >= 3
     },
     {
@@ -223,7 +223,7 @@ export const ACHIEVEMENTS = [
         description: 'Discover every standard event type in a single run.',
         flavor: 'You did it, you found some of the things!',
         hidden: true,
-        icon: null,
+        icon: 'ach_true_explorer',
         check: (m) =>
             m.run.eventsDiscovered.has('CargoShipEvent')
             && m.run.eventsDiscovered.has('SpaceCache')
@@ -236,7 +236,7 @@ export const ACHIEVEMENTS = [
         name: 'Salvager',
         description: 'Loot 5 abandoned cargo ships across all runs.',
         flavor: 'Empty hulls keep the lights on.',
-        icon: null,
+        icon: 'ach_salvager',
         check: (m) => (m.lifetime.eventTypes['CargoShipEvent'] || 0) >= 5
     },
     {
@@ -245,7 +245,7 @@ export const ACHIEVEMENTS = [
         description: 'Approach the lidless thing above the void.',
         flavor: 'It stares back. It always stares back.',
         hidden: true,
-        icon: null,
+        icon: 'ach_strange_galaxy',
         check: (m) => (m.lifetime.eventTypes['KnowledgeEvent'] || 0) >= 1
     },
     {
@@ -253,7 +253,7 @@ export const ACHIEVEMENTS = [
         name: 'Derelict Orbit',
         description: 'Investigate a Fractured Station.',
         flavor: 'Three signals, three abandoned outposts.',
-        icon: null,
+        icon: 'ach_derelict_orbit',
         check: (m) => (m.lifetime.eventTypes['FracturedStationEvent'] || 0) >= 1
     },
     {
@@ -262,7 +262,7 @@ export const ACHIEVEMENTS = [
         description: 'Defeat the Frozen God after waking him.',
         flavor: "Some things sleep for a reason.",
         hidden: true,
-        icon: null,
+        icon: 'ach_frozen_god',
         // CthulhuEvent summons three waves of CthulhuEnemy cultists; clearing
         // the event reliably requires putting down ~15 of them.
         check: (m) => (m.lifetime.enemyKillsByClass['CthulhuEnemy'] || 0) >= 15
@@ -274,7 +274,7 @@ export const ACHIEVEMENTS = [
         name: 'Lockbreaker',
         description: 'Open your first space cache.',
         flavor: 'Locks out here are mostly suggestions.',
-        icon: null,
+        icon: 'ach_lockbreaker',
         check: (m) => m.lifetime.cachesOpened >= 1
     },
     {
@@ -282,7 +282,7 @@ export const ACHIEVEMENTS = [
         name: 'Treasure Hunter',
         description: 'Open 25 space caches across all runs.',
         flavor: 'Chests are awesome. The more the better.',
-        icon: null,
+        icon: 'ach_treasure_hunter',
         check: (m) => m.lifetime.cachesOpened >= 25
     },
     {
@@ -290,8 +290,34 @@ export const ACHIEVEMENTS = [
         name: 'Hoarder',
         description: 'Open 5 space caches in a single run.',
         flavor: 'Isn\'t your cargo full yet?',
-        icon: null,
+        icon: 'ach_hoarder',
         check: (m) => m.run.cachesOpened >= 5
+    },
+
+    // ── Shops ───────────────────────────────────────────────────────────────
+    {
+        id: 'window_shopping',
+        name: 'Window Shopping',
+        description: 'Dock at your first shop.',
+        flavor: 'They\'re not happy you didn\'t buy anything.',
+        icon: null,
+        check: (m) => m.lifetime.shopsVisited >= 1
+    },
+    {
+        id: 'mall_crawl',
+        name: 'Mall Crawl',
+        description: 'Visit 3 different shops in a single run.',
+        flavor: 'Comparison shopping is a virtue.',
+        icon: null,
+        check: (m) => m.run.shopsVisited >= 3
+    },
+    {
+        id: 'loyalty_card',
+        name: 'Loyalty Card',
+        description: 'Visit 25 shops across all runs.',
+        flavor: 'They know your order before you say it.',
+        icon: null,
+        check: (m) => m.lifetime.shopsVisited >= 25
     },
 
     // ── Upgrades: progress & variety ────────────────────────────────────────
@@ -300,7 +326,7 @@ export const ACHIEVEMENTS = [
         name: 'Tinkerer',
         description: 'Install your first upgrade.',
         flavor: 'It\'s like putting fake carbon fiber on your car, but it does something.',
-        icon: null,
+        icon: 'ach_tinkerer',
         check: (m) => m.lifetime.upgradesCollected >= 1
     },
     {
@@ -308,7 +334,7 @@ export const ACHIEVEMENTS = [
         name: 'Collector',
         description: 'Install 100 upgrades across all runs.',
         flavor: 'You have a whole shelf of these things now.',
-        icon: null,
+        icon: 'ach_collector',
         check: (m) => m.lifetime.upgradesCollected >= 100
     },
     {
@@ -316,7 +342,7 @@ export const ACHIEVEMENTS = [
         name: 'Armory',
         description: 'Install 25 upgrades in a single run.',
         flavor: 'The ship is more upgrades than original parts at this point.',
-        icon: null,
+        icon: 'ach_armory',
         check: (m) => m.run.upgradesCollected >= 25
     },
     {
@@ -324,7 +350,7 @@ export const ACHIEVEMENTS = [
         name: 'Connoisseur',
         description: 'Install 4 epic-or-better upgrades in a single run.',
         flavor: 'Italian space ship levels of taste.',
-        icon: null,
+        icon: 'ach_connoisseur',
         check: (m) => (
             m.run.upgradesByRarity.epic
             + m.run.upgradesByRarity.legendary
@@ -339,7 +365,7 @@ export const ACHIEVEMENTS = [
         description: 'Find the Ancient Curse.',
         flavor: 'You feel the ship answer your hands differently now.',
         hidden: true,
-        icon: null,
+        icon: 'ach_ancient_bargain',
         check: (m) => (m.lifetime.upgradesById['ancient_curse'] || 0) >= 1
     },
     {
@@ -348,7 +374,7 @@ export const ACHIEVEMENTS = [
         description: 'Find the Obedience module.',
         flavor: 'A reward for your gift to the Void.',
         hidden: true,
-        icon: null,
+        icon: 'ach_obedience',
         check: (m) => (m.lifetime.upgradesById['obedience'] || 0) >= 1
     },
     {
@@ -357,7 +383,7 @@ export const ACHIEVEMENTS = [
         description: 'Find the Sacrifice.',
         flavor: 'The Void is hungry. Feed it.',
         hidden: true,
-        icon: null,
+        icon: 'ach_sacrifice',
         check: (m) => (m.lifetime.upgradesById['sacrifice'] || 0) >= 1
     },
     {
@@ -366,7 +392,7 @@ export const ACHIEVEMENTS = [
         description: 'Find Knowledge.',
         flavor: "You can finally see what\'s out there.",
         hidden: true,
-        icon: null,
+        icon: 'ach_knowledge',
         check: (m) => (m.lifetime.upgradesById['knowledge'] || 0) >= 1
     },
     {
@@ -375,7 +401,7 @@ export const ACHIEVEMENTS = [
         description: 'Find the Cosmos Engine.',
         flavor: 'He guards it with his life.',
         hidden: true,
-        icon: null,
+        icon: 'ach_cosmos_engine',
         check: (m) => (m.lifetime.upgradesById['cosmos_engine'] || 0) >= 1
     },
 
@@ -385,7 +411,7 @@ export const ACHIEVEMENTS = [
         name: 'Ludicrous Speed',
         description: 'Reach a 5x effective speed multiplier in one run.',
         flavor: 'Watch out for asteroids.',
-        icon: null,
+        icon: 'ach_ludicrous_speed',
         check: (m) => m.run.peakSpeedMult >= 5
     },
     {
@@ -394,7 +420,7 @@ export const ACHIEVEMENTS = [
         description: 'Reach an 8x effective speed multiplier in one run.',
         flavor: 'Can you even steer that thing?',
         hidden: true,
-        icon: null,
+        icon: 'ach_plaid',
         check: (m) => m.run.peakSpeedMult >= 8
     },
     {
@@ -402,7 +428,7 @@ export const ACHIEVEMENTS = [
         name: 'Trigger Discipline',
         description: 'Reach a 2.5x fire rate multiplier in a single run.',
         flavor: 'It\'s always overheating and that\'s okay.',
-        icon: null,
+        icon: 'ach_trigger_discipline',
         check: (m) => m.run.peakFireRateMult >= 2.5
     },
     {
@@ -410,7 +436,7 @@ export const ACHIEVEMENTS = [
         name: 'Cannonade',
         description: 'Accumulate +100 permanent damage in a run.',
         flavor: 'Your lasers might as well be solid objects.',
-        icon: null,
+        icon: 'ach_cannonade',
         check: (m) => m.run.peakDamageBonus >= 100
     },
     {
@@ -418,7 +444,7 @@ export const ACHIEVEMENTS = [
         name: 'Wide Angle',
         description: 'Reach 200% FOV in a single run.',
         flavor: 'Can you see enough stuff yet?',
-        icon: null,
+        icon: 'ach_wide_angle',
         check: (m) => m.run.peakFovMult >= 2.0
     },
     {
@@ -426,7 +452,7 @@ export const ACHIEVEMENTS = [
         name: 'Magnetic Personality',
         description: 'Reach 3x scrap vacuum range in a single run.',
         flavor: 'The scrap comes to you now. Less work for everyone.',
-        icon: null,
+        icon: 'ach_magnetic_personality',
         check: (m) => m.run.peakVacuumRangeMult >= 3.0
     },
     {
@@ -434,7 +460,7 @@ export const ACHIEVEMENTS = [
         name: 'Spread Shot',
         description: 'Fire 4 or more extra projectiles per volley in a run.',
         flavor: 'More lasers is more better.',
-        icon: null,
+        icon: 'ach_spread_shot',
         check: (m) => m.run.peakExtraProjectiles >= 4
     },
     {
@@ -442,7 +468,7 @@ export const ACHIEVEMENTS = [
         name: 'Fortunate Son',
         description: 'Reach 1.5x luck in a single run.',
         flavor: 'Things just keep going your way. Suspicious.',
-        icon: null,
+        icon: 'ach_fortunate_son',
         check: (m) => m.run.peakLuck >= 1.5
     },
 
