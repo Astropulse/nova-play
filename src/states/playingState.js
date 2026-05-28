@@ -1166,7 +1166,7 @@ export class PlayingState {
                         if (this.game.achievements) {
                             this.game.achievements.notify('upgrade_collected', { item: it.item });
                         }
-                        this._onInventoryChanged(true);
+                        this._onInventoryChanged();
                     } else {
                         // Inventory full — engage the follow-leash so the item
                         // stops bouncing around the player and eventually despawns.
@@ -1715,6 +1715,17 @@ export class PlayingState {
                     ev.state = evData.state;
                     if (evData.type === 'CthulhuEvent') ev.wave = evData.wave;
                     if (evData.type === 'CargoShipEvent') ev.spawnedInitialScrap = evData.spawnedInitialScrap;
+                    if (evData.type === 'KnowledgeEvent') {
+                        ev.isFinished = evData.isFinished || false;
+                        // Belt-and-suspenders: derive from state in case an older
+                        // save was written before isFinished was persisted, so
+                        // the signal indicator + radar dot stay hidden.
+                        if (ev.state === KNOWLEDGE_STATE.DEFEATED || ev.state === KNOWLEDGE_STATE.FINISHED) {
+                            ev.isFinished = true;
+                            ev.acceptsItems = false;
+                            ev.acceptsEnemies = false;
+                        }
+                    }
                     if (evData.type === 'YellowOne') {
                         ev.health = evData.health;
                         ev.maxHealth = evData.maxHealth;
@@ -1733,6 +1744,18 @@ export class PlayingState {
                 ev.revealed = evData.revealed;
                 ev.discovered = evData.discovered;
                 this.events.push(ev);
+            }
+        }
+
+        // Reseed the achievement run-set from already-discovered events.
+        // Without this, save/load wipes run.eventsDiscovered (it lives only in
+        // memory) while events keep `discovered=true`, so the discovery
+        // detector never re-notifies and Cartographer can never trigger after
+        // a load.
+        if (this.game.achievements) {
+            const runSet = this.game.achievements.run.eventsDiscovered;
+            for (const ev of this.events) {
+                if (ev.discovered) runSet.add(ev.constructor.name);
             }
         }
 
@@ -1822,7 +1845,7 @@ export class PlayingState {
         this.camera.snapTo(this.player);
 
         // Recalculate all stats and multipliers based on loaded inventory
-        this._onInventoryChanged(true);
+        this._onInventoryChanged();
     }
 
     _spawnExplosion(x, y, damage) {
@@ -3254,7 +3277,9 @@ export class PlayingState {
                 if (mouse.x < l.gridVisX || mouse.x > l.gridVisX + l.visW) continue;
                 if (mouse.y < l.gridVisY || mouse.y > l.gridVisY + l.visH) continue;
                 const { col, row } = this._getDropPosition(mouse, l, p.scrollXKey, p.scrollYKey);
-                const fits = p.inv.canFit(item, col, row);
+                const fits = p.inv.canFit(item, col, row) ||
+                             (this.draggedItem.originInventory === p.inv &&
+                              p.inv.canSwap(item, col, row, this.draggedItem.x, this.draggedItem.y));
                 const sx = l.gridVisX + col * l.slotSize - this[p.scrollXKey];
                 const sy = l.gridVisY + row * l.slotSize - this[p.scrollYKey];
                 const w  = item.width  * l.slotSize;
@@ -3428,8 +3453,8 @@ export class PlayingState {
             this.activeShop.permUpgrades[bounds.id].stock--;
 
             if (bounds.id === 'health') {
-                this.player.permHealthBonus += 30;
-                this._onInventoryChanged(true);
+                this.player.addPermHealthBonus(30);
+                this._onInventoryChanged();
             } else if (bounds.id === 'shield') {
                 this.player.updateMaxShield(100);
             } else if (bounds.id === 'damage') {
@@ -3671,7 +3696,7 @@ export class PlayingState {
                 if (playerInv.canFit(this.draggedItem.item, pCol, pRow)) {
                     const fromCache = this.draggedItem.originInventory === cacheInv;
                     playerInv.addItem(this.draggedItem.item, pCol, pRow);
-                    this._onInventoryChanged(true);
+                    this._onInventoryChanged();
                     this.game.sounds.play('select', 0.8);
                     if (fromCache) {
                         if (this.game.achievements) {
@@ -3680,9 +3705,18 @@ export class PlayingState {
                         if (cacheInv.items.length === 0 && this._activeCache) this._activeCache.markEmptied();
                     }
                     this._gpFocus = { kind: 'slot', panelKey: 'player', col: pCol, row: pRow };
+                } else if (this.draggedItem.originInventory === playerInv &&
+                           playerInv.trySwap(this.draggedItem.item, pCol, pRow, this.draggedItem.x, this.draggedItem.y)) {
+                    this._onInventoryChanged();
+                    this.game.sounds.play('click', 0.5);
+                    this._gpFocus = { kind: 'slot', panelKey: 'player', col: pCol, row: pRow };
                 } else if (cacheInv.canFit(this.draggedItem.item, cCol, cRow)) {
                     cacheInv.addItem(this.draggedItem.item, cCol, cRow);
                     if (this.draggedItem.originInventory === playerInv) this._onInventoryChanged();
+                    this.game.sounds.play('click', 0.5);
+                    this._gpFocus = { kind: 'slot', panelKey: 'cache', col: cCol, row: cRow };
+                } else if (this.draggedItem.originInventory === cacheInv &&
+                           cacheInv.trySwap(this.draggedItem.item, cCol, cRow, this.draggedItem.x, this.draggedItem.y)) {
                     this.game.sounds.play('click', 0.5);
                     this._gpFocus = { kind: 'slot', panelKey: 'cache', col: cCol, row: cRow };
                 } else {
@@ -3824,7 +3858,7 @@ export class PlayingState {
                         this.player.scrap -= this.draggedItem.item.cost;
                         playerInv.addItem(this.draggedItem.item, pCol, pRow);
                         this.game.sounds.play('select', 0.8);
-                        this._onInventoryChanged(true);
+                        this._onInventoryChanged();
                         if (this.game.achievements) {
                             this.game.achievements.notify('upgrade_collected', { item: this.draggedItem.item });
                         }
@@ -3840,6 +3874,13 @@ export class PlayingState {
                     this._gpFocus = { kind: 'slot', panelKey: 'player', col: pCol, row: pRow };
                 }
             }
+            // 1b. Swap within player inventory
+            else if (this.draggedItem.originInventory === playerInv &&
+                     playerInv.trySwap(this.draggedItem.item, pCol, pRow, this.draggedItem.x, this.draggedItem.y)) {
+                this.game.sounds.play('click', 0.5);
+                this._onInventoryChanged();
+                this._gpFocus = { kind: 'slot', panelKey: 'player', col: pCol, row: pRow };
+            }
             // 2. Try Drop in Shop Inventory (Sell/Return)
             else if (shopInv.canFit(this.draggedItem.item, sCol, sRow)) {
                 if (this.draggedItem.originInventory === playerInv) {
@@ -3851,6 +3892,12 @@ export class PlayingState {
                     shopInv.addItem(this.draggedItem.item, sCol, sRow);
                     this.game.sounds.play('click', 0.5);
                 }
+                this._gpFocus = { kind: 'slot', panelKey: 'shop', col: sCol, row: sRow };
+            }
+            // 2b. Swap within shop inventory
+            else if (this.draggedItem.originInventory === shopInv &&
+                     shopInv.trySwap(this.draggedItem.item, sCol, sRow, this.draggedItem.x, this.draggedItem.y)) {
+                this.game.sounds.play('click', 0.5);
                 this._gpFocus = { kind: 'slot', panelKey: 'shop', col: sCol, row: sRow };
             }
             // 3. Drop failed
@@ -4085,6 +4132,10 @@ export class PlayingState {
                 this.game.sounds.play('click', 0.5);
                 this._onInventoryChanged();
                 this._gpFocus = { kind: 'slot', panelKey: 'player', col: pCol, row: pRow };
+            } else if (playerInv.trySwap(this.draggedItem.item, pCol, pRow, this.draggedItem.x, this.draggedItem.y)) {
+                this.game.sounds.play('click', 0.5);
+                this._onInventoryChanged();
+                this._gpFocus = { kind: 'slot', panelKey: 'player', col: pCol, row: pRow };
             } else {
                 const worldMouse = this.camera.screenToWorld(mouse.x, mouse.y, this.game.width, this.game.height);
                 const dropOffset  = (Math.random() - 0.5) * 20;
@@ -4152,9 +4203,8 @@ export class PlayingState {
         return power;
     }
 
-    _onInventoryChanged(healAcquisition = false) {
+    _onInventoryChanged() {
         const p = this.player;
-        const oldMax = p.maxHealth;
 
         // Reset multipliers and flags
         p.fireRateMult = 1.0;
@@ -4364,11 +4414,6 @@ export class PlayingState {
         p.baseSpeed = p.shipData.speed * 100 * p.obedienceMult * p.momentumSpeedMult * this.encounterBonuses.speedMult * cosmosSpeedMult;
         p.baseSpeed *= p.lvlSpeedMult;
         p.acceleration = p.baseSpeed * 3;
-
-        if (healAcquisition) {
-            const diff = p.maxHealth - oldMax;
-            if (diff > 0) p.health += diff;
-        }
 
         if (this.game.achievements) {
             this.game.achievements.notify('player_stats', { player: p });

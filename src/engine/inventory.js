@@ -115,6 +115,63 @@ export class Inventory {
     }
 
     /**
+     * Swaps a dragged item with the single item it overlaps at the drop position.
+     * The displaced item must fit exactly at (originX, originY) — otherwise the
+     * swap is rejected and the inventory is left untouched (caller can bounce
+     * the dragged item back to its origin). Returns true on success.
+     */
+    trySwap(draggedItem, dropX, dropY, originX, originY) {
+        const dw = draggedItem.width;
+        const dh = draggedItem.height;
+
+        if (dropX < 0 || dropY < 0 || dropX + dw > this.cols || dropY + dh > this.rows) {
+            return false;
+        }
+
+        const overlapping = new Set();
+        for (let r = dropY; r < dropY + dh; r++) {
+            for (let c = dropX; c < dropX + dw; c++) {
+                const entry = this.grid[r][c];
+                if (entry) overlapping.add(entry);
+            }
+        }
+        if (overlapping.size !== 1) return false;
+
+        const otherEntry = overlapping.values().next().value;
+        const otherItem = otherEntry.item;
+        const otherX = otherEntry.x;
+        const otherY = otherEntry.y;
+
+        this.removeItemAt(otherX, otherY);
+
+        if (!this.canFit(draggedItem, dropX, dropY)) {
+            this.addItem(otherItem, otherX, otherY);
+            return false;
+        }
+        this.addItem(draggedItem, dropX, dropY);
+
+        if (!this.canFit(otherItem, originX, originY)) {
+            this.removeItemAt(dropX, dropY);
+            this.addItem(otherItem, otherX, otherY);
+            return false;
+        }
+        this.addItem(otherItem, originX, originY);
+        return true;
+    }
+
+    /**
+     * Non-mutating feasibility check for trySwap.
+     */
+    canSwap(draggedItem, dropX, dropY, originX, originY) {
+        const gridSnap = this.grid.map(row => row.slice());
+        const itemsSnap = this.items.slice();
+        const ok = this.trySwap(draggedItem, dropX, dropY, originX, originY);
+        this.grid = gridSnap;
+        this.items = itemsSnap;
+        return ok;
+    }
+
+    /**
      * Finds the first available spot for an item and adds it.
      */
     autoAdd(item) {

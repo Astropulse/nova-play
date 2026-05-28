@@ -367,11 +367,11 @@ export const ACHIEVEMENTS = [
     {
         id: 'collector',
         name: 'Collector',
-        description: 'Install 100 upgrades across all runs.',
+        description: 'Install 1000 upgrades across all runs.',
         flavor: 'You have a whole shelf of these things now.',
         icon: 'ach_collector',
-        check: (m) => m.lifetime.upgradesCollected >= 100,
-        progress: (m) => m.lifetime.upgradesCollected / 100
+        check: (m) => m.lifetime.upgradesCollected >= 1000,
+        progress: (m) => m.lifetime.upgradesCollected / 1000
     },
     {
         id: 'armory',
@@ -486,10 +486,10 @@ export const ACHIEVEMENTS = [
     {
         id: 'magnetic_personality',
         name: 'Magnetic Personality',
-        description: 'Reach 3x scrap vacuum range in a single run.',
+        description: 'Reach 10x scrap vacuum range in a single run.',
         flavor: 'The scrap comes to you now. Less work for everyone.',
         icon: 'ach_magnetic_personality',
-        check: (m) => m.run.peakVacuumRangeMult >= 3.0
+        check: (m) => m.run.peakVacuumRangeMult >= 10.0
     },
     {
         id: 'spread_shot',

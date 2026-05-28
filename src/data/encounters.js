@@ -188,26 +188,6 @@ function substitute(template, vars) {
 function executeActions(actions, vars, player, state, encounter) {
     if (!actions) return 'ok';
 
-    // Pre-check: if actions will both take scrap and add an upgrade,
-    // verify inventory space before executing anything (prevents paying but getting no item)
-    const hasRemoveScrap = actions.some(a => a.startsWith('remove_scrap'));
-    const upgradeAction = actions.find(a => a.startsWith('add_upgrade'));
-    if (hasRemoveScrap && upgradeAction) {
-        const paramKey = upgradeAction.slice(upgradeAction.indexOf(':') + 1);
-        if (paramKey && vars[paramKey] !== undefined) {
-            const v = vars[paramKey];
-            const upgrade = typeof v === 'object' && v.item ? v.item : v;
-            if (upgrade && upgrade.width && upgrade.height) {
-                let canFit = false;
-                const inv = player.inventory;
-                for (let y = 0; y <= inv.rows - upgrade.height && !canFit; y++)
-                    for (let x = 0; x <= inv.cols - upgrade.width && !canFit; x++)
-                        if (inv.canFit(upgrade, x, y)) canFit = true;
-                if (!canFit) return 'inventory_full';
-            }
-        }
-    }
-
     for (const actionStr of actions) {
         const colonIdx = actionStr.indexOf(':');
         const type = colonIdx >= 0 ? actionStr.slice(0, colonIdx) : actionStr;
@@ -257,18 +237,21 @@ function executeActions(actions, vars, player, state, encounter) {
             case 'add_upgrade': {
                 const upgrade = resolveParam();
                 if (!upgrade) break;
-                if (!player.inventory.autoAdd(upgrade)) return 'inventory_full';
-                if (state.game.achievements) {
-                    state.game.achievements.notify('upgrade_collected', { item: upgrade });
+                if (player.inventory.autoAdd(upgrade)) {
+                    if (state.game.achievements) {
+                        state.game.achievements.notify('upgrade_collected', { item: upgrade });
+                    }
+                } else if (state._ejectItems) {
+                    state._ejectItems([upgrade]);
                 }
                 break;
             }
             case 'add_perm_health': {
                 const amt = resolveParam();
-                player.permHealthBonus += amt;
+                player.addPermHealthBonus(amt);
                 state.spawnFloatingText(player.worldX, player.worldY, `+${amt} MAX HP`, '#44ff44');
                 state.game.sounds.play('select', { volume: 0.8 });
-                state._onInventoryChanged(true);
+                state._onInventoryChanged();
                 break;
             }
             case 'add_perm_shield': {
@@ -291,7 +274,7 @@ function executeActions(actions, vars, player, state, encounter) {
                 if (state._ejectItems && ejected && ejected.length > 0) {
                     state._ejectItems(ejected);
                 }
-                state._onInventoryChanged(true);
+                state._onInventoryChanged();
                 break;
             }
             case 'encounter_speed': {
@@ -406,7 +389,6 @@ function buildOption(opt, scenario, vars) {
                 if (success) {
                     const result = executeActions(opt.actions, vars, p, s, enc);
                     if (result === 'not_enough_scrap') return { message: "Not enough scrap.", close: true };
-                    if (result === 'inventory_full') return { message: "Cargo hold is full.", close: true };
                     return { message: substitute(opt.response || "Deal.", vars), close: true };
                 } else {
                     const fbPrice = opt.negotiate.fallbackPrice;
@@ -426,7 +408,6 @@ function buildOption(opt, scenario, vars) {
                                 action: (p2, s2, enc2) => {
                                     const r = executeActions(opt.fallbackActions || opt.actions, vars, p2, s2, enc2);
                                     if (r === 'not_enough_scrap') return { message: "Not enough scrap.", close: true };
-                                    if (r === 'inventory_full') return { message: "Cargo hold is full.", close: true };
                                     return { message: substitute(opt.response || "Done.", vars), close: true };
                                 }
                             },
@@ -443,31 +424,9 @@ function buildOption(opt, scenario, vars) {
         return {
             label,
             action: (p, s, enc) => {
-                // Pre-check: if pre-actions take scrap and any outcome adds an upgrade,
-                // verify inventory space before taking payment
-                const preActionsRemoveScrap = opt.actions && opt.actions.some(a => a.startsWith('remove_scrap'));
-                if (preActionsRemoveScrap) {
-                    const upgradeAction = opt.gamble.flatMap(o => o.actions || []).find(a => a.startsWith('add_upgrade'));
-                    if (upgradeAction) {
-                        const paramKey = upgradeAction.slice(upgradeAction.indexOf(':') + 1);
-                        if (paramKey && vars[paramKey] !== undefined) {
-                            const v = vars[paramKey];
-                            const upgrade = typeof v === 'object' && v.item ? v.item : v;
-                            if (upgrade && upgrade.width && upgrade.height) {
-                                let canFit = false;
-                                const inv = p.inventory;
-                                for (let y = 0; y <= inv.rows - upgrade.height && !canFit; y++)
-                                    for (let x = 0; x <= inv.cols - upgrade.width && !canFit; x++)
-                                        if (inv.canFit(upgrade, x, y)) canFit = true;
-                                if (!canFit) return { message: "Cargo hold is full.", close: true };
-                            }
-                        }
-                    }
-                }
                 if (opt.actions && opt.actions.length > 0) {
                     const result = executeActions(opt.actions, vars, p, s, enc);
                     if (result === 'not_enough_scrap') return { message: "Not enough scrap.", close: true };
-                    if (result === 'inventory_full') return { message: "Cargo hold is full.", close: true };
                 }
                 const outcomes = opt.gamble;
                 const totalWeight = outcomes.reduce((sum, o) => sum + (o.weight || 1), 0);
@@ -492,7 +451,6 @@ function buildOption(opt, scenario, vars) {
                 if (opt.actions && opt.actions.length > 0) {
                     const result = executeActions(opt.actions, vars, p, s, enc);
                     if (result === 'not_enough_scrap') return { message: "Not enough scrap.", close: true };
-                    if (result === 'inventory_full') return { message: "Cargo hold is full.", close: true };
                 }
                 if (!step) return { message: '...', close: true };
                 return {
@@ -511,7 +469,6 @@ function buildOption(opt, scenario, vars) {
             if (opt.actions && opt.actions.length > 0) {
                 const result = executeActions(opt.actions, vars, p, s, enc);
                 if (result === 'not_enough_scrap') return { message: "Not enough scrap.", close: true };
-                if (result === 'inventory_full') return { message: "Cargo hold is full.", close: true };
             }
             // Options flagged optimal:true in scenario data unlock per-scenario
             // achievements. Scenario.id keys the lifetime.optimalChoices map.

@@ -1278,12 +1278,24 @@ export class Player {
     }
 
     updateMaxHealth(multiplier) {
+        // Preserve current health % across max-pool changes so picking up /
+        // dropping max-HP items (e.g. energy canisters) can't be milked for free
+        // healing. Flat permHealthBonus grants are added via addPermHealthBonus,
+        // which updates maxHealth + health together so the ratio stays put here.
+        const oldMax = this.maxHealth;
+        const ratio = oldMax > 0 ? this.health / oldMax : 1;
+
         this.maxHealthMult = multiplier;
         const base = this.shipData.health * this.obedienceMult;
         this.maxHealth = base * this.maxHealthMult + this.permHealthBonus;
 
-        // Clamp health to new max and ensure it doesn't go below 0
-        this.health = Math.max(0, Math.min(this.maxHealth, this.health));
+        this.health = Math.max(0, Math.min(this.maxHealth, this.maxHealth * ratio));
+    }
+
+    addPermHealthBonus(amount) {
+        this.permHealthBonus += amount;
+        this.maxHealth += amount;
+        this.health = Math.min(this.maxHealth, this.health + amount);
     }
 
     updateMaxShield(flatBonus) {

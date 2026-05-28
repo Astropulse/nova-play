@@ -1492,7 +1492,7 @@ export class HostileEncounter extends Enemy {
                     state.player.heal(0.3);
                     break;
                 case 'add_perm_health':
-                    state.player.permHealthBonus += 10;
+                    state.player.addPermHealthBonus(10);
                     break;
                 case 'add_scrap': {
                     const scrapAmount = resolveScrap(paramStr);
@@ -1636,11 +1636,9 @@ export class HostileEncounter extends Enemy {
             spawns.push(new Scrap(this.game, this.worldX + Math.cos(outAngle) * dist, this.worldY + Math.sin(outAngle) * dist, Math.random() > 0.4 ? 'big' : 'small'));
         }
 
-        for (const [key, val] of Object.entries(this.encounterVars)) {
-            if (val && typeof val === 'object' && val.id && val.name && val.cost) {
-                spawns.push(new ItemPickup(this.game, this.worldX, this.worldY, val));
-            }
-        }
+        // Dialog-defined item drops (add_upgrade actions) are handled by
+        // _grantAbstractRewards. Do not also drop upgrade-like encounterVars
+        // here or every trader will drop their offering twice.
 
         return spawns;
     }

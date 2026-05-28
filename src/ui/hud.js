@@ -195,8 +195,7 @@ export class HUD {
                     const distSq = dx * dx + dy * dy;
 
                     if (distSq < radarRangeSq) {
-                        const dist = Math.sqrt(distSq);
-                        const scale = radarSize / (radarRange * dist || 1);
+                        const scale = radarSize / radarRange;
                         const rawX = cx + dx * scale;
                         const rawY = cy + dy * scale;
 
@@ -443,6 +442,8 @@ export class HUD {
 
             // Progress fill behind everything else — matches the menu card's
             // partial-width tint. Only shown when the achievement opts in.
+            // Bar starts at the right edge of the icon so it tints the text
+            // area without fighting with the artwork (mirrors menu layout).
             let progress = null;
             if (typeof ach.progress === 'function') {
                 try { progress = ach.progress(mgr); } catch (e) { progress = null; }
@@ -450,13 +451,11 @@ export class HUD {
                 else progress = Math.max(0, Math.min(1, progress));
             }
             if (progress !== null && progress > 0) {
-                const fillW = Math.max(1, Math.floor(rowW * progress));
+                const barX = stackX + Math.floor(hudScale * 1) + iconSize;
+                const barMaxW = (stackX + rowW) - barX;
+                const fillW = Math.max(1, Math.floor(barMaxW * progress));
                 ctx.fillStyle = 'rgba(34, 85, 106, 0.55)';
-                ctx.fillRect(stackX, y, fillW, rowH);
-                if (progress < 1) {
-                    ctx.fillStyle = '#44ddff';
-                    ctx.fillRect(stackX + fillW - 1, y, 1, rowH);
-                }
+                ctx.fillRect(barX, y, fillW, rowH);
             }
 
             ctx.strokeStyle = 'rgba(68, 221, 255, 0.55)';
