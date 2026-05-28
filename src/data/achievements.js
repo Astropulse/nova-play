@@ -38,7 +38,8 @@ export const ACHIEVEMENTS = [
         description: 'Destroy 100 enemy ships across all runs.',
         flavor: 'Barely a dent.',
         icon: 'ach_centurion',
-        check: (m) => m.lifetime.enemiesKilled >= 100
+        check: (m) => m.lifetime.enemiesKilled >= 100,
+        progress: (m) => m.lifetime.enemiesKilled / 100
     },
     {
         id: 'thousand_cuts',
@@ -46,17 +47,18 @@ export const ACHIEVEMENTS = [
         description: 'Destroy 1000 enemy ships across all runs.',
         flavor: 'You stopped counting somewhere around three hundred.',
         icon: 'ach_thousand_cuts',
-        check: (m) => m.lifetime.enemiesKilled >= 1000
+        check: (m) => m.lifetime.enemiesKilled >= 1000,
+        progress: (m) => m.lifetime.enemiesKilled / 1000
     },
 
     // ── Combat: single run ─────────────────────────────────────────────────
     {
         id: 'butcher',
         name: 'Butcher',
-        description: 'Destroy 100 enemy ships in a single run.',
+        description: 'Destroy 200 enemy ships in a single run.',
         flavor: "All in one go, nice.",
         icon: 'ach_butcher',
-        check: (m) => m.run.enemiesKilled >= 100
+        check: (m) => m.run.enemiesKilled >= 200
     },
     {
         id: 'blitz',
@@ -91,7 +93,8 @@ export const ACHIEVEMENTS = [
         description: 'Clear 50 enemy waves across all runs.',
         flavor: 'Wave after unending wave.',
         icon: 'ach_wave_breaker',
-        check: (m) => m.lifetime.wavesCleared >= 50
+        check: (m) => m.lifetime.wavesCleared >= 50,
+        progress: (m) => m.lifetime.wavesCleared / 50
     },
     {
         id: 'untouched',
@@ -138,7 +141,12 @@ export const ACHIEVEMENTS = [
         icon: 'ach_trifecta',
         check: (m) => !!m.lifetime.bossesDefeated['Starcore']
             && !!m.lifetime.bossesDefeated['AsteroidCrusher']
-            && !!m.lifetime.bossesDefeated['EventHorizon']
+            && !!m.lifetime.bossesDefeated['EventHorizon'],
+        progress: (m) => (
+            (m.lifetime.bossesDefeated['Starcore'] ? 1 : 0)
+            + (m.lifetime.bossesDefeated['AsteroidCrusher'] ? 1 : 0)
+            + (m.lifetime.bossesDefeated['EventHorizon'] ? 1 : 0)
+        ) / 3
     },
     {
         id: 'single_run_trifecta',
@@ -165,50 +173,54 @@ export const ACHIEVEMENTS = [
     {
         id: 'asteroid_taste',
         name: 'Tastes Like Rocks',
-        description: 'Destroy 20 asteroids in a single run.',
+        description: 'Destroy 60 asteroids in a single run.',
         flavor: 'Minerals. Yum.',
         icon: 'ach_asteroid_taste',
-        check: (m) => m.run.asteroidsDestroyed >= 20
-    },
-    {
-        id: 'asteroid_1000',
-        name: 'Pebble Hunter',
-        description: 'Destroy 1000 asteroids across all runs.',
-        flavor: 'Easy pickings.',
-        icon: 'ach_asteroid_1000',
-        check: (m) => m.lifetime.asteroidsDestroyed >= 1000
+        check: (m) => m.run.asteroidsDestroyed >= 60
     },
     {
         id: 'asteroid_10000',
-        name: 'Belt Wrecker',
+        name: 'Pebble Hunter',
         description: 'Destroy 10000 asteroids across all runs.',
-        flavor: 'Somewhere, a geologist is weeping.',
+        flavor: 'Easy pickings.',
         icon: 'ach_asteroid_10000',
-        check: (m) => m.lifetime.asteroidsDestroyed >= 10000
+        check: (m) => m.lifetime.asteroidsDestroyed >= 10000,
+        progress: (m) => m.lifetime.asteroidsDestroyed / 10000
     },
     {
-        id: 'single_run_asteroid_200',
+        id: 'asteroid_100000',
+        name: 'Belt Wrecker',
+        description: 'Destroy 100000 asteroids across all runs.',
+        flavor: 'Somewhere, a geologist is weeping.',
+        icon: 'ach_asteroid_100000',
+        check: (m) => m.lifetime.asteroidsDestroyed >= 100000,
+        progress: (m) => m.lifetime.asteroidsDestroyed / 100000
+    },
+    {
+        id: 'single_run_asteroid_600',
         name: 'Field Day',
-        description: 'Destroy 200 asteroids in a single run.',
+        description: 'Destroy 600 asteroids in a single run.',
         flavor: 'Give me all the scrap.',
-        icon: 'ach_single_run_asteroid_200',
-        check: (m) => m.run.asteroidsDestroyed >= 200
+        icon: 'ach_single_run_asteroid_600',
+        check: (m) => m.run.asteroidsDestroyed >= 600
     },
     {
         id: 'boulder_smasher',
         name: 'Boulder Smasher',
-        description: 'Destroy 100 large asteroids across all runs.',
+        description: 'Destroy 1000 large asteroids across all runs.',
         flavor: 'Big rocks give big rewards.',
         icon: 'ach_boulder_smasher',
-        check: (m) => m.lifetime.asteroidsByType.big >= 100
+        check: (m) => m.lifetime.asteroidsByType.big >= 1000,
+        progress: (m) => m.lifetime.asteroidsByType.big / 1000
     },
     {
         id: 'dust_devil',
         name: 'Dust Devil',
-        description: 'Destroy 1000 tiny asteroids across all runs.',
+        description: 'Destroy 10000 tiny asteroids across all runs.',
         flavor: 'They really start to add up.',
         icon: 'ach_dust_devil',
-        check: (m) => m.lifetime.asteroidsByType.tiny >= 1000
+        check: (m) => m.lifetime.asteroidsByType.tiny >= 10000,
+        progress: (m) => m.lifetime.asteroidsByType.tiny / 10000
     },
 
     // ── Events / Encounters ─────────────────────────────────────────────────
@@ -240,7 +252,8 @@ export const ACHIEVEMENTS = [
         description: 'Loot 5 abandoned cargo ships across all runs.',
         flavor: 'Empty hulls keep the lights on.',
         icon: 'ach_salvager',
-        check: (m) => (m.lifetime.eventTypes['CargoShipEvent'] || 0) >= 5
+        check: (m) => (m.lifetime.eventTypes['CargoShipEvent'] || 0) >= 5,
+        progress: (m) => (m.lifetime.eventTypes['CargoShipEvent'] || 0) / 5
     },
     {
         id: 'strange_galaxy',
@@ -311,7 +324,8 @@ export const ACHIEVEMENTS = [
         description: 'Open 25 space caches across all runs.',
         flavor: 'Chests are awesome. The more the better.',
         icon: 'ach_treasure_hunter',
-        check: (m) => m.lifetime.cachesOpened >= 25
+        check: (m) => m.lifetime.cachesOpened >= 25,
+        progress: (m) => m.lifetime.cachesOpened / 25
     },
     {
         id: 'hoarder',
@@ -337,7 +351,8 @@ export const ACHIEVEMENTS = [
         description: 'Visit 25 shops across all runs.',
         flavor: 'Do legendary upgrades even exist?',
         icon: 'ach_chasing_the_dragon',
-        check: (m) => m.lifetime.shopsVisited >= 25
+        check: (m) => m.lifetime.shopsVisited >= 25,
+        progress: (m) => m.lifetime.shopsVisited / 25
     },
 
     // ── Upgrades: progress & variety ────────────────────────────────────────
@@ -355,7 +370,8 @@ export const ACHIEVEMENTS = [
         description: 'Install 100 upgrades across all runs.',
         flavor: 'You have a whole shelf of these things now.',
         icon: 'ach_collector',
-        check: (m) => m.lifetime.upgradesCollected >= 100
+        check: (m) => m.lifetime.upgradesCollected >= 100,
+        progress: (m) => m.lifetime.upgradesCollected / 100
     },
     {
         id: 'armory',
@@ -560,7 +576,8 @@ export const ACHIEVEMENTS = [
         description: 'Collect 20000 scrap across all runs.',
         flavor: 'You could buy a small moon by now.',
         icon: 'ach_magnate',
-        check: (m) => m.lifetime.scrapCollected >= 20000
+        check: (m) => m.lifetime.scrapCollected >= 20000,
+        progress: (m) => m.lifetime.scrapCollected / 20000
     },
     {
         id: 'empire',
@@ -568,7 +585,8 @@ export const ACHIEVEMENTS = [
         description: 'Collect 100000 scrap across all runs.',
         flavor: 'Six figures of bolts and broken glass.',
         icon: 'ach_empire',
-        check: (m) => m.lifetime.scrapCollected >= 100000
+        check: (m) => m.lifetime.scrapCollected >= 100000,
+        progress: (m) => m.lifetime.scrapCollected / 100000
     },
     {
         id: 'scrap_storm',
@@ -625,6 +643,15 @@ export const ACHIEVEMENTS = [
                 if (!(m.lifetime.encounterTypes[t] > 0)) return false;
             }
             return true;
+        },
+        progress: (m) => {
+            const types = [
+                'cargo_trader', 'civilian', 'colony', 'engineer', 'explorer',
+                'junker', 'law_enforcement', 'black_market', 'tuner'
+            ];
+            let n = 0;
+            for (const t of types) if (m.lifetime.encounterTypes[t] > 0) n++;
+            return n / types.length;
         }
     },
     {
@@ -637,6 +664,11 @@ export const ACHIEVEMENTS = [
             let total = 0;
             for (const k in m.lifetime.encounterTypes) total += m.lifetime.encounterTypes[k];
             return total >= 25;
+        },
+        progress: (m) => {
+            let total = 0;
+            for (const k in m.lifetime.encounterTypes) total += m.lifetime.encounterTypes[k];
+            return total / 25;
         }
     },
     {
@@ -653,7 +685,8 @@ export const ACHIEVEMENTS = [
         description: 'Turn 10 ship encounters hostile across all runs.',
         flavor: 'You really cannot help yourself.',
         icon: 'ach_provoker',
-        check: (m) => m.lifetime.hostilesConverted >= 10
+        check: (m) => m.lifetime.hostilesConverted >= 10,
+        progress: (m) => m.lifetime.hostilesConverted / 10
     },
     {
         id: 'see_through',
@@ -726,10 +759,10 @@ export const ACHIEVEMENTS = [
     {
         id: 'battering_ram',
         name: 'Battering Ram',
-        description: 'Destroy 50 asteroids by ramming them in a single run with the Bruiser.',
+        description: 'Destroy 150 asteroids by ramming them in a single run with the Bruiser.',
         flavor: 'Lasers are for cowards.',
         icon: 'ach_battering_ram',
-        check: (m) => m.run.shipId === 'bruiser' && m.run.asteroidsRammed >= 50
+        check: (m) => m.run.shipId === 'bruiser' && m.run.asteroidsRammed >= 150
     },
     {
         id: 'frequent_flyer',
@@ -766,7 +799,8 @@ export const ACHIEVEMENTS = [
         flavor: 'You know these ships are expensive right?',
         icon: 'ach_veteran_pilot',
         unlock: { type: 'starter_item', id: 'small_battery' },
-        check: (m) => m.lifetime.runsCompleted >= 10
+        check: (m) => m.lifetime.runsCompleted >= 10,
+        progress: (m) => m.lifetime.runsCompleted / 10
     },
     {
         id: 'tenured',
@@ -774,7 +808,8 @@ export const ACHIEVEMENTS = [
         description: 'Complete 50 runs.',
         flavor: 'Just keep mashing the start button.',
         icon: 'ach_tenured',
-        check: (m) => m.lifetime.runsCompleted >= 50
+        check: (m) => m.lifetime.runsCompleted >= 50,
+        progress: (m) => m.lifetime.runsCompleted / 50
     },
     {
         id: 'career_pilot',
@@ -791,7 +826,8 @@ export const ACHIEVEMENTS = [
         description: 'Spend 1 hour in the cockpit across all runs.',
         flavor: '60 minutes you\'ll never get back.',
         icon: 'ach_clock_watcher',
-        check: (m) => m.lifetime.timeAlive >= 3600
+        check: (m) => m.lifetime.timeAlive >= 3600,
+        progress: (m) => m.lifetime.timeAlive / 3600
     },
     {
         id: 'personal_best',
@@ -799,7 +835,8 @@ export const ACHIEVEMENTS = [
         description: 'Survive a single run for 50 minutes.',
         flavor: 'You could have ended it at any time. You didn\'t.',
         icon: 'ach_personal_best',
-        check: (m) => m.lifetime.peakRunTime >= 3000
+        check: (m) => m.lifetime.peakRunTime >= 3000,
+        progress: (m) => m.lifetime.peakRunTime / 3000
     },
     {
         id: 'hangar_tour',
@@ -811,7 +848,12 @@ export const ACHIEVEMENTS = [
             && m.lifetime.shipsUsed.fighter
             && m.lifetime.shipsUsed.cruiser
             && m.lifetime.shipsUsed.bruiser
-            && m.lifetime.shipsUsed.looper
+            && m.lifetime.shipsUsed.looper,
+        progress: (m) => {
+            const s = m.lifetime.shipsUsed || {};
+            return ((s.fighter ? 1 : 0) + (s.cruiser ? 1 : 0)
+                + (s.bruiser ? 1 : 0) + (s.looper ? 1 : 0)) / 4;
+        }
     },
     {
         id: 'punching_bag',
@@ -819,7 +861,8 @@ export const ACHIEVEMENTS = [
         description: 'Take 10000 damage across all runs.',
         flavor: 'Most of it was your fault.',
         icon: 'ach_punching_bag',
-        check: (m) => m.lifetime.damageTaken >= 10000
+        check: (m) => m.lifetime.damageTaken >= 10000,
+        progress: (m) => m.lifetime.damageTaken / 10000
     },
     {
         id: 'catalog',
@@ -827,7 +870,8 @@ export const ACHIEVEMENTS = [
         description: 'Find 25 different upgrades across all runs.',
         flavor: 'Almost a complete set. Almost.',
         icon: 'ach_catalog',
-        check: (m) => m.lifetime.upgradesById && Object.keys(m.lifetime.upgradesById).length >= 25
+        check: (m) => m.lifetime.upgradesById && Object.keys(m.lifetime.upgradesById).length >= 25,
+        progress: (m) => Object.keys(m.lifetime.upgradesById || {}).length / 25
     },
     {
         id: 'boss_hunter',
@@ -839,6 +883,11 @@ export const ACHIEVEMENTS = [
             let total = 0;
             for (const k in m.lifetime.bossesDefeated) total += m.lifetime.bossesDefeated[k];
             return total >= 25;
+        },
+        progress: (m) => {
+            let total = 0;
+            for (const k in m.lifetime.bossesDefeated) total += m.lifetime.bossesDefeated[k];
+            return total / 25;
         }
     }
 ];

@@ -19,6 +19,8 @@ import { AsteroidCrusher } from '../entities/asteroidCrusher.js';
 import { EventHorizon } from '../entities/eventHorizon.js';
 import { YellowOne, YO_STATE } from '../entities/yellowOne.js';
 import { MenuState } from './menuState.js';
+import { AchievementsState } from './achievementsState.js';
+import { ACHIEVEMENTS } from '../data/achievements.js';
 import { FloatingText } from '../entities/floatingText.js';
 import { MUSIC_STATE } from '../engine/soundManager.js';
 import { BOSS_STATE } from '../entities/boss.js';
@@ -154,6 +156,7 @@ export class PlayingState {
         this.totalGameTime = 0;
         this.trueTotalTime = 0; // Persistent game time
         this.waveTimer = 120; // 2 minutes
+        this._waveWasActive = false;
         this.difficultyScale = 1.0;
 
         // Tunable Difficulty Constants
@@ -203,7 +206,8 @@ export class PlayingState {
             sfxDec: { x: 0, y: 0, w: 0, h: 0, hovered: false },
             sfxInc: { x: 0, y: 0, w: 0, h: 0, hovered: false },
             shipSelection: { x: 0, y: 0, w: 0, h: 0, hovered: false },
-            claimLevels: { x: 0, y: 0, w: 0, h: 0, hovered: false }
+            claimLevels: { x: 0, y: 0, w: 0, h: 0, hovered: false },
+            achievements: { x: 0, y: 0, w: 0, h: 0, hovered: false }
         };
         this.confirmRestart = false;
         this.confirmRestartButtons = {
@@ -392,6 +396,7 @@ export class PlayingState {
         // Increment true total time only if not paused, not in shop, and not dead
         if (!this.paused && !this.isShopOpen && !this.isEncounterOpen && !this.isCacheOpen && !this.isLevelUpOpen && !this.isDead) {
             this.trueTotalTime += dt;
+            if (this.game.achievements) this.game.achievements.tickRun(dt);
         }
 
         // --- Death sequence ---
@@ -937,6 +942,15 @@ export class PlayingState {
             const waveStillSpawning = this.enemySpawner.waveQueue > 0;
             const waveClearedPct = waveSpawned > 0 ? 1 - (currentWaveAlive / waveSpawned) : 1;
             const waveActive = waveStillSpawning || (waveSpawned > 0 && waveClearedPct < 0.9);
+
+            // Wave clear: transition from active -> inactive (player killed 90%+).
+            if (this._waveWasActive && !waveActive) {
+                this.stats.wavesCleared++;
+                if (this.game.achievements) {
+                    this.game.achievements.notify('wave_cleared');
+                }
+            }
+            this._waveWasActive = waveActive;
 
             if (!bossAlive && !this.yellowOneFightActive) {
                 this.postWaveTimer += dt;
@@ -2134,10 +2148,6 @@ export class PlayingState {
     }
 
     _triggerWave() {
-        this.stats.wavesCleared++;
-        if (this.game.achievements) {
-            this.game.achievements.notify('wave_cleared');
-        }
         const waveEnemies = this.enemySpawner.spawnWave(this.player.worldX, this.player.worldY, this.difficultyScale);
 
         // Check if a boss was spawned
@@ -3929,6 +3939,16 @@ export class PlayingState {
         this.pauseButtons.shipSelection.w = shipSelSize.w;
         this.pauseButtons.shipSelection.h = shipSelSize.h;
 
+        // Achievements button — mirrors the main-menu placement (top-right
+        // text button) so the two screens read consistently.
+        const achMargin = Math.floor(uiScale * 12);
+        const achW = Math.floor(uiScale * 80);
+        const achH = Math.floor(uiScale * 22);
+        this.pauseButtons.achievements.x = cw - achMargin - achW;
+        this.pauseButtons.achievements.y = achMargin;
+        this.pauseButtons.achievements.w = achW;
+        this.pauseButtons.achievements.h = achH;
+
         if (this.confirmRestart) {
             this.confirmRestartButtons.yes = {
                 x: Math.floor(cw / 2 - 40 * uiScale), y: ch / 2 + 20 * uiScale,
@@ -3976,6 +3996,10 @@ export class PlayingState {
             addBtn('sfxInc', this.pauseButtons.sfxInc, () => {
                 this.game.sounds.setSfxVolume(this.game.sounds.sfxVolume + 0.1);
                 this.game.sounds.play('click', 0.5);
+            });
+            addBtn('achievements', this.pauseButtons.achievements, () => {
+                this.game.sounds.play('click', 1.0);
+                this.game.setState(new AchievementsState(this.game, this));
             });
             if (this.levelUpQueue.length > 0 && this.pauseButtons.claimLevels.w > 0) {
                 addBtn('claimLevels', this.pauseButtons.claimLevels, () => {
@@ -4030,6 +4054,12 @@ export class PlayingState {
                 if (pb.shipSelection.hovered) {
                     this.game.sounds.play('click', 0.5);
                     this.confirmRestart = true;
+                    return;
+                }
+                if (pb.achievements.hovered) {
+                    this.game.input.consumeMouseButton(0);
+                    this.game.sounds.play('click', 1.0);
+                    this.game.setState(new AchievementsState(this.game, this));
                     return;
                 }
             }
@@ -4803,6 +4833,22 @@ export class PlayingState {
         if (!this.confirmRestart) {
             const ss = this.pauseButtons.shipSelection;
             this.game.drawSprite(ctx, ss.hovered ? 'ship_selection_on' : 'ship_selection_off', ss.x, ss.y, uiScale);
+
+            // Achievements text button — visual parity with the main menu's
+            // top-right entry. Renders cyan, white on hover, with a small
+            // unlock-count hint underneath.
+            const ab = this.pauseButtons.achievements;
+            ctx.font = `${8 * uiScale}px Astro5x`;
+            ctx.textAlign = 'right';
+            ctx.textBaseline = 'alphabetic';
+            ctx.fillStyle = ab.hovered ? '#ffffff' : '#44ddff';
+            ctx.fillText('ACHIEVEMENTS ►', ab.x + ab.w, ab.y + Math.floor(uiScale * 8));
+            const mgr = this.game.achievements;
+            if (mgr) {
+                ctx.font = `${5 * uiScale}px Astro4x`;
+                ctx.fillStyle = '#667788';
+                ctx.fillText(`${mgr.unlocked.size} / ${ACHIEVEMENTS.length}`, ab.x + ab.w, ab.y + Math.floor(uiScale * 16));
+            }
         } else {
             ctx.fillStyle = 'rgba(0,0,0,0.85)';
             ctx.fillRect(0, 0, cw, ch);

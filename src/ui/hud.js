@@ -103,6 +103,9 @@ export class HUD {
         ctx.fillText(`SCRAP: ${p.scrap}`, cw - margin, this.game.hudScale * 10);
         ctx.textAlign = 'left';
 
+        // Tracked achievements — vertical stack below the scrap counter.
+        this._drawTrackedAchievements(ctx, cw, ch, margin);
+
         // Coordinates
         ctx.fillStyle = '#445566';
         ctx.font = `${8 * this.game.hudScale}px Astro4x`;
@@ -399,6 +402,238 @@ export class HUD {
             ctx.fillText('CLAIM IN INVENTORY', cw / 2, textY - hudScale * 7);
         }
         ctx.restore();
+    }
+
+    // Vertical stack of player-pinned achievements anchored under the scrap
+    // counter. Mirrors the menu-card layout (icon + name + description +
+    // flavor) at HUD scale so the player can read the unlock condition and
+    // tone hint at a glance. Hidden achievements mask their description with
+    // "???" but still surface their name + flavor (the only hint the player
+    // is allowed to see while it's locked).
+    _drawTrackedAchievements(ctx, cw, ch, margin) {
+        const mgr = this.game.achievements;
+        if (!mgr) return;
+        const tracked = mgr.getTrackedAchievements();
+        if (tracked.length === 0) return;
+
+        const hudScale = this.game.hudScale;
+        const rowW = Math.floor(hudScale * 130);
+        const rowH = Math.floor(hudScale * 32);
+        const rowGap = Math.floor(hudScale * 2);
+        const iconSize = rowH;
+        const stackX = cw - margin - rowW;
+        const stackY = Math.floor(hudScale * 18);
+        const padTop = Math.floor(hudScale * 2);
+        const padBot = Math.floor(hudScale * 2);
+
+        // Wrap cache — keyed on text+width+font so a resize or string change
+        // invalidates the entry. Built lazily to avoid an unused Map on
+        // sessions where nothing is tracked.
+        if (!this._trackedWrapCache) this._trackedWrapCache = new Map();
+
+        ctx.save();
+        ctx.textBaseline = 'alphabetic';
+        for (let i = 0; i < tracked.length; i++) {
+            const ach = tracked[i];
+            const y = stackY + i * (rowH + rowGap);
+
+            // Panel
+            ctx.fillStyle = 'rgba(8, 16, 28, 0.82)';
+            ctx.fillRect(stackX, y, rowW, rowH);
+
+            // Progress fill behind everything else — matches the menu card's
+            // partial-width tint. Only shown when the achievement opts in.
+            let progress = null;
+            if (typeof ach.progress === 'function') {
+                try { progress = ach.progress(mgr); } catch (e) { progress = null; }
+                if (typeof progress !== 'number') progress = null;
+                else progress = Math.max(0, Math.min(1, progress));
+            }
+            if (progress !== null && progress > 0) {
+                const fillW = Math.max(1, Math.floor(rowW * progress));
+                ctx.fillStyle = 'rgba(34, 85, 106, 0.55)';
+                ctx.fillRect(stackX, y, fillW, rowH);
+                if (progress < 1) {
+                    ctx.fillStyle = '#44ddff';
+                    ctx.fillRect(stackX + fillW - 1, y, 1, rowH);
+                }
+            }
+
+            ctx.strokeStyle = 'rgba(68, 221, 255, 0.55)';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(stackX + 0.5, y + 0.5, rowW - 1, rowH - 1);
+
+            // Left accent
+            ctx.fillStyle = '#ffcc44';
+            ctx.fillRect(stackX, y, Math.max(1, Math.floor(hudScale * 0.75)), rowH);
+
+            // Icon
+            const iconX = stackX + Math.floor(hudScale * 1);
+            const asset = ach.icon ? this.game.assets.get(ach.icon) : null;
+            if (asset) {
+                const img = asset.canvas || asset;
+                const aw = asset.width || img.width;
+                const ah = asset.height || img.height;
+                const scale = Math.min(iconSize / aw, iconSize / ah);
+                const dw = aw * scale;
+                const dh = ah * scale;
+                ctx.save();
+                ctx.globalAlpha = 0.9;
+                ctx.drawImage(img,
+                    Math.floor(iconX + (iconSize - dw) / 2),
+                    Math.floor(y + (iconSize - dh) / 2), dw, dh);
+                ctx.restore();
+            } else {
+                ctx.fillStyle = 'rgba(20, 40, 60, 0.9)';
+                ctx.fillRect(iconX, y, iconSize, iconSize);
+            }
+
+            // Text region
+            const textX = iconX + iconSize + Math.floor(hudScale * 3);
+            const textRight = stackX + rowW - Math.floor(hudScale * 3);
+            const textW = textRight - textX;
+
+            const showDesc = !ach.hidden;
+            const nameFontPx = Math.floor(5 * hudScale);
+            const bodyFontPx = Math.floor(3.5 * hudScale);
+            const nameLineH = Math.floor(hudScale * 6);
+            const bodyLineH = Math.floor(hudScale * 4.5);
+            const gapAfterName = Math.floor(hudScale * 1.5);
+            const gapAfterDesc = Math.floor(hudScale * 1);
+
+            ctx.font = `${nameFontPx}px Astro5x`;
+            const nameStr = this._truncateText(ctx, ach.name.toUpperCase(), textW);
+
+            // Compute how many body lines the card can hold, then split that
+            // budget between description and flavor (description gets first
+            // pick — the player needs the unlock condition more than the lore).
+            // Wrap with no ellipsis; if more lines exist than fit, we just
+            // drop them silently rather than mark the cut.
+            const availBodyH = rowH - padTop - padBot - nameLineH - gapAfterName;
+            const maxBodyLines = Math.max(0, Math.floor(availBodyH / bodyLineH));
+
+            ctx.font = `${bodyFontPx}px Astro4x`;
+            const descAll = this._wrapTrackedNoCap(ctx,
+                showDesc ? ach.description : '???', textW,
+                `${ach.id}@d@${showDesc}`);
+            const flavorAll = ach.flavor
+                ? this._wrapTrackedNoCap(ctx, '"' + ach.flavor + '"', textW, `${ach.id}@f`)
+                : [];
+
+            // Allocate lines. Try to reserve at least 1 line for flavor when
+            // both fit; if not, description wins the remaining budget.
+            let descBudget;
+            let flavorBudget;
+            if (flavorAll.length === 0) {
+                descBudget = Math.min(descAll.length, maxBodyLines);
+                flavorBudget = 0;
+            } else if (descAll.length + flavorAll.length <= maxBodyLines) {
+                descBudget = descAll.length;
+                flavorBudget = flavorAll.length;
+            } else if (descAll.length >= maxBodyLines) {
+                descBudget = maxBodyLines;
+                flavorBudget = 0;
+            } else {
+                descBudget = descAll.length;
+                flavorBudget = Math.min(flavorAll.length, maxBodyLines - descAll.length);
+            }
+            // Flavor needs one body-line of vertical real estate for its
+            // gap-after-desc — if it eats into our budget, drop a flavor line.
+            if (flavorBudget > 0) {
+                const flavorSpace = descBudget * 0 + gapAfterDesc;
+                const flavorRoom = availBodyH - descBudget * bodyLineH - flavorSpace;
+                const maxFlavor = Math.max(0, Math.floor(flavorRoom / bodyLineH));
+                flavorBudget = Math.min(flavorBudget, maxFlavor);
+            }
+            const descLines = descAll.slice(0, descBudget);
+            const flavorLines = flavorAll.slice(0, flavorBudget);
+
+            let textY = y + padTop;
+
+            // Name
+            ctx.font = `${nameFontPx}px Astro5x`;
+            ctx.fillStyle = '#ffffff';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'top';
+            ctx.fillText(nameStr, textX, textY);
+            textY += nameLineH;
+
+            // Description
+            if (descLines.length > 0) {
+                textY += gapAfterName;
+                ctx.font = `${bodyFontPx}px Astro4x`;
+                ctx.fillStyle = '#ccddee';
+                for (const line of descLines) {
+                    ctx.fillText(line, textX, textY);
+                    textY += bodyLineH;
+                }
+            }
+
+            // Flavor
+            if (flavorLines.length > 0) {
+                textY += gapAfterDesc;
+                ctx.font = `${bodyFontPx}px Astro4x`;
+                ctx.fillStyle = '#88aabb';
+                for (const line of flavorLines) {
+                    ctx.fillText(line, textX, textY);
+                    textY += bodyLineH;
+                }
+            }
+        }
+        ctx.restore();
+    }
+
+    // Full wrap with no ellipsis or line cap. Caller slices the result to fit
+    // their available vertical room. Cached on text+width+font so we don't
+    // re-measure every frame.
+    _wrapTrackedNoCap(ctx, text, maxWidth, cacheKey) {
+        if (!text) return [];
+        const fullKey = `nocap@${cacheKey}@${Math.floor(maxWidth)}@${ctx.font}`;
+        const cached = this._trackedWrapCache.get(fullKey);
+        if (cached) return cached;
+
+        const words = text.split(/\s+/);
+        const lines = [];
+        let current = '';
+        for (const word of words) {
+            const probe = current ? current + ' ' + word : word;
+            if (ctx.measureText(probe).width <= maxWidth) current = probe;
+            else { if (current) lines.push(current); current = word; }
+        }
+        if (current) lines.push(current);
+        this._trackedWrapCache.set(fullKey, lines);
+        return lines;
+    }
+
+    _wrapTracked(ctx, text, maxWidth, maxLines, cacheKey) {
+        if (!text) return [];
+        const fullKey = `${cacheKey}@${Math.floor(maxWidth)}@${ctx.font}@L${maxLines}`;
+        const cached = this._trackedWrapCache.get(fullKey);
+        if (cached) return cached;
+
+        const words = text.split(/\s+/);
+        const lines = [];
+        let current = '';
+        for (const word of words) {
+            const probe = current ? current + ' ' + word : word;
+            if (ctx.measureText(probe).width <= maxWidth) current = probe;
+            else { if (current) lines.push(current); current = word; }
+        }
+        if (current) lines.push(current);
+
+        let result;
+        if (lines.length <= maxLines) {
+            result = lines;
+        } else {
+            result = lines.slice(0, maxLines);
+            let last = result[maxLines - 1];
+            while (last.length > 0 && ctx.measureText(last + '…').width > maxWidth) {
+                last = last.slice(0, -1);
+            }
+            result[maxLines - 1] = last + '…';
+        }
+        this._trackedWrapCache.set(fullKey, result);
+        return result;
     }
 
     _drawAchievementToast(ctx) {

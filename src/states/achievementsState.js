@@ -11,8 +11,12 @@ import { GP } from '../engine/inputManager.js';
 // per page = cols × rowsPerPage (computed from available vertical space).
 // The page index drives which slice of ACHIEVEMENTS is visible.
 export class AchievementsState {
-    constructor(game) {
+    // `returnState`, when provided, is the state to restore on home/Escape
+    // instead of constructing a fresh MenuState. Used by the pause screen so
+    // the in-progress run isn't discarded when the player browses unlocks.
+    constructor(game, returnState = null) {
         this.game = game;
+        this.returnState = returnState;
 
         // Pagination
         this.page = 0;
@@ -28,6 +32,12 @@ export class AchievementsState {
         this.confirmNo  = { x: 0, y: 0, w: 0, h: 0, hovered: false };
 
         this._lastMouse = { x: 0, y: 0 };
+
+        // Hitboxes for per-card track toggle buttons, refreshed each draw.
+        // Cleared at the top of draw() so a page flip can't leave stale rects
+        // that the click handler would still match.
+        this._trackBtns = [];
+        this._hoveredTrackId = null;
 
         // Cache wrapped lines per achievement by id so we don't re-wrap every
         // frame. Keyed on `${id}@${maxWidth}@${unlocked}@${font}` so a window
@@ -79,6 +89,17 @@ export class AchievementsState {
         this.prevPageBtn.hovered = this._isInside(mouse, this.prevPageBtn);
         this.nextPageBtn.hovered = this._isInside(mouse, this.nextPageBtn);
 
+        // Track-button hover (cards from last draw). Mouse takes priority over
+        // the buttons below so the card overlay still works when the cursor
+        // sits over it.
+        this._hoveredTrackId = null;
+        for (const btn of this._trackBtns) {
+            if (this._isInside(mouse, btn)) {
+                this._hoveredTrackId = btn.id;
+                break;
+            }
+        }
+
         // Page navigation — keys + bumpers + d-pad LR
         const input = this.game.input;
         const totalPages = Math.max(1, this._totalPages);
@@ -102,12 +123,25 @@ export class AchievementsState {
         if (input.isMouseJustPressed(0)) {
             if (this.homeBtn.hovered) {
                 this.game.sounds.play('click', 1.0);
-                this.game.setState(new MenuState(this.game));
+                this.game.setState(this.returnState || new MenuState(this.game));
                 return;
             }
             if (this.resetBtn.hovered) {
                 this.game.sounds.play('click', 1.0);
                 this.confirmReset = true;
+                return;
+            }
+            if (this._hoveredTrackId && this.game.achievements) {
+                const mgr = this.game.achievements;
+                const wasTracked = mgr.isTracked(this._hoveredTrackId);
+                const ok = mgr.toggleTrack(this._hoveredTrackId);
+                // toggleTrack returns false either on untrack or when the
+                // tracked cap is hit — only the latter should fail-sound.
+                if (!wasTracked && !ok) {
+                    this.game.sounds.play('click', 0.4);
+                } else {
+                    this.game.sounds.play('select', 0.6);
+                }
                 return;
             }
             if (this.prevPageBtn.hovered && this.page > 0) {
@@ -126,7 +160,7 @@ export class AchievementsState {
             || input.isGamepadJustPressed(GP.BACK)
             || input.isGamepadJustPressed(GP.START)) {
             this.game.sounds.play('click', 1.0);
-            this.game.setState(new MenuState(this.game));
+            this.game.setState(this.returnState || new MenuState(this.game));
             return;
         }
     }
@@ -142,6 +176,10 @@ export class AchievementsState {
         ctx.save();
         ctx.imageSmoothingEnabled = false;
         ctx.textBaseline = 'alphabetic';
+
+        // Drop last frame's track-button hitboxes — they're regenerated as
+        // each visible card is drawn below.
+        this._trackBtns.length = 0;
 
         // Background
         ctx.fillStyle = '#050a14';
@@ -309,11 +347,20 @@ export class AchievementsState {
         const textRightEdge = x + w - padX;
         const textMaxW = textRightEdge - textX;
 
-        // Status pill width reserved on the top row.
-        const statusText = unlocked ? 'UNLOCKED' : 'LOCKED';
-        ctx.font = `${Math.floor(4 * uiScale)}px Astro4x`;
-        const statusW = ctx.measureText(statusText).width;
-        const nameMaxW = textMaxW - statusW - Math.floor(uiScale * 6);
+        // Track button reserves space on the top row for locked achievements
+        // so the title can't overrun it. Unlocked cards have no top-right
+        // chrome (the lock icon already conveys state), so the name gets the
+        // full width.
+        let topRightReservedW = 0;
+        if (!unlocked) {
+            ctx.font = `${Math.floor(4 * uiScale)}px Astro4x`;
+            // Use the widest of the three possible labels so the reserved
+            // width is stable regardless of which one is showing.
+            const probeLabel = '★ TRACKED';
+            topRightReservedW = Math.ceil(ctx.measureText(probeLabel).width)
+                + Math.floor(uiScale * 6); // matches the button's interior padding
+        }
+        const nameMaxW = textMaxW - topRightReservedW - Math.floor(uiScale * 6);
 
         // Name: up to 2 lines (wrap on whitespace; ellipsize only as a last
         // resort if even 2 lines can't fit). Description & flavor: up to
@@ -335,6 +382,26 @@ export class AchievementsState {
         ctx.fillStyle = unlocked ? 'rgba(20, 40, 60, 0.92)' : 'rgba(10, 14, 22, 0.92)';
         ctx.fillRect(x, y, w, h);
 
+        // Progress fill — partial background tint for locked, non-hidden
+        // lifetime-tracked achievements. The achievement opts in by defining
+        // a `progress(mgr)` returning 0..1. Drawn to the right of the icon
+        // so it tints the text area rather than fighting with the artwork.
+        if (!unlocked && !ach.hidden && typeof ach.progress === 'function') {
+            const mgr = this.game.achievements;
+            let p = 0;
+            if (mgr) {
+                try { p = ach.progress(mgr) || 0; } catch (e) { p = 0; }
+            }
+            p = Math.max(0, Math.min(1, p));
+            if (p > 0) {
+                const barX = x + iconSize;
+                const barMaxW = w - iconSize;
+                const fillW = Math.max(1, Math.floor(barMaxW * p));
+                ctx.fillStyle = 'rgba(34, 85, 106, 0.35)';
+                ctx.fillRect(barX, y, fillW, h);
+            }
+        }
+
         // Card border
         ctx.strokeStyle = unlocked ? '#22556a' : '#1a2233';
         ctx.lineWidth = 1;
@@ -344,19 +411,15 @@ export class AchievementsState {
         this._drawIconBox(ctx, ach, unlocked, x, y, iconSize, uiScale);
 
         // Vertical rhythm — line heights are slot heights (baseline-to-baseline
-        // spacing). Block layout treats each text region as stacked slots so
-        // we can measure the full visual height and center it inside the card.
-        const nameLineH = Math.floor(uiScale * 9);
-        const bodyLineH = Math.floor(uiScale * 7);
-        const gapAfterName = Math.floor(uiScale * 7);
-        const gapAfterDesc = ach.flavor ? Math.floor(uiScale * 6) : 0;
+        // spacing). Block layout treats each text region as stacked slots and
+        // anchors the whole stack to the top of the card so wave-of-text and
+        // single-name cards share a consistent name baseline.
+        const nameLineH = Math.floor(uiScale * 7);
+        const bodyLineH = Math.floor(uiScale * 6);
+        const gapAfterName = Math.floor(uiScale * 6);
+        const gapAfterDesc = ach.flavor ? Math.floor(uiScale * 5) : 0;
 
-        // Total visual height of the text block.
-        let contentH = nameLines.length * nameLineH;
-        if (descLines.length > 0)   contentH += gapAfterName + descLines.length * bodyLineH;
-        if (flavorLines.length > 0) contentH += gapAfterDesc + flavorLines.length * bodyLineH;
-
-        const blockTop = y + Math.max(0, Math.floor((h - contentH) / 2));
+        const blockTop = y + Math.floor(uiScale * 4);
 
         // Baseline lives near the bottom of each slot — 0.85 of lineH from
         // the top gives roughly the right cap/x-height alignment for these
@@ -369,17 +432,11 @@ export class AchievementsState {
         // Name
         ctx.font = `${Math.floor(7 * uiScale)}px Astro5x`;
         ctx.fillStyle = unlocked ? '#ffffff' : '#778899';
-        const firstNameBaseline = cursorY + baselineIn(nameLineH);
+        const firstNameTop = cursorY;
         for (const line of nameLines) {
             ctx.fillText(line, textX, cursorY + baselineIn(nameLineH));
             cursorY += nameLineH;
         }
-
-        // Status pill — anchored to first name line baseline
-        ctx.font = `${Math.floor(4 * uiScale)}px Astro4x`;
-        ctx.fillStyle = unlocked ? '#44ddff' : '#445566';
-        ctx.textAlign = 'right';
-        ctx.fillText(statusText, textRightEdge, firstNameBaseline);
 
         // Description
         if (descLines.length > 0) {
@@ -412,6 +469,66 @@ export class AchievementsState {
             ctx.textAlign = 'right';
             const badgeText = this._truncatedTo(ctx, `+${ach.unlock.id}`, textMaxW);
             ctx.fillText(badgeText, textRightEdge, y + h - Math.floor(uiScale * 4));
+        }
+
+        // Track toggle — only on locked achievements. Pinned to the top-right
+        // corner of the card, aligned to the first name line. Hidden
+        // achievements still get the toggle so the player can pin a name +
+        // flavor hint to the HUD.
+        if (!unlocked) {
+            this._drawTrackButton(ctx, ach, x, y, w, h, textRightEdge, firstNameTop, nameLineH, uiScale);
+        }
+    }
+
+    _drawTrackButton(ctx, ach, x, y, w, h, textRightEdge, firstNameTop, nameLineH, uiScale) {
+        const mgr = this.game.achievements;
+        const isTracked = mgr ? mgr.isTracked(ach.id) : false;
+        const isHovered = this._hoveredTrackId === ach.id;
+        // Refuse-track state: the cap is full and this one isn't on the list.
+        const capFull = mgr && !isTracked && mgr.tracked.size >= mgr.MAX_TRACKED;
+
+        const label = isTracked ? '★ TRACKED' : (capFull ? '★ MAX' : '★ TRACK');
+        ctx.font = `${Math.floor(4 * uiScale)}px Astro4x`;
+        const padX = Math.floor(uiScale * 3);
+        const labelW = Math.ceil(ctx.measureText(label).width);
+        const btnW = labelW + padX * 2;
+        const btnH = Math.floor(uiScale * 8);
+        const btnX = Math.floor(textRightEdge - btnW);
+        // Center the button vertically on the first name line so it reads as
+        // a chip "next to the title" rather than free-floating chrome.
+        const btnY = Math.floor(firstNameTop + (nameLineH - btnH) / 2);
+
+        let fg, bg, border;
+        if (isTracked) {
+            fg = isHovered ? '#ffffff' : '#ffcc44';
+            bg = isHovered ? 'rgba(70, 50, 14, 0.95)' : 'rgba(40, 28, 8, 0.90)';
+            border = isHovered ? '#ffdd66' : '#aa8822';
+        } else if (capFull) {
+            fg = '#556677';
+            bg = 'rgba(20, 24, 32, 0.85)';
+            border = '#33445a';
+        } else {
+            fg = isHovered ? '#ffffff' : '#88aabb';
+            bg = isHovered ? 'rgba(20, 40, 60, 0.95)' : 'rgba(10, 18, 28, 0.85)';
+            border = isHovered ? '#44ddff' : '#445566';
+        }
+
+        ctx.fillStyle = bg;
+        ctx.fillRect(btnX, btnY, btnW, btnH);
+        ctx.strokeStyle = border;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(btnX + 0.5, btnY + 0.5, btnW - 1, btnH - 1);
+
+        ctx.fillStyle = fg;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(label, btnX + btnW / 2, btnY + btnH / 2 + Math.floor(uiScale * 0.5));
+        ctx.textBaseline = 'alphabetic';
+
+        // Don't store the rect when the cap blocks tracking — the click would
+        // be a no-op and the dim styling already signals "disabled".
+        if (!capFull) {
+            this._trackBtns.push({ id: ach.id, x: btnX, y: btnY, w: btnW, h: btnH });
         }
     }
 

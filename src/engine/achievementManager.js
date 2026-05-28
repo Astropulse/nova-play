@@ -13,6 +13,12 @@ export class AchievementManager {
         this.run = this._newRunState();
         this.unlocked = new Set();
 
+        // Player-pinned achievements rendered on the in-game HUD. Persisted
+        // alongside unlocks. Cleared automatically when the achievement is
+        // unlocked (see _unlock).
+        this.tracked = new Set();
+        this.MAX_TRACKED = 5;
+
         // Toast display state — HUD pulls one off at a time and runs the
         // slide/fade animation. We keep a small queue so back-to-back unlocks
         // don't get dropped.
@@ -449,12 +455,55 @@ export class AchievementManager {
     _unlock(ach) {
         if (this.unlocked.has(ach.id)) return;
         this.unlocked.add(ach.id);
+        // Auto-untrack: once it's earned, the HUD shouldn't keep promoting it.
+        this.tracked.delete(ach.id);
         this.toastQueue.push(ach);
         this._save();
         if (this.game && this.game.sounds) {
             this.game.sounds.play('achievement', 0.8);
         }
         console.log(`Achievement unlocked: ${ach.name}`);
+    }
+
+    // Tracking API — UI surfaces (achievements menu, HUD) call these. We
+    // refuse to track unlocked achievements because they wouldn't render
+    // (HUD filter skips them) and a stale tracked id would silently linger
+    // in localStorage.
+    track(id) {
+        if (this.unlocked.has(id)) return false;
+        if (this.tracked.has(id)) return true;
+        if (this.tracked.size >= this.MAX_TRACKED) return false;
+        this.tracked.add(id);
+        this._scheduleSave();
+        return true;
+    }
+
+    untrack(id) {
+        if (!this.tracked.has(id)) return;
+        this.tracked.delete(id);
+        this._scheduleSave();
+    }
+
+    toggleTrack(id) {
+        if (this.tracked.has(id)) { this.untrack(id); return false; }
+        return this.track(id);
+    }
+
+    isTracked(id) {
+        return this.tracked.has(id);
+    }
+
+    // Returns tracked achievements in their ACHIEVEMENTS-array order so the
+    // HUD stack is stable across frames. Filters out anything that's been
+    // unlocked since the set was last persisted (defensive — _unlock should
+    // already prune it).
+    getTrackedAchievements() {
+        if (this.tracked.size === 0) return [];
+        const out = [];
+        for (const ach of ACHIEVEMENTS) {
+            if (this.tracked.has(ach.id) && !this.unlocked.has(ach.id)) out.push(ach);
+        }
+        return out;
     }
 
     // Microtask-debounced save — multiple notifies in the same frame all
@@ -529,7 +578,8 @@ export class AchievementManager {
         try {
             const data = {
                 lifetime: this.lifetime,
-                unlocked: [...this.unlocked]
+                unlocked: [...this.unlocked],
+                tracked: [...this.tracked]
             };
             localStorage.setItem(AchievementManager.STORAGE_KEY, JSON.stringify(data));
         } catch (err) {
@@ -557,6 +607,11 @@ export class AchievementManager {
                 }
             }
             if (Array.isArray(data.unlocked)) this.unlocked = new Set(data.unlocked);
+            if (Array.isArray(data.tracked)) {
+                // Drop anything that's already unlocked — the player has no
+                // use for tracking it any more.
+                this.tracked = new Set(data.tracked.filter(id => !this.unlocked.has(id)));
+            }
         } catch (err) {
             console.error('Failed to load achievements:', err);
         }
@@ -568,6 +623,7 @@ export class AchievementManager {
         this.lifetime = this._newLifetimeState();
         this.run = this._newRunState();
         this.unlocked = new Set();
+        this.tracked = new Set();
         this.toastQueue = [];
         this.currentToast = null;
         this._save();

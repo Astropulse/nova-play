@@ -1431,50 +1431,86 @@ export class HostileEncounter extends Enemy {
         const state = this.game.currentState;
         if (!state || !state.player) return;
 
+        // Only grant loot from scenarios that actually offered a hostile path —
+        // killing the ship implies the player took that path. Without this gate,
+        // any HostileEncounter (including those spawned by other systems) would
+        // erroneously drop the dialog's rewards.
+        const hasHostilePath = this.rawScenario.options.some(o =>
+            o.actions && o.actions.includes('convert_hostile')
+        );
+        if (!hasHostilePath) return;
+
         const abstractActions = ['reveal_shop', 'reveal_event', 'reveal_event_2', 'heal', 'add_perm_health', 'add_scrap', 'add_upgrade'];
 
-        // Only options that paired with convert_hostile contribute rewards on death.
-        // Iterating every option dropped add_upgrade items from buy/haggle options
-        // the player never selected (e.g. killing a cargo trader yielded the items
-        // they were offering for sale).
+        // Collect rewards across every option so the trader drops what they
+        // were offering (buy/haggle options hold the add_upgrade, not the
+        // convert_hostile option itself). Dedupe by action string so the same
+        // upgrade listed under both Buy and Haggle only drops once.
+        const seen = new Set();
+        const rewardActions = [];
         for (const opt of this.rawScenario.options) {
-            if (!opt.actions || !opt.actions.includes('convert_hostile')) continue;
+            if (!opt.actions) continue;
             for (const act of opt.actions) {
+                if (seen.has(act)) continue;
                 const colonIdx = act.indexOf(':');
                 const type = colonIdx >= 0 ? act.slice(0, colonIdx) : act;
+                if (!abstractActions.includes(type)) continue;
+                seen.add(act);
+                rewardActions.push(act);
+            }
+        }
 
-                if (abstractActions.includes(type)) {
-                    switch (type) {
-                        case 'reveal_shop':
-                            state.spawnDistantShop();
-                            break;
-                        case 'reveal_event':
-                            const events1 = state.events.filter(ev => !ev.revealed && !ev.isFinished);
-                            if (events1.length > 0) events1[0].revealed = true;
-                            break;
-                        case 'reveal_event_2':
-                            const events2 = state.events.filter(ev => !ev.revealed && !ev.isFinished);
-                            if (events2.length > 0) events2[0].revealed = true;
-                            if (events2.length > 1) events2[1].revealed = true;
-                            break;
-                        case 'heal':
-                            state.player.heal(0.3);
-                            break;
-                        case 'add_perm_health':
-                            state.player.permHealthBonus += 10;
-                            break;
-                        case 'add_scrap':
-                            const scrapAmount = parseInt(act.split(':')[1]) || 0;
-                            state.player.scrap += scrapAmount;
-                            break;
-                        case 'add_upgrade':
-                            const upgVar = act.split(':')[1];
-                            const upgrade = this.encounterVars[upgVar];
-                            if (upgrade && state.itemPickups) {
-                                state.itemPickups.push(new ItemPickup(this.game, this.worldX, this.worldY, upgrade));
-                            }
-                            break;
+        const resolveScrap = (paramStr) => {
+            if (!paramStr) return 0;
+            const v = this.encounterVars[paramStr];
+            if (typeof v === 'number') return v;
+            const num = parseInt(paramStr, 10);
+            return isNaN(num) ? 0 : num;
+        };
+
+        for (const act of rewardActions) {
+            const colonIdx = act.indexOf(':');
+            const type = colonIdx >= 0 ? act.slice(0, colonIdx) : act;
+            const paramStr = colonIdx >= 0 ? act.slice(colonIdx + 1) : null;
+
+            switch (type) {
+                case 'reveal_shop':
+                    state.spawnDistantShop();
+                    break;
+                case 'reveal_event': {
+                    const events1 = state.events.filter(ev => !ev.revealed && !ev.isFinished);
+                    if (events1.length > 0) events1[0].revealed = true;
+                    break;
+                }
+                case 'reveal_event_2': {
+                    const events2 = state.events.filter(ev => !ev.revealed && !ev.isFinished);
+                    if (events2.length > 0) events2[0].revealed = true;
+                    if (events2.length > 1) events2[1].revealed = true;
+                    break;
+                }
+                case 'heal':
+                    state.player.heal(0.3);
+                    break;
+                case 'add_perm_health':
+                    state.player.permHealthBonus += 10;
+                    break;
+                case 'add_scrap': {
+                    const scrapAmount = resolveScrap(paramStr);
+                    if (scrapAmount > 0) {
+                        state.player.scrap += scrapAmount;
+                        if (state.stats) state.stats.scrapCollected += scrapAmount;
+                        if (state.spawnFloatingText) {
+                            state.spawnFloatingText(this.worldX, this.worldY, `+${scrapAmount} SCRAP`, '#ffff44');
+                        }
                     }
+                    break;
+                }
+                case 'add_upgrade': {
+                    const upgrade = this.encounterVars[paramStr];
+                    if (upgrade && state.itemPickups) {
+                        state.itemPickups.push(new ItemPickup(this.game, this.worldX, this.worldY, upgrade));
+                    }
+                    break;
                 }
             }
         }
