@@ -1,3 +1,5 @@
+import { UPGRADES } from '../data/upgrades.js';
+
 /**
  * Manages a grid-based inventory.
  */
@@ -197,12 +199,11 @@ export class Inventory {
         };
     }
 
-    async deserialize(data) {
+    deserialize(data) {
         this.cols = data.cols;
         this.rows = data.rows;
         this.clear();
 
-        const { UPGRADES } = await import('../data/upgrades.js');
         for (const itemData of data.items) {
             const upgrade = UPGRADES.find(u => u.id === itemData.id);
             if (upgrade) {

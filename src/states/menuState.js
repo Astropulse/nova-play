@@ -107,23 +107,40 @@ export class MenuState {
 
         this._computeLayout();
 
+        // Spatial focus map — pair each id with its live button rect so
+        // directional navigation can pick whichever button is actually
+        // closest in the pressed direction. Hoisted above the parallax
+        // block so the gamepad parallax can read the focused rect too.
+        const focusables = [
+            { id: 'shipLeft',  rect: this.leftArrowBtn },
+            { id: 'shipRight', rect: this.rightArrowBtn },
+            { id: 'start',     rect: this.startBtn },
+            { id: 'tutorial',  rect: this.tutorialBtn },
+            { id: 'sfxDec',    rect: this.sfxDecBtn },
+            { id: 'sfxInc',    rect: this.sfxIncBtn },
+            { id: 'musicDec',  rect: this.musicDecBtn },
+            { id: 'musicInc',  rect: this.musicIncBtn },
+            { id: 'achievements', rect: this.achievementsBtn },
+        ];
+        if (this.focusIndex >= focusables.length) this.focusIndex = 0;
+
         // --- Background parallax target ---
-        // Gamepad: use stick tilt directly (right stick preferred; falls back
-        // to left). Mouse: normalize position around screen center to -1..1.
-        // During transition both targets are forced to 0 so the camera drifts
-        // back to where PlayingState's player will spawn.
+        // Gamepad: track the focused button's screen position so the
+        // background drifts as the user navigates rather than reacting to
+        // held stick tilt. Mouse: normalize position around screen center
+        // to -1..1. During transition both targets are forced to 0 so the
+        // camera drifts back to where PlayingState's player will spawn.
         let targetX = 0, targetY = 0;
         if (!this.transition) {
+            const cwHalf = this.game.width / 2;
+            const chHalf = this.game.height / 2;
             if (this.game.input.isGamepadActive()) {
-                const rx = this.game.input.rightStickX;
-                const ry = this.game.input.rightStickY;
-                const lx = this.game.input.leftStickX;
-                const ly = this.game.input.leftStickY;
-                targetX = Math.abs(rx) > Math.abs(lx) ? rx : lx;
-                targetY = Math.abs(ry) > Math.abs(ly) ? ry : ly;
+                const r = focusables[this.focusIndex].rect;
+                const bx = r.x + r.w / 2;
+                const by = r.y + r.h / 2;
+                targetX = Math.max(-1, Math.min(1, (bx - cwHalf) / cwHalf));
+                targetY = Math.max(-1, Math.min(1, (by - chHalf) / chHalf));
             } else {
-                const cwHalf = this.game.width / 2;
-                const chHalf = this.game.height / 2;
                 targetX = Math.max(-1, Math.min(1, (mouse.x - cwHalf) / cwHalf));
                 targetY = Math.max(-1, Math.min(1, (mouse.y - chHalf) / chHalf));
             }
@@ -258,22 +275,6 @@ export class MenuState {
             this.selectedShipIndex = (this.selectedShipIndex + dir + SHIPS.length) % SHIPS.length;
             this.game.sounds.play('select', 1.0);
         };
-
-        // Spatial focus map — pair each id with its live button rect so
-        // directional navigation can pick whichever button is actually
-        // closest in the pressed direction.
-        const focusables = [
-            { id: 'shipLeft',  rect: this.leftArrowBtn },
-            { id: 'shipRight', rect: this.rightArrowBtn },
-            { id: 'start',     rect: this.startBtn },
-            { id: 'tutorial',  rect: this.tutorialBtn },
-            { id: 'sfxDec',    rect: this.sfxDecBtn },
-            { id: 'sfxInc',    rect: this.sfxIncBtn },
-            { id: 'musicDec',  rect: this.musicDecBtn },
-            { id: 'musicInc',  rect: this.musicIncBtn },
-            { id: 'achievements', rect: this.achievementsBtn },
-        ];
-        if (this.focusIndex >= focusables.length) this.focusIndex = 0;
 
         const moveFocusSpatial = (dirX, dirY) => {
             const cur = focusables[this.focusIndex].rect;

@@ -43,6 +43,21 @@ export class AchievementsState {
         // frame. Keyed on `${id}@${maxWidth}@${unlocked}@${font}` so a window
         // resize or hidden-condition flip invalidates the cache automatically.
         this._wrapCache = new Map();
+
+        // Gamepad focus. `focusId` selects one focusable — either a card
+        // ('card:N' where N indexes ACHIEVEMENTS) or one of the footer
+        // buttons ('home' | 'reset' | 'prev' | 'next'). Spatial navigation
+        // works off live rectangles so the closest neighbour in the pressed
+        // direction wins; that lets the page arrows participate in the same
+        // grid the cards live in, instead of edge-flipping the page
+        // implicitly. `_cardRects` mirrors the visible cards' hit rects so
+        // update() can build a focusables list without re-running layout.
+        this.focusId = 'card:0';
+        this._stickLatched = false;
+        this._cardRects = [];
+        this._cols = 1;
+        this._rowsPerPage = 1;
+        this._cardsPerPage = 1;
     }
 
     enter() {
@@ -100,22 +115,161 @@ export class AchievementsState {
             }
         }
 
-        // Page navigation — keys + bumpers + d-pad LR
         const input = this.game.input;
         const totalPages = Math.max(1, this._totalPages);
+        const gpActive = input.isGamepadActive();
+
+        // ── Page-flip shortcut (keys + bumpers). The bumpers stay as a "jump
+        // to next page" convenience; the page-arrow buttons themselves are
+        // also focusable below so users can A-them like any other button.
+        const flipPage = (dir) => {
+            const next = this.page + dir;
+            if (next < 0 || next > totalPages - 1) return false;
+            this.page = next;
+            // Pin focus to the first card on the new page so the highlight
+            // doesn't strand on a now-off-page card.
+            this.focusId = `card:${Math.min(
+                ACHIEVEMENTS.length - 1,
+                this.page * this._cardsPerPage
+            )}`;
+            this.game.sounds.play('click', 0.6);
+            return true;
+        };
 
         if (input.isKeyJustPressed('ArrowRight') || input.isKeyJustPressed('KeyD')
-            || input.isGamepadJustPressed(GP.RB) || input.isGamepadJustPressed(GP.DRIGHT)) {
-            if (this.page < totalPages - 1) {
-                this.page++;
-                this.game.sounds.play('click', 0.6);
-            }
+            || input.isGamepadJustPressed(GP.RB)) {
+            flipPage(1);
         }
         if (input.isKeyJustPressed('ArrowLeft') || input.isKeyJustPressed('KeyA')
-            || input.isGamepadJustPressed(GP.LB) || input.isGamepadJustPressed(GP.DLEFT)) {
-            if (this.page > 0) {
-                this.page--;
-                this.game.sounds.play('click', 0.6);
+            || input.isGamepadJustPressed(GP.LB)) {
+            flipPage(-1);
+        }
+
+        // ── Gamepad spatial focus ─────────────────────────────────────────
+        // Build the list of focusables every frame from the live rects. Cards
+        // come from the previous draw; page arrows are only included when
+        // multi-page (their rect collapses to 0×0 on single-page layouts).
+        const focusables = [];
+        for (const cr of this._cardRects) {
+            focusables.push({ id: cr.id, kind: 'card', rect: cr });
+        }
+        if (this.prevPageBtn.w > 0) focusables.push({ id: 'prev', kind: 'btn', rect: this.prevPageBtn });
+        if (this.nextPageBtn.w > 0) focusables.push({ id: 'next', kind: 'btn', rect: this.nextPageBtn });
+        if (this.homeBtn.w  > 0) focusables.push({ id: 'home',  kind: 'btn', rect: this.homeBtn });
+        if (this.resetBtn.w > 0) focusables.push({ id: 'reset', kind: 'btn', rect: this.resetBtn });
+
+        let curIdx = focusables.findIndex(f => f.id === this.focusId);
+        // First-frame fallback: card rects haven't been populated yet. Park
+        // focus on whatever's available (likely a button) but don't change
+        // focusId — next frame's draw will restore the intended card.
+        if (curIdx < 0 && focusables.length > 0) curIdx = 0;
+
+        const moveFocusSpatial = (dirX, dirY) => {
+            if (curIdx < 0 || focusables.length <= 1) return;
+            const cur = focusables[curIdx].rect;
+            const cx = cur.x + cur.w / 2;
+            const cy = cur.y + cur.h / 2;
+            let bestIdx = -1;
+            let bestScore = Infinity;
+            const CROSS_PENALTY = 2.0;
+            for (let i = 0; i < focusables.length; i++) {
+                if (i === curIdx) continue;
+                const r = focusables[i].rect;
+                const rx = r.x + r.w / 2;
+                const ry = r.y + r.h / 2;
+                const dx = rx - cx;
+                const dy = ry - cy;
+                if (dirX !== 0) {
+                    if (Math.sign(dx) !== dirX) continue;
+                    if (Math.abs(dy) > Math.abs(dx) * 2.5) continue;
+                }
+                if (dirY !== 0) {
+                    if (Math.sign(dy) !== dirY) continue;
+                    if (Math.abs(dx) > Math.abs(dy) * 2.5) continue;
+                }
+                const primary   = dirX !== 0 ? Math.abs(dx) : Math.abs(dy);
+                const secondary = dirX !== 0 ? Math.abs(dy) : Math.abs(dx);
+                const score = primary + secondary * CROSS_PENALTY;
+                if (score < bestScore) {
+                    bestScore = score;
+                    bestIdx = i;
+                }
+            }
+            if (bestIdx >= 0 && bestIdx !== curIdx) {
+                curIdx = bestIdx;
+                this.focusId = focusables[bestIdx].id;
+                this.game.sounds.play('click', 0.5);
+            }
+        };
+
+        if (input.isGamepadJustPressed(GP.DLEFT))  moveFocusSpatial(-1, 0);
+        if (input.isGamepadJustPressed(GP.DRIGHT)) moveFocusSpatial(1, 0);
+        if (input.isGamepadJustPressed(GP.DUP))    moveFocusSpatial(0, -1);
+        if (input.isGamepadJustPressed(GP.DDOWN))  moveFocusSpatial(0, 1);
+
+        const lx = input.leftStickX;
+        const ly = input.leftStickY;
+        const stickMag = Math.max(Math.abs(lx), Math.abs(ly));
+        if (stickMag > 0.55) {
+            if (!this._stickLatched) {
+                this._stickLatched = true;
+                if (Math.abs(lx) > Math.abs(ly)) moveFocusSpatial(lx < 0 ? -1 : 1, 0);
+                else                             moveFocusSpatial(0, ly < 0 ? -1 : 1);
+            }
+        } else if (stickMag < 0.25) {
+            this._stickLatched = false;
+        }
+
+        // A activates whichever focusable is highlighted. Cards toggle their
+        // track state; buttons fire their respective action. Home is a state
+        // transition — return early so subsequent input handling doesn't run
+        // against a stale state.
+        if (gpActive && input.isGamepadJustPressed(GP.A) && curIdx >= 0) {
+            const focused = focusables[curIdx];
+            if (focused.kind === 'card') {
+                const idx = parseInt(focused.id.slice(5), 10);
+                if (idx >= 0 && idx < ACHIEVEMENTS.length && this.game.achievements) {
+                    const ach = ACHIEVEMENTS[idx];
+                    const mgr = this.game.achievements;
+                    if (!mgr.unlocked.has(ach.id)) {
+                        const wasTracked = mgr.isTracked(ach.id);
+                        const ok = mgr.toggleTrack(ach.id);
+                        if (!wasTracked && !ok) this.game.sounds.play('click', 0.4);
+                        else this.game.sounds.play('select', 0.6);
+                    }
+                }
+            } else if (focused.id === 'prev') {
+                if (flipPage(-1)) this.focusId = 'prev';
+            } else if (focused.id === 'next') {
+                if (flipPage(1)) this.focusId = 'next';
+            } else if (focused.id === 'home') {
+                this.game.sounds.play('click', 1.0);
+                this.game.setState(this.returnState || new MenuState(this.game));
+                return;
+            } else if (focused.id === 'reset') {
+                this.game.sounds.play('click', 1.0);
+                this.confirmReset = true;
+                return;
+            }
+        }
+
+        // When the controller is the active device, drive the same "hover"
+        // signal the mouse path uses so the focused button / card chip lights
+        // up exactly the way a mouse hover would. Clearing the others keeps
+        // a stale mouse-hover state from double-highlighting.
+        if (gpActive && curIdx >= 0) {
+            const focused = focusables[curIdx];
+            this.homeBtn.hovered     = focused.id === 'home';
+            this.resetBtn.hovered    = focused.id === 'reset';
+            this.prevPageBtn.hovered = focused.id === 'prev';
+            this.nextPageBtn.hovered = focused.id === 'next';
+            this._hoveredTrackId = null;
+            if (focused.kind === 'card' && this.game.achievements) {
+                const idx = parseInt(focused.id.slice(5), 10);
+                const ach = ACHIEVEMENTS[idx];
+                if (ach && !this.game.achievements.unlocked.has(ach.id)) {
+                    this._hoveredTrackId = ach.id;
+                }
             }
         }
 
@@ -146,10 +300,12 @@ export class AchievementsState {
             }
             if (this.prevPageBtn.hovered && this.page > 0) {
                 this.page--;
+                this.focusId = 'prev';
                 this.game.sounds.play('click', 0.6);
             }
             if (this.nextPageBtn.hovered && this.page < totalPages - 1) {
                 this.page++;
+                this.focusId = 'next';
                 this.game.sounds.play('click', 0.6);
             }
         }
@@ -177,9 +333,10 @@ export class AchievementsState {
         ctx.imageSmoothingEnabled = false;
         ctx.textBaseline = 'alphabetic';
 
-        // Drop last frame's track-button hitboxes — they're regenerated as
-        // each visible card is drawn below.
+        // Drop last frame's track-button hitboxes and card rects — both are
+        // regenerated as each visible card is drawn below.
         this._trackBtns.length = 0;
+        this._cardRects.length = 0;
 
         // Background
         ctx.fillStyle = '#050a14';
@@ -233,6 +390,10 @@ export class AchievementsState {
         const cardsPerPage = cols * rowsPerPage;
         const totalPages = Math.max(1, Math.ceil(ACHIEVEMENTS.length / cardsPerPage));
         this._totalPages = totalPages;
+        // Snapshot grid dimensions for update()'s controller-focus math.
+        this._cols = cols;
+        this._rowsPerPage = rowsPerPage;
+        this._cardsPerPage = cardsPerPage;
         // Clamp page if data shrank (e.g. resize)
         if (this.page >= totalPages) this.page = totalPages - 1;
         if (this.page < 0) this.page = 0;
@@ -249,6 +410,7 @@ export class AchievementsState {
         const gridBlockH = rowsPerPage * cardH + Math.max(0, rowsPerPage - 1) * rowGap;
         const gridTop = listTop + Math.max(0, Math.floor((listH - gridBlockH) / 2));
 
+        const gpActive = game.input.isGamepadActive();
         for (let i = startIdx; i < endIdx; i++) {
             const localIdx = i - startIdx;
             const row = Math.floor(localIdx / cols);
@@ -257,7 +419,24 @@ export class AchievementsState {
             const y = gridTop + row * (cardH + rowGap);
             const ach = ACHIEVEMENTS[i];
             const isUnlocked = mgr ? mgr.unlocked.has(ach.id) : false;
+
+            // Hit rect for controller spatial nav. Pushed before the card
+            // draws so an early bail-out (none today) couldn't strand update()
+            // without it.
+            const cardId = `card:${i}`;
+            this._cardRects.push({ id: cardId, x, y, w: cardW, h: cardH });
+
             this._drawCard(ctx, ach, isUnlocked, x, y, cardW, cardH, uiScale);
+
+            // Controller focus ring — sits just outside the card so it doesn't
+            // fight the card's own 1px border. Only shown while the gamepad is
+            // the active input device so mouse users don't see a floating
+            // highlight that doesn't track their cursor.
+            if (gpActive && this.focusId === cardId) {
+                ctx.strokeStyle = '#44ddff';
+                ctx.lineWidth = 2;
+                ctx.strokeRect(x - 1, y - 1, cardW + 2, cardH + 2);
+            }
         }
 
         // ── Footer: home (left), page controls (center), reset (right)

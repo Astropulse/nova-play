@@ -566,7 +566,10 @@ export class EncounterDialog {
         // Calculate dimensions
         const name = upg.name.toUpperCase();
         const rarity = upg.rarity.toUpperCase();
-        const desc = upg.description;
+        let desc = upg.description;
+        if (this.game.input.isGamepadActive()) {
+            desc = desc.replace(/Right-click in cargo/gi, 'Press Y in cargo');
+        }
 
         const maxWidth = 120 * uiScale;
         const descLines = [];

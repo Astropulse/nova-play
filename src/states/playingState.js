@@ -2882,7 +2882,10 @@ export class PlayingState {
         // Calculate dimensions
         const name = item.name.toUpperCase();
         const rarity = (item.rarity || 'common').toUpperCase();
-        const desc = item.description || '';
+        let desc = item.description || '';
+        if (this.game.input.isGamepadActive()) {
+            desc = desc.replace(/Right-click in cargo/gi, 'Press Y in cargo');
+        }
 
         const maxWidth = 120 * uiScale;
         const descLines = this._wrapText(ctx, desc, maxWidth);
@@ -3615,6 +3618,25 @@ export class PlayingState {
         }
     }
 
+    // Right stick pans the focused panel (or first scrollable panel as fallback)
+    // when the gamepad is in snap-focus mode. While dragging, the cursor uses the
+    // stick directly and edge-scroll takes over, so we skip.
+    _applyGamepadScroll(dt, panels, speed = 400) {
+        const input = this.game.input;
+        if (!input.isGamepadActive() || this.draggedItem) return;
+        const rx = input.rightStickX;
+        const ry = input.rightStickY;
+        if (Math.abs(rx) < 0.15 && Math.abs(ry) < 0.15) return;
+
+        const focusKey = this._gpFocus && this._gpFocus.panelKey;
+        let target = focusKey ? panels.find(p => p.panelKey === focusKey) : null;
+        if (!target) target = panels.find(p => p.layout.maxScrollX > 0 || p.layout.maxScrollY > 0);
+        if (!target) return;
+
+        if (target.layout.maxScrollX > 0) this[target.scrollXKey] += rx * speed * dt;
+        if (target.layout.maxScrollY > 0) this[target.scrollYKey] += ry * speed * dt;
+    }
+
     // Handles all scroll input for the given panels in one call.
     // Returns true if a scrollbar was dragged (caller should return early to skip drag-drop).
     _applyScrollPanels(dt, mouse, panels, edgeSpeed = 300) {
@@ -3624,6 +3646,7 @@ export class PlayingState {
         }
         this._applyEdgeScroll(dt, panels, edgeSpeed);
         this._applyScrollInput(panels);
+        this._applyGamepadScroll(dt, panels);
         this._clampScrollPanels(panels);
         return false;
     }
