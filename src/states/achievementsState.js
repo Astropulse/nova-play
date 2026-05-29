@@ -30,6 +30,9 @@ export class AchievementsState {
         this.confirmReset = false;
         this.confirmYes = { x: 0, y: 0, w: 0, h: 0, hovered: false };
         this.confirmNo  = { x: 0, y: 0, w: 0, h: 0, hovered: false };
+        // Gamepad focus within the modal: 'yes' | 'no'. Defaults to 'no' each
+        // time the dialog opens so a stray A press can't wipe progress.
+        this.confirmFocus = 'no';
 
         this._lastMouse = { x: 0, y: 0 };
 
@@ -72,29 +75,67 @@ export class AchievementsState {
 
         // Modal owns input when open
         if (this.confirmReset) {
-            this.confirmYes.hovered = this._isInside(mouse, this.confirmYes);
-            this.confirmNo.hovered  = this._isInside(mouse, this.confirmNo);
+            const input = this.game.input;
+            const gpActive = input.isGamepadActive();
 
-            if (this.game.input.isMouseJustPressed(0)) {
-                if (this.confirmYes.hovered) {
-                    this.game.sounds.play('select', 1.0);
-                    if (this.game.achievements) this.game.achievements.reset();
-                    this.confirmReset = false;
-                } else if (this.confirmNo.hovered) {
-                    this.game.sounds.play('click', 1.0);
-                    this.confirmReset = false;
-                }
-            }
-            if (this.game.input.isKeyJustPressed('Escape')
-                || this.game.input.isGamepadJustPressed(GP.B)
-                || this.game.input.isGamepadJustPressed(GP.BACK)) {
-                this.game.sounds.play('click', 1.0);
-                this.confirmReset = false;
-            }
-            if (this.game.input.isGamepadJustPressed(GP.A)) {
+            // Helper so every confirm/cancel path goes through one place.
+            const doReset = () => {
                 this.game.sounds.play('select', 1.0);
                 if (this.game.achievements) this.game.achievements.reset();
                 this.confirmReset = false;
+            };
+            const doCancel = () => {
+                this.game.sounds.play('click', 1.0);
+                this.confirmReset = false;
+            };
+
+            // ── Gamepad focus between the two buttons (D-pad / left stick) ──
+            const moveConfirmFocus = (dir) => {
+                const next = dir < 0 ? 'yes' : 'no';
+                if (next !== this.confirmFocus) {
+                    this.confirmFocus = next;
+                    this.game.sounds.play('click', 0.5);
+                }
+            };
+            if (input.isGamepadJustPressed(GP.DLEFT))  moveConfirmFocus(-1);
+            if (input.isGamepadJustPressed(GP.DRIGHT)) moveConfirmFocus(1);
+
+            const lx = input.leftStickX;
+            if (Math.abs(lx) > 0.55) {
+                if (!this._stickLatched) {
+                    this._stickLatched = true;
+                    moveConfirmFocus(lx < 0 ? -1 : 1);
+                }
+            } else if (Math.abs(lx) < 0.25) {
+                this._stickLatched = false;
+            }
+
+            // Highlight follows the controller focus; mouse hover otherwise.
+            if (gpActive) {
+                this.confirmYes.hovered = this.confirmFocus === 'yes';
+                this.confirmNo.hovered  = this.confirmFocus === 'no';
+            } else {
+                this.confirmYes.hovered = this._isInside(mouse, this.confirmYes);
+                this.confirmNo.hovered  = this._isInside(mouse, this.confirmNo);
+            }
+
+            if (input.isMouseJustPressed(0)) {
+                if (this._isInside(mouse, this.confirmYes)) {
+                    doReset();
+                } else if (this._isInside(mouse, this.confirmNo)) {
+                    doCancel();
+                }
+            }
+            // A activates whichever button the controller has focused.
+            if (input.isGamepadJustPressed(GP.A)) {
+                if (this.confirmFocus === 'yes') doReset();
+                else doCancel();
+            }
+            // B / Back / Escape always cancel, regardless of focus.
+            if (input.isKeyJustPressed('Escape')
+                || input.isGamepadJustPressed(GP.B)
+                || input.isGamepadJustPressed(GP.BACK)) {
+                doCancel();
             }
             return;
         }
@@ -249,6 +290,7 @@ export class AchievementsState {
             } else if (focused.id === 'reset') {
                 this.game.sounds.play('click', 1.0);
                 this.confirmReset = true;
+                this.confirmFocus = 'no';
                 return;
             }
         }
@@ -283,6 +325,7 @@ export class AchievementsState {
             if (this.resetBtn.hovered) {
                 this.game.sounds.play('click', 1.0);
                 this.confirmReset = true;
+                this.confirmFocus = 'no';
                 return;
             }
             if (this._hoveredTrackId && this.game.achievements) {
