@@ -838,12 +838,12 @@ export const ACHIEVEMENTS = [
     {
         id: 'frequent_flyer',
         name: 'Frequent Flyer',
-        description: 'Travel 100000 world units in a single run with the Cruiser.',
+        description: 'Travel 1000000 world units in a single run with the Cruiser.',
         flavor: 'You stopped to look at the scenery exactly never.',
         icon: 'ach_frequent_flyer',
-        check: (m) => m.run.shipId === 'cruiser' && m.run.distanceTraveled >= 100000,
+        check: (m) => m.run.shipId === 'cruiser' && m.run.distanceTraveled >= 1000000,
         progressScope: 'run',
-        progress: (m) => m.run.shipId === 'cruiser' ? m.run.distanceTraveled / 100000 : 0
+        progress: (m) => m.run.shipId === 'cruiser' ? m.run.distanceTraveled / 1000000 : 0
     },
     {
         id: 'variety_pack',

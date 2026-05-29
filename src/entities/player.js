@@ -226,7 +226,7 @@ export class Player {
         // EXP and Leveling
         this.level = 0;
         this.exp = 0;
-        this.expNeeded = 8;
+        this.expNeeded = 10;
 
         // Level-up stat bonuses (accumulated, separate from inventory upgrades)
         this.lvlDamageMult           = 1.0;
@@ -1514,7 +1514,7 @@ export class Player {
         while (this.exp >= this.expNeeded) {
             this.exp -= this.expNeeded;
             this.level++;
-            this.expNeeded = Math.floor(this.expNeeded * 1.12);
+            this.expNeeded = Math.floor(this.expNeeded * 1.18);
 
             // Visual feedback
             if (this.game.currentState && this.game.currentState.spawnFloatingText) {

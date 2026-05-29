@@ -21,7 +21,8 @@
  *   Epic      6.0 – 10.0 %
  *   Legendary 10.0 – 20.0 %
  *
- * Luck (player.luck) shifts rolls toward rarer tiers.
+ * Luck (player.luck) biases the within-tier % roll toward the high end of each
+ * band (see _luckyUnit). It does NOT change which bonus tier is selected.
  * The Luck stat itself is an epic-tier upgrade with small, hard-capped rolls
  * (never above LUCK_MAX_PCT) that compound player.luck via lvlLuckMult.
  * Cursed choices are extremely rare and reverse every effect.
@@ -159,26 +160,25 @@ function _bonusRarity(pct) {
     return 'legendary';
 }
 
+// Luck-skewed unit roll in [0, 1). Used to bias a within-tier % roll toward the
+// high end of its band: u^(1/luck). At luck = 1 it's uniform; luck > 1 pushes
+// the result toward 1 (higher %), luck < 1 toward 0 (lower %). This stacks on
+// top of luck's existing influence over which tier gets rolled.
+function _luckyUnit(luck) {
+    return Math.pow(Math.random(), 1 / Math.max(0.1, luck));
+}
+
 // ─── Choice generation ────────────────────────────────────────────────────────
 // typePickCounts: { offense: n, defense: n, ... } — accumulated across the run.
 // bonusMult: scalar applied to the rolled %/flat (from the skip-stacking system).
 function rollChoices(luck, typePickCounts = {}, bonusMult = 1) {
     const lk = Math.max(0.1, luck);
 
-    const catW = {
-        common:   Math.max(5, CAT_BASE_W.common / lk),
-        uncommon: CAT_BASE_W.uncommon * Math.sqrt(lk),
-        rare:     CAT_BASE_W.rare     * lk,
-        epic:     CAT_BASE_W.epic     * lk * lk,
-        cursed:   CAT_BASE_W.cursed   / (lk * lk),
-    };
-    const bonusW = {
-        common:    Math.max(5, BONUS_BASE_W.common / lk),
-        uncommon:  BONUS_BASE_W.uncommon * Math.sqrt(lk),
-        rare:      BONUS_BASE_W.rare     * lk,
-        epic:      BONUS_BASE_W.epic     * lk * lk,
-        legendary: BONUS_BASE_W.legendary * lk * lk,
-    };
+    // Neither stat-category nor bonus-tier selection is influenced by luck —
+    // luck only biases the within-tier % roll toward the high end (via
+    // _luckyUnit in _makeChoice).
+    const catW   = { ...CAT_BASE_W };
+    const bonusW = { ...BONUS_BASE_W };
 
     const used = new Set();
     const allDefs = [
@@ -230,12 +230,12 @@ function rollChoices(luck, typePickCounts = {}, bonusMult = 1) {
         const stat = _pickFromPool(pool);
         used.add(stat.id);
         rollTypeCounts[STAT_TYPE[stat.id]] = (rollTypeCounts[STAT_TYPE[stat.id]] || 0) + 1;
-        choices.push(_makeChoice(stat, isCursed, bonusW, bonusMult));
+        choices.push(_makeChoice(stat, isCursed, bonusW, bonusMult, lk));
     }
     return choices;
 }
 
-function _makeChoice(stat, isCursed, bonusW, bonusMult = 1) {
+function _makeChoice(stat, isCursed, bonusW, bonusMult = 1, luck = 1) {
     if (stat.flat) {
         // Flat upgrades: scale the count by bonusMult.
         // extra_projectile is integer (round), hp_regen is float (0.1 * mult).
@@ -274,7 +274,10 @@ function _makeChoice(stat, isCursed, bonusW, bonusMult = 1) {
     // Luck rolls low and is hard-capped — it's always displayed as epic tier
     // regardless of the (small) rolled value.
     if (stat.id === 'luck') {
-        const baseLuckPct = LUCK_TIER.min + Math.random() * (LUCK_TIER.max - LUCK_TIER.min);
+        // Non-cursed luck rolls lean high with luck; cursed stays uniform so
+        // good luck never deepens a curse.
+        const luckUnit    = isCursed ? Math.random() : _luckyUnit(luck);
+        const baseLuckPct = LUCK_TIER.min + luckUnit * (LUCK_TIER.max - LUCK_TIER.min);
         const luckPct     = Math.min(LUCK_MAX_PCT, baseLuckPct * bonusMult);
         return {
             stat, isCursed,
@@ -292,7 +295,10 @@ function _makeChoice(stat, isCursed, bonusW, bonusMult = 1) {
 
     const tierName   = _wrand(bonusW);
     const tier       = BONUS_TIERS[tierName];
-    const basePct    = tier.min + Math.random() * (tier.max - tier.min);
+    // Luck biases the roll toward the top of the chosen tier's band (cursed
+    // rolls stay uniform so luck doesn't make the penalty worse).
+    const tierUnit   = isCursed ? Math.random() : _luckyUnit(luck);
+    const basePct    = tier.min + tierUnit * (tier.max - tier.min);
     const pct        = basePct * bonusMult;
     const bonusRarity = _bonusRarity(pct);
 
