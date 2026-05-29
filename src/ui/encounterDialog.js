@@ -61,6 +61,14 @@ export class EncounterDialog {
         this._layoutDirty = true;
         this.upgradeHitboxes = [];
         this.hoveredUpgrade = null;
+
+        // Controller navigation: a single vertical focus that flows through the
+        // upgrade references in the message (above) down into the options (below).
+        // gpFocusKind is 'option' (default) or 'upgrade'; gpUpgradeSel indexes the
+        // merged message upgrade references when focus is on one.
+        this._tooltipAnchor = null;
+        this.gpFocusKind = 'option';
+        this.gpUpgradeSel = 0;
     }
 
     _parse(text) {
@@ -152,24 +160,33 @@ export class EncounterDialog {
                     this._stepSelection(1);
                 }
 
-                // Gamepad: d-pad / left stick cycle, A confirms, B closes.
-                if (input.isGamepadJustPressed(GP.DUP))   this._stepSelection(-1);
-                if (input.isGamepadJustPressed(GP.DDOWN)) this._stepSelection(1);
+                // Gamepad: d-pad / left stick move a single vertical focus that
+                // runs from the message's upgrade references (top) down through
+                // the options. A confirms an option, B closes.
+                if (input.isGamepadJustPressed(GP.DUP))   this._stepGamepadFocus(-1);
+                if (input.isGamepadJustPressed(GP.DDOWN)) this._stepGamepadFocus(1);
 
                 const stickY = input.leftStickY;
                 if (Math.abs(stickY) > 0.55) {
                     if (!this._stickLatched) {
                         this._stickLatched = true;
-                        this._stepSelection(stickY < 0 ? -1 : 1);
+                        this._stepGamepadFocus(stickY < 0 ? -1 : 1);
                     }
                 } else if (Math.abs(stickY) < 0.25) {
                     this._stickLatched = false;
                 }
 
-                if (input.isGamepadJustPressed(GP.A) || input.isKeyJustPressed('Enter')) {
-                    if (this.keyboardSelected >= 0 && this.keyboardSelected < this.options.length) {
-                        this._selectOption(this.keyboardSelected);
-                    }
+                // Keyboard Enter confirms the selected option.
+                if (input.isKeyJustPressed('Enter')
+                    && this.keyboardSelected >= 0 && this.keyboardSelected < this.options.length) {
+                    this._selectOption(this.keyboardSelected);
+                }
+
+                // Gamepad A confirms only when an option is focused (does nothing
+                // while inspecting an upgrade tooltip).
+                if (input.isGamepadJustPressed(GP.A) && this.gpFocusKind === 'option'
+                    && this.keyboardSelected >= 0 && this.keyboardSelected < this.options.length) {
+                    this._selectOption(this.keyboardSelected);
                 }
 
                 // Escape or B to close (blocked on forced encounters)
@@ -216,24 +233,90 @@ export class EncounterDialog {
             }
         }
 
-        // Hover identification
+        // Tooltip target identification
         this.hoveredUpgrade = null;
-        if (this.upgradeHitboxes.length > 0) {
+        this._tooltipAnchor = null;
+
+        if (input.isGamepadActive()) {
+            // Controller: a tooltip shows only while the vertical focus sits on
+            // one of the message's upgrade references (reached by navigating up
+            // above the first option).
+            if (this.gpFocusKind === 'upgrade') {
+                const refs = this._mergedMessageRefs();
+                const box = refs[this.gpUpgradeSel];
+                if (box) {
+                    this.hoveredUpgrade = UPGRADES.find(u => u.id === box.id);
+                    this._tooltipAnchor = box;
+                }
+            }
+        } else if (this.upgradeHitboxes.length > 0) {
             const mouse = this.game.getMousePos();
             for (const h of this.upgradeHitboxes) {
                 if (mouse.x >= h.x && mouse.x <= h.x + h.w &&
                     mouse.y >= h.y && mouse.y <= h.y + h.h) {
                     this.hoveredUpgrade = UPGRADES.find(u => u.id === h.id);
+                    this._tooltipAnchor = h;
                     break;
                 }
             }
         }
     }
 
+    /**
+     * Merge the message/response upgrade hitboxes into one entry per logical
+     * reference. A multi-word name like "Small Battery" is laid out as several
+     * per-word hitboxes; this coalesces consecutive same-id boxes on the same
+     * line so it reads as a single navigation stop. Returns boxes ordered top
+     * to bottom, left to right.
+     */
+    _mergedMessageRefs() {
+        const refs = this.upgradeHitboxes.filter(h => h.fromMessage);
+        refs.sort((a, b) => (a.y - b.y) || (a.x - b.x));
+        const merged = [];
+        for (const h of refs) {
+            const last = merged[merged.length - 1];
+            // Same id, same line, and contiguous (only whitespace between) → extend.
+            if (last && last.id === h.id && Math.abs(last.y - h.y) < 1
+                && h.x <= last.x + last.w + last.h) {
+                last.w = Math.max(last.w, (h.x + h.w) - last.x);
+            } else {
+                merged.push({ x: h.x, y: h.y, w: h.w, h: h.h, id: h.id });
+            }
+        }
+        return merged;
+    }
+
+    /**
+     * Move the gamepad focus through the combined list of message upgrade
+     * references (first) followed by the options, wrapping at the ends.
+     */
+    _stepGamepadFocus(step) {
+        const U = this._mergedMessageRefs().length;
+        const O = this.options.length;
+        const total = U + O;
+        if (total === 0) return;
+
+        let flat = (this.gpFocusKind === 'upgrade')
+            ? Math.min(Math.max(this.gpUpgradeSel, 0), Math.max(0, U - 1))
+            : U + Math.min(Math.max(this.keyboardSelected, 0), Math.max(0, O - 1));
+
+        flat = ((flat + step) % total + total) % total;
+
+        if (flat < U) {
+            this.gpFocusKind = 'upgrade';
+            this.gpUpgradeSel = flat;
+        } else {
+            this.gpFocusKind = 'option';
+            this.keyboardSelected = flat - U;
+        }
+        this.game.sounds.play('click', 0.5);
+    }
+
     _stepSelection(dir) {
         if (this.options.length === 0) return;
         const n = this.options.length;
         this.keyboardSelected = ((this.keyboardSelected + dir) % n + n) % n;
+        this.gpFocusKind = 'option';
         this.game.sounds.play('click', 0.5);
     }
 
@@ -270,6 +353,8 @@ export class EncounterDialog {
             this.options = result.options;
             this.hoveredOption = -1;
             this.keyboardSelected = 0;
+            this.gpFocusKind = 'option';
+            this.gpUpgradeSel = 0;
             this.state = DIALOG_STATE.TYPING_RESPONSE;
         } else {
             this.options = [];
@@ -407,9 +492,12 @@ export class EncounterDialog {
                 const mouseInBounds = mouse.x >= panelX + pad && mouse.x <= panelX + panelW - pad &&
                     mouse.y >= optY && mouse.y <= optY + optH;
                 if (mouseInBounds) this.hoveredOption = i;
-                // When the gamepad is the active device, the keyboard-selected
-                // index drives highlight instead of the mouse.
-                const inBounds = gamepadActive ? (this.keyboardSelected === i) : mouseInBounds;
+                // When the gamepad is the active device, an option is highlighted
+                // only while the vertical focus is on it (not when the focus has
+                // moved up onto a message upgrade reference).
+                const inBounds = gamepadActive
+                    ? (this.gpFocusKind === 'option' && this.keyboardSelected === i)
+                    : mouseInBounds;
 
                 // Number prefix
                 const prefix = `[${i + 1}] `;
@@ -434,6 +522,18 @@ export class EncounterDialog {
                     ox += textW;
                 }
             }
+        }
+
+        // Controller: underline the upgrade reference the tooltip describes so
+        // the player can see which one is currently 'selected'.
+        if (this._tooltipAnchor && this.game.input.isGamepadActive()) {
+            const a = this._tooltipAnchor;
+            ctx.strokeStyle = TAG_COLORS.upgrade;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(a.x, a.y + a.h - 1);
+            ctx.lineTo(a.x + a.w, a.y + a.h - 1);
+            ctx.stroke();
         }
 
         // Draw tooltip
@@ -522,7 +622,7 @@ export class EncounterDialog {
                         if (meta && charIdx < maxChars) {
                             this.upgradeHitboxes.push({
                                 x: curX, y: ly, w: textW, h: lineHeight,
-                                id: meta
+                                id: meta, fromMessage: true
                             });
                         }
 
@@ -555,8 +655,8 @@ export class EncounterDialog {
     }
 
     _drawUpgradeTooltip(ctx, upg) {
-        const mouse = this.game.getMousePos();
         const uiScale = this.game.uiScale;
+        const gamepadActive = this.game.input.isGamepadActive();
 
         const pad = 8 * uiScale;
         const fontSize = Math.floor(5 * uiScale);
@@ -567,7 +667,7 @@ export class EncounterDialog {
         const name = upg.name.toUpperCase();
         const rarity = upg.rarity.toUpperCase();
         let desc = upg.description;
-        if (this.game.input.isGamepadActive()) {
+        if (gamepadActive) {
             desc = desc.replace(/Right-click in cargo/gi, 'Press Y in cargo');
         }
 
@@ -587,13 +687,29 @@ export class EncounterDialog {
         if (curLine) descLines.push(curLine);
 
         const headerW = Math.max(ctx.measureText(name).width * 1.2, ctx.measureText(rarity).width);
-        const tw = Math.max(headerW, descLines.reduce((max, l) => Math.max(max, ctx.measureText(l).width), 0)) + pad * 2;
-        const th = (descLines.length + 3) * fontSize * 1.5 + pad * 2;
+        const bodyW = descLines.reduce((max, l) => Math.max(max, ctx.measureText(l).width), 0);
+        const tw = Math.max(headerW, bodyW) + pad * 2;
+        const extraLines = upg.cost ? 1 : 0;
+        const th = (descLines.length + 3 + extraLines) * fontSize * 1.5 + pad * 2;
 
-        let tx = mouse.x + 10;
-        let ty = mouse.y + 10;
-        if (tx + tw > this.game.width) tx = mouse.x - tw - 10;
-        if (ty + th > this.game.height) ty = mouse.y - th - 10;
+        // Anchor below the selected reference for controllers; follow the mouse
+        // otherwise. Flip the tooltip when it would run off the screen edges.
+        let ax, ay;
+        if (gamepadActive && this._tooltipAnchor) {
+            ax = this._tooltipAnchor.x;
+            ay = this._tooltipAnchor.y + this._tooltipAnchor.h;
+        } else {
+            const mouse = this.game.getMousePos();
+            ax = mouse.x;
+            ay = mouse.y;
+        }
+
+        let tx = ax + 10;
+        let ty = ay + 10;
+        if (tx + tw > this.game.width) tx = ax - tw - 10;
+        if (ty + th > this.game.height) ty = ay - th - 10;
+        if (tx < 0) tx = 0;
+        if (ty < 0) ty = 0;
 
         // Frame
         ctx.fillStyle = 'rgba(5, 10, 20, 0.95)';

@@ -493,13 +493,13 @@ export const ACHIEVEMENTS = [
     {
         id: 'trigger_discipline',
         name: 'Trigger Discipline',
-        description: 'Reach a 2.5x fire rate multiplier in a single run.',
+        description: 'Reach a 4x fire rate multiplier in a single run.',
         flavor: 'It\'s always overheating and that\'s okay.',
         icon: 'ach_trigger_discipline',
-        check: (m) => m.run.peakFireRateMult >= 2.5,
+        check: (m) => m.run.peakFireRateMult >= 4,
         progressScope: 'run',
         // Baseline 1x — see ludicrous_speed.
-        progress: (m) => (m.run.peakFireRateMult - 1) / 1.5
+        progress: (m) => (m.run.peakFireRateMult - 1) / 3.0
     },
     {
         id: 'cannonade',

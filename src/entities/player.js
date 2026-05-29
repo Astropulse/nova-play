@@ -845,7 +845,7 @@ export class Player {
                 if (this.hasEnergyBlaster) {
                     origins.forEach(origin => {
                         const extraCount = (this.energyBlasterCount - 1) * 2;
-                        const count = 3 + Math.floor(Math.random() * 3) + extraCount; // 3-5 + 2 per extra
+                        const count = 3 + Math.floor(Math.random() * 3) + extraCount + this.lvlExtraProjectiles; // 3-5 + 2 per extra + Multi-Shot
                         const spreadBase = 0.5 + (this.energyBlasterCount - 1) * 0.1; // Wider with more blasters
                         const dmgReduc = Math.pow(0.85, this.energyBlasterCount - 1); // 15% reduction per extra
 

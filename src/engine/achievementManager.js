@@ -589,7 +589,7 @@ export class AchievementManager {
     // composing every multishot source the way the firing code does:
     //   - Multishot Guns upgrade doubles the firing origins.
     //   - Energy Blaster replaces the single shot with a 3-5 (+2 per extra
-    //     blaster) spread and ignores the level-up extra-projectile stat.
+    //     blaster) spread, plus the level-up extra-projectile stat.
     //   - Otherwise the level-up stat adds projectiles per origin.
     // We count the guaranteed (minimum) projectiles so the achievement reflects
     // a reliable build capability rather than a lucky Energy Blaster roll.
@@ -598,7 +598,7 @@ export class AchievementManager {
         const origins = p.hasMultishotGuns ? 2 : 1;
         let perOrigin;
         if (p.hasEnergyBlaster) {
-            perOrigin = 3 + Math.max(0, (p.energyBlasterCount || 1) - 1) * 2;
+            perOrigin = 3 + Math.max(0, (p.energyBlasterCount || 1) - 1) * 2 + (p.lvlExtraProjectiles || 0);
         } else {
             perOrigin = 1 + (p.lvlExtraProjectiles || 0);
         }

@@ -200,6 +200,10 @@ export class PlayingState {
             flyAgain: { x: 0, y: 0, w: 0, h: 0, hovered: false },
             shipSelection: { x: 0, y: 0, w: 0, h: 0, hovered: false }
         };
+        // Gamepad/keyboard selection on the death screen (0 = fly again,
+        // 1 = ship selection), independent of mouse hover.
+        this.deathScreenSelected = 0;
+        this._deathStickLatched = false;
         this.pauseButtons = {
             musicDec: { x: 0, y: 0, w: 0, h: 0, hovered: false },
             musicInc: { x: 0, y: 0, w: 0, h: 0, hovered: false },
@@ -423,6 +427,9 @@ export class PlayingState {
                 for (const r of this.rubble) r.update(dt);
                 if (this.deathTimer >= 3.0) {
                     this.showDeathScreen = true;
+                    // Ensure d-pad/stick drive button selection rather than a
+                    // lingering virtual mouse cursor from an inventory UI.
+                    this.game.input.setGamepadCursorEnabled(false);
                     if (!this.yellowOneDeathScreen) {
                         this.game.sounds.playGameOverMusic();
                     }
@@ -5186,7 +5193,8 @@ export class PlayingState {
         if (p.hasEnergyBlaster) {
             origins.forEach(origin => {
                 const extraCount = (p.energyBlasterCount - 1) * 2;
-                const count = 3 + Math.floor(Math.random() * 3) + extraCount; // 3-5 + 2 per extra
+                // Multi-Shot level-up adds extra beams to the burst
+                const count = 3 + Math.floor(Math.random() * 3) + extraCount + p.lvlExtraProjectiles; // 3-5 + 2 per extra + Multi-Shot
                 const spreadBase = 0.5 + (p.energyBlasterCount - 1) * 0.1; // Wider with more blasters
                 const dmgReduc = Math.pow(0.85, p.energyBlasterCount - 1); // 15% reduction per extra
 
@@ -5205,6 +5213,12 @@ export class PlayingState {
                 const dirX = Math.cos(fireAngle);
                 const dirY = Math.sin(fireAngle);
                 this._fireSingleBeam(origin.x, origin.y, dirX, dirY, beamLength, currentBaseDamage * 2.5 * damageMult);
+                // Extra beams from Multi-Shot level-up — increasing spread, reduced damage
+                for (let ei = 0; ei < p.lvlExtraProjectiles; ei++) {
+                    const spread = (0.08 + ei * 0.06) * (Math.random() < 0.5 ? 1 : -1);
+                    const a = fireAngle + spread;
+                    this._fireSingleBeam(origin.x, origin.y, Math.cos(a), Math.sin(a), beamLength, currentBaseDamage * 2.5 * damageMult * 0.7);
+                }
             });
         }
     }
@@ -5512,22 +5526,66 @@ export class PlayingState {
             hovered: false
         };
 
-        // Hover detection
-        const fa = this.deathScreenButtons.flyAgain;
-        fa.hovered = mouse.x >= fa.x && mouse.x <= fa.x + fa.w && mouse.y >= fa.y && mouse.y <= fa.y + fa.h;
-        const ss = this.deathScreenButtons.shipSelection;
-        ss.hovered = mouse.x >= ss.x && mouse.x <= ss.x + ss.w && mouse.y >= ss.y && mouse.y <= ss.y + ss.h;
+        const input = this.game.input;
+        const gamepadActive = input.isGamepadActive();
+        // Buttons are hidden (and therefore not interactive) during the Yellow
+        // One scripted death sequence.
+        const buttonsActive = !this.yellowOneDeathScreen;
 
-        if (this.game.input.isMouseJustPressed(0)) {
-            if (fa.hovered) {
-                this.game.sounds.play('select', 1.0);
-                this.game.setState(new PlayingState(this.game, this.shipData));
-            }
-            if (ss.hovered) {
-                this.game.sounds.play('select', 1.0);
-                this.game.setState(new MenuState(this.game));
+        const fa = this.deathScreenButtons.flyAgain;
+        const ss = this.deathScreenButtons.shipSelection;
+
+        // Mouse hover detection
+        const faMouse = mouse.x >= fa.x && mouse.x <= fa.x + fa.w && mouse.y >= fa.y && mouse.y <= fa.y + fa.h;
+        const ssMouse = mouse.x >= ss.x && mouse.x <= ss.x + ss.w && mouse.y >= ss.y && mouse.y <= ss.y + ss.h;
+
+        // Gamepad/keyboard navigation between the two buttons.
+        if (buttonsActive && gamepadActive) {
+            if (input.isGamepadJustPressed(GP.DLEFT))  this._stepDeathSelection(-1);
+            if (input.isGamepadJustPressed(GP.DRIGHT)) this._stepDeathSelection(1);
+
+            const sx = input.leftStickX;
+            if (Math.abs(sx) > 0.55) {
+                if (!this._deathStickLatched) {
+                    this._deathStickLatched = true;
+                    this._stepDeathSelection(sx < 0 ? -1 : 1);
+                }
+            } else if (Math.abs(sx) < 0.25) {
+                this._deathStickLatched = false;
             }
         }
+
+        // When the gamepad is the active device the selected index drives the
+        // highlight; otherwise the mouse does.
+        fa.hovered = gamepadActive ? (this.deathScreenSelected === 0) : faMouse;
+        ss.hovered = gamepadActive ? (this.deathScreenSelected === 1) : ssMouse;
+
+        const flyAgain = () => {
+            this.game.sounds.play('select', 1.0);
+            this.game.setState(new PlayingState(this.game, this.shipData));
+        };
+        const shipSelection = () => {
+            this.game.sounds.play('select', 1.0);
+            this.game.setState(new MenuState(this.game));
+        };
+
+        if (buttonsActive) {
+            if (input.isMouseJustPressed(0)) {
+                if (faMouse) flyAgain();
+                else if (ssMouse) shipSelection();
+            }
+
+            // Gamepad A confirms the selected button.
+            if (gamepadActive && input.isGamepadJustPressed(GP.A)) {
+                if (this.deathScreenSelected === 0) flyAgain();
+                else shipSelection();
+            }
+        }
+    }
+
+    _stepDeathSelection(dir) {
+        this.deathScreenSelected = (this.deathScreenSelected + dir + 2) % 2;
+        this.game.sounds.play('click', 0.5);
     }
 
     _drawDeathScreen(ctx) {
@@ -5584,6 +5642,13 @@ export class PlayingState {
 
             this.game.drawSprite(ctx, fa.hovered ? 'fly_again_on' : 'fly_again_off', fa.x, fa.y, uiScale);
             this.game.drawSprite(ctx, ss.hovered ? 'ship_selection_on' : 'ship_selection_off', ss.x, ss.y, uiScale);
+
+            if (this.game.input.isGamepadActive()) {
+                ctx.fillStyle = '#667788';
+                ctx.font = `${6 * uiScale}px Astro4x`;
+                ctx.textAlign = 'center';
+                ctx.fillText('A to confirm', cw / 2, fa.y + fa.h + Math.floor(uiScale * 10));
+            }
         }
     }
 
