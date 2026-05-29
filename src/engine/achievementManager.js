@@ -86,7 +86,7 @@ export class AchievementManager {
             peakLevel: 0,
             peakSpeedMult: 0,
             peakFireRateMult: 0,
-            peakDamageBonus: 0,
+            peakDamageMult: 0,
             peakFovMult: 0,
             peakMaxHealth: 0,
             peakMaxShield: 0,
@@ -377,9 +377,17 @@ export class AchievementManager {
                     const p = payload.player;
                     const r = this.run;
                     r.peakSpeedMult = Math.max(r.peakSpeedMult, this._effectiveSpeedMult(p));
-                    r.peakFireRateMult = Math.max(r.peakFireRateMult, p.fireRateMult || 0);
-                    r.peakDamageBonus = Math.max(r.peakDamageBonus, p.permDamageBonus || 0);
-                    r.peakFovMult = Math.max(r.peakFovMult, p.lvlFovMult || 0);
+                    // fireRateMult is a cooldown multiplier (<1 = faster), so the
+                    // fire-rate the player feels is its reciprocal. Compose every
+                    // source the way _onInventoryChanged does (firing_coordinator,
+                    // repeater, cosmos, level-ups all fold into fireRateMult).
+                    const fireRate = (p.fireRateMult > 0) ? (1 / p.fireRateMult) : 0;
+                    r.peakFireRateMult = Math.max(r.peakFireRateMult, fireRate);
+                    r.peakDamageMult = Math.max(r.peakDamageMult, this._effectiveDamageMult(p));
+                    // FOV composes the upgrade mult (sensor_accelerator) with the
+                    // level-up mult; playingState bundles them into payload.fovMult.
+                    const fov = (payload.fovMult != null) ? payload.fovMult : (p.lvlFovMult || 0);
+                    r.peakFovMult = Math.max(r.peakFovMult, fov);
                     r.peakMaxHealth = Math.max(r.peakMaxHealth, p.maxHealth || 0);
                     r.peakMaxShield = Math.max(r.peakMaxShield, p.maxShieldEnergy || 0);
                     // Vacuum range composes the inventory mult (scrapRangeMult,
@@ -387,10 +395,14 @@ export class AchievementManager {
                     // their product to match what the player actually feels.
                     const vac = (p.scrapRangeMult || 1) * (p.lvlVacuumRangeMult || 1);
                     r.peakVacuumRangeMult = Math.max(r.peakVacuumRangeMult, vac);
-                    r.peakExtraProjectiles = Math.max(r.peakExtraProjectiles, p.lvlExtraProjectiles || 0);
+                    r.peakExtraProjectiles = Math.max(r.peakExtraProjectiles, this._extraProjectilesPerVolley(p));
                     r.peakLuck = Math.max(r.peakLuck, p.luck || 0);
-                    r.peakHpRegen = Math.max(r.peakHpRegen, p.lvlHpRegen || 0);
-                    r.peakExpGainMult = Math.max(r.peakExpGainMult, p.lvlExpGainMult || 0);
+                    // HP regen sums the level-up regen and the nanite_tank upgrade.
+                    const hpRegen = (p.lvlHpRegen || 0) + (p.naniteRegen || 0);
+                    r.peakHpRegen = Math.max(r.peakHpRegen, hpRegen);
+                    // Exp gain composes the level-up mult with experience_condenser.
+                    const expMult = (p.lvlExpGainMult || 0) * (p.experienceCondenserMult || 1);
+                    r.peakExpGainMult = Math.max(r.peakExpGainMult, expMult);
                     if (typeof p.level === 'number' && p.level > r.peakLevel) {
                         r.peakLevel = p.level;
                         if (p.level > this.lifetime.peakLevel) this.lifetime.peakLevel = p.level;
@@ -559,19 +571,60 @@ export class AchievementManager {
         return entity.bossId || (entity.constructor && entity.constructor.name);
     }
 
+    // Effective per-projectile damage as a multiple of the ship's stock
+    // baseDamage, counting every source the firing code does:
+    //   (baseDamage*obedience + permDamageBonus) * laserCartridgeMult
+    // i.e. flat shop/encounter damage, obedience, level-up damage and Laser
+    // Cartridge (both fold into laserCartridgeMult), and cosmos. So a 7-damage
+    // ship hitting for 140 reads as 20.0.
+    _effectiveDamageMult(p) {
+        if (!p || !p.shipData) return 0;
+        const base = p.shipData.baseDamage || 0;
+        if (base <= 0) return 0;
+        const effective = (base * (p.obedienceMult || 1) + (p.permDamageBonus || 0)) * (p.laserCartridgeMult || 1);
+        return effective / base;
+    }
+
+    // Extra projectiles fired per volley, beyond the single baseline shot,
+    // composing every multishot source the way the firing code does:
+    //   - Multishot Guns upgrade doubles the firing origins.
+    //   - Energy Blaster replaces the single shot with a 3-5 (+2 per extra
+    //     blaster) spread and ignores the level-up extra-projectile stat.
+    //   - Otherwise the level-up stat adds projectiles per origin.
+    // We count the guaranteed (minimum) projectiles so the achievement reflects
+    // a reliable build capability rather than a lucky Energy Blaster roll.
+    _extraProjectilesPerVolley(p) {
+        if (!p) return 0;
+        const origins = p.hasMultishotGuns ? 2 : 1;
+        let perOrigin;
+        if (p.hasEnergyBlaster) {
+            perOrigin = 3 + Math.max(0, (p.energyBlasterCount || 1) - 1) * 2;
+        } else {
+            perOrigin = 1 + (p.lvlExtraProjectiles || 0);
+        }
+        return origins * perOrigin - 1;
+    }
+
     _eventType(ev) {
         if (!ev) return null;
         return ev.eventType || (ev.constructor && ev.constructor.name);
     }
 
-    // Effective speed = current baseSpeed / ship's stock baseSpeed. This is
-    // the same composite that `_onInventoryChanged` builds, so a result of
-    // 5.0 means the player is moving 5x the ship's printed speed.
+    // Effective speed = the player's actual top speed / ship's stock baseSpeed,
+    // so a result of 5.0 means they're moving 5x the ship's printed speed.
+    // baseSpeed already folds in obedience/momentum/cosmos/encounter/level-ups,
+    // but Player.update multiplies the pulse_jet and mechanical_engines upgrades
+    // (and the momentum drift cap) on top when computing max speed — mirror that
+    // here so those upgrades count toward the speed achievements.
     _effectiveSpeedMult(p) {
         if (!p || !p.shipData) return 0;
         const stockBase = p.shipData.speed * 100;
         if (stockBase <= 0) return 0;
-        return (p.baseSpeed || 0) / stockBase;
+        const topSpeed = (p.baseSpeed || 0)
+            * (p.pulseJetMult || 1)
+            * (p.mechanicalEngineSpeedMult || 1)
+            * (p.momentumMaxSpeedMult || 1);
+        return topSpeed / stockBase;
     }
 
     _save() {

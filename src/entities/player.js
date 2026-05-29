@@ -226,7 +226,7 @@ export class Player {
         // EXP and Leveling
         this.level = 0;
         this.exp = 0;
-        this.expNeeded = 10;
+        this.expNeeded = 8;
 
         // Level-up stat bonuses (accumulated, separate from inventory upgrades)
         this.lvlDamageMult           = 1.0;
@@ -256,6 +256,7 @@ export class Player {
         this.lvlWaveCountdownMult    = 1.0;  // <1 = shorter countdown (positive)
         this.lvlHpRegen              = 0.0;  // HP/sec
         this._lvlHpRegenAccum        = 0.0;  // for floating text
+        this.lvlLuckMult             = 1.0;  // multiplies player.luck (epic stat)
 
         // Per-type pick history used by the level-up roller to softly bias
         // future rolls away from over-picked types (offense/defense/mobility/
@@ -1513,7 +1514,7 @@ export class Player {
         while (this.exp >= this.expNeeded) {
             this.exp -= this.expNeeded;
             this.level++;
-            this.expNeeded = Math.floor(this.expNeeded * 1.2);
+            this.expNeeded = Math.floor(this.expNeeded * 1.12);
 
             // Visual feedback
             if (this.game.currentState && this.game.currentState.spawnFloatingText) {
@@ -1578,6 +1579,7 @@ export class Player {
             lvlWaveCountdownMult: this.lvlWaveCountdownMult,
             lvlExtraProjectiles: this.lvlExtraProjectiles,
             lvlHpRegen: this.lvlHpRegen,
+            lvlLuckMult: this.lvlLuckMult,
             upgradeTypeCounts: { ...this.upgradeTypeCounts },
             hasYellowGlow: this.hasYellowGlow,
             inventory: this.inventory ? this.inventory.serialize() : null
@@ -1631,6 +1633,7 @@ export class Player {
             this.lvlWaveCountdownMult    = data.lvlWaveCountdownMult;
             this.lvlExtraProjectiles     = data.lvlExtraProjectiles || 0;
             this.lvlHpRegen              = data.lvlHpRegen || 0;
+            this.lvlLuckMult             = data.lvlLuckMult || 1.0;
             this.upgradeTypeCounts       = data.upgradeTypeCounts ? { ...data.upgradeTypeCounts } : {};
             this.hasYellowGlow           = data.hasYellowGlow || false;
         }

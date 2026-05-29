@@ -4410,6 +4410,8 @@ export class PlayingState {
         p.asteroidSpawnMult *= p.lvlAsteroidSpawnMult;
         p.asteroidDrillMult *= p.lvlScrapChanceMult;
         p.laserCartridgeMult *= p.lvlDamageMult;
+        // Compound the epic Luck stat on top of any item-based luck (e.g. cosmos engine).
+        p.luck *= p.lvlLuckMult;
 
         p.boostCooldownMult = boostCooldownMult;
         p.boostRangeMult = boostRangeMult;
@@ -4439,7 +4441,9 @@ export class PlayingState {
         p.acceleration = p.baseSpeed * 3;
 
         if (this.game.achievements) {
-            this.game.achievements.notify('player_stats', { player: p });
+            // fovUpgradeMult already composes the sensor_accelerator upgrade with
+            // the level-up FOV bonus; pass it so the FOV achievement counts both.
+            this.game.achievements.notify('player_stats', { player: p, fovMult: this.fovUpgradeMult });
         }
     }
 

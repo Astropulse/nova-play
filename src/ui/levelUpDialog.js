@@ -22,6 +22,8 @@
  *   Legendary 10.0 – 20.0 %
  *
  * Luck (player.luck) shifts rolls toward rarer tiers.
+ * The Luck stat itself is an epic-tier upgrade with small, hard-capped rolls
+ * (never above LUCK_MAX_PCT) that compound player.luck via lvlLuckMult.
  * Cursed choices are extremely rare and reverse every effect.
  */
 
@@ -62,6 +64,9 @@ const STAT_DEFS = {
         { id: 'wave_countdown',   name: 'Wave Urgency',     desc: 'Reduces wave countdown duration' },
         { id: 'hp_regen',         name: 'Hull Repair',      desc: 'Slowly regenerates hull integrity',   flat: '+0.1 HP/S' },
     ],
+    epic: [
+        { id: 'luck',             name: 'Luck',             desc: 'Improves the odds on every random roll' },
+    ],
 };
 
 // Build stat-id → category lookup
@@ -100,6 +105,7 @@ export const STAT_TYPE = {
     scrap_chance:   'utility',
     cache_freq:     'utility',
     encounter_freq: 'utility',
+    luck:           'utility',
     // Difficulty / world-density
     asteroid_spawn:  'difficulty',
     enemy_spawn:     'difficulty',
@@ -121,8 +127,15 @@ const BONUS_TIERS = {
     legendary: { min: 10.0, max: 20.0 },
 };
 
+// Luck is an epic-tier stat with deliberately small rolls and a hard ceiling,
+// so it never spikes the way other %-bonus stats can. Its base roll is low and
+// the result is clamped to LUCK_MAX_PCT even after the skip-stacking multiplier.
+const LUCK_TIER    = { min: 1.0, max: 3.0 };
+const LUCK_MAX_PCT = 5.0;
+
 // ─── Base weights ─────────────────────────────────────────────────────────────
-const CAT_BASE_W   = { common: 60, uncommon: 25, rare: 12, cursed: 3 };
+// epic is the rarest non-cursed category — luck is its only member.
+const CAT_BASE_W   = { common: 60, uncommon: 25, rare: 12, epic: 2, cursed: 3 };
 const BONUS_BASE_W = { common: 67, uncommon: 20, rare: 8, epic: 4, legendary: 1 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -156,6 +169,7 @@ function rollChoices(luck, typePickCounts = {}, bonusMult = 1) {
         common:   Math.max(5, CAT_BASE_W.common / lk),
         uncommon: CAT_BASE_W.uncommon * Math.sqrt(lk),
         rare:     CAT_BASE_W.rare     * lk,
+        epic:     CAT_BASE_W.epic     * lk * lk,
         cursed:   CAT_BASE_W.cursed   / (lk * lk),
     };
     const bonusW = {
@@ -171,6 +185,7 @@ function rollChoices(luck, typePickCounts = {}, bonusMult = 1) {
         ...STAT_DEFS.common,
         ...STAT_DEFS.uncommon,
         ...STAT_DEFS.rare,
+        ...STAT_DEFS.epic,
     ];
     const rollTypeCounts = {}; // types already represented in THIS roll
     const choices = [];
@@ -199,7 +214,7 @@ function rollChoices(luck, typePickCounts = {}, bonusMult = 1) {
     for (let i = 0; i < 4; i++) {
         let cat = _wrand(catW);
         const isCursed = cat === 'cursed';
-        if (isCursed) cat = _wrand({ common: 60, uncommon: 25, rare: 15 });
+        if (isCursed) cat = _wrand({ common: 60, uncommon: 25, rare: 15, epic: 2 });
 
         // Prefer pool that satisfies diversity cap; fall back to broader pools.
         let pool = _filterByDiversity(STAT_DEFS[cat].filter(s => !used.has(s.id)));
@@ -252,6 +267,25 @@ function _makeChoice(stat, isCursed, bonusW, bonusMult = 1) {
             bonusRarity: 'rare',
             bonusColor: isCursed ? '#664433' : RARITY_COLORS.rare,
             category: STAT_CAT[stat.id] || 'rare',
+            type: STAT_TYPE[stat.id] || 'utility',
+        };
+    }
+
+    // Luck rolls low and is hard-capped — it's always displayed as epic tier
+    // regardless of the (small) rolled value.
+    if (stat.id === 'luck') {
+        const baseLuckPct = LUCK_TIER.min + Math.random() * (LUCK_TIER.max - LUCK_TIER.min);
+        const luckPct     = Math.min(LUCK_MAX_PCT, baseLuckPct * bonusMult);
+        return {
+            stat, isCursed,
+            pct: isCursed ? -luckPct : luckPct,
+            basePct: isCursed ? -baseLuckPct : baseLuckPct,
+            bonusMult,
+            flatDisplay: null,
+            baseFlatDisplay: null,
+            bonusRarity: 'epic',
+            bonusColor: isCursed ? '#664433' : RARITY_COLORS.epic,
+            category: 'epic',
             type: STAT_TYPE[stat.id] || 'utility',
         };
     }
@@ -350,6 +384,10 @@ export function applyLevelUpChoice(choice, player, playingState) {
             player.lvlHpRegen += delta;
             break;
         }
+
+        // ── Epic ────────────────────────────────────────────────────────────
+        case 'luck':
+            player.lvlLuckMult *= isCursed ? (1 - absPct) : (1 + absPct); break;
     }
 
     // Resync inventory-derived stats (max hp, speed, fire rate, etc.)

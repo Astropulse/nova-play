@@ -562,10 +562,20 @@ export class AchievementsState {
         ctx.fillRect(x, y, w, h);
 
         // Progress fill — partial background tint for locked, non-hidden
-        // lifetime-tracked achievements. The achievement opts in by defining
-        // a `progress(mgr)` returning 0..1. Drawn to the right of the icon
-        // so it tints the text area rather than fighting with the artwork.
-        if (!unlocked && !ach.hidden && typeof ach.progress === 'function') {
+        // achievements. The achievement opts in by defining a `progress(mgr)`
+        // returning 0..1. Drawn to the right of the icon so it tints the text
+        // area rather than fighting with the artwork.
+        //
+        // `progressScope: 'run'` achievements track per-run counters that reset
+        // each run, so their bar is only meaningful while a run is live. We
+        // only have a live run when opened from the pause menu (returnState is
+        // the PlayingState); from the main menu run.* holds stale last-run
+        // values, so suppress those bars there. Lifetime-scoped progress (no
+        // scope) is persistent and always shown.
+        const inRun = !!this.returnState;
+        const showProgress = typeof ach.progress === 'function'
+            && (ach.progressScope !== 'run' || inRun);
+        if (!unlocked && !ach.hidden && showProgress) {
             const mgr = this.game.achievements;
             let p = 0;
             if (mgr) {

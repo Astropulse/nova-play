@@ -58,7 +58,9 @@ export const ACHIEVEMENTS = [
         description: 'Destroy 200 enemy ships in a single run.',
         flavor: "All in one go, nice.",
         icon: 'ach_butcher',
-        check: (m) => m.run.enemiesKilled >= 200
+        check: (m) => m.run.enemiesKilled >= 200,
+        progressScope: 'run',
+        progress: (m) => m.run.enemiesKilled / 200
     },
     {
         id: 'blitz',
@@ -66,7 +68,9 @@ export const ACHIEVEMENTS = [
         description: 'Destroy 10 enemies within 10 seconds.',
         flavor: 'Just try holding down the trigger and spinning around.',
         icon: 'ach_blitz',
-        check: (m) => m.run.maxKillStreak >= 10
+        check: (m) => m.run.maxKillStreak >= 10,
+        progressScope: 'run',
+        progress: (m) => m.run.maxKillStreak / 10
     },
     {
         id: 'storm_front',
@@ -102,7 +106,10 @@ export const ACHIEVEMENTS = [
         description: 'Clear 4 waves in a single run without taking any damage.',
         flavor: 'Their lasers are fast, but you\'re faster.',
         icon: 'ach_untouched',
-        check: (m) => m.run.wavesCleared >= 4 && m.run.damageless
+        check: (m) => m.run.wavesCleared >= 4 && m.run.damageless,
+        progressScope: 'run',
+        // Empties the moment a hull hit lands — the run can no longer earn it.
+        progress: (m) => m.run.damageless ? m.run.wavesCleared / 4 : 0
     },
 
     // ── Bosses (each major boss + composite achievements) ───────────────────
@@ -176,7 +183,9 @@ export const ACHIEVEMENTS = [
         description: 'Destroy 60 asteroids in a single run.',
         flavor: 'Minerals. Yum.',
         icon: 'ach_asteroid_taste',
-        check: (m) => m.run.asteroidsDestroyed >= 60
+        check: (m) => m.run.asteroidsDestroyed >= 60,
+        progressScope: 'run',
+        progress: (m) => m.run.asteroidsDestroyed / 60
     },
     {
         id: 'asteroid_10000',
@@ -202,7 +211,9 @@ export const ACHIEVEMENTS = [
         description: 'Destroy 600 asteroids in a single run.',
         flavor: 'Give me all the scrap.',
         icon: 'ach_single_run_asteroid_600',
-        check: (m) => m.run.asteroidsDestroyed >= 600
+        check: (m) => m.run.asteroidsDestroyed >= 600,
+        progressScope: 'run',
+        progress: (m) => m.run.asteroidsDestroyed / 600
     },
     {
         id: 'boulder_smasher',
@@ -230,7 +241,9 @@ export const ACHIEVEMENTS = [
         description: 'Discover three different event types in a single run.',
         flavor: 'They call it space because its mostly empty.',
         icon: 'ach_cartographer',
-        check: (m) => m.run.eventsDiscovered.size >= 3
+        check: (m) => m.run.eventsDiscovered.size >= 3,
+        progressScope: 'run',
+        progress: (m) => m.run.eventsDiscovered.size / 3
     },
     {
         id: 'true_explorer',
@@ -333,7 +346,9 @@ export const ACHIEVEMENTS = [
         description: 'Open 5 space caches in a single run.',
         flavor: 'Isn\'t your cargo full yet?',
         icon: 'ach_hoarder',
-        check: (m) => m.run.cachesOpened >= 5
+        check: (m) => m.run.cachesOpened >= 5,
+        progressScope: 'run',
+        progress: (m) => m.run.cachesOpened / 5
     },
 
     // ── Shops ───────────────────────────────────────────────────────────────
@@ -343,7 +358,9 @@ export const ACHIEVEMENTS = [
         description: 'Visit 3 different shops in a single run.',
         flavor: 'Deals you can\'t pass up.',
         icon: 'ach_bargain_hunter',
-        check: (m) => m.run.shopsVisited >= 3
+        check: (m) => m.run.shopsVisited >= 3,
+        progressScope: 'run',
+        progress: (m) => m.run.shopsVisited / 3
     },
     {
         id: 'chasing_the_dragon',
@@ -379,7 +396,9 @@ export const ACHIEVEMENTS = [
         description: 'Install 25 upgrades in a single run.',
         flavor: 'The ship is more upgrades than original parts at this point.',
         icon: 'ach_armory',
-        check: (m) => m.run.upgradesCollected >= 25
+        check: (m) => m.run.upgradesCollected >= 25,
+        progressScope: 'run',
+        progress: (m) => m.run.upgradesCollected / 25
     },
     {
         id: 'connoisseur',
@@ -391,7 +410,13 @@ export const ACHIEVEMENTS = [
             m.run.upgradesByRarity.epic
             + m.run.upgradesByRarity.legendary
             + m.run.upgradesByRarity.unique
-        ) >= 4
+        ) >= 4,
+        progressScope: 'run',
+        progress: (m) => (
+            m.run.upgradesByRarity.epic
+            + m.run.upgradesByRarity.legendary
+            + m.run.upgradesByRarity.unique
+        ) / 4
     },
 
     // ── Upgrades: specific finds (hidden lore) ──────────────────────────────
@@ -448,7 +473,13 @@ export const ACHIEVEMENTS = [
         description: 'Reach a 5x effective speed multiplier in one run.',
         flavor: 'Watch out for asteroids.',
         icon: 'ach_ludicrous_speed',
-        check: (m) => m.run.peakSpeedMult >= 5
+        check: (m) => m.run.peakSpeedMult >= 5,
+        progressScope: 'run',
+        // Multiplier baseline is 1x (a stock ship is already at 1x), so measure
+        // progress from 1 → target, not 0 → target. Otherwise a fresh ship with
+        // no upgrades reads 1/5 = 20% before doing anything. Negative pre-notify
+        // values (peak defaults to 0) clamp to 0 in the renderer.
+        progress: (m) => (m.run.peakSpeedMult - 1) / 4
     },
     {
         id: 'plaid',
@@ -465,15 +496,21 @@ export const ACHIEVEMENTS = [
         description: 'Reach a 2.5x fire rate multiplier in a single run.',
         flavor: 'It\'s always overheating and that\'s okay.',
         icon: 'ach_trigger_discipline',
-        check: (m) => m.run.peakFireRateMult >= 2.5
+        check: (m) => m.run.peakFireRateMult >= 2.5,
+        progressScope: 'run',
+        // Baseline 1x — see ludicrous_speed.
+        progress: (m) => (m.run.peakFireRateMult - 1) / 1.5
     },
     {
         id: 'cannonade',
         name: 'Cannonade',
-        description: 'Accumulate +100 permanent damage in a run.',
+        description: 'Accumulate 20x damage in a single run.',
         flavor: 'Your lasers might as well be solid objects.',
         icon: 'ach_cannonade',
-        check: (m) => m.run.peakDamageBonus >= 100
+        check: (m) => m.run.peakDamageMult >= 20.0,
+        progressScope: 'run',
+        // Baseline 1x — see ludicrous_speed.
+        progress: (m) => (m.run.peakDamageMult - 1) / 19.0
     },
     {
         id: 'wide_angle',
@@ -481,7 +518,10 @@ export const ACHIEVEMENTS = [
         description: 'Reach 200% FOV in a single run.',
         flavor: 'Can you see enough stuff yet?',
         icon: 'ach_wide_angle',
-        check: (m) => m.run.peakFovMult >= 2.0
+        check: (m) => m.run.peakFovMult >= 2.0,
+        progressScope: 'run',
+        // Baseline 1x — see ludicrous_speed.
+        progress: (m) => (m.run.peakFovMult - 1) / 1.0
     },
     {
         id: 'magnetic_personality',
@@ -489,7 +529,10 @@ export const ACHIEVEMENTS = [
         description: 'Reach 10x scrap vacuum range in a single run.',
         flavor: 'The scrap comes to you now. Less work for everyone.',
         icon: 'ach_magnetic_personality',
-        check: (m) => m.run.peakVacuumRangeMult >= 10.0
+        check: (m) => m.run.peakVacuumRangeMult >= 10.0,
+        progressScope: 'run',
+        // Baseline 1x — see ludicrous_speed.
+        progress: (m) => (m.run.peakVacuumRangeMult - 1) / 9.0
     },
     {
         id: 'spread_shot',
@@ -497,7 +540,9 @@ export const ACHIEVEMENTS = [
         description: 'Fire 4 or more extra projectiles per volley in a run.',
         flavor: 'More lasers is more better.',
         icon: 'ach_spread_shot',
-        check: (m) => m.run.peakExtraProjectiles >= 4
+        check: (m) => m.run.peakExtraProjectiles >= 4,
+        progressScope: 'run',
+        progress: (m) => m.run.peakExtraProjectiles / 4
     },
     {
         id: 'fortunate_son',
@@ -505,7 +550,10 @@ export const ACHIEVEMENTS = [
         description: 'Reach 1.5x luck in a single run.',
         flavor: 'Things just keep going your way. Suspicious.',
         icon: 'ach_fortunate_son',
-        check: (m) => m.run.peakLuck >= 1.5
+        check: (m) => m.run.peakLuck >= 1.5,
+        progressScope: 'run',
+        // Baseline 1x — see ludicrous_speed.
+        progress: (m) => (m.run.peakLuck - 1) / 0.5
     },
 
     // ── Levels / progression ────────────────────────────────────────────────
@@ -515,7 +563,9 @@ export const ACHIEVEMENTS = [
         description: 'Reach level 10 in a single run.',
         flavor: 'You\'re getting the hang of things now.',
         icon: 'ach_ascendant',
-        check: (m) => m.run.peakLevel >= 10
+        check: (m) => m.run.peakLevel >= 10,
+        progressScope: 'run',
+        progress: (m) => m.run.peakLevel / 10
     },
     {
         id: 'apex',
@@ -532,7 +582,9 @@ export const ACHIEVEMENTS = [
         description: 'Skip 5 level ups in a single run.',
         flavor: 'Holding out for the good stuff, are we?',
         icon: 'ach_skip_artist',
-        check: (m) => m.run.levelUpsSkipped >= 5
+        check: (m) => m.run.levelUpsSkipped >= 5,
+        progressScope: 'run',
+        progress: (m) => m.run.levelUpsSkipped / 5
     },
     {
         id: 'one_trick_pony',
@@ -540,7 +592,9 @@ export const ACHIEVEMENTS = [
         description: 'Pick the same stat 3 level ups in a row.',
         flavor: 'You sure committed to that one.',
         icon: 'ach_one_trick_pony',
-        check: (m) => m.run.maxSameStatStreak >= 3
+        check: (m) => m.run.maxSameStatStreak >= 3,
+        progressScope: 'run',
+        progress: (m) => m.run.maxSameStatStreak / 3
     },
     {
         id: 'legendary_roll',
@@ -559,7 +613,9 @@ export const ACHIEVEMENTS = [
         description: 'Collect 1000 scrap in a single run.',
         flavor: 'Why is there so much trash out here?',
         icon: 'ach_salvage_king',
-        check: (m) => m.run.scrapCollected >= 1000
+        check: (m) => m.run.scrapCollected >= 1000,
+        progressScope: 'run',
+        progress: (m) => m.run.scrapCollected / 1000
     },
     {
         id: 'hoard',
@@ -594,7 +650,9 @@ export const ACHIEVEMENTS = [
         description: 'Collect 100 scrap within 3 seconds.',
         flavor: 'Right place. Right time. Very greedy.',
         icon: 'ach_scrap_storm',
-        check: (m) => m.run.scrapBurstPeak >= 100
+        check: (m) => m.run.scrapBurstPeak >= 100,
+        progressScope: 'run',
+        progress: (m) => m.run.scrapBurstPeak / 100
     },
 
     // ── Ship Encounters ─────────────────────────────────────────────────────
@@ -714,7 +772,10 @@ export const ACHIEVEMENTS = [
         description: 'Reach level 40 in a single run with the Fighter.',
         flavor: 'Nothing fancy. Just consistent.',
         icon: 'ach_workhorse',
-        check: (m) => m.run.shipId === 'fighter' && m.run.peakLevel >= 40
+        check: (m) => m.run.shipId === 'fighter' && m.run.peakLevel >= 40,
+        progressScope: 'run',
+        // Ship-specific: only fills while flying the matching hull.
+        progress: (m) => m.run.shipId === 'fighter' ? m.run.peakLevel / 40 : 0
     },
     {
         id: 'hauler',
@@ -722,7 +783,9 @@ export const ACHIEVEMENTS = [
         description: 'Expand cargo to 24 slots in a single run with the Cruiser.',
         flavor: 'Speed AND space? Someone\'s getting greedy.',
         icon: 'ach_hauler',
-        check: (m) => m.run.shipId === 'cruiser' && m.run.peakCargoSlots >= 24
+        check: (m) => m.run.shipId === 'cruiser' && m.run.peakCargoSlots >= 24,
+        progressScope: 'run',
+        progress: (m) => m.run.shipId === 'cruiser' ? m.run.peakCargoSlots / 24 : 0
     },
     {
         id: 'heavy_hitter',
@@ -730,7 +793,9 @@ export const ACHIEVEMENTS = [
         description: 'Take 800 damage in a single run with the Bruiser.',
         flavor: 'Hit me again. I dare you.',
         icon: 'ach_heavy_hitter',
-        check: (m) => m.run.shipId === 'bruiser' && m.run.damageTaken >= 800
+        check: (m) => m.run.shipId === 'bruiser' && m.run.damageTaken >= 800,
+        progressScope: 'run',
+        progress: (m) => m.run.shipId === 'bruiser' ? m.run.damageTaken / 800 : 0
     },
     {
         id: 'blink_and_miss',
@@ -738,7 +803,9 @@ export const ACHIEVEMENTS = [
         description: 'Dodge 50 enemy shots in a single run with the Looper.',
         flavor: 'They keep shooting where you were.',
         icon: 'ach_blink_and_miss',
-        check: (m) => m.run.shipId === 'looper' && m.run.dodgesPerformed >= 50
+        check: (m) => m.run.shipId === 'looper' && m.run.dodgesPerformed >= 50,
+        progressScope: 'run',
+        progress: (m) => m.run.shipId === 'looper' ? m.run.dodgesPerformed / 50 : 0
     },
     {
         id: 'photo_finish',
@@ -754,7 +821,9 @@ export const ACHIEVEMENTS = [
         description: 'Cover 25000 units of blink distance in a single run with the Looper.',
         flavor: 'Frequent flyer miles add up.',
         icon: 'ach_lightyears',
-        check: (m) => m.run.shipId === 'looper' && m.run.blinkDistanceTotal >= 25000
+        check: (m) => m.run.shipId === 'looper' && m.run.blinkDistanceTotal >= 25000,
+        progressScope: 'run',
+        progress: (m) => m.run.shipId === 'looper' ? m.run.blinkDistanceTotal / 25000 : 0
     },
     {
         id: 'battering_ram',
@@ -762,7 +831,9 @@ export const ACHIEVEMENTS = [
         description: 'Destroy 150 asteroids by ramming them in a single run with the Bruiser.',
         flavor: 'Lasers are for cowards.',
         icon: 'ach_battering_ram',
-        check: (m) => m.run.shipId === 'bruiser' && m.run.asteroidsRammed >= 150
+        check: (m) => m.run.shipId === 'bruiser' && m.run.asteroidsRammed >= 150,
+        progressScope: 'run',
+        progress: (m) => m.run.shipId === 'bruiser' ? m.run.asteroidsRammed / 150 : 0
     },
     {
         id: 'frequent_flyer',
@@ -770,7 +841,9 @@ export const ACHIEVEMENTS = [
         description: 'Travel 100000 world units in a single run with the Cruiser.',
         flavor: 'You stopped to look at the scenery exactly never.',
         icon: 'ach_frequent_flyer',
-        check: (m) => m.run.shipId === 'cruiser' && m.run.distanceTraveled >= 100000
+        check: (m) => m.run.shipId === 'cruiser' && m.run.distanceTraveled >= 100000,
+        progressScope: 'run',
+        progress: (m) => m.run.shipId === 'cruiser' ? m.run.distanceTraveled / 100000 : 0
     },
     {
         id: 'variety_pack',
