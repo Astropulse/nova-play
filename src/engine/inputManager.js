@@ -90,12 +90,16 @@ export class InputManager {
         };
         this._mousemoveListener = (e) => {
             const rect = this.canvas.getBoundingClientRect();
-            this.mouseScreenX = e.clientX - rect.left;
-            this.mouseScreenY = e.clientY - rect.top;
+            // Convert CSS-pixel pointer coords into backing-store (physical) pixels,
+            // which is the coordinate space the rest of the game renders in.
+            const scaleX = rect.width ? this.canvas.width / rect.width : 1;
+            const scaleY = rect.height ? this.canvas.height / rect.height : 1;
+            this.mouseScreenX = (e.clientX - rect.left) * scaleX;
+            this.mouseScreenY = (e.clientY - rect.top) * scaleY;
 
             if (this.mouseButtons.has(1)) { // Middle button
-                this._accPanDeltaX += e.movementX;
-                this._accPanDeltaY += e.movementY;
+                this._accPanDeltaX += e.movementX * scaleX;
+                this._accPanDeltaY += e.movementY * scaleY;
             }
             if (Math.abs(e.movementX) + Math.abs(e.movementY) > 0) {
                 this.lastInputDevice = 'mouse';

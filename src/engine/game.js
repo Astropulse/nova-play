@@ -52,11 +52,16 @@ export class Game {
     }
 
     resize() {
-        this.canvas.width = window.innerWidth;
-        this.canvas.height = window.innerHeight;
+        // Size the backing store in physical pixels so rendering is crisp and the
+        // scale math below reflects the real pixel count. On HiDPI / OS-scaled
+        // displays (e.g. 2560x1600 @ 150%), window.innerWidth/Height report CSS
+        // pixels (~1707x1067), which would otherwise shrink the UI and world.
+        this.dpr = window.devicePixelRatio || 1;
+        this.canvas.width = Math.round(window.innerWidth * this.dpr);
+        this.canvas.height = Math.round(window.innerHeight * this.dpr);
         this.ctx.imageSmoothingEnabled = true;
 
-        // Reference resolution 2560x1440 (16:9)
+        // Reference resolution 2560x1440 (16:9), in physical pixels
         const refW = 2560;
         const refH = 1440;
         const refMean = Math.sqrt(refW * refH);
@@ -76,8 +81,11 @@ export class Game {
         this.hudScale = Math.max(1, Math.round(4 * heightRatio));
     }
 
-    get width() { return window.innerWidth; }
-    get height() { return window.innerHeight; }
+    // Logical screen dimensions == backing-store (physical) pixels. The whole
+    // render/coordinate space runs in these units; mouse input is converted to
+    // match in inputManager.
+    get width() { return this.canvas.width; }
+    get height() { return this.canvas.height; }
 
 
     async init() {

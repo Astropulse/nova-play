@@ -479,11 +479,14 @@ export class ItemPickup {
         }
 
         if (this.encountered) {
-            // If the player breaks the leash (e.g. boosts away), drop follow
-            // mode so the item returns to a normal vacuum-able pickup.
+            // The leash only drops on a genuine boost/blink: playingState feeds
+            // dummy (-99999) coords while warping, which trips the break check
+            // below. Normal flight — even at high upgraded speed — stays leashed
+            // so the item never flip-flops between follow and vacuum, which is
+            // what produced the jerky motion.
             const ldx = playerX - this.worldX;
             const ldy = playerY - this.worldY;
-            const breakDist = 200;
+            const breakDist = 1000;
             if (ldx * ldx + ldy * ldy > breakDist * breakDist) {
                 this.encountered = false;
                 this.followTimer = 0;
@@ -495,14 +498,25 @@ export class ItemPickup {
                     this.alive = false;
                     return;
                 }
-                // Soft follow at fixed offset — no vacuum forces, no orbit/bounce.
+                // Critically-damped spring toward the leash point (exact Juckett
+                // integration). Carries the inbound vacuum velocity through the
+                // hand-off so there's no sudden stop, and tracks the moving player
+                // smoothly with no overshoot or oscillation.
                 const targetX = playerX + this.followOffsetX;
                 const targetY = playerY + this.followOffsetY;
-                const lerp = 1 - Math.pow(0.001, dt);
-                this.worldX += (targetX - this.worldX) * lerp;
-                this.worldY += (targetY - this.worldY) * lerp;
-                this.vx = 0;
-                this.vy = 0;
+                const omega = 12; // stiffness; higher = tighter, snappier follow
+                const e = Math.exp(-omega * dt);
+
+                const px = this.worldX - targetX;
+                const detX = (this.vx + omega * px) * dt;
+                this.worldX = targetX + (px + detX) * e;
+                this.vx = (this.vx - omega * detX) * e;
+
+                const py = this.worldY - targetY;
+                const detY = (this.vy + omega * py) * dt;
+                this.worldY = targetY + (py + detY) * e;
+                this.vy = (this.vy - omega * detY) * e;
+
                 this.rotation += this.rotSpeed * dt;
                 return;
             }
