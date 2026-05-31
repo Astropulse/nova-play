@@ -72,6 +72,7 @@ export class PlayingState {
         this.itemPickups = [];
         this.activeBeams = []; // specific fx
         this.explosions = []; // area fx
+        this.sparks = []; // short-lived impact spark streaks
         this.events = [];
         this.expOrbs = [];
         // Encounter system
@@ -891,6 +892,20 @@ export class PlayingState {
             }
         }
 
+        // --- Update impact sparks ---
+        if (this.sparks.length) {
+            const drag = Math.pow(0.84, dt * 60);
+            for (let i = this.sparks.length - 1; i >= 0; i--) {
+                const s = this.sparks[i];
+                s.worldX += s.vx * dt;
+                s.worldY += s.vy * dt;
+                s.vx *= drag;
+                s.vy *= drag;
+                s.life -= dt;
+                if (s.life <= 0) this.sparks.splice(i, 1);
+            }
+        }
+
         if (this.eventBufferTimer > 0) {
             this.eventBufferTimer -= dt;
         }
@@ -1236,10 +1251,18 @@ export class PlayingState {
                 if (dx * dx + dy * dy < cr * cr) {
                     proj.alive = false;
                     this.game.sounds.play('hit', { volume: 0.4, x: proj.worldX, y: proj.worldY });
+                    this._spawnSparks(proj.worldX, proj.worldY, 5 + Math.floor(Math.random() * 4), {
+                        // Fan out along the surface normal (center → impact point)
+                        dir: Math.atan2(proj.worldY - ast.worldY, proj.worldX - ast.worldX),
+                        spread: Math.PI * 0.9
+                    });
                     if (ast.hit(proj.damage)) {
                         this._onEntityDestroyed(ast);
                     } else {
                         this._triggerShakeAt(proj.worldX, proj.worldY, 0.4);
+                        // Break a few outer chips off where the laser landed
+                        const chips = ast.chipHit(proj.worldX, proj.worldY);
+                        for (const d of chips) { if (this.rubble.length < 250) this.rubble.push(d); }
                     }
                     // Player-only Explosives Unit vs Shared Rockets
                     if ((proj.owner === this.player && this.player.hasExplosivesUnit) || proj.isRocket) {
@@ -1288,6 +1311,10 @@ export class PlayingState {
                     if (dx * dx + dy * dy < cr * cr) {
                         proj.alive = false;
                         this.game.sounds.play('hit', { volume: 0.4, x: proj.worldX, y: proj.worldY });
+                        this._spawnSparks(proj.worldX, proj.worldY, 5 + Math.floor(Math.random() * 4), {
+                            dir: Math.atan2(proj.worldY - en.worldY, proj.worldX - en.worldX),
+                            spread: Math.PI * 0.9, color: '#fff2b0'
+                        });
                         if (en.hit(proj.damage)) {
                             this._onEntityDestroyed(en);
                         } else {
@@ -1310,7 +1337,12 @@ export class PlayingState {
                 if (dx * dx + dy * dy < cr * cr) {
                     if (this.player.checkPixelCollision(proj.worldX, proj.worldY)) {
                         proj.alive = false;
-                        this._damagePlayer(proj.damage); // proj.damage is already scaled in Enemy.shoot
+                        this._damagePlayer(proj.damage, proj.worldX, proj.worldY); // proj.damage is already scaled in Enemy.shoot
+                        this._spawnSparks(proj.worldX, proj.worldY, 7 + Math.floor(Math.random() * 4), {
+                            dir: Math.atan2(proj.worldY - this.player.worldY, proj.worldX - this.player.worldX),
+                            spread: Math.PI * 0.9,
+                            color: this.player.shielding ? '#9fe8ff' : '#ff9a5a'
+                        });
 
                         const kdx = this.player.worldX - proj.worldX;
                         const kdy = this.player.worldY - proj.worldY;
@@ -1338,7 +1370,7 @@ export class PlayingState {
                     const wasPendingBellyFlop = this.player._pendingBellyFlop > 0;
                     const dist = Math.sqrt(dx * dx + dy * dy);
                     ast.onCollision(this.player);
-                    this._damagePlayer(ast.damage * this.player.lvlAsteroidResistanceMult);
+                    this._damagePlayer(ast.damage * this.player.lvlAsteroidResistanceMult, ast.worldX, ast.worldY);
                     ast.alive = false;
                     this._onEntityDestroyed(ast);
                     this._applyKnockback(dx, dy, dist, 200);
@@ -1362,7 +1394,7 @@ export class PlayingState {
                 const cr = this.player.radius + en.radius;
                 if (dx * dx + dy * dy < cr * cr) {
                     const dist = Math.sqrt(dx * dx + dy * dy);
-                    this._damagePlayer(20); // Ramming hurts!
+                    this._damagePlayer(20, en.worldX, en.worldY); // Ramming hurts!
                     en.onCollision(this.player);
                     if (!en.alive) this._onEntityDestroyed(en);
                     this._applyKnockback(dx, dy, dist, 300);
@@ -1377,7 +1409,7 @@ export class PlayingState {
                 const cr = this.player.radius + ev.radius * 0.5;
                 if (dx * dx + dy * dy < cr * cr) { // Smaller inner radius for waking
                     const dist = Math.sqrt(dx * dx + dy * dy);
-                    this._damagePlayer(20);
+                    this._damagePlayer(20, ev.worldX, ev.worldY);
                     ev.hit(1); // Triggers wake
                     this._applyKnockback(dx, dy, dist, 600); // Big knockback from boss
                 }
@@ -1555,7 +1587,7 @@ export class PlayingState {
         }
     }
 
-    _damagePlayer(amount) {
+    _damagePlayer(amount, hitX, hitY) {
         if (this.player.invulnTimer > 0 || this.isDead || this.bossDeathImmunityTimer > 0) return;
 
         // Cap damage at 1/5th of max health per instance
@@ -1868,6 +1900,30 @@ export class PlayingState {
         this._triggerShakeAt(x, y, 2.0);
     }
 
+    // Burst of short, bright spark streaks at an impact point. `opts.dir` aims
+    // the spray (radians); `opts.spread` widens it; `opts.color` tints it.
+    _spawnSparks(x, y, count = 6, opts = {}) {
+        if (this.sparks.length > 350) return; // hard cap so spam fire can't pile up
+        const dir = opts.dir != null ? opts.dir : Math.random() * Math.PI * 2;
+        const spread = opts.spread != null ? opts.spread : Math.PI * 2;
+        const color = opts.color || '#ffe08a';
+        const sMin = opts.speedMin != null ? opts.speedMin : 140;
+        const sMax = opts.speedMax != null ? opts.speedMax : 420;
+        for (let i = 0; i < count; i++) {
+            const a = dir + (Math.random() - 0.5) * spread;
+            const sp = sMin + Math.random() * (sMax - sMin);
+            const life = 0.12 + Math.random() * 0.18;
+            this.sparks.push({
+                worldX: x, worldY: y,
+                vx: Math.cos(a) * sp,
+                vy: Math.sin(a) * sp,
+                life, maxLife: life,
+                size: Math.random() < 0.7 ? 1 : 2, // chunk size in logical pixels
+                color
+            });
+        }
+    }
+
     spawnFloatingText(x, y, text, color) {
         this.floatingTexts.push(new FloatingText(this.game, x, y, text, color));
     }
@@ -2002,6 +2058,7 @@ export class PlayingState {
         // Explosions (drawn above most things, below UI)
         this.perf.begin('particles');
         this._drawExplosions(ctx);
+        this._drawSparks(ctx);
 
         // Draw floating texts
         for (const ft of this.floatingTexts) {
@@ -4822,14 +4879,12 @@ export class PlayingState {
             const ix = cx + Math.cos(angle) * radius;
             const iy = cy + Math.sin(angle) * radius;
 
-            // Draw yellow "!" indicator
+            // Draw yellow dot indicator (single pixel at UI scale, centered)
+            const px = this.game.uiScale;
             ctx.save();
             ctx.globalAlpha = opacity;
             ctx.fillStyle = '#ffff44';
-            ctx.font = `${12 * this.game.uiScale}px Astro5x`;
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            ctx.fillText('!', ix, iy);
+            ctx.fillRect(Math.floor(ix - px / 2), Math.floor(iy - px / 2), px, px);
             ctx.restore();
         }
     }
@@ -5440,6 +5495,46 @@ export class PlayingState {
 
             ctx.drawImage(img, sx - size / 2, sy - size / 2, size, size);
         }
+        ctx.restore();
+    }
+
+    _drawSparks(ctx) {
+        if (!this.sparks || this.sparks.length === 0) return;
+
+        // One logical pixel, rounded to whole screen pixels so blocks stay crisp
+        // and match the chunky scale of the game's sprites.
+        const pix = Math.max(1, Math.round(this.game.worldScale));
+        const W = this.game.width, H = this.game.height;
+
+        ctx.save();
+        ctx.imageSmoothingEnabled = false;
+
+        for (const s of this.sparks) {
+            const screen = this.camera.worldToScreen(s.worldX, s.worldY, W, H);
+            if (screen.x < -20 || screen.x > W + 20 || screen.y < -20 || screen.y > H + 20) continue;
+
+            const t = Math.max(0, s.life / s.maxLife);
+            const blockSize = s.size * pix;
+
+            // Trail is a row of discrete pixel blocks stepping back along the
+            // velocity (one logical pixel per step) — longer when fast, shorter
+            // as the spark slows and dies.
+            const vmag = Math.hypot(s.vx, s.vy) || 1;
+            const stepX = -(s.vx / vmag) * pix;
+            const stepY = -(s.vy / vmag) * pix;
+            const trail = Math.max(0, Math.min(4, Math.round((vmag / 220) * (0.3 + t))));
+            const headAlpha = Math.min(1, t * 2.2); // hold bright, fade only at the end
+
+            ctx.fillStyle = s.color;
+            for (let i = trail; i >= 0; i--) {
+                ctx.globalAlpha = headAlpha * (1 - i / (trail + 1));
+                // Snap each block to the logical-pixel grid for crisp edges
+                const px = Math.round((screen.x + stepX * i) / pix) * pix;
+                const py = Math.round((screen.y + stepY * i) / pix) * pix;
+                ctx.fillRect(px, py, blockSize, blockSize);
+            }
+        }
+        ctx.globalAlpha = 1;
         ctx.restore();
     }
 

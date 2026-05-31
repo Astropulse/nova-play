@@ -169,6 +169,227 @@ export class VoronoiSlicer {
     }
 }
 
+// Module cache of persistent fracture layouts, keyed by asset + piece count.
+// Every entity sharing a sprite shares one cell layout; each entity keeps its
+// own removed-set, so the slice only ever runs once per sprite.
+const _fractureModelCache = new Map();
+
+// Target chunk size in logical pixels. Kept constant so a big sprite just gets
+// MORE chunks rather than bigger ones — chips look the same scale everywhere.
+const CHUNK_PX = 3.0;
+
+/**
+ * A persistent Voronoi "chip" layout for a sprite. Unlike the death shatter
+ * (which slices a sprite into flying shards on destruction), this pre-computes
+ * a fixed set of small cells once per asset. Only the cells on the sprite's
+ * silhouette (its "shell") can break off, so hits erode the surface a little
+ * rather than taking deep bites — and lasers can never bore through to the core.
+ */
+export class FractureModel {
+    static get(asset, key) {
+        if (!asset) return null;
+        let model = _fractureModelCache.get(key);
+        if (model === undefined) {
+            model = new FractureModel(asset);
+            if (!model.cells.length) model = null;
+            _fractureModelCache.set(key, model);
+        }
+        return model;
+    }
+
+    constructor(asset) {
+        const img = asset.canvas || asset;
+        this.lw = asset.width || img.width;
+        this.lh = asset.height || img.height;
+        // Physical (prescaled) dimensions — composite at this resolution so a
+        // chipped sprite matches the crispness of the un-chipped one exactly.
+        this.pw = img.width;
+        this.ph = img.height;
+        this.prescale = asset.prescale || (this.lw ? img.width / this.lw : 1);
+
+        // Piece count scales with area → constant chunk size regardless of object.
+        const numPieces = Math.max(12, Math.min(320, Math.round((this.lw * this.lh) / (CHUNK_PX * CHUNK_PX))));
+        const cells = VoronoiSlicer.slice(asset, numPieces);
+
+        // Logical-resolution alpha map of the full sprite, for edge detection.
+        const map = this._buildAlphaMap(img);
+
+        let maxDist = 1;
+        let edgeCount = 0;
+        for (const c of cells) {
+            c.dist = Math.hypot(c.lx, c.ly);
+            // top-left of this cell within the full logical canvas
+            c.ox = Math.round(c.lx + this.lw / 2 - c.canvas.width / 2);
+            c.oy = Math.round(c.ly + this.lh / 2 - c.canvas.height / 2);
+            c.edge = this._touchesSilhouette(c, map);
+            if (c.edge) edgeCount++;
+            if (c.dist > maxDist) maxDist = c.dist;
+        }
+        this.cells = cells;
+        this.maxDist = maxDist;
+        // Only the silhouette shell is ever removable → surface damage only.
+        this.maxRemovable = edgeCount;
+    }
+
+    _buildAlphaMap(physImg) {
+        const c = document.createElement('canvas');
+        c.width = this.lw;
+        c.height = this.lh;
+        const ctx = c.getContext('2d');
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(physImg, 0, 0, physImg.width, physImg.height, 0, 0, this.lw, this.lh);
+        const data = ctx.getImageData(0, 0, this.lw, this.lh).data;
+        const map = new Uint8Array(this.lw * this.lh);
+        for (let i = 0; i < map.length; i++) map[i] = data[i * 4 + 3] > 30 ? 1 : 0;
+        return map;
+    }
+
+    // A cell is a shell cell if any of its pixels sits on the sprite border or
+    // borders a transparent pixel.
+    _touchesSilhouette(cell, map) {
+        const cw = cell.canvas.width, ch = cell.canvas.height;
+        const cdata = cell.canvas.getContext('2d').getImageData(0, 0, cw, ch).data;
+        const W = this.lw, H = this.lh;
+        for (let y = 0; y < ch; y++) {
+            for (let x = 0; x < cw; x++) {
+                if (cdata[(y * cw + x) * 4 + 3] <= 30) continue;
+                const gx = cell.ox + x, gy = cell.oy + y;
+                if (gx <= 0 || gy <= 0 || gx >= W - 1 || gy >= H - 1) return true;
+                if (!map[(gy - 1) * W + gx] || !map[(gy + 1) * W + gx] ||
+                    !map[gy * W + (gx - 1)] || !map[gy * W + (gx + 1)]) return true;
+            }
+        }
+        return false;
+    }
+}
+
+/**
+ * Per-entity hull damage state: which cells of a FractureModel have broken off,
+ * plus a cached composite canvas (source sprite with the broken cells erased).
+ * Shared by asteroids (chip on hit) and the player ship (chip tied to health).
+ */
+export class HullFracture {
+    constructor(model) {
+        this.model = model;
+        this.removed = [];          // ordered list of removed cell indices
+        this._removedSet = new Set();
+        this._composite = null;
+        this._compositeVer = -1;
+        this._compositeSrc = null;
+        this.version = 0;           // bumps whenever the removed-set changes
+    }
+
+    get count() { return this.removed.length; }
+
+    // Break off up to `count` of the nearest shell (silhouette) cells to local
+    // point (lx, ly). Returns the removed cell objects (for spawning debris).
+    chipNear(lx, ly, count) {
+        const m = this.model;
+        const taken = [];
+        for (let n = 0; n < count; n++) {
+            if (this.removed.length >= m.maxRemovable) break;
+            let best = -1, bestD = Infinity;
+            for (let i = 0; i < m.cells.length; i++) {
+                if (this._removedSet.has(i)) continue;
+                const c = m.cells[i];
+                if (!c.edge) continue;
+                const dx = c.lx - lx, dy = c.ly - ly;
+                const d = dx * dx + dy * dy;
+                if (d < bestD) { bestD = d; best = i; }
+            }
+            if (best < 0) break;
+            this._removedSet.add(best);
+            this.removed.push(best);
+            taken.push(m.cells[best]);
+        }
+        if (taken.length) this.version++;
+        return taken;
+    }
+
+    // Nearest shell cell to a local point (regardless of removal) — used to spawn
+    // a transient impact spark when a hit doesn't break anything new off.
+    nearestOuterCell(lx, ly) {
+        const m = this.model;
+        let best = null, bestD = Infinity;
+        for (const c of m.cells) {
+            if (!c.edge) continue;
+            const dx = c.lx - lx, dy = c.ly - ly;
+            const d = dx * dx + dy * dy;
+            if (d < bestD) { bestD = d; best = c; }
+        }
+        return best;
+    }
+
+    // Put back the innermost-removed cell (fills in from the core outward as the
+    // ship heals). Returns true if a cell was restored.
+    restoreOne() {
+        if (!this.removed.length) return false;
+        let bestPos = 0, bestDist = Infinity;
+        for (let p = 0; p < this.removed.length; p++) {
+            const d = this.model.cells[this.removed[p]].dist;
+            if (d < bestDist) { bestDist = d; bestPos = p; }
+        }
+        const idx = this.removed.splice(bestPos, 1)[0];
+        this._removedSet.delete(idx);
+        this.version++;
+        return true;
+    }
+
+    // Source sprite frame with the broken cells erased. Cached per (frame,
+    // removed-version) so it only re-composites when something actually changes.
+    composite(sourceAsset) {
+        const srcImg = sourceAsset.canvas || sourceAsset;
+        if (this._composite && this._compositeVer === this.version && this._compositeSrc === srcImg) {
+            return this._composite;
+        }
+        const m = this.model;
+        const s = m.prescale;
+        let cv = this._composite;
+        if (!cv) { cv = document.createElement('canvas'); cv.width = m.pw; cv.height = m.ph; this._composite = cv; }
+        const ctx = cv.getContext('2d');
+        ctx.clearRect(0, 0, m.pw, m.ph);
+        ctx.imageSmoothingEnabled = false;
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.drawImage(srcImg, 0, 0, srcImg.width, srcImg.height, 0, 0, m.pw, m.ph);
+        // Erase broken cells at physical resolution (cell masks are logical, so
+        // upscale them by prescale — nearest-neighbor lines up with the sprite).
+        ctx.globalCompositeOperation = 'destination-out';
+        for (const idx of this.removed) {
+            const c = m.cells[idx];
+            ctx.drawImage(c.canvas, 0, 0, c.canvas.width, c.canvas.height,
+                c.ox * s, c.oy * s, c.canvas.width * s, c.canvas.height * s);
+        }
+        ctx.globalCompositeOperation = 'source-over';
+        this._compositeVer = this.version;
+        this._compositeSrc = srcImg;
+        return cv;
+    }
+}
+
+/**
+ * Build a flying-debris piece from a fractured cell, ejected outward from the
+ * parent's center. `rotation` is the parent's draw rotation (so the shard keeps
+ * the orientation it had while attached).
+ */
+export function ejectChipDebris(game, worldX, worldY, rotation, baseVx, baseVy, cell, shortLife = false) {
+    const cosA = Math.cos(rotation), sinA = Math.sin(rotation);
+    const wox = cell.lx * cosA - cell.ly * sinA;
+    const woy = cell.lx * sinA + cell.ly * cosA;
+    const outAngle = Math.atan2(woy, wox);
+    const spread = 40 + Math.random() * 70;
+    const life = shortLife ? (0.18 + Math.random() * 0.15) : (0.3 + Math.random() * 0.4);
+    return new ProceduralDebris(
+        game,
+        worldX + wox, worldY + woy,
+        cell.canvas,
+        (baseVx || 0) * 0.4 + Math.cos(outAngle) * spread,
+        (baseVy || 0) * 0.4 + Math.sin(outAngle) * spread,
+        rotation,
+        (Math.random() - 0.5) * 6,
+        life
+    );
+}
+
 // --- Pre-define classes used by others ---
 
 // Rubble — small debris that fades and vanishes
@@ -701,6 +922,43 @@ export class Asteroid {
     onCollision(player) {
     }
 
+    // Lazily build this asteroid's persistent fracture layout (only asteroids
+    // that actually get shot pay for the slice).
+    _ensureFracture() {
+        if (this._fx !== undefined) return this._fx;
+        const model = FractureModel.get(this.img, this.assetKey);
+        this._fx = model ? new HullFracture(model) : null;
+        return this._fx;
+    }
+
+    // Break a few outer cells off near a non-lethal hit point and return the
+    // ejected debris. Hitbox is unaffected — this is purely cosmetic.
+    chipHit(hitWorldX, hitWorldY) {
+        const fx = this._ensureFracture();
+        if (!fx) return [];
+        // 1 world unit == 1 logical pixel, so the local hit maps straight onto
+        // cell coordinates after undoing the asteroid's rotation.
+        const dx = hitWorldX - this.worldX;
+        const dy = hitWorldY - this.worldY;
+        const a = -this.rotation;
+        const lx = dx * Math.cos(a) - dy * Math.sin(a);
+        const ly = dx * Math.sin(a) + dy * Math.cos(a);
+
+        const count = 1 + (Math.random() < 0.5 ? 1 : 0);
+        const cells = fx.chipNear(lx, ly, count);
+        const debris = [];
+        for (const c of cells) {
+            debris.push(ejectChipDebris(this.game, this.worldX, this.worldY, this.rotation, this.vx, this.vy, c));
+        }
+        // Even when the rim near the hit is already gone, throw a small spark so
+        // every laser hit reads as connecting.
+        if (!cells.length) {
+            const c = fx.nearestOuterCell(lx, ly);
+            if (c) debris.push(ejectChipDebris(this.game, this.worldX, this.worldY, this.rotation, this.vx, this.vy, c, true));
+        }
+        return debris;
+    }
+
     _generateProceduralDebris() {
         if (!this.img || !this.img.width) return [];
 
@@ -827,7 +1085,11 @@ export class Asteroid {
             ctx.shadowColor = '#ff4444';
         }
 
-        ctx.drawImage(this.img.canvas || this.img, -w / 2, -h / 2, w, h);
+        // Once chipped, draw the composited sprite (logical-size, broken cells
+        // erased) instead of the full sprite.
+        const src = (this._fx && this._fx.count > 0) ? this._fx.composite(this.img) : (this.img.canvas || this.img);
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(src, -w / 2, -h / 2, w, h);
         ctx.restore();
     }
 

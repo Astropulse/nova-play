@@ -715,7 +715,7 @@ export class Enemy {
                 if (dot > 0.99) { // Very narrow beam
                     const cross = Math.abs(dx * dirY - dy * dirX);
                     if (cross < player.radius) {
-                        this.game.currentState._damagePlayer(damage);
+                        this.game.currentState._damagePlayer(damage, this.worldX, this.worldY);
                         this.game.sounds.play('hit', { volume: 0.5, x: player.worldX, y: player.worldY });
                     }
                 }
