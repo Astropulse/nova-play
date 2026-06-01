@@ -3639,7 +3639,7 @@ export class PlayingState {
         if (!this.draggedItem) return;
         const mouse = this.game.getMousePos();
         const uiScale = this.game.uiScale;
-        const edgeMargin = 12 * uiScale;
+        const edgeMargin = 24 * uiScale;
         const speed = baseSpeed * dt * uiScale;
         for (const p of panels) {
             const { layout } = p;
