@@ -176,6 +176,15 @@ export class Player {
         this.railgunTargetTimer = 0;
         this.pendingRailgunFire = false;
 
+        // Combine-scaled weapon multipliers (recomputed by _onInventoryChanged)
+        this.railgunDmgMult = 1.0;
+        this.laserOverrideMult = 1.0;
+        this.multishotDamageMult = 1.0;
+        this.controlSpeedMult = 1.0;
+        this.targetingConeDeg = 10;
+        this.boostDriveMult = 1.0;
+        this.repeaterRateBonus = 0;
+
         // Sprite refs
         this.stillImg = game.assets.get(shipData.assets.still);
         this.jetsImg = game.assets.get(shipData.assets.jets);
@@ -277,7 +286,7 @@ export class Player {
 
         let closestEnemy = null;
         let minDist = Infinity;
-        const targetingCone = 10 * (Math.PI / 180); // ±5 degrees
+        const targetingCone = (this.targetingConeDeg ?? 10) * (Math.PI / 180);
 
         for (const en of this.game.currentState.enemies) {
             if (!en.alive) continue;
@@ -606,7 +615,7 @@ export class Player {
                 this.boostIntensity = 1.0;
                 this.boostTimer = 0.1; // Keep it alive for trail effect
 
-                const power = this.acceleration * 4.5 * dt;
+                const power = this.acceleration * 4.5 * (this.boostDriveMult ?? 1.0) * dt;
                 this.vx += Math.cos(this.angle) * power;
                 this.vy += Math.sin(this.angle) * power;
 
@@ -814,11 +823,11 @@ export class Player {
                 const px = this.worldX + Math.cos(this.angle) * noseOffset;
                 const py = this.worldY + Math.sin(this.angle) * noseOffset;
 
-                let damageMult = (this.hasRepeater ? 0.5 : 1.0) * (this.hasLaserOverride ? 1.3 : 1.0);
+                let damageMult = (this.hasRepeater ? 0.5 : 1.0) * this.laserOverrideMult;
                 const spriteKey = this.hasLaserOverride ? 'blue_laser_ball_big' : 'blue_laser_ball';
 
                 let baseProjSpeed = this.projectileSpeed * this.lvlProjectileSpeedMult;
-                if (this.hasControlModule) baseProjSpeed *= 1.2;
+                if (this.hasControlModule) baseProjSpeed *= this.controlSpeedMult;
 
 
                 // Determine firing origins
@@ -835,7 +844,7 @@ export class Player {
                         px: px - Math.cos(perpAngle) * offset,
                         py: py - Math.sin(perpAngle) * offset
                     });
-                    damageMult *= 0.7; // 30% individual damage reduction
+                    damageMult *= this.multishotDamageMult; // individual damage reduction (combine shrinks it)
                 } else {
                     origins.push({ px, py });
                 }

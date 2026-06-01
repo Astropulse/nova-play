@@ -22,7 +22,13 @@ export const UPGRADES = [
         height: 1,
         cost: 20,
         rarity: 'common',
-        consumable: true
+        consumable: true,
+        combine: {
+            stat: 'heal',
+            base: 0.20,
+            legendary: 8.00,
+            descTemplate: 'Restores {bonus} health. Consumed on use (Right-click in cargo).'
+        }
     },
     {
         id: 'firing_coordinator',
@@ -32,7 +38,13 @@ export const UPGRADES = [
         width: 1,
         height: 1,
         cost: 40,
-        rarity: 'common'
+        rarity: 'common',
+        combine: {
+            stat: 'fireRate',
+            base: 0.10,
+            legendary: 2.00,
+            descTemplate: 'Increases shooting speed by {bonus}.'
+        }
     },
     {
         id: 'energy_canisters',
@@ -42,7 +54,13 @@ export const UPGRADES = [
         width: 2,
         height: 2,
         cost: 80,
-        rarity: 'uncommon'
+        rarity: 'uncommon',
+        combine: {
+            stat: 'maxHealth',
+            base: 0.60,
+            legendary: 1.40,
+            descTemplate: 'Increases max health by {bonus}.'
+        }
     },
     {
         id: 'pulse_boosters',
@@ -52,7 +70,13 @@ export const UPGRADES = [
         width: 2,
         height: 2,
         cost: 40,
-        rarity: 'rare'
+        rarity: 'rare',
+        combine: {
+            stat: 'pulseBoost',
+            base: 0.40,
+            legendary: 0.85,
+            descTemplate: 'Increases boost range by {bonus} and reduces cooldown.'
+        }
     },
     {
         id: 'field_array',
@@ -62,7 +86,13 @@ export const UPGRADES = [
         width: 2,
         height: 2,
         cost: 50,
-        rarity: 'uncommon'
+        rarity: 'uncommon',
+        combine: {
+            stat: 'shieldDrain',
+            base: 0.30,
+            legendary: 0.55,
+            descTemplate: 'Reduces shield energy drain by {bonus}.'
+        }
     },
     {
         id: 'auto_turret',
@@ -82,7 +112,13 @@ export const UPGRADES = [
         width: 1,
         height: 1,
         cost: 30,
-        rarity: 'uncommon'
+        rarity: 'uncommon',
+        combine: {
+            stat: 'scrapRange',
+            base: 3.0,
+            legendary: 8.0,
+            descTemplate: 'Increases the vacuum range for pulling in scrap (by {bonus}).'
+        }
     },
     {
         id: 'mechanical_claw',
@@ -113,7 +149,14 @@ export const UPGRADES = [
         width: 4,
         height: 1,
         cost: 60,
-        rarity: 'rare'
+        rarity: 'rare',
+        combine: {
+            stat: 'railgunDmg',
+            curve: 'linear',
+            base: 0,
+            legendary: 1.00,
+            descTemplate: 'Slow firing but high damage beam. Overrides standard lasers. Deals {bonus} more damage.'
+        }
     },
     {
         id: 'energy_blaster',
@@ -123,7 +166,14 @@ export const UPGRADES = [
         width: 3,
         height: 1,
         cost: 70,
-        rarity: 'rare'
+        rarity: 'rare',
+        combine: {
+            stat: 'blasterShots',
+            format: 'int',
+            base: 0,
+            legendary: 5,
+            descTemplate: 'Converts shots into a shotgun blast of lower damage shots ({bonus} extra). Reduces fire rate.'
+        }
     },
     {
         id: 'repeater',
@@ -133,7 +183,14 @@ export const UPGRADES = [
         width: 4,
         height: 1,
         cost: 80,
-        rarity: 'rare'
+        rarity: 'rare',
+        combine: {
+            stat: 'repeaterRate',
+            curve: 'linear',
+            base: 0,
+            legendary: 0.60,
+            descTemplate: 'Massively increases fire rate (+{bonus} more) but reduces damage slightly.'
+        }
     },
     {
         id: 'laser_override',
@@ -143,7 +200,13 @@ export const UPGRADES = [
         width: 2,
         height: 2,
         cost: 80,
-        rarity: 'rare'
+        rarity: 'rare',
+        combine: {
+            stat: 'overrideDmg',
+            base: 0.30,
+            legendary: 1.00,
+            descTemplate: 'Converts all projectiles into massive versions that deal {bonus} more damage.'
+        }
     },
     {
         id: 'warning_system',
@@ -163,7 +226,13 @@ export const UPGRADES = [
         width: 2,
         height: 1,
         cost: 30,
-        rarity: 'uncommon'
+        rarity: 'uncommon',
+        combine: {
+            stat: 'pulseJet',
+            base: 0.15,
+            legendary: 0.45,
+            descTemplate: 'Increases ship speed by {bonus}.'
+        }
     },
     {
         id: 'shield_booster',
@@ -173,7 +242,13 @@ export const UPGRADES = [
         width: 1,
         height: 1,
         cost: 40,
-        rarity: 'common'
+        rarity: 'common',
+        combine: {
+            stat: 'shieldBooster',
+            base: 0.20,
+            legendary: 2.50,
+            descTemplate: 'Increases maximum shields by {bonus}.'
+        }
     },
     {
         id: 'targeting_module',
@@ -183,7 +258,14 @@ export const UPGRADES = [
         width: 2,
         height: 2,
         cost: 50,
-        rarity: 'rare'
+        rarity: 'rare',
+        combine: {
+            stat: 'aimCone',
+            format: 'int',
+            base: 10,
+            legendary: 60,
+            descTemplate: 'Standard shots seek towards enemies within a {bonus}° cone in front of you.'
+        }
     },
     {
         id: 'control_module',
@@ -193,7 +275,13 @@ export const UPGRADES = [
         width: 1,
         height: 2,
         cost: 40,
-        rarity: 'rare'
+        rarity: 'rare',
+        combine: {
+            stat: 'projSpeed',
+            base: 0.20,
+            legendary: 0.60,
+            descTemplate: 'Increases projectile speed by {bonus} and reduces railgun charge time.'
+        }
     },
     {
         id: 'mechanical_engines',
@@ -203,7 +291,13 @@ export const UPGRADES = [
         width: 2,
         height: 2,
         cost: 70,
-        rarity: 'rare'
+        rarity: 'rare',
+        combine: {
+            stat: 'mechEngine',
+            base: 0.25,
+            legendary: 0.50,
+            descTemplate: 'Makes ship turning faster and increases speed by {bonus}.'
+        }
     },
     {
         id: 'multishot_guns',
@@ -213,7 +307,13 @@ export const UPGRADES = [
         width: 2,
         height: 1,
         cost: 60,
-        rarity: 'epic'
+        rarity: 'epic',
+        combine: {
+            stat: 'multishotPenalty',
+            base: 0.30,
+            legendary: 0.15,
+            descTemplate: 'Fires two parallel shots. Reduces individual shot damage by {bonus}.'
+        }
     },
     {
         id: 'high_density_capacitor',
@@ -223,7 +323,13 @@ export const UPGRADES = [
         width: 1,
         height: 2,
         cost: 80,
-        rarity: 'rare'
+        rarity: 'rare',
+        combine: {
+            stat: 'boostCooldown',
+            base: 0.50,
+            legendary: 0.70,
+            descTemplate: 'Reduces the boost cooldown by {bonus}.'
+        }
     },
     {
         id: 'energy_cell',
@@ -233,7 +339,13 @@ export const UPGRADES = [
         width: 1,
         height: 2,
         cost: 50,
-        rarity: 'uncommon'
+        rarity: 'uncommon',
+        combine: {
+            stat: 'shieldRegen',
+            base: 0.30,
+            legendary: 1.10,
+            descTemplate: 'Increases shield recharge speed by {bonus}.'
+        }
     },
     {
         id: 'explosives_unit',
@@ -253,7 +365,13 @@ export const UPGRADES = [
         width: 1,
         height: 2,
         cost: 30,
-        rarity: 'uncommon'
+        rarity: 'uncommon',
+        combine: {
+            stat: 'boostSpeed',
+            base: 0.10,
+            legendary: 0.35,
+            descTemplate: 'Gives a {bonus} speed increase for the ship\'s boost.'
+        }
     },
     {
         id: 'rockets',
@@ -263,7 +381,14 @@ export const UPGRADES = [
         width: 2,
         height: 1,
         cost: 50,
-        rarity: 'epic'
+        rarity: 'epic',
+        combine: {
+            stat: 'rocketInterval',
+            format: 'number',
+            base: 3.0,
+            legendary: 1.5,
+            descTemplate: 'Every {bonus} seconds shoots a rocket that explodes on impact.'
+        }
     },
     {
         id: 'advanced_locator',
@@ -294,7 +419,14 @@ export const UPGRADES = [
         width: 2,
         height: 1,
         cost: 50,
-        rarity: 'rare'
+        rarity: 'rare',
+        combine: {
+            stat: 'boostDriveSpeed',
+            curve: 'linear',
+            base: 0,
+            legendary: 0.50,
+            descTemplate: 'Ship boost is slower, but constant while held ({bonus} faster).'
+        }
     },
     {
         id: 'obedience',
@@ -344,7 +476,13 @@ export const UPGRADES = [
         width: 1,
         height: 1,
         cost: 40,
-        rarity: 'common'
+        rarity: 'common',
+        combine: {
+            stat: 'fov',
+            base: 0.10,
+            legendary: 0.90,
+            descTemplate: 'Increases field of view by {bonus}.'
+        }
     },
     {
         id: 'nanite_tank',
@@ -354,7 +492,14 @@ export const UPGRADES = [
         width: 2,
         height: 2,
         cost: 100,
-        rarity: 'epic'
+        rarity: 'epic',
+        combine: {
+            stat: 'naniteRegen',
+            format: 'number',
+            base: 0.6,
+            legendary: 1.20,
+            descTemplate: 'Regenerates ship health ({bonus}/s).'
+        }
     },
     {
         id: 'shield_capacitor',
@@ -364,7 +509,14 @@ export const UPGRADES = [
         width: 1,
         height: 2,
         cost: 60,
-        rarity: 'rare'
+        rarity: 'rare',
+        combine: {
+            stat: 'shieldCapacitor',
+            format: 'int',
+            base: 1,
+            legendary: 4,
+            descTemplate: 'Increases damage dealt to enemies on shield impact (tier {bonus}).'
+        }
     },
     {
         id: 'asteroid_accumulator',
@@ -374,7 +526,13 @@ export const UPGRADES = [
         width: 2,
         height: 2,
         cost: 80,
-        rarity: 'rare'
+        rarity: 'rare',
+        combine: {
+            stat: 'asteroidSpawn',
+            base: 0.50,
+            legendary: 1.10,
+            descTemplate: 'Increases the frequency of asteroids by {bonus}.'
+        }
     },
     {
         id: 'cargo_expansion',
@@ -394,7 +552,13 @@ export const UPGRADES = [
         width: 1,
         height: 2,
         cost: 70,
-        rarity: 'uncommon'
+        rarity: 'uncommon',
+        combine: {
+            stat: 'xp',
+            base: 0.20,
+            legendary: 0.85,
+            descTemplate: 'Increases the value of experience orbs by {bonus}.'
+        }
     },
     {
         id: 'asteroid_drill',
@@ -404,7 +568,13 @@ export const UPGRADES = [
         width: 3,
         height: 2,
         cost: 60,
-        rarity: 'rare'
+        rarity: 'rare',
+        combine: {
+            stat: 'asteroidDrill',
+            base: 0.50,
+            legendary: 0.95,
+            descTemplate: 'Increases scrap drop chance from asteroids by {bonus}.'
+        }
     },
     {
         id: 'laser_cartridge',
@@ -414,7 +584,13 @@ export const UPGRADES = [
         width: 1,
         height: 1,
         cost: 30,
-        rarity: 'common'
+        rarity: 'common',
+        combine: {
+            stat: 'damage',
+            base: 0.10,
+            legendary: 2.00,
+            descTemplate: 'Increases damage by {bonus}.'
+        }
     },
     {
         id: 'cosmos_engine',
@@ -445,3 +621,111 @@ export const RARITY_COLORS = {
     legendary: '#ffff00',
     unique: '#ffffff'
 };
+
+// ─── Combine / upgrade tiers ────────────────────────────────────────────
+// Combinable upgrades climb a shared ladder of tiers. Even tiers are named
+// rarities; odd tiers are half-steps whose color is the midpoint of the two
+// adjacent named rarities. An item STARTS at the tier matching its own listed
+// rarity (common=0, uncommon=2, rare=4, epic=6, legendary=8) and can only
+// climb upward from there toward legendary — never below its native rarity.
+export const COMBINE_RARITY_ORDER = ['common', 'uncommon', 'rare', 'epic', 'legendary'];
+export const MAX_COMBINE_TIER = (COMBINE_RARITY_ORDER.length - 1) * 2; // 8 = legendary
+
+/** Ladder tier an item of the given rarity starts at (common=0 ... legendary=8). */
+export function rarityToTier(rarity) {
+    const i = COMBINE_RARITY_ORDER.indexOf(rarity);
+    return i < 0 ? 0 : i * 2;
+}
+
+/** Effective ladder tier of an item instance. Base items have no `.tier` and
+ *  sit at the tier matching their listed rarity. */
+export function itemTier(item) {
+    return item.tier ?? rarityToTier(item.rarity);
+}
+
+function _mixHex(a, b) {
+    const pa = parseInt(a.slice(1), 16);
+    const pb = parseInt(b.slice(1), 16);
+    const mix = (sa, sb) => Math.round((sa + sb) / 2);
+    const r  = mix((pa >> 16) & 255, (pb >> 16) & 255);
+    const g  = mix((pa >> 8) & 255,  (pb >> 8) & 255);
+    const bl = mix(pa & 255,          pb & 255);
+    return '#' + [r, g, bl].map(v => v.toString(16).padStart(2, '0')).join('');
+}
+
+/** Color for a combine tier: named rarity on even tiers, blended midpoint on odd. */
+export function tierColor(tier) {
+    const i = Math.floor(tier / 2);
+    if (tier % 2 === 0) return RARITY_COLORS[COMBINE_RARITY_ORDER[i]] || '#ffffff';
+    return _mixHex(RARITY_COLORS[COMBINE_RARITY_ORDER[i]], RARITY_COLORS[COMBINE_RARITY_ORDER[i + 1]]);
+}
+
+/** Display label for a combine tier, e.g. "COMMON / UNCOMMON". */
+export function tierLabel(tier) {
+    const i = Math.floor(tier / 2);
+    if (tier % 2 === 0) return COMBINE_RARITY_ORDER[i].toUpperCase();
+    return `${COMBINE_RARITY_ORDER[i].toUpperCase()} / ${COMBINE_RARITY_ORDER[i + 1].toUpperCase()}`;
+}
+
+/** Highest combine tier an upgrade definition supports (0 if not combinable). */
+export function maxTierFor(def) {
+    return (def && def.combine) ? MAX_COMBINE_TIER : 0;
+}
+
+/**
+ * Resolves the bonus value for a combinable upgrade at a given ladder tier.
+ * `base` is the value at the item's native rarity; `legendary` is the value at
+ * tier 8. Intermediate tiers interpolate geometrically (linearly for integer
+ * stats) between the two, so a higher-rarity item climbs the same endpoints in
+ * fewer, larger steps.
+ */
+function _bonusAtTier(def, tier) {
+    const { base, legendary, format = 'percent' } = def.combine;
+    const baseTier = rarityToTier(def.rarity);
+    const span = MAX_COMBINE_TIER - baseTier;
+    const frac = span > 0 ? (tier - baseTier) / span : 0;
+    // Linear when integer, explicitly requested, or anchored at 0 (geometric
+    // can't grow from 0). Geometric otherwise — including decreasing curves
+    // (e.g. a shrinking penalty) where legendary < base.
+    const linear = format === 'int' || def.combine.curve === 'linear' || base <= 0;
+    if (linear) {
+        const v = base + (legendary - base) * frac;
+        return format === 'int' ? Math.round(v) : v;
+    }
+    return base * Math.pow(legendary / base, frac);
+}
+
+/**
+ * Builds an inventory item for an upgrade id at a given ladder tier.
+ * At (or below) the item's native rarity tier it returns the shared base
+ * definition unchanged, so world / shop / cache spawns are untouched. Higher
+ * tiers return a fresh per-instance object carrying its own tier, bonus,
+ * blended color, label and templated description.
+ */
+export function makeItem(id, tier) {
+    const def = UPGRADES.find(u => u.id === id);
+    if (!def) return null;
+    const baseTier = rarityToTier(def.rarity);
+    if (!def.combine || tier == null || tier <= baseTier) return def;
+
+    const t = Math.min(tier, MAX_COMBINE_TIER);
+    const bonus = _bonusAtTier(def, t);
+
+    // How the {bonus} token renders in the description.
+    const fmt = def.combine.format || 'percent';
+    const round2 = (v) => Math.round(v * 100) / 100;
+    let bonusText;
+    if (fmt === 'int')         bonusText = String(bonus);
+    else if (fmt === 'number') bonusText = String(round2(bonus));
+    else if (fmt === 'x')      bonusText = round2(bonus) + 'x';
+    else                       bonusText = Math.round(bonus * 100) + '%';
+
+    return {
+        ...def,
+        tier: t,
+        bonus,
+        color: tierColor(t),
+        rarityLabel: tierLabel(t),
+        description: (def.combine.descTemplate || def.description).replace('{bonus}', bonusText)
+    };
+}

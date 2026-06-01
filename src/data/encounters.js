@@ -3,7 +3,7 @@
  * Resolves conditions, vars, template strings, and actions at runtime.
  */
 
-import { UPGRADES } from './upgrades.js';
+import { UPGRADES, itemTier } from './upgrades.js';
 import { DIALOG_SCENARIOS } from './encounterDialogs.js';
 
 // ── Ship asset mappings ──────────────────────────────────────────
@@ -57,6 +57,14 @@ const ENCOUNTER_WEIGHTS = {
 // ── Helpers ──────────────────────────────────────────────────────
 function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
 
+// Picks among the lowest combine-tier entries, so traders never take a player's
+// hard-won combined items when an un-combined copy is available.
+function pickLowestTier(entries) {
+    let min = Infinity;
+    for (const e of entries) min = Math.min(min, itemTier(e.item));
+    return pick(entries.filter(e => itemTier(e.item) === min));
+}
+
 // ── Condition checker ────────────────────────────────────────────
 function checkCondition(cond, player, state) {
     if (!cond || cond === 'always') return true;
@@ -108,7 +116,7 @@ function resolveVars(varDefs, player, state) {
                 const items = player.inventory.items.filter(e =>
                     e.item.rarity === 'rare' || e.item.rarity === 'epic');
                 if (items.length === 0) return null;
-                resolved[key] = pick(items);
+                resolved[key] = pickLowestTier(items);
                 break;
             }
             case 'random_any_item': {
@@ -116,7 +124,7 @@ function resolveVars(varDefs, player, state) {
                     (e.item.rarity === 'common' || e.item.rarity === 'uncommon') &&
                     !(e.item.width >= 2 && e.item.height >= 2));
                 if (items.length === 0) return null;
-                resolved[key] = pick(items);
+                resolved[key] = pickLowestTier(items);
                 break;
             }
             case 'random_upgrade': {
@@ -174,9 +182,12 @@ function substitute(template, vars) {
         if (typeof val === 'object') {
             const name = val.item ? val.item.name : (val.name || match);
             const id = val.item ? val.item.id : val.id;
-            // If it's an upgrade (has an id), append it with a marker for the UI to parse
+            // If it's an upgrade (has an id), append it with a marker for the UI to parse.
+            // Combined items carry their tier too, so the tooltip reflects the
+            // actual item (rarity + scaled stats) being bought/traded, not the base.
             if (id && !val.displayName) { // val.displayName check to avoid tagging events that shouldn't have tooltips
-                return `${name}#${id}`;
+                const tier = val.item ? val.item.tier : undefined;
+                return tier != null ? `${name}#${id}#${tier}` : `${name}#${id}`;
             }
             return name;
         }

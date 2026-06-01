@@ -8,7 +8,7 @@ import { Asteroid, AsteroidSpawner, Rubble, Scrap, ItemPickup, ProceduralDebris,
 import { EnemySpawner, Enemy, HostileEncounter } from '../entities/enemy.js';
 import { Shop } from '../entities/shop.js';
 import { Inventory } from '../engine/inventory.js';
-import { UPGRADES, RARITY_COLORS } from '../data/upgrades.js';
+import { UPGRADES, RARITY_COLORS, itemTier, MAX_COMBINE_TIER, makeItem } from '../data/upgrades.js';
 import { CthulhuEvent, CTHULHU_STATE } from '../entities/cthulhuEvent.js';
 import { CargoShipEvent, CARGO_SHIP_STATE } from '../entities/cargoShipEvent.js';
 import { FracturedStationEvent } from '../entities/fracturedStationEvent.js';
@@ -705,7 +705,7 @@ export class PlayingState {
                     const aimAngle = Math.atan2(target.worldY - this.player.worldY, target.worldX - this.player.worldX);
                     // Increased damage and applied modifiers
                     const currentBaseDamage = (this.player.shipData.baseDamage * this.player.obedienceMult + this.player.permDamageBonus) * this.player.laserCartridgeMult;
-                    const damage = (currentBaseDamage * 3.0) * (this.player.hasLaserOverride ? 1.3 : 1.0);
+                    const damage = (currentBaseDamage * 3.0) * this.player.laserOverrideMult;
                     const spriteKey = 'blue_laser_ball_big';
 
                     const proj = new Projectile(this.game, this.player.worldX, this.player.worldY, aimAngle, 1200, spriteKey, this.player, damage);
@@ -713,7 +713,7 @@ export class PlayingState {
                     proj.target = target;
                     this.projectiles.push(proj);
                     this.game.sounds.play('laser', { volume: 0.4, x: this.player.worldX, y: this.player.worldY });
-                    this.player.rocketsTimer = 3.0;
+                    this.player.rocketsTimer = this.rocketInterval;
                 }
             }
         }
@@ -795,7 +795,7 @@ export class PlayingState {
 
                     const spriteKey = this.player.hasLaserOverride ? 'blue_laser_ball_big' : 'blue_laser_ball';
                     const currentBaseDamage = (this.player.shipData.baseDamage * this.player.obedienceMult + this.player.permDamageBonus) * this.player.laserCartridgeMult;
-                    const damage = currentBaseDamage * (this.player.hasLaserOverride ? 1.3 : 1.0);
+                    const damage = currentBaseDamage * this.player.laserOverrideMult;
 
                     this.projectiles.push(
                         new Projectile(this.game, px, py, aimAngle, 2400, spriteKey, this.player, damage)
@@ -2562,6 +2562,9 @@ export class PlayingState {
         ]);
 
         this._drawDraggedItem(ctx, slotSize);
+        this._drawCombinePreview(ctx, [
+            { inv: playerInv, layout: playerLayout, scrollX: this.playerScrollX, scrollY: this.playerScrollY }
+        ]);
 
         ctx.restore();
     }
@@ -2683,6 +2686,9 @@ export class PlayingState {
             { inv: playerInv, layout: playerLayout, scrollXKey: 'playerScrollX', scrollYKey: 'playerScrollY', panelKey: 'player' }
         ]);
         this._drawDraggedItem(ctx, slotSize, shopInv);
+        this._drawCombinePreview(ctx, [
+            { inv: playerInv, layout: playerLayout, scrollX: this.playerScrollX, scrollY: this.playerScrollY }
+        ]);
     }
 
     _drawTotalGameTimer(ctx) {
@@ -2880,10 +2886,10 @@ export class PlayingState {
             // Simple cull
             if (ix + w < startX || ix > startX + visW || iy + h < startY || iy > startY + visH) continue;
 
-            // Draw rarity overlay
-            const baseColor = RARITY_COLORS[item.rarity] || '#ffffff';
+            // Draw rarity overlay (combined items carry a blended tier color)
+            const baseColor = item.color || RARITY_COLORS[item.rarity] || '#ffffff';
             const alphaMap = { common: 0.15, uncommon: 0.2, rare: 0.25, epic: 0.25, legendary: 0.3, unique: 0.3 };
-            ctx.globalAlpha = alphaMap[item.rarity] || 0.2;
+            ctx.globalAlpha = item.tier ? Math.min(0.3, 0.15 + item.tier * 0.02) : (alphaMap[item.rarity] || 0.2);
             ctx.fillStyle = baseColor;
             ctx.fillRect(ix + 2, iy + 2, w - 4, h - 4); // Inset to keep grid lines clear
             ctx.globalAlpha = 1.0;
@@ -2933,7 +2939,8 @@ export class PlayingState {
         ctx.restore();
     }
 
-    _drawTooltip(ctx, item, mouse) {
+    _drawTooltip(ctx, item, mouse, opts = {}) {
+        const previewLabel = opts.previewLabel || null;
         const cw = this.game.width;
         const ch = this.game.height;
         const uiScale = this.game.uiScale;
@@ -2945,7 +2952,7 @@ export class PlayingState {
 
         // Calculate dimensions
         const name = item.name.toUpperCase();
-        const rarity = (item.rarity || 'common').toUpperCase();
+        const rarity = item.rarityLabel || (item.rarity || 'common').toUpperCase();
         let desc = item.description || '';
         if (this.game.input.isGamepadActive()) {
             desc = desc.replace(/Right-click in cargo/gi, 'Press Y in cargo');
@@ -2954,9 +2961,19 @@ export class PlayingState {
         const maxWidth = 120 * uiScale;
         const descLines = this._wrapText(ctx, desc, maxWidth);
 
-        const headerW = Math.max(ctx.measureText(name).width * 1.2, ctx.measureText(rarity).width);
-        const tw = Math.max(headerW, descLines.reduce((max, l) => Math.max(max, ctx.measureText(l).width), 0)) + pad * 2;
-        const th = (descLines.length + 3) * fontSize * 1.5 + pad * 2;
+        // Combinable upgrades that aren't yet maxed get a hint footer (not on a
+        // combine-result preview, which is itself the outcome of combining).
+        const canCombine = !previewLabel && item.combine && itemTier(item) < MAX_COMBINE_TIER;
+        const hintLines = canCombine
+            ? this._wrapText(ctx, 'Drop onto a copy to combine', maxWidth)
+            : [];
+
+        const headerW = Math.max(ctx.measureText(name).width * 1.2, ctx.measureText(rarity).width,
+            previewLabel ? ctx.measureText(previewLabel).width : 0);
+        const bodyW = descLines.concat(hintLines).reduce((max, l) => Math.max(max, ctx.measureText(l).width), 0);
+        const tw = Math.max(headerW, bodyW) + pad * 2;
+        // 3 header units = name + rarity + (cost OR preview label); hint adds lines.
+        const th = (descLines.length + hintLines.length + 3) * fontSize * 1.5 + pad * 2;
 
         let tx = mouse.x + 10;
         let ty = mouse.y + 10;
@@ -2974,6 +2991,16 @@ export class PlayingState {
 
         let cy = ty + pad;
 
+        // Preview header (e.g. "COMBINE →")
+        if (previewLabel) {
+            ctx.font = `${fontSize}px Astro4x`;
+            ctx.fillStyle = item.color || RARITY_COLORS[item.rarity] || '#88ccff';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'top';
+            ctx.fillText(previewLabel, tx + pad, cy);
+            cy += fontSize * 1.5;
+        }
+
         // Name
         ctx.font = `${titleFontSize}px Astro5x`;
         ctx.fillStyle = '#ffffff';
@@ -2984,7 +3011,7 @@ export class PlayingState {
 
         // Rarity
         ctx.font = `${fontSize}px Astro4x`;
-        ctx.fillStyle = RARITY_COLORS[item.rarity] || '#ffffff';
+        ctx.fillStyle = item.color || RARITY_COLORS[item.rarity] || '#ffffff';
         ctx.fillText(rarity, tx + pad, cy);
         cy += fontSize * 2;
 
@@ -3002,7 +3029,17 @@ export class PlayingState {
             cy += fontSize * 1.4;
         }
 
-        if (item.cost) {
+        // Combine hint footer
+        if (hintLines.length) {
+            cy += fontSize * 0.4;
+            ctx.fillStyle = item.color || RARITY_COLORS[item.rarity] || '#88ccff';
+            for (const line of hintLines) {
+                ctx.fillText(line, tx + pad, cy);
+                cy += fontSize * 1.4;
+            }
+        }
+
+        if (item.cost && !previewLabel) {
             cy += fontSize * 0.5;
             ctx.fillStyle = '#ffff44';
             ctx.fillText(`BASE VALUE: ${item.cost} SCRAP`, tx + pad, cy);
@@ -3451,12 +3488,34 @@ export class PlayingState {
         }
     }
 
+    // While dragging a combinable item, preview the combine result wherever the
+    // drop would merge with a matching item in the player's inventory. Drawn
+    // AFTER the dragged item so it sits on top of the cursor sprite.
+    _drawCombinePreview(ctx, panels) {
+        if (!this.draggedItem) return;
+        const dragged = this.draggedItem.item;
+        if (!dragged.combine) return;
+        const mouse = this.game.getMousePos();
+        for (const p of panels) {
+            if (p.inv !== this.player.inventory) continue;
+            const slotSize = p.layout.slotSize;
+            const col = Math.floor((mouse.x - p.layout.gridVisX + p.scrollX - this.draggedItem.offsetX) / slotSize + 0.5);
+            const row = Math.floor((mouse.y - p.layout.gridVisY + p.scrollY - this.draggedItem.offsetY) / slotSize + 0.5);
+            const target = p.inv.combineTargetAt(dragged, col, row);
+            if (target) {
+                const result = makeItem(dragged.id, itemTier(target.item) + 1);
+                this._drawTooltip(ctx, result, mouse, { previewLabel: 'COMBINE →' });
+                return;
+            }
+        }
+    }
+
     // Attempts to use a consumable item. Returns true if the item was handled.
     _tryUseConsumable(entry, playerInv) {
         if (!entry || !entry.item.consumable) return false;
         const id = entry.item.id;
         if (id === 'small_battery') {
-            this.player.heal(0.2);
+            this.player.heal(entry.item.bonus ?? 0.2);
             playerInv.removeItemAt(entry.x, entry.y);
             this.game.sounds.play('select', 0.8);
             this._onInventoryChanged();
@@ -3793,6 +3852,11 @@ export class PlayingState {
                     }
                     this._gpFocus = { kind: 'slot', panelKey: 'player', col: pCol, row: pRow };
                 } else if (this.draggedItem.originInventory === playerInv &&
+                           playerInv.tryCombine(this.draggedItem.item, pCol, pRow)) {
+                    this._onInventoryChanged();
+                    this.game.sounds.play('select', 0.8);
+                    this._gpFocus = { kind: 'slot', panelKey: 'player', col: pCol, row: pRow };
+                } else if (this.draggedItem.originInventory === playerInv &&
                            playerInv.trySwap(this.draggedItem.item, pCol, pRow, this.draggedItem.x, this.draggedItem.y)) {
                     this._onInventoryChanged();
                     this.game.sounds.play('click', 0.5);
@@ -3961,7 +4025,14 @@ export class PlayingState {
                     this._gpFocus = { kind: 'slot', panelKey: 'player', col: pCol, row: pRow };
                 }
             }
-            // 1b. Swap within player inventory
+            // 1b. Combine within player inventory
+            else if (this.draggedItem.originInventory === playerInv &&
+                     playerInv.tryCombine(this.draggedItem.item, pCol, pRow)) {
+                this.game.sounds.play('select', 0.8);
+                this._onInventoryChanged();
+                this._gpFocus = { kind: 'slot', panelKey: 'player', col: pCol, row: pRow };
+            }
+            // 1c. Swap within player inventory
             else if (this.draggedItem.originInventory === playerInv &&
                      playerInv.trySwap(this.draggedItem.item, pCol, pRow, this.draggedItem.x, this.draggedItem.y)) {
                 this.game.sounds.play('click', 0.5);
@@ -4219,6 +4290,10 @@ export class PlayingState {
                 this.game.sounds.play('click', 0.5);
                 this._onInventoryChanged();
                 this._gpFocus = { kind: 'slot', panelKey: 'player', col: pCol, row: pRow };
+            } else if (playerInv.tryCombine(this.draggedItem.item, pCol, pRow)) {
+                this.game.sounds.play('select', 0.8);
+                this._onInventoryChanged();
+                this._gpFocus = { kind: 'slot', panelKey: 'player', col: pCol, row: pRow };
             } else if (playerInv.trySwap(this.draggedItem.item, pCol, pRow, this.draggedItem.x, this.draggedItem.y)) {
                 this.game.sounds.play('click', 0.5);
                 this._onInventoryChanged();
@@ -4336,6 +4411,16 @@ export class PlayingState {
         p.hasCosmosEngine = false;
         p.luck = 1.0;
 
+        // Combine-scaled weapon/ability multipliers (default = un-combined behavior)
+        p.railgunDmgMult = 1.0;        // ×(1 + bonus) on railgun beam damage
+        p.laserOverrideMult = 1.0;     // damage mult when laser override present (1.3 base)
+        p.multishotDamageMult = 0;     // sentinel; max() below picks the highest-tier copy (gated by hasMultishotGuns)
+        p.controlSpeedMult = 1.0;      // projectile speed mult when control module present (1.2 base)
+        p.targetingConeDeg = 10;       // half-cone for targeting module seek
+        p.boostDriveMult = 1.0;        // boost-drive thrust mult
+        p.repeaterRateBonus = 0;       // extra repeater fire-rate fraction
+        this.rocketInterval = 3.0;     // seconds between rockets
+
         this.hasAutoTurret = false;
         this.hasMechanicalClaw = false;
         this.hasRockets = false;
@@ -4357,45 +4442,74 @@ export class PlayingState {
             const item = entry.item;
 
             if (item.id === 'blink_engine') blinkEngines++;
-            if (item.id === 'firing_coordinator') fireRateMult *= 0.9;
+            if (item.id === 'firing_coordinator') {
+                // Combined coordinators carry a tier-scaled bonus; tier-0 = +10%.
+                const bonus = item.bonus ?? 0.10;
+                fireRateMult *= 1 / (1 + bonus);
+            }
             if (item.id === 'energy_canisters') {
-                maxHealthMult *= 1.6;
+                maxHealthMult *= 1 + (item.bonus ?? 0.60);
             }
             if (item.id === 'pulse_boosters') {
-                boostRangeMult *= 1.4;
-                boostCooldownMult *= 0.7;
+                const b = item.bonus ?? 0.40;
+                boostRangeMult *= 1 + b;
+                boostCooldownMult *= Math.max(0.2, 1 - b * 0.75);
             }
-            if (item.id === 'field_array') shieldDrainMult *= 0.7;
-            if (item.id === 'scrap_drone') scrapRangeMult *= 4.0;
+            if (item.id === 'field_array') shieldDrainMult *= Math.max(0.05, 1 - (item.bonus ?? 0.30));
+            if (item.id === 'scrap_drone') scrapRangeMult *= 1 + (item.bonus ?? 3.0);
             if (item.id === 'auto_turret') this.hasAutoTurret = true;
             if (item.id === 'mechanical_claw') this.hasMechanicalClaw = true;
-            if (item.id === 'railgun') p.hasRailgun = true;
+            if (item.id === 'railgun') {
+                p.hasRailgun = true;
+                p.railgunDmgMult = Math.max(p.railgunDmgMult, 1 + (item.bonus ?? 0));
+            }
             if (item.id === 'energy_blaster') {
                 p.hasEnergyBlaster = true;
-                p.energyBlasterCount++;
+                p.energyBlasterCount += 1 + (item.bonus ?? 0);
             }
             if (item.id === 'repeater') {
                 p.hasRepeater = true;
                 repeaters++;
+                p.repeaterRateBonus = Math.max(p.repeaterRateBonus, item.bonus ?? 0);
             }
-            if (item.id === 'laser_override') p.hasLaserOverride = true;
-            if (item.id === 'pulse_jet') p.pulseJetMult *= 1.15;
-            if (item.id === 'shield_booster') p.shieldBoosterMult *= 1.2;
-            if (item.id === 'targeting_module') p.hasTargetingModule = true;
-            if (item.id === 'control_module') p.hasControlModule = true;
+            if (item.id === 'laser_override') {
+                p.hasLaserOverride = true;
+                p.laserOverrideMult = Math.max(p.laserOverrideMult, 1 + (item.bonus ?? 0.30));
+            }
+            if (item.id === 'pulse_jet') p.pulseJetMult *= 1 + (item.bonus ?? 0.15);
+            if (item.id === 'shield_booster') p.shieldBoosterMult *= 1 + (item.bonus ?? 0.20);
+            if (item.id === 'targeting_module') {
+                p.hasTargetingModule = true;
+                p.targetingConeDeg = Math.max(p.targetingConeDeg, item.bonus ?? 10);
+            }
+            if (item.id === 'control_module') {
+                p.hasControlModule = true;
+                p.controlSpeedMult = Math.max(p.controlSpeedMult, 1 + (item.bonus ?? 0.20));
+            }
             if (item.id === 'warning_system') p.hasWarningSystem = true;
             if (item.id === 'mechanical_engines') {
                 p.mechanicalEngineTurnMult *= 2.0;
-                p.mechanicalEngineSpeedMult *= 1.25;
+                p.mechanicalEngineSpeedMult *= 1 + (item.bonus ?? 0.25);
             }
-            if (item.id === 'multishot_guns') p.hasMultishotGuns = true;
-            if (item.id === 'high_density_capacitor') boostCooldownMult *= 0.5;
-            if (item.id === 'energy_cell') shieldRegenMult *= 1.3;
+            if (item.id === 'multishot_guns') {
+                p.hasMultishotGuns = true;
+                // Penalty multiplier (<1); higher tier = smaller penalty = higher
+                // mult. Reset to 0, so max() prefers the highest-tier copy.
+                p.multishotDamageMult = Math.max(p.multishotDamageMult, 1 - (item.bonus ?? 0.30));
+            }
+            if (item.id === 'high_density_capacitor') boostCooldownMult *= Math.max(0.05, 1 - (item.bonus ?? 0.50));
+            if (item.id === 'energy_cell') shieldRegenMult *= 1 + (item.bonus ?? 0.30);
             if (item.id === 'explosives_unit') p.hasExplosivesUnit = true;
-            if (item.id === 'small_boosters') p.boostSpeedMult *= 1.1;
-            if (item.id === 'rockets') this.hasRockets = true;
+            if (item.id === 'small_boosters') p.boostSpeedMult *= 1 + (item.bonus ?? 0.10);
+            if (item.id === 'rockets') {
+                this.hasRockets = true;
+                this.rocketInterval = Math.min(this.rocketInterval, item.bonus ?? 3.0);
+            }
             if (item.id === 'ancient_curse') p.hasAncientCurse = true;
-            if (item.id === 'boost_drive') p.hasBoostDrive = true;
+            if (item.id === 'boost_drive') {
+                p.hasBoostDrive = true;
+                p.boostDriveMult = Math.max(p.boostDriveMult, 1 + (item.bonus ?? 0));
+            }
             if (item.id === 'momentum_module') {
                 p.momentumSpeedMult = 0.75;
                 p.momentumMaxSpeedMult = 1.5;
@@ -4403,11 +4517,11 @@ export class PlayingState {
                 p.friction = 0.98;
             }
             if (item.id === 'sensor_accelerator') {
-                fovMult *= 1.1; // 10% increase in FOV
+                fovMult *= 1 + (item.bonus ?? 0.10);
             }
-            if (item.id === 'nanite_tank') p.naniteRegen += 0.6;
-            if (item.id === 'shield_capacitor') p.shieldCapacitorCount += 1;
-            if (item.id === 'asteroid_accumulator') p.asteroidSpawnMult += 0.5;
+            if (item.id === 'nanite_tank') p.naniteRegen += (item.bonus ?? 0.6);
+            if (item.id === 'shield_capacitor') p.shieldCapacitorCount += (item.bonus ?? 1);
+            if (item.id === 'asteroid_accumulator') p.asteroidSpawnMult += (item.bonus ?? 0.5);
 
             // Knowledge Upgrades
             if (item.id === 'obedience') p.obedienceMult = 1.2;
@@ -4420,10 +4534,10 @@ export class PlayingState {
                 // 20% boost to luck
                 p.luck += 0.2;
             }
-            if (item.id === 'cargo_expansion') cargoExpansions++;
-            if (item.id === 'experience_condenser') p.experienceCondenserMult += 0.2;
-            if (item.id === 'asteroid_drill') p.asteroidDrillMult += 0.5;
-            if (item.id === 'laser_cartridge') p.laserCartridgeMult += 0.1;
+            if (item.id === 'cargo_expansion') cargoExpansions += (item.bonus ?? 1);
+            if (item.id === 'experience_condenser') p.experienceCondenserMult += (item.bonus ?? 0.2);
+            if (item.id === 'asteroid_drill') p.asteroidDrillMult += (item.bonus ?? 0.5);
+            if (item.id === 'laser_cartridge') p.laserCartridgeMult += (item.bonus ?? 0.1);
         }
 
         const targetRows = this.inventoryRows + cargoExpansions;
@@ -4443,6 +4557,8 @@ export class PlayingState {
                 if (i === 1) rMult *= 0.75;
                 else rMult *= 0.85;
             }
+            // Combined repeaters add extra fire rate (lower mult = faster).
+            rMult *= 1 / (1 + p.repeaterRateBonus);
             fireRateMult *= rMult;
         }
 
@@ -4879,8 +4995,8 @@ export class PlayingState {
             const ix = cx + Math.cos(angle) * radius;
             const iy = cy + Math.sin(angle) * radius;
 
-            // Draw yellow dot indicator (single pixel at UI scale, centered)
-            const px = this.game.uiScale;
+            // Draw yellow dot indicator (centered)
+            const px = this.game.uiScale * 2;
             ctx.save();
             ctx.globalAlpha = opacity;
             ctx.fillStyle = '#ffff44';
@@ -5018,6 +5134,9 @@ export class PlayingState {
         ]);
 
         this._drawDraggedItem(ctx, playerLayout.slotSize);
+        this._drawCombinePreview(ctx, [
+            { inv: playerInv, layout: playerLayout, scrollX: this.playerScrollX, scrollY: this.playerScrollY }
+        ]);
 
         ctx.restore();
     }
@@ -5240,8 +5359,8 @@ export class PlayingState {
         }
 
         const beamLength = 8000;
-        let damageMult = (p.hasRepeater ? 0.5 : 1.0) * (p.hasLaserOverride ? 1.3 : 1.0);
-        if (p.hasMultishotGuns) damageMult *= 0.7; // 30% reduction
+        let damageMult = (p.hasRepeater ? 0.5 : 1.0) * p.laserOverrideMult;
+        if (p.hasMultishotGuns) damageMult *= p.multishotDamageMult;
 
         const currentBaseDamage = (p.shipData.baseDamage * p.obedienceMult + p.permDamageBonus) * p.laserCartridgeMult;
 
@@ -5267,12 +5386,12 @@ export class PlayingState {
                 const fireAngle = p.getTargetAngle(origin.x, origin.y);
                 const dirX = Math.cos(fireAngle);
                 const dirY = Math.sin(fireAngle);
-                this._fireSingleBeam(origin.x, origin.y, dirX, dirY, beamLength, currentBaseDamage * 2.5 * damageMult);
+                this._fireSingleBeam(origin.x, origin.y, dirX, dirY, beamLength, currentBaseDamage * 2.5 * p.railgunDmgMult * damageMult);
                 // Extra beams from Multi-Shot level-up — increasing spread, reduced damage
                 for (let ei = 0; ei < p.lvlExtraProjectiles; ei++) {
                     const spread = (0.08 + ei * 0.06) * (Math.random() < 0.5 ? 1 : -1);
                     const a = fireAngle + spread;
-                    this._fireSingleBeam(origin.x, origin.y, Math.cos(a), Math.sin(a), beamLength, currentBaseDamage * 2.5 * damageMult * 0.7);
+                    this._fireSingleBeam(origin.x, origin.y, Math.cos(a), Math.sin(a), beamLength, currentBaseDamage * 2.5 * p.railgunDmgMult * damageMult * 0.7);
                 }
             });
         }

@@ -1,4 +1,4 @@
-import { UPGRADES } from '../data/upgrades.js';
+import { makeItem, itemTier, MAX_COMBINE_TIER } from '../data/upgrades.js';
 
 /**
  * Manages a grid-based inventory.
@@ -162,6 +162,63 @@ export class Inventory {
     }
 
     /**
+     * Attempts to combine the dragged item into a matching item it overlaps at
+     * the drop position. Both must be combinable, share the same id and tier,
+     * and not already be at max tier. On success the overlapped item is replaced
+     * in place by the next tier up, the dragged item is consumed, and true is
+     * returned. Returns false (leaving the inventory untouched) otherwise, so
+     * the caller can fall through to trySwap.
+     */
+    /**
+     * Non-mutating check: returns the entry the dragged item would combine into
+     * at the drop position, or null if no valid combine. Combine requires the
+     * footprint to overlap exactly one entry of the same id and tier, both
+     * combinable, below max tier.
+     */
+    combineTargetAt(draggedItem, dropX, dropY) {
+        if (!draggedItem.combine) return null;
+
+        const dw = draggedItem.width;
+        const dh = draggedItem.height;
+        if (dropX < 0 || dropY < 0 || dropX + dw > this.cols || dropY + dh > this.rows) {
+            return null;
+        }
+
+        const overlapping = new Set();
+        for (let r = dropY; r < dropY + dh; r++) {
+            for (let c = dropX; c < dropX + dw; c++) {
+                const entry = this.grid[r][c];
+                if (entry) overlapping.add(entry);
+            }
+        }
+        if (overlapping.size !== 1) return null;
+
+        // Note: tier-0 items share one definition object, so identity equality
+        // can't distinguish entries — the dragged item is already removed from
+        // the grid on pickup, so the overlapped entry is never the dragged one.
+        const target = overlapping.values().next().value;
+        const other = target.item;
+        if (other.id !== draggedItem.id || !other.combine) return null;
+
+        const tier = itemTier(draggedItem);
+        if (itemTier(other) !== tier) return null;
+        if (tier >= MAX_COMBINE_TIER) return null;
+
+        return target;
+    }
+
+    tryCombine(draggedItem, dropX, dropY) {
+        const target = this.combineTargetAt(draggedItem, dropX, dropY);
+        if (!target) return false;
+
+        const { x, y } = target;
+        const tier = itemTier(target.item);
+        this.removeItemAt(x, y);
+        this.addItem(makeItem(draggedItem.id, tier + 1), x, y);
+        return true;
+    }
+
+    /**
      * Non-mutating feasibility check for trySwap.
      */
     canSwap(draggedItem, dropX, dropY, originX, originY) {
@@ -193,6 +250,7 @@ export class Inventory {
             rows: this.rows,
             items: this.items.map(entry => ({
                 id: entry.item.id,
+                tier: entry.item.tier || 0,
                 x: entry.x,
                 y: entry.y
             }))
@@ -205,7 +263,7 @@ export class Inventory {
         this.clear();
 
         for (const itemData of data.items) {
-            const upgrade = UPGRADES.find(u => u.id === itemData.id);
+            const upgrade = makeItem(itemData.id, itemData.tier || 0);
             if (upgrade) {
                 this.addItem(upgrade, itemData.x, itemData.y);
             }

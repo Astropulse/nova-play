@@ -6,7 +6,7 @@
  * Tooltip: Shows upgrade properties on hover.
  */
 
-import { UPGRADES, RARITY_COLORS } from '../data/upgrades.js';
+import { UPGRADES, RARITY_COLORS, makeItem } from '../data/upgrades.js';
 import { GP } from '../engine/inputManager.js';
 
 const TAG_COLORS = {
@@ -89,7 +89,8 @@ export class EncounterDialog {
             if (tag === 'upgrade' && content.includes('#')) {
                 const parts = content.split('#');
                 content = parts[0];
-                meta = parts[1];
+                // meta = "id" or "id#tier" (tier present for combined items)
+                meta = parts.slice(1).join('#');
             }
 
             segments.push({
@@ -245,7 +246,7 @@ export class EncounterDialog {
                 const refs = this._mergedMessageRefs();
                 const box = refs[this.gpUpgradeSel];
                 if (box) {
-                    this.hoveredUpgrade = UPGRADES.find(u => u.id === box.id);
+                    this.hoveredUpgrade = this._resolveUpgrade(box.id);
                     this._tooltipAnchor = box;
                 }
             }
@@ -254,7 +255,7 @@ export class EncounterDialog {
             for (const h of this.upgradeHitboxes) {
                 if (mouse.x >= h.x && mouse.x <= h.x + h.w &&
                     mouse.y >= h.y && mouse.y <= h.y + h.h) {
-                    this.hoveredUpgrade = UPGRADES.find(u => u.id === h.id);
+                    this.hoveredUpgrade = this._resolveUpgrade(h.id);
                     this._tooltipAnchor = h;
                     break;
                 }
@@ -654,6 +655,16 @@ export class EncounterDialog {
         return { colorMap, metaMap };
     }
 
+    // Decodes a hitbox meta ("id" or "id#tier") into the upgrade to preview.
+    // Combined items resolve to their actual tiered instance, so the tooltip
+    // reflects the real rarity/stats being bought or traded.
+    _resolveUpgrade(meta) {
+        if (!meta) return null;
+        const hash = meta.indexOf('#');
+        if (hash < 0) return UPGRADES.find(u => u.id === meta);
+        return makeItem(meta.slice(0, hash), parseInt(meta.slice(hash + 1), 10));
+    }
+
     _drawUpgradeTooltip(ctx, upg) {
         const uiScale = this.game.uiScale;
         const gamepadActive = this.game.input.isGamepadActive();
@@ -665,7 +676,7 @@ export class EncounterDialog {
 
         // Calculate dimensions
         const name = upg.name.toUpperCase();
-        const rarity = upg.rarity.toUpperCase();
+        const rarity = (upg.rarityLabel || upg.rarity).toUpperCase();
         let desc = upg.description;
         if (gamepadActive) {
             desc = desc.replace(/Right-click in cargo/gi, 'Press Y in cargo');
@@ -728,7 +739,7 @@ export class EncounterDialog {
 
         // Rarity
         ctx.font = `${fontSize}px Astro4x`;
-        ctx.fillStyle = RARITY_COLORS[upg.rarity] || '#ffffff';
+        ctx.fillStyle = upg.color || RARITY_COLORS[upg.rarity] || '#ffffff';
         ctx.fillText(rarity, tx + pad, cy);
         cy += fontSize * 2;
 

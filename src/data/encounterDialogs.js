@@ -1740,7 +1740,7 @@ export const DIALOG_SCENARIOS = [
                 chain: 'escalate'
             },
             {
-                label: "Check your records - you have the wrong pilot",
+                label: "Check again, you got the wrong pilot.",
                 chain: 'wrong_pilot'
             },
             {
