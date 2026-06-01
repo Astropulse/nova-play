@@ -3639,19 +3639,23 @@ export class PlayingState {
         if (!this.draggedItem) return;
         const mouse = this.game.getMousePos();
         const uiScale = this.game.uiScale;
-        const edgeMargin = 40 * uiScale;
+        const edgeMargin = 12 * uiScale;
         const speed = baseSpeed * dt * uiScale;
         for (const p of panels) {
             const { layout } = p;
             if (mouse.x >= layout.gridVisX && mouse.x <= layout.gridVisX + layout.visW &&
                 mouse.y >= layout.gridVisY && mouse.y <= layout.gridVisY + layout.visH) {
                 if (layout.scrollableY) {
-                    if (mouse.y < layout.gridVisY + edgeMargin)                    this[p.scrollYKey] -= speed;
-                    else if (mouse.y > layout.gridVisY + layout.visH - edgeMargin) this[p.scrollYKey] += speed;
+                    const distTop = mouse.y - layout.gridVisY;
+                    const distBottom = (layout.gridVisY + layout.visH) - mouse.y;
+                    if (distTop < edgeMargin)         this[p.scrollYKey] -= speed * (1 - distTop / edgeMargin);
+                    else if (distBottom < edgeMargin) this[p.scrollYKey] += speed * (1 - distBottom / edgeMargin);
                 }
                 if (layout.scrollableX) {
-                    if (mouse.x < layout.gridVisX + edgeMargin)                    this[p.scrollXKey] -= speed;
-                    else if (mouse.x > layout.gridVisX + layout.visW - edgeMargin) this[p.scrollXKey] += speed;
+                    const distLeft = mouse.x - layout.gridVisX;
+                    const distRight = (layout.gridVisX + layout.visW) - mouse.x;
+                    if (distLeft < edgeMargin)         this[p.scrollXKey] -= speed * (1 - distLeft / edgeMargin);
+                    else if (distRight < edgeMargin)   this[p.scrollXKey] += speed * (1 - distRight / edgeMargin);
                 }
             }
         }
