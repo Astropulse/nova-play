@@ -138,20 +138,26 @@ export class AchievementManager {
                 this.run = this._newRunState();
                 break;
 
-            case 'run_ended':
+            case 'run_ended': {
                 this.lifetime.runsCompleted++;
-                if (payload && typeof payload.time === 'number') {
-                    this.lifetime.timeAlive += payload.time;
+                const payloadTime = (payload && typeof payload.time === 'number') ? payload.time : 0;
+                if (payloadTime > 0) {
+                    this.lifetime.timeAlive += payloadTime;
                 }
                 // Longest single run — true in-game seconds, not wall time.
-                if (this.run.timeAlive > this.lifetime.peakRunTime) {
-                    this.lifetime.peakRunTime = this.run.timeAlive;
+                // Prefer payload.time (the run's trueTotalTime), which is
+                // serialized across save/resume; this.run.timeAlive resets to 0
+                // on load and would undercount any run that spanned a save.
+                const runTime = Math.max(this.run.timeAlive, payloadTime);
+                if (runTime > this.lifetime.peakRunTime) {
+                    this.lifetime.peakRunTime = runTime;
                 }
                 // Mark this run's ship as used (Hangar Tour).
                 if (this.run.shipId) {
                     this.lifetime.shipsUsed[this.run.shipId] = true;
                 }
                 break;
+            }
 
             case 'enemy_killed': {
                 this.lifetime.enemiesKilled++;

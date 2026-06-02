@@ -661,8 +661,12 @@ export class EncounterDialog {
     _resolveUpgrade(meta) {
         if (!meta) return null;
         const hash = meta.indexOf('#');
-        if (hash < 0) return UPGRADES.find(u => u.id === meta);
-        return makeItem(meta.slice(0, hash), parseInt(meta.slice(hash + 1), 10));
+        const id = hash < 0 ? meta : meta.slice(0, hash);
+        const tier = hash < 0 ? null : parseInt(meta.slice(hash + 1), 10);
+        // makeItem(tier) for combined items; fall back to the base def so the
+        // tooltip never blanks out if the tier can't be resolved.
+        const item = (tier != null && !Number.isNaN(tier)) ? makeItem(id, tier) : null;
+        return item || UPGRADES.find(u => u.id === id) || null;
     }
 
     _drawUpgradeTooltip(ctx, upg) {

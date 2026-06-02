@@ -1523,7 +1523,7 @@ export class Player {
         while (this.exp >= this.expNeeded) {
             this.exp -= this.expNeeded;
             this.level++;
-            this.expNeeded = Math.floor(this.expNeeded * 1.18);
+            this.expNeeded = Math.floor(this.expNeeded * 1.16);
 
             // Visual feedback
             if (this.game.currentState && this.game.currentState.spawnFloatingText) {
