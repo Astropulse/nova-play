@@ -152,6 +152,8 @@ export class Player {
         // Overheal — health stored above the normal cap. Drains at a constant
         // maxHealth/15 per second (so 100% overflow decays in 15s, 200% in 30s,
         // etc.) and is consumed before normal health when taking damage.
+        // Capped at 4× maxHealth (400% overflow = the legendary bar, i.e. 500%
+        // total health) to match the four overflow tiers drawn in the HUD.
         this.overheal = 0;
         this.alive = true;
         this.scrap = 0;
@@ -1300,6 +1302,9 @@ export class Player {
             this.overheal += this.health - this.maxHealth;
             this.health = this.maxHealth;
         }
+        // Cap overheal at 4× maxHealth (400% overflow = the legendary bar, i.e.
+        // 500% total health) to match the four overflow tiers drawn in the HUD.
+        if (this.overheal > this.maxHealth * 4) this.overheal = this.maxHealth * 4;
 
         const healed = (this.health + this.overheal) - prev;
         if (healed > 0 && this.game.currentState && this.game.currentState.spawnFloatingText) {
