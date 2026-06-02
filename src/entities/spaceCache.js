@@ -94,11 +94,15 @@ export class SpaceCache {
         // ── Crash-landing (resupply drop) state ───────────────────────────────
         this.crashVX = 0;   this.crashVY = 0;
         this.crashDirX = 0; this.crashDirY = 0;
+        this.crashTargetX = worldX; this.crashTargetY = worldY;
         this.crashScale = 1.0;
         this.crashThrustTimer = 0;
         this.crashSettleTimer = 0;
         this.crashEnteredScreen = false;
         this._trail = null;
+        // Wave-reward drops stay highlighted on the HUD after landing regardless of
+        // discovery range, so they can't be lost if the player boosted away.
+        this.isReward = false;
 
         // ── Flying piece state (world-space, like Rubble) ─────────────────────
         // Piece positions are placeholders; open() sets them to centroid world offsets.
@@ -179,13 +183,13 @@ export class SpaceCache {
         // doesn't come down right on top of them.
         const offAngle = Math.random() * Math.PI * 2;
         const offDist  = landR * (0.35 + Math.random() * 0.4);
-        const targetX  = playerX + Math.cos(offAngle) * offDist;
-        const targetY  = playerY + Math.sin(offAngle) * offDist;
+        this.crashTargetX = playerX + Math.cos(offAngle) * offDist;
+        this.crashTargetY = playerY + Math.sin(offAngle) * offDist;
 
         // Spawn well beyond the screen border, back along the travel direction
         const spawnDist = this._screenRadius() + 500 + Math.random() * 300;
-        this.worldX = targetX - dirX * spawnDist;
-        this.worldY = targetY - dirY * spawnDist;
+        this.worldX = this.crashTargetX - dirX * spawnDist;
+        this.worldY = this.crashTargetY - dirY * spawnDist;
 
         this.crashVX = dirX * C.crashSpeed;
         this.crashVY = dirY * C.crashSpeed;
@@ -330,23 +334,26 @@ export class SpaceCache {
                 this.worldY += this.crashVY * dt;
                 this._pushTrail(this.worldX, this.worldY);
 
-                const dxp = playerWorldX - this.worldX;
-                const dyp = playerWorldY - this.worldY;
-                const distP = Math.sqrt(dxp * dxp + dyp * dyp);
                 const screenR = this._screenRadius();
-                const landR = C.crashLandRadius * fov;
 
-                // Scale shrinks with distance: crashStartScale*fov at the screen border,
-                // exactly 1.0 by the time it reaches the land radius. Reads as the drop
-                // descending from "above" the play plane down into it. The start size is
-                // FOV-scaled so it stays equally "close" when the view is zoomed out.
+                // Distance remaining to the fixed landing coord chosen at spawn. The drop
+                // commits to this point, so a moving player can't make it whiff past.
+                const dxt = this.crashTargetX - this.worldX;
+                const dyt = this.crashTargetY - this.worldY;
+                const distT = Math.sqrt(dxt * dxt + dyt * dyt);
+
+                // Scale shrinks with distance to the target: crashStartScale*fov while
+                // off-screen, exactly 1.0 at touchdown. Reads as the drop descending
+                // from "above" the play plane. FOV-scaled so it stays equally "close"
+                // when the view is zoomed out.
                 const startScale = C.crashStartScale * fov;
-                const tScale = Math.max(0, Math.min(1,
-                    (distP - landR) / Math.max(1, screenR - landR)));
+                const tScale = Math.max(0, Math.min(1, distT / screenR));
                 this.crashScale = 1.0 + (startScale - 1.0) * tScale;
 
                 // Boost whoosh the moment it crosses onto the player's screen
-                if (!this.crashEnteredScreen && distP < screenR) {
+                const dxp = playerWorldX - this.worldX;
+                const dyp = playerWorldY - this.worldY;
+                if (!this.crashEnteredScreen && (dxp * dxp + dyp * dyp) < screenR * screenR) {
                     this.crashEnteredScreen = true;
                     this.game.sounds.play('boost', { volume: 0.7, x: this.worldX, y: this.worldY, maxDistance: 8000 });
                 }
@@ -361,9 +368,13 @@ export class SpaceCache {
                 // Continuous rumble, attenuated with distance to the player
                 this.game.currentState?._rumbleAt?.(this.worldX, this.worldY, C.crashShakeFly);
 
-                // Land on approach, or as a fallback if the player outran the drop
-                // (fly-in is ~1s; the timeout keeps it from streaking off forever).
-                if (distP <= landR || this.stateTimer > 4.0) this._land();
+                // Land once it reaches/passes the target coord — snap exactly onto it
+                const remaining = dxt * this.crashDirX + dyt * this.crashDirY;
+                if (remaining <= 0) {
+                    this.worldX = this.crashTargetX;
+                    this.worldY = this.crashTargetY;
+                    this._land();
+                }
                 break;
             }
 
@@ -380,9 +391,10 @@ export class SpaceCache {
                 this.crashSettleTimer += dt;
                 if (this.crashSettleTimer >= C.crashSettleTime) {
                     this._trail = null;
-                    // Become a normal cache — proximity discovery takes over from here
-                    this.state = CACHE_STATE.CLOSED;
                     this.stateTimer = 0;
+                    // Reward drops are pre-discovered (always on HUD); normal caches
+                    // fall back to proximity discovery.
+                    this.state = this.isReward ? CACHE_STATE.FOUND : CACHE_STATE.CLOSED;
                 }
                 break;
             }
@@ -644,7 +656,7 @@ export class SpaceCache {
         return {
             worldX: this.worldX, worldY: this.worldY,
             state: this.state, alpha: this.alpha, emptiedTimer: this.emptiedTimer,
-            cacheRotation: this.cacheRotation,
+            cacheRotation: this.cacheRotation, isReward: this.isReward,
             lidWorldX: this.lidWorldX, lidWorldY: this.lidWorldY, lidRotation: this.lidRotation,
             clip0WorldX: this.clip0WorldX, clip0WorldY: this.clip0WorldY, clip0Rot: this.clip0Rot,
             clip1WorldX: this.clip1WorldX, clip1WorldY: this.clip1WorldY, clip1Rot: this.clip1Rot,
@@ -654,9 +666,11 @@ export class SpaceCache {
     deserialize(data) {
         this.worldX = data.worldX; this.worldY = data.worldY;
         this.state  = data.state  || CACHE_STATE.CLOSED;
-        // Crash entrance is a transient animation — never restore mid-flight
+        this.isReward = data.isReward || false;
+        // Crash entrance is a transient animation — never restore mid-flight.
+        // Reward drops land pre-discovered (FOUND); others fall back to CLOSED.
         if (this.state === CACHE_STATE.INCOMING || this.state === CACHE_STATE.SETTLING) {
-            this.state = CACHE_STATE.CLOSED;
+            this.state = this.isReward ? CACHE_STATE.FOUND : CACHE_STATE.CLOSED;
             this.crashScale = 1.0;
             this._trail = null;
         }
@@ -728,6 +742,7 @@ export class CacheSpawner {
     // Resupply drop that streaks in from off-screen and crash-lands near the player.
     spawnCrash(px, py) {
         const cache = new SpaceCache(this.game, px, py);
+        cache.isReward = true; // wave reward — stays highlighted on the HUD after landing
         cache.startCrashLanding(px, py);
         return cache;
     }

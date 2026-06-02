@@ -1019,15 +1019,26 @@ export class Asteroid {
 
         // Spawn physical scrap
         const drillMult = this.game.currentState?.player ? this.game.currentState.player.asteroidDrillMult : 1.0;
-        if (Math.random() < 0.8 * drillMult) { // 80% chance to drop scrap * drill multiplier
-            let count = 1;
+        // Base 80% drop chance scaled by drill. The chance can exceed 100%: each full
+        // 1.0 is a guaranteed scrap roll, the leftover fraction is a probabilistic roll,
+        // so overflow past 100% keeps adding scrap instead of being wasted.
+        const dropChance = 0.8 * drillMult;
+        let drops = Math.floor(dropChance);
+        if (Math.random() < dropChance - drops) drops++;
+
+        if (drops > 0) {
+            let count = 0;
             let forceBig = false;
 
-            if (this.size === 'big') {
-                count = 2 + Math.floor(Math.random() * 3);
-            } else if (this.size === 'medium') {
-                count = Math.random() < 0.4 ? 2 : 1; // 40% chance for 2 scrap
-                if (Math.random() < 0.1) forceBig = true; // 10% chance for a big scrap
+            for (let d = 0; d < drops; d++) {
+                if (this.size === 'big') {
+                    count += 2 + Math.floor(Math.random() * 3);
+                } else if (this.size === 'medium') {
+                    count += Math.random() < 0.4 ? 2 : 1; // 40% chance for 2 scrap
+                    if (Math.random() < 0.1) forceBig = true; // 10% chance for a big scrap
+                } else {
+                    count += 1;
+                }
             }
 
             for (let i = 0; i < count; i++) {

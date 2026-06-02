@@ -1653,7 +1653,14 @@ export class PlayingState {
             }
         } else {
             this.spawnFloatingText(this.player.worldX, this.player.worldY, `-${Math.ceil(finalAmount)}`, '#ff4444');
-            this.player.health -= finalAmount;
+            // Overheal soaks damage before normal health.
+            let dmgRemaining = finalAmount;
+            if (this.player.overheal > 0) {
+                const absorbed = Math.min(this.player.overheal, dmgRemaining);
+                this.player.overheal -= absorbed;
+                dmgRemaining -= absorbed;
+            }
+            this.player.health -= dmgRemaining;
             // Increased with damage slightly, but with diminishing returns (sqrt)
             this.camera.shake(Math.sqrt(finalAmount) * 1.2, 15.0);
             this.game.sounds.play('ship_explode', { volume: 0.5, x: this.player.worldX, y: this.player.worldY });
@@ -4882,6 +4889,10 @@ export class PlayingState {
         // Grant the player a brief grace window so a freshly-hostile encounter
         // can't instantly damage them at point-blank range.
         this.player.invulnTimer = Math.max(this.player.invulnTimer, 1.5);
+
+        // Give the enemy a matching grace window and have it quickly back away
+        // to make some space before engaging.
+        en.startEvasiveEntry(this.player, 1.5);
     }
 
     _drawEncounterIndicators(ctx) {
@@ -5208,38 +5219,66 @@ export class PlayingState {
         ctx.textBaseline = 'middle';
 
         // Each entry: [label, value, lowerIsBetter?]
-        //   value = number  → shown as %, reflects level-up bonuses only
+        //   value = number  → shown as %, reflects level-up bonuses AND upgrades
         //   value = string  → shown as-is, grey at zero / green when active
         //   lowerIsBetter   → green < 100%, red > 100% (drain/cooldown/difficulty stats)
+        // Combined stats fold every source together the same way _onInventoryChanged
+        // and achievementManager do, so the panel shows the ship's true effective
+        // stats — inventory upgrades, level-ups, encounters and ship hull alike.
+        const sd = p.shipData;
+        const dmgMult = (sd.baseDamage > 0)
+            ? ((sd.baseDamage * p.obedienceMult + p.permDamageBonus) * p.laserCartridgeMult) / sd.baseDamage
+            : p.laserCartridgeMult;
+        const hullMult   = (sd.health > 0) ? p.maxHealth / sd.health : p.maxHealthMult;
+        const shieldBase = sd.shield * 15;
+        const shieldMult = (shieldBase > 0) ? p.maxShieldEnergy / shieldBase : p.lvlMaxShieldMult;
+        const stockSpeed = sd.speed * 100;
+        const speedMult  = (stockSpeed > 0)
+            ? (p.baseSpeed * p.pulseJetMult * p.mechanicalEngineSpeedMult * p.momentumMaxSpeedMult) / stockSpeed
+            : p.lvlSpeedMult;
+        const projSpeedMult = p.lvlProjectileSpeedMult * (p.hasControlModule ? p.controlSpeedMult : 1);
+        const turnMult      = p.lvlTurnSpeedMult * p.mechanicalEngineTurnMult;
+        const expMult       = p.lvlExpGainMult * p.experienceCondenserMult;
+        const hullRegen     = p.lvlHpRegen + p.naniteRegen;
+        const fovMult       = this.fovUpgradeMult ?? p.lvlFovMult;
+        // Guaranteed extra projectiles per volley beyond the single baseline shot
+        // (Multishot doubles origins; Energy Blaster fires a 3+ spread per origin).
+        const origins   = p.hasMultishotGuns ? 2 : 1;
+        const perOrigin = p.hasEnergyBlaster
+            ? 3 + Math.max(0, (p.energyBlasterCount || 1) - 1) * 2 + p.lvlExtraProjectiles
+            : 1 + p.lvlExtraProjectiles;
+        const extraShots = origins * perOrigin - 1;
+
         const colA = [
-            ['Max Hull',      p.lvlMaxHpMult],
-            ['Max Shield',    p.lvlMaxShieldMult],
-            ['Damage',        p.lvlDamageMult],
-            ['Fire Rate',     1 / Math.max(0.01, p.lvlFireRateMult)],   // lower cooldown = higher rate
-            ['Proj. Speed',   p.lvlProjectileSpeedMult],
-            ['Shld Drain',    p.lvlShieldDrainMult,        true],        // less drain = good, shown < 100%
-            ['Shld Regen',    p.lvlShieldRechargeMult],
+            ['Max Hull',      hullMult],
+            ['Max Shield',    shieldMult],
+            ['Damage',        dmgMult],
+            ['Fire Rate',     1 / Math.max(0.01, p.fireRateMult)],       // lower cooldown = higher rate
+            ['Proj. Speed',   projSpeedMult],
+            ['Shld Drain',    p.shieldDrainMult,           true],        // less drain = good, shown < 100%
+            ['Shld Regen',    p.shieldRegenMult],
             ['Shld Impact',   p.lvlShieldDamageMult],
             ['Asteroid Res.', 1 / Math.max(0.01, p.lvlAsteroidResistanceMult)], // less damage taken = higher resistance
             ['Difficulty',    p.lvlDifficultyMult,         true],        // lower difficulty scaling = good
-            ['Hull Regen',    `+${p.lvlHpRegen > 0 ? p.lvlHpRegen.toFixed(1) : '0.0'}/s`],
+            ['Hull Regen',    `+${hullRegen > 0 ? hullRegen.toFixed(1) : '0.0'}/s`],
             ['Cache Rate',    p.lvlCacheFreqMult],
             ['Enc. Rate',     p.lvlEncounterFreqMult],
         ];
         const colB = [
-            ['Ship Speed',     p.lvlSpeedMult],
-            ['Turn Speed',     p.lvlTurnSpeedMult],
-            ['Boost Speed',    p.lvlBoostSpeedMult],
+            ['Ship Speed',     speedMult],
+            ['Turn Speed',     turnMult],
+            ['Boost Speed',    p.boostSpeedMult],
             ['Boost Duration', p.lvlBoostDurationMult],
-            ['Boost Rech.',    1 / Math.max(0.01, p.lvlBoostCooldownMult)], // shorter cooldown = faster recharge
-            ['Field of View',  p.lvlFovMult],
-            ['Vacuum Range',   p.lvlVacuumRangeMult],
-            ['Exp Gain',       p.lvlExpGainMult],
-            ['Scrap Chance',   p.lvlScrapChanceMult],
-            ['Ast. Density',   p.lvlAsteroidSpawnMult],
+            ['Boost Rech.',    1 / Math.max(0.01, p.boostCooldownMult)], // shorter cooldown = faster recharge
+            ['Field of View',  fovMult],
+            ['Vacuum Range',   p.scrapRangeMult],
+            ['Exp Gain',       expMult],
+            ['Scrap Chance',   p.asteroidDrillMult],
+            ['Ast. Density',   p.asteroidSpawnMult],
             ['Enemy Spawn',    p.lvlEnemySpawnMult,        true],        // fewer enemies = good, shown < 100%
             ['Wave Speed',     1 / Math.max(0.01, p.lvlWaveCountdownMult)], // shorter countdown = faster waves
-            ['Extra Shots',    `+${p.lvlExtraProjectiles}`],
+            ['Extra Shots',    `+${extraShots}`],
+            ['Luck',           p.luck],
         ];
 
         // Measure column widths — value slot wide enough for 4-digit % or flat strings

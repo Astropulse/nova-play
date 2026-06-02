@@ -149,6 +149,10 @@ export class Player {
         this.thrusting = false;
         this.health = shipData.health;
         this.maxHealth = shipData.health;
+        // Overheal — health stored above the normal cap. Drains at a constant
+        // maxHealth/15 per second (so 100% overflow decays in 15s, 200% in 30s,
+        // etc.) and is consumed before normal health when taking damage.
+        this.overheal = 0;
         this.alive = true;
         this.scrap = 0;
 
@@ -603,7 +607,7 @@ export class Player {
                 }
             }
         } else if (this.hasBoostDrive) {
-            if (boostDown) {
+            if (boostDown && this.boostCooldownTimer <= 0) {
                 // Play sound once when starting
                 if (!this.isBoosting) {
                     this.game.sounds.play('boost', { volume: 0.5, x: this.worldX, y: this.worldY });
@@ -622,6 +626,11 @@ export class Player {
                 // Subtle continuous jitter while holding boost
                 this.game.camera.rumble(0.4);
             } else {
+                // Just stopped boosting (released or hit cooldown) — start the cooldown
+                if (this.isBoosting) {
+                    this.boostCooldownTimer = this.boostCooldown * this.boostCooldownMult;
+                    this._boostWasOnCooldown = true;
+                }
                 this.isBoosting = false;
                 this.boostIntensity = 0;
             }
@@ -764,6 +773,13 @@ export class Player {
             if (this.shieldBroken && this.shieldEnergy >= this.maxShieldEnergy * 0.3) {
                 this.shieldBroken = false;
             }
+        }
+
+        // --- Overheal decay ---
+        // Constant rate: maxHealth/15 per second. The overflow above the cap
+        // bleeds back down to 100% over 15s per extra 100% of health.
+        if (this.overheal > 0) {
+            this.overheal = Math.max(0, this.overheal - (this.maxHealth / 15) * dt);
         }
 
         // --- Level-up HP regen ---
@@ -1276,10 +1292,16 @@ export class Player {
 
     heal(percent) {
         const amount = this.maxHealth * percent;
-        const prev = this.health;
-        this.health = Math.min(this.maxHealth, this.health + amount);
+        const prev = this.health + this.overheal;
 
-        const healed = this.health - prev;
+        // Fill normal health first; any surplus spills into overheal.
+        this.health += amount;
+        if (this.health > this.maxHealth) {
+            this.overheal += this.health - this.maxHealth;
+            this.health = this.maxHealth;
+        }
+
+        const healed = (this.health + this.overheal) - prev;
         if (healed > 0 && this.game.currentState && this.game.currentState.spawnFloatingText) {
             this.game.currentState.spawnFloatingText(this.worldX, this.worldY, `+${Math.ceil(healed)}`, '#44ff44');
         }
@@ -1552,6 +1574,7 @@ export class Player {
             angle: this.angle,
             health: this.health,
             maxHealth: this.maxHealth,
+            overheal: this.overheal,
             scrap: this.scrap,
             shieldEnergy: this.shieldEnergy,
             shieldBroken: this.shieldBroken,
@@ -1603,6 +1626,7 @@ export class Player {
         this.angle = data.angle;
         this.health = data.health;
         this.maxHealth = data.maxHealth;
+        this.overheal = data.overheal || 0;
         this.scrap = data.scrap;
         this.shieldEnergy = data.shieldEnergy;
         this.shieldBroken = data.shieldBroken;

@@ -7,6 +7,7 @@ export class HUD {
 
         this.healthBarEmpty = game.assets.get('health_bar_empty');
         this.healthBarFull = game.assets.get('health_bar_full');
+        this.healthBarOverflow = game.assets.get('health_bar_overflow');
         this.shieldBarEmpty = game.assets.get('shield_bar_empty');
         this.shieldBarFull = game.assets.get('shield_bar_full');
 
@@ -63,6 +64,12 @@ export class HUD {
                 hbX, hbY, srcClipW * this.game.hudScale, hbH
             );
         }
+
+        // Overheal overflow bars — layered on top of the (full) health bar.
+        // Each 100% of overflow fills one bar; once full the next tier stacks
+        // over it in the next upgrade-rarity color: common→rare→epic→legendary
+        // (green → purple → red → yellow). Caps at 4 tiers (400% overflow).
+        this._drawOverheal(ctx, p, hbX, hbY, hbH);
 
         // Shield bar — above health bar (dimmed when broken)
         // Bar fill region: source pixels 4–75 (71px wide fill area)
@@ -141,6 +148,86 @@ export class HUD {
     // the overlay/dialog pass so unlocks aren't hidden by the dark backdrop.
     drawToast(ctx) {
         this._drawAchievementToast(ctx);
+    }
+
+    _drawOverheal(ctx, p, hbX, hbY, hbH) {
+        if (!this.healthBarOverflow || !p.overheal || p.overheal <= 0 || p.maxHealth <= 0) return;
+
+        // Upgrade-rarity colors for stacked overflow tiers, in fill order:
+        // common (green), rare (purple), epic (red), legendary (yellow).
+        const colors = ['#00ff00', '#b400ff', '#ff0000', '#ffff00'];
+        const maxTiers = colors.length;
+        // Overflow as a fraction of max health, capped at the number of tiers.
+        const ovPct = Math.min(p.overheal / p.maxHealth, maxTiers);
+        const tierIndex = Math.min(Math.floor(ovPct), maxTiers - 1);
+        const frac = ovPct - tierIndex; // current filling tier (0–1; 1 at the cap)
+
+        const asset = this.healthBarOverflow;
+        const img = asset.canvas || asset;
+        const ofH = asset.height || img.height;
+        const prescale = img.width / (asset.width || img.width);
+
+        // Same fill region as the health bar full asset.
+        const fillStart = 27;
+        const fillEnd = 118;
+        const fillWidth = fillEnd - fillStart;
+
+        const drawTier = (color, fillFrac) => {
+            if (fillFrac <= 0) return;
+            const srcClipW = fillStart + Math.floor(fillWidth * fillFrac);
+            const tinted = this._getTintedOverflow(color);
+            ctx.drawImage(
+                tinted,
+                0, 0, srcClipW * prescale, ofH * prescale,
+                hbX, hbY, srcClipW * this.game.hudScale, hbH
+            );
+        };
+
+        // Completed lower tier sits full underneath, current tier fills over it.
+        if (tierIndex > 0) drawTier(colors[tierIndex - 1], 1);
+        drawTier(colors[tierIndex], frac);
+    }
+
+    // Returns a cached canvas of the (grayscale) overflow bar tinted to `color`,
+    // preserving the art's shading via a multiply blend masked to its alpha.
+    // The rarity color is blended heavily toward white first so the tint reads
+    // as a soft pastel rather than a harsh, fully-saturated wash — this also
+    // keeps the green tier distinct from the (darker) base health-bar green.
+    _getTintedOverflow(color) {
+        if (!this._overflowTintCache) this._overflowTintCache = new Map();
+        const cached = this._overflowTintCache.get(color);
+        if (cached) return cached;
+
+        const asset = this.healthBarOverflow;
+        const img = asset.canvas || asset;
+        const w = img.width;
+        const h = img.height;
+
+        const c = document.createElement('canvas');
+        c.width = w;
+        c.height = h;
+        const cx = c.getContext('2d');
+        cx.imageSmoothingEnabled = false;
+
+        cx.drawImage(img, 0, 0);
+        cx.globalCompositeOperation = 'multiply';
+        cx.fillStyle = this._desaturate(color, 0.55);
+        cx.fillRect(0, 0, w, h);
+        // Re-apply the source alpha so transparent areas stay transparent.
+        cx.globalCompositeOperation = 'destination-in';
+        cx.drawImage(img, 0, 0);
+
+        this._overflowTintCache.set(color, c);
+        return c;
+    }
+
+    // Blend a #rrggbb color toward white by `amt` (0 = unchanged, 1 = white).
+    _desaturate(hex, amt) {
+        const n = parseInt(hex.slice(1), 16);
+        const r = (n >> 16) & 0xff, g = (n >> 8) & 0xff, b = n & 0xff;
+        const mix = (ch) => Math.round(ch + (255 - ch) * amt);
+        const to2 = (v) => v.toString(16).padStart(2, '0');
+        return `#${to2(mix(r))}${to2(mix(g))}${to2(mix(b))}`;
     }
 
 

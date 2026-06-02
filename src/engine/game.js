@@ -593,6 +593,7 @@ export class Game {
 
             'health_bar_empty': 'Assets/UI/health_bar_empty.png',
             'health_bar_full': 'Assets/UI/health_bar_full.png',
+            'health_bar_overflow': 'Assets/UI/health_bar_overflow.png',
             'shield_bar_empty': 'Assets/UI/shield_bar_empty.png',
             'shield_bar_full': 'Assets/UI/shield_bar_full.png',
             '9_slice_inventory': 'Assets/UI/9_slice_inventory.png',

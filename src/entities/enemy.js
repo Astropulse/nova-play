@@ -1345,6 +1345,24 @@ export class HostileEncounter extends Enemy {
         this.reversalTriggerDist = 450 * scaleDist;
     }
 
+    /**
+     * When an encounter first turns hostile, give it a brief grace window and
+     * have it quickly back away from the player to open up some fighting space
+     * before it starts its attack runs.
+     */
+    startEvasiveEntry(player, invulnDuration = 1.5) {
+        this.invulnTimer = Math.max(this.invulnTimer, invulnDuration);
+
+        // Face directly away from the player so the retreat is immediate (no
+        // turn-in delay), and use BREAK so it sprints at boosted speed for a
+        // short burst before reverting to PURSUIT.
+        const awayAngle = Math.atan2(this.worldY - player.worldY, this.worldX - player.worldX);
+        this.angle = awayAngle;
+        this.targetAngleOverride = awayAngle;
+        this.state = AI_STATE.BREAK;
+        this.stateTimer = 0.6;
+    }
+
     hit(damage) {
         if (this.invulnTimer > 0 || this.isDying) return false;
         this.health -= damage;
