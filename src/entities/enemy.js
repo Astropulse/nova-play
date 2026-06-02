@@ -1132,8 +1132,8 @@ export class EnemySpawner {
         // Burst sizing is fully dynamic now: each burst rolls its size at fire time,
         // can overshoot the queue (harder wave), and a sub-minimum remainder gets
         // dumped as the final small burst. Cache the per-wave max here.
-        // Max ramps up quickly: ~5 at wave 1, +2 per wave, capped at 24.
-        this.waveMaxBurstSize = Math.min(24, 3 + this.waveNumber * 2);
+        // Max grows 3 → 16 across waves: ~3 at wave 1, ~16 by wave 26+.
+        this.waveMaxBurstSize = Math.min(16, 3 + Math.floor(this.waveNumber / 1.8));
         this.waveQueue = count;
         this.waveSpawnedTotal = 0;
         this.waveBurstTimer = 0.8; // First burst delay — let the wave-start flash breathe

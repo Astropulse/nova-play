@@ -530,7 +530,7 @@ export const UPGRADES = [
         combine: {
             stat: 'asteroidSpawn',
             base: 0.50,
-            legendary: 1.10,
+            legendary: 2.00,
             descTemplate: 'Increases the frequency of asteroids by {bonus}.'
         }
     },
