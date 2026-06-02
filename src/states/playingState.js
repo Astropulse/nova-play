@@ -158,6 +158,8 @@ export class PlayingState {
         this.trueTotalTime = 0; // Persistent game time
         this.waveTimer = 120; // 2 minutes
         this._waveWasActive = false;
+        this._lastCrashWave = 0; // last wave number that spawned a crash-landing resupply cache
+        this._crashCacheTimer = 0; // countdown before the queued resupply drop arrives (0 = none pending)
         this.difficultyScale = 1.0;
 
         // Tunable Difficulty Constants
@@ -285,6 +287,21 @@ export class PlayingState {
         if (finalIntensity > 0.1) {
             this.camera.shake(finalIntensity);
         }
+    }
+
+    // Continuous, non-accumulating rumble attenuated by distance to the player.
+    // For sustained effects (e.g. an incoming cache) that shouldn't build up like shake().
+    _rumbleAt(x, y, intensity, minPassDist = 1200, maxDist = 5000) {
+        const dx = x - this.player.worldX;
+        const dy = y - this.player.worldY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist >= maxDist) return;
+
+        let finalIntensity = intensity;
+        if (dist > minPassDist) {
+            finalIntensity *= 1.0 - ((dist - minPassDist) / (maxDist - minPassDist));
+        }
+        if (finalIntensity > 0.05) this.camera.rumble(finalIntensity);
     }
 
     enter() {
@@ -974,6 +991,27 @@ export class PlayingState {
             }
             this._waveWasActive = waveActive;
 
+            // Full wave clear (every spawned enemy of this wave destroyed) → a resupply
+            // cache crash-lands in from off-screen. Boss waves spawn 0 normal enemies and
+            // already drop a cache on boss death, so they naturally don't trigger this.
+            const waveFullyCleared = waveSpawned > 0 && !waveStillSpawning && currentWaveAlive === 0;
+            if (waveFullyCleared && currentWaveNum > 0 && this._lastCrashWave !== currentWaveNum) {
+                this._lastCrashWave = currentWaveNum;
+                this._crashCacheTimer = 3.0; // brief beat before the drop streaks in
+            }
+
+            // Deliver the queued resupply drop once the delay elapses, aimed at the
+            // player's position at arrival time.
+            if (this._crashCacheTimer > 0) {
+                this._crashCacheTimer -= dt;
+                if (this._crashCacheTimer <= 0) {
+                    this._crashCacheTimer = 0;
+                    if (this.caches.length < CACHE_CONFIG.maxActiveCaches + 2) {
+                        this.caches.push(this.cacheSpawner.spawnCrash(this.player.worldX, this.player.worldY));
+                    }
+                }
+            }
+
             if (!bossAlive && !this.yellowOneFightActive) {
                 this.postWaveTimer += dt;
                 if (!waveActive) {
@@ -1660,6 +1698,8 @@ export class PlayingState {
             difficultyScale: this.difficultyScale,
             stats: { ...this.stats },
             waveTimer: this.waveTimer,
+            lastCrashWave: this._lastCrashWave,
+            crashCacheTimer: this._crashCacheTimer,
             shipId: this.shipData.id,
             enemySpawner: this.enemySpawner.serialize(),
             musicState: {
@@ -1706,6 +1746,8 @@ export class PlayingState {
         this.difficultyScale = data.difficultyScale;
         this.stats = { ...data.stats };
         this.waveTimer = data.waveTimer;
+        this._lastCrashWave = data.lastCrashWave || 0;
+        this._crashCacheTimer = data.crashCacheTimer || 0;
 
         if (data.enemySpawner) {
             this.enemySpawner.deserialize(data.enemySpawner);
@@ -4836,6 +4878,10 @@ export class PlayingState {
 
         this.enemies.push(en);
         encounter.alive = false;
+
+        // Grant the player a brief grace window so a freshly-hostile encounter
+        // can't instantly damage them at point-blank range.
+        this.player.invulnTimer = Math.max(this.player.invulnTimer, 1.5);
     }
 
     _drawEncounterIndicators(ctx) {

@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(node --check src/states/menuState.js)"
+      "Bash(node --check src/states/menuState.js)",
+      "Bash(node --check src/entities/spaceCache.js)"
     ]
   }
 }

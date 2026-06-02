@@ -47,10 +47,24 @@ export const CACHE_CONFIG = {
 
     // ── Glow pulse when FOUND ─────────────────────────────────────────────────
     glowPulseSpeed: 2.2,
+
+    // ── Crash-landing resupply drop (fires when a wave is fully cleared) ───────
+    crashStartScale:  5.0,    // visual scale while flying in (drawn big = feels closer)
+    crashSpeed:       2600,   // incoming speed (world units/sec)
+    crashLandRadius:  200,    // distance from player at which it "lands"/slows (scaled by FOV)
+    crashDrift:       260,    // residual momentum kept in the travel direction on landing
+    crashFriction:    0.90,   // per-frame velocity multiplier while drifting to rest (^(dt*60))
+    crashSettleTime:  1.2,    // time to settle scale back to 1.0 after landing
+    crashShakeFly:    0.6,    // continuous rumble intensity while incoming
+    crashShakeLand:   3.0,    // shake burst on landing
+    crashThrustInterval: 0.05,// looped thrust sound cadence (matches player movement)
+    crashTrailLength: 16,     // number of trail samples retained
 };
 
 // ─── State enum ───────────────────────────────────────────────────────────────
 export const CACHE_STATE = {
+    INCOMING:   'incoming',   // flying in from off-screen like a resupply drop
+    SETTLING:   'settling',   // landed — drifting to rest while scale returns to normal
     CLOSED:     'closed',
     FOUND:      'found',
     OPENING:    'opening',
@@ -76,6 +90,15 @@ export class SpaceCache {
 
         // Persistent CacheUI — created on first open, reused on subsequent opens
         this._cachedUI  = null;
+
+        // ── Crash-landing (resupply drop) state ───────────────────────────────
+        this.crashVX = 0;   this.crashVY = 0;
+        this.crashDirX = 0; this.crashDirY = 0;
+        this.crashScale = 1.0;
+        this.crashThrustTimer = 0;
+        this.crashSettleTimer = 0;
+        this.crashEnteredScreen = false;
+        this._trail = null;
 
         // ── Flying piece state (world-space, like Rubble) ─────────────────────
         // Piece positions are placeholders; open() sets them to centroid world offsets.
@@ -138,6 +161,77 @@ export class SpaceCache {
                 dy: sumY / count - h / 2,
             };
         } catch { return { dx: 0, dy: 0 }; }
+    }
+
+    // ── Kick off a crash-landing entrance ────────────────────────────────────
+    // Spawns far off-screen and flies toward a point near the player, then slows
+    // and drifts to rest once within crashLandRadius. Called right after construction.
+    startCrashLanding(playerX, playerY) {
+        const C = CACHE_CONFIG;
+        const fov = (this.game.currentState?.currentFovMult) || 1.0;
+        const landR = C.crashLandRadius * fov;
+
+        // Travel direction (random) — the cache streaks across along this heading
+        const travelAngle = Math.random() * Math.PI * 2;
+        const dirX = Math.cos(travelAngle), dirY = Math.sin(travelAngle);
+
+        // Land target: a point near the player but biased to the side so the drop
+        // doesn't come down right on top of them.
+        const offAngle = Math.random() * Math.PI * 2;
+        const offDist  = landR * (0.35 + Math.random() * 0.4);
+        const targetX  = playerX + Math.cos(offAngle) * offDist;
+        const targetY  = playerY + Math.sin(offAngle) * offDist;
+
+        // Spawn well beyond the screen border, back along the travel direction
+        const spawnDist = this._screenRadius() + 500 + Math.random() * 300;
+        this.worldX = targetX - dirX * spawnDist;
+        this.worldY = targetY - dirY * spawnDist;
+
+        this.crashVX = dirX * C.crashSpeed;
+        this.crashVY = dirY * C.crashSpeed;
+        this.crashDirX = dirX;
+        this.crashDirY = dirY;
+
+        this.crashScale = C.crashStartScale;
+        this.crashThrustTimer = 0;
+        this.crashSettleTimer = 0;
+        this.crashEnteredScreen = false;
+        this._trail = [];
+
+        // Point the chest along its heading (image-up faces the direction of motion)
+        this.cacheRotation = travelAngle + Math.PI / 2;
+
+        this.state = CACHE_STATE.INCOMING;
+        this.stateTimer = 0;
+    }
+
+    // Half the view diagonal in world units (accounts for FOV/zoom)
+    _screenRadius() {
+        const fov = (this.game.currentState?.currentFovMult) || 1.0;
+        const hw  = this.game.width  / 2 / this.game.worldScale;
+        const hh  = this.game.height / 2 / this.game.worldScale;
+        return Math.max(hw, hh) * fov;
+    }
+
+    _pushTrail(x, y) {
+        if (!this._trail) this._trail = [];
+        this._trail.push({ x, y });
+        if (this._trail.length > CACHE_CONFIG.crashTrailLength) this._trail.shift();
+    }
+
+    // Touchdown — keep a little momentum in the travel direction, then drift to rest
+    _land() {
+        const C = CACHE_CONFIG;
+        this.crashVX = this.crashDirX * C.crashDrift;
+        this.crashVY = this.crashDirY * C.crashDrift;
+        this.crashScale = 1.0;
+        this.crashSettleTimer = 0;
+        this.state = CACHE_STATE.SETTLING;
+        this.stateTimer = 0;
+
+        this.game.sounds.play('ship_explode', { volume: 0.8, x: this.worldX, y: this.worldY, maxDistance: 8000 });
+        this.game.currentState?._triggerShakeAt?.(this.worldX, this.worldY, C.crashShakeLand);
+        this.game.currentState?.triggerFlash?.('#ffcc44', 0.4, 0.2);
     }
 
     // ── Kick off the opening animation ───────────────────────────────────────
@@ -208,7 +302,11 @@ export class SpaceCache {
         // emptiedTimer keeps counting — despawn is 30s from open, not 30s from empty
     }
 
-    get isFound()     { return this.state !== CACHE_STATE.CLOSED; }
+    get isFound() {
+        return this.state !== CACHE_STATE.CLOSED
+            && this.state !== CACHE_STATE.INCOMING
+            && this.state !== CACHE_STATE.SETTLING;
+    }
     get interactRange() { return CACHE_CONFIG.interactRadius; }
 
     // Interact prompt shown when FOUND (ready to open) or OPEN (can re-open UI)
@@ -225,6 +323,69 @@ export class SpaceCache {
         this.stateTimer += dt;
 
         switch (this.state) {
+
+            case CACHE_STATE.INCOMING: {
+                const C = CACHE_CONFIG;
+                this.worldX += this.crashVX * dt;
+                this.worldY += this.crashVY * dt;
+                this._pushTrail(this.worldX, this.worldY);
+
+                const dxp = playerWorldX - this.worldX;
+                const dyp = playerWorldY - this.worldY;
+                const distP = Math.sqrt(dxp * dxp + dyp * dyp);
+                const screenR = this._screenRadius();
+                const landR = C.crashLandRadius * fov;
+
+                // Scale shrinks with distance: crashStartScale*fov at the screen border,
+                // exactly 1.0 by the time it reaches the land radius. Reads as the drop
+                // descending from "above" the play plane down into it. The start size is
+                // FOV-scaled so it stays equally "close" when the view is zoomed out.
+                const startScale = C.crashStartScale * fov;
+                const tScale = Math.max(0, Math.min(1,
+                    (distP - landR) / Math.max(1, screenR - landR)));
+                this.crashScale = 1.0 + (startScale - 1.0) * tScale;
+
+                // Boost whoosh the moment it crosses onto the player's screen
+                if (!this.crashEnteredScreen && distP < screenR) {
+                    this.crashEnteredScreen = true;
+                    this.game.sounds.play('boost', { volume: 0.7, x: this.worldX, y: this.worldY, maxDistance: 8000 });
+                }
+
+                // Thrust loop — re-triggered like player movement sounds
+                this.crashThrustTimer -= dt;
+                if (this.crashThrustTimer <= 0) {
+                    this.crashThrustTimer = C.crashThrustInterval;
+                    this.game.sounds.play('thrust', { volume: 0.4, x: this.worldX, y: this.worldY, maxDistance: 8000 });
+                }
+
+                // Continuous rumble, attenuated with distance to the player
+                this.game.currentState?._rumbleAt?.(this.worldX, this.worldY, C.crashShakeFly);
+
+                // Land on approach, or as a fallback if the player outran the drop
+                // (fly-in is ~1s; the timeout keeps it from streaking off forever).
+                if (distP <= landR || this.stateTimer > 4.0) this._land();
+                break;
+            }
+
+            case CACHE_STATE.SETTLING: {
+                const C = CACHE_CONFIG;
+                const friction = Math.pow(C.crashFriction, dt * 60);
+                this.crashVX *= friction;
+                this.crashVY *= friction;
+                this.worldX += this.crashVX * dt;
+                this.worldY += this.crashVY * dt;
+                this._pushTrail(this.worldX, this.worldY);
+
+                // Already at 1.0 scale on touchdown — SETTLING just drifts to rest.
+                this.crashSettleTimer += dt;
+                if (this.crashSettleTimer >= C.crashSettleTime) {
+                    this._trail = null;
+                    // Become a normal cache — proximity discovery takes over from here
+                    this.state = CACHE_STATE.CLOSED;
+                    this.stateTimer = 0;
+                }
+                break;
+            }
 
             case CACHE_STATE.CLOSED: {
                 const dx = playerWorldX - this.worldX;
@@ -343,6 +504,21 @@ export class SpaceCache {
 
         switch (this.state) {
 
+            case CACHE_STATE.INCOMING:
+            case CACHE_STATE.SETTLING: {
+                // Fiery meteor trail behind the drop
+                this._drawCrashTrail(ctx, camera);
+                if (this.imgClosed) {
+                    const s = camera.worldToScreen(this.worldX, this.worldY, cw, ch);
+                    const sw = ws * this.crashScale;
+                    if (!this._offscreen(s, sw, cw, ch)) {
+                        this._drawGlow(ctx, s, sw);
+                        this._drawSprite(ctx, this.imgClosed, s.x, s.y, sw, this.cacheRotation);
+                    }
+                }
+                break;
+            }
+
             case CACHE_STATE.CLOSED:
             case CACHE_STATE.FOUND: {
                 if (!this.imgClosed) break;
@@ -412,6 +588,32 @@ export class SpaceCache {
         ctx.restore();
     }
 
+    // Tapering fiery streak through recent positions — widest/brightest at the head.
+    _drawCrashTrail(ctx, camera) {
+        if (!this._trail || this._trail.length < 2) return;
+        const cw = this.game.width, ch = this.game.height, ws = this.game.worldScale;
+        const n = this._trail.length;
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        ctx.lineCap = 'round';
+        for (let i = 1; i < n; i++) {
+            const a  = this._trail[i - 1];
+            const b  = this._trail[i];
+            const s0 = camera.worldToScreen(a.x, a.y, cw, ch);
+            const s1 = camera.worldToScreen(b.x, b.y, cw, ch);
+            const t  = i / n; // 0 at tail .. ~1 at head
+            const alpha = t * t * 0.8 * this.alpha;
+            const width = (2 + t * 16) * ws * (this.crashScale * 0.6 + 0.4);
+            ctx.strokeStyle = `rgba(255, ${Math.floor(150 + 90 * t)}, 60, ${alpha})`;
+            ctx.lineWidth = width;
+            ctx.beginPath();
+            ctx.moveTo(s0.x, s0.y);
+            ctx.lineTo(s1.x, s1.y);
+            ctx.stroke();
+        }
+        ctx.restore();
+    }
+
     // centroid: {dx, dy} — offset in image pixels from bounding-box center to visual CoM.
     // We translate to (sx, sy) so that the centroid sits at the rotation origin, then draw
     // the image offset so its centroid aligns with that origin.
@@ -452,6 +654,12 @@ export class SpaceCache {
     deserialize(data) {
         this.worldX = data.worldX; this.worldY = data.worldY;
         this.state  = data.state  || CACHE_STATE.CLOSED;
+        // Crash entrance is a transient animation — never restore mid-flight
+        if (this.state === CACHE_STATE.INCOMING || this.state === CACHE_STATE.SETTLING) {
+            this.state = CACHE_STATE.CLOSED;
+            this.crashScale = 1.0;
+            this._trail = null;
+        }
         this.alpha  = data.alpha  ?? 1.0;
         this.emptiedTimer = data.emptiedTimer || 0;
         this.cacheRotation = data.cacheRotation ?? (Math.random() * Math.PI * 2);
@@ -515,5 +723,12 @@ export class CacheSpawner {
         const angle = Math.random() * Math.PI * 2;
         const dist  = distMin + Math.random() * (distMax - distMin);
         return new SpaceCache(this.game, px + Math.cos(angle) * dist, py + Math.sin(angle) * dist);
+    }
+
+    // Resupply drop that streaks in from off-screen and crash-lands near the player.
+    spawnCrash(px, py) {
+        const cache = new SpaceCache(this.game, px, py);
+        cache.startCrashLanding(px, py);
+        return cache;
     }
 }
