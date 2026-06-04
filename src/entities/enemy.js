@@ -12,7 +12,9 @@ const AI_STATE = {
     BREAK: 'break',       // Short turn to reposition
     REVERSAL: 'reversal', // Hard loop back when chased
     RECOVERY: 'recovery', // Boost away after collision
-    REPOSITION: 'reposition' // Back off to standoff distance
+    REPOSITION: 'reposition', // Back off to standoff distance
+    WINDUP: 'windup',     // Telegraph: slow, lock onto player, charge-up flash
+    RAM: 'ram'            // Locked straight-line dash (Starcore-style ram)
 };
 
 const RADIUS_CACHE = {};
@@ -97,6 +99,15 @@ export class Enemy {
         this.attackRange = 500;
         this.breakRange = 450; // Veer off distance — needs to be large enough to turn in time
         this.reversalTriggerDist = 350;
+
+        // Ram cycle (used by chargers: kamikaze, cthulhu, kamikaze-upgraded).
+        // Cruise in, telegraph with a wind-up, then commit to a locked dash the
+        // player can read and dodge — modelled on the Starcore ramming phase.
+        this.windupDuration = 0.45;       // Telegraph length (reaction window)
+        this.windupSpeedMult = 0.15;      // Near-stop while charging up
+        this.ramSpeed = 2200;             // Absolute dash speed (px/s) — big spike
+        this.ramCrossMult = 2.0;          // Dash travels this × distance-to-player at commit
+        this.ramTriggerScreenFrac = 0.9;  // Only wind up once on-screen (fraction of half-screen)
 
         // Attack pass: fire a burst during charge, then veer off
         this.attackPassCount = 0;     // 0 = first approach (normal), 1+ = dive attacks
@@ -195,13 +206,24 @@ export class Enemy {
 
         this._updateAIState(dt, dist, angleToPlayer, player, enemies, distMult);
 
+        // Starcore-style ram: a fully committed straight-line dash. Handled on
+        // its own path with NO obstacle avoidance and NO speed overrides, so it
+        // holds a dead-straight heading at full ram speed and overshoots clean
+        // across the screen. (Avoidance is what made it curve and stutter.)
+        if (this.state === AI_STATE.RAM) {
+            this._updateRamMovement(dt);
+            return;
+        }
+
         // 2. Determine Target Angle
         let targetAngle = this._getTargetAngle(angleToPlayer, dist);
 
         // 3. Environmental Avoidance Override
         // Calculate speed first so avoidance can use it for look-ahead
         let currentMaxSpeed = this.baseSpeed;
-        if (this.state === AI_STATE.RECOVERY) {
+        if (this.state === AI_STATE.WINDUP) {
+            currentMaxSpeed = this.baseSpeed * this.windupSpeedMult;
+        } else if (this.state === AI_STATE.RECOVERY) {
             currentMaxSpeed = this.baseSpeed * 1.8;
         } else if (this.state === AI_STATE.BREAK || this.state === AI_STATE.REPOSITION) {
             currentMaxSpeed = this.baseSpeed * 1.3;
@@ -289,6 +311,12 @@ export class Enemy {
     }
 
     _updateAIState(dt, dist, angleToPlayer, player, enemies, distMult) {
+        // Kamikaze-upgraded enemies don't do attack runs — they charge and ram.
+        if (this.upgradeType === 'kamikaze') {
+            this._updateRamCycle(dt, dist, angleToPlayer, distMult);
+            return;
+        }
+
         this.stateTimer -= dt;
 
         // Detection: Is the player tailing/chasing me?
@@ -371,10 +399,118 @@ export class Enemy {
                 }
                 break;
         }
+    }
 
-        if (this.upgradeType === 'kamikaze' && this.state !== AI_STATE.RECOVERY) {
-            this.state = AI_STATE.PURSUIT;
+    /**
+     * Charge-and-ram cycle shared by all charger types (kamikaze, cthulhu, and
+     * kamikaze-upgraded enemies). Modelled on the Starcore ramming phase:
+     * cruise toward the player, telegraph with a brief wind-up that locks the
+     * heading, then dash in a committed straight line the player can dodge.
+     */
+    _updateRamCycle(dt, dist, angleToPlayer, distMult) {
+        this.stateTimer -= dt;
+
+        // A collision knocked us into RECOVERY — let it play out, then re-engage.
+        if (this.state === AI_STATE.RECOVERY) {
+            if (this.stateTimer <= 0) this.state = AI_STATE.PURSUIT;
+            return;
         }
+
+        // Only wind up once the charger is actually on-screen, so the player can
+        // see it coming. worldScale already folds in the FOV zoom, so the distance
+        // from screen-centre to the nearest edge (in world units) is half the
+        // smaller screen dimension divided by worldScale.
+        const halfScreen = Math.min(this.game.width, this.game.height) * 0.5;
+        const triggerRange = (halfScreen / (this.game.worldScale || 1)) * this.ramTriggerScreenFrac;
+
+        switch (this.state) {
+            case AI_STATE.WINDUP:
+                // Tracked the player during the wind-up; now lock the heading and
+                // commit to the dash.
+                if (this.stateTimer <= 0) {
+                    this.state = AI_STATE.RAM;
+                    // Cap the dash to ramCrossMult × the distance to the player at
+                    // commit: it passes through and overshoots an equal distance,
+                    // no further. duration = travel distance / speed.
+                    this.stateTimer = (this.ramCrossMult * dist) / this.ramSpeed;
+                    // Lock the heading to the player's current bearing and snap to
+                    // it — the dash is dead-straight from the first frame.
+                    this.targetAngleOverride = angleToPlayer;
+                    this.angle = angleToPlayer;
+                    this.game.sounds.play('boost', { volume: 0.6, x: this.worldX, y: this.worldY });
+                }
+                break;
+
+            case AI_STATE.RAM:
+                // Locked straight-line dash — end on timeout, then peel away.
+                if (this.stateTimer <= 0) {
+                    this.state = AI_STATE.RECOVERY;
+                    this.stateTimer = 0.5 + Math.random() * 0.3;
+                    this.targetAngleOverride = angleToPlayer + Math.PI + (Math.random() - 0.5) * 0.8;
+                }
+                break;
+
+            default:
+                // PURSUIT: home in at cruise speed, then start the wind-up once in
+                // range. The wind-up's slow + flash + sound is the telegraph.
+                this.state = AI_STATE.PURSUIT;
+                if (dist < triggerRange) {
+                    this.state = AI_STATE.WINDUP;
+                    this.stateTimer = this.windupDuration;
+                    this.game.sounds.play('railgun_target', { volume: 0.45, x: this.worldX, y: this.worldY });
+                }
+                break;
+        }
+    }
+
+    /**
+     * Pure committed dash movement for the RAM state — mirrors the Starcore's
+     * dash: travel straight along the locked heading at full ram speed, no
+     * avoidance, no speed overrides, so it overshoots clean across the screen.
+     */
+    _updateRamMovement(dt) {
+        this.vx = Math.cos(this.angle) * this.ramSpeed + this.externalVx;
+        this.vy = Math.sin(this.angle) * this.ramSpeed + this.externalVy;
+
+        this.worldX += this.vx * dt;
+        this.worldY += this.vy * dt;
+
+        // Dampen external forces (dt-compensated), same as the normal path.
+        const externalFriction = Math.pow(0.99, dt * 60);
+        this.externalVx *= externalFriction;
+        this.externalVy *= externalFriction;
+    }
+
+    /**
+     * Pulsing red charge-up glow drawn over a charger's sprite during the ram
+     * wind-up. Intensifies as the wind-up completes so the player can read the
+     * incoming dash. Called by the draw() of every charger type.
+     */
+    _drawWindupFlash(ctx, screen) {
+        if (!this.img) return;
+        const isWindup = this.state === AI_STATE.WINDUP;
+        const isRam = this.state === AI_STATE.RAM;
+        if (!isWindup && !isRam) return;
+
+        // Wind-up ramps 0→1 as it completes; the ram holds at full intensity so
+        // the red glow doubles as the "I'm invincible, dodge me" tell.
+        const progress = isRam ? 1 : 1 - Math.max(0, this.stateTimer) / this.windupDuration;
+        const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 40);
+        const intensity = 0.35 + 0.65 * progress;
+
+        const canvas = this.img.canvas || this.img;
+        const w = (this.img.width || canvas.width) * this.game.worldScale;
+        const h = (this.img.height || canvas.height) * this.game.worldScale;
+
+        ctx.save();
+        ctx.translate(screen.x, screen.y);
+        ctx.rotate(this.angle + Math.PI / 2);
+        ctx.globalAlpha = intensity * pulse;
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.shadowBlur = (10 + 20 * progress) * this.game.worldScale;
+        ctx.shadowColor = '#ff3322';
+        ctx.drawImage(canvas, -w / 2, -h / 2, w, h);
+        ctx.restore();
     }
 
     _startVeerOff(angleToPlayer) {
@@ -402,10 +538,12 @@ export class Enemy {
             case AI_STATE.PURSUIT:
             case AI_STATE.ATTACK:
             case AI_STATE.REVERSAL:
+            case AI_STATE.WINDUP: // keep tracking the player while charging up
                 return angleToPlayer;
             case AI_STATE.BREAK:
             case AI_STATE.RECOVERY:
             case AI_STATE.REPOSITION:
+            case AI_STATE.RAM: // heading is locked at ram start — commit to the line
                 return this.targetAngleOverride;
             default:
                 return angleToPlayer;
@@ -725,7 +863,9 @@ export class Enemy {
     }
 
     hit(damage) {
-        if (this.invulnTimer > 0) return false;
+        // Invulnerable mid-ram, like the Starcore dash — the player has to dodge,
+        // not out-trade, the charge.
+        if (this.invulnTimer > 0 || this.state === AI_STATE.RAM) return false;
         this.health -= damage;
 
         if (this.game.currentState && this.game.currentState.spawnFloatingText) {
@@ -746,6 +886,11 @@ export class Enemy {
     }
 
     onCollision(player) {
+        // While ramming, plow straight through the player and keep overshooting —
+        // the dash is committed and invincible, like the Starcore. Don't recoil
+        // or turn around. (The collision handler still applies contact damage.)
+        if (this.state === AI_STATE.RAM) return;
+
         let damage = 20;
 
         // --- Shield Capacitor Impact Damage ---
@@ -901,6 +1046,9 @@ export class Enemy {
         }
 
         ctx.restore();
+
+        // Ram wind-up charge-up flash
+        this._drawWindupFlash(ctx, screen);
 
         // Draw targeting line for beam
         if (this.isTargeting) {
@@ -1194,14 +1342,8 @@ export class KamikazeEnemy extends Enemy {
         // Do nothing, they don't shoot
     }
 
-    _updateAIState(dt, dist, angleToPlayer, player) {
-        if (this.state === AI_STATE.RECOVERY) {
-            if (this.stateTimer <= 0) {
-                this.state = AI_STATE.PURSUIT;
-            }
-            return;
-        }
-        this.state = AI_STATE.PURSUIT; // Always chase
+    _updateAIState(dt, dist, angleToPlayer, player, enemies, distMult) {
+        this._updateRamCycle(dt, dist, angleToPlayer, distMult);
     }
 
     getSpawnOnDeath() {
@@ -1243,6 +1385,9 @@ export class KamikazeEnemy extends Enemy {
         const h = logicalH * this.game.worldScale;
         ctx.drawImage(canvas, -w / 2, -h / 2, w, h);
         ctx.restore();
+
+        // Ram wind-up charge-up flash
+        this._drawWindupFlash(ctx, screen);
     }
 }
 
@@ -1269,14 +1414,8 @@ export class CthulhuEnemy extends Enemy {
         // Do nothing, they don't shoot
     }
 
-    _updateAIState(dt, dist, angleToPlayer, player) {
-        if (this.state === AI_STATE.RECOVERY) {
-            if (this.stateTimer <= 0) {
-                this.state = AI_STATE.PURSUIT;
-            }
-            return;
-        }
-        this.state = AI_STATE.PURSUIT; // Always chase
+    _updateAIState(dt, dist, angleToPlayer, player, enemies, distMult) {
+        this._updateRamCycle(dt, dist, angleToPlayer, distMult);
     }
 
     getSpawnOnDeath() {
@@ -1315,6 +1454,9 @@ export class CthulhuEnemy extends Enemy {
         const h = logicalH * this.game.worldScale;
         ctx.drawImage(canvas, -w / 2, -h / 2, w, h);
         ctx.restore();
+
+        // Ram wind-up charge-up flash
+        this._drawWindupFlash(ctx, screen);
     }
 }
 

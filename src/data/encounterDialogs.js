@@ -1175,7 +1175,7 @@ export const DIALOG_SCENARIOS = [
                 chain: 'scan'
             },
             {
-                label: "Send payment details first - we'll settle before docking",
+                label: "Send payment details first",
                 chain: 'probe'
             }
         ]
