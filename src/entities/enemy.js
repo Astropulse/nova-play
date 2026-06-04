@@ -105,8 +105,8 @@ export class Enemy {
         // player can read and dodge — modelled on the Starcore ramming phase.
         this.windupDuration = 0.45;       // Telegraph length (reaction window)
         this.windupSpeedMult = 0.15;      // Near-stop while charging up
-        this.ramSpeed = 2200;             // Absolute dash speed (px/s) — big spike
-        this.ramCrossMult = 2.0;          // Dash travels this × distance-to-player at commit
+        this.ramSpeedMult = 2.3;          // Dash speed = this × cruise speed (scales with difficulty)
+        this.ramCrossMult = 2.3;          // Dash travels this × distance-to-player at commit
         this.ramTriggerScreenFrac = 0.9;  // Only wind up once on-screen (fraction of half-screen)
 
         // Attack pass: fire a burst during charge, then veer off
@@ -407,6 +407,12 @@ export class Enemy {
      * cruise toward the player, telegraph with a brief wind-up that locks the
      * heading, then dash in a committed straight line the player can dodge.
      */
+    // Dash speed scales off the enemy's effective cruise speed, which grows with
+    // difficulty — faster enemies ram faster.
+    _getRamSpeed() {
+        return this.baseSpeed * this.speedMult * this.ramSpeedMult;
+    }
+
     _updateRamCycle(dt, dist, angleToPlayer, distMult) {
         this.stateTimer -= dt;
 
@@ -432,7 +438,7 @@ export class Enemy {
                     // Cap the dash to ramCrossMult × the distance to the player at
                     // commit: it passes through and overshoots an equal distance,
                     // no further. duration = travel distance / speed.
-                    this.stateTimer = (this.ramCrossMult * dist) / this.ramSpeed;
+                    this.stateTimer = (this.ramCrossMult * dist) / this._getRamSpeed();
                     // Lock the heading to the player's current bearing and snap to
                     // it — the dash is dead-straight from the first frame.
                     this.targetAngleOverride = angleToPlayer;
@@ -469,8 +475,9 @@ export class Enemy {
      * avoidance, no speed overrides, so it overshoots clean across the screen.
      */
     _updateRamMovement(dt) {
-        this.vx = Math.cos(this.angle) * this.ramSpeed + this.externalVx;
-        this.vy = Math.sin(this.angle) * this.ramSpeed + this.externalVy;
+        const ramSpeed = this._getRamSpeed();
+        this.vx = Math.cos(this.angle) * ramSpeed + this.externalVx;
+        this.vy = Math.sin(this.angle) * ramSpeed + this.externalVy;
 
         this.worldX += this.vx * dt;
         this.worldY += this.vy * dt;
