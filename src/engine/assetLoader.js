@@ -32,8 +32,13 @@ export class AssetLoader {
 
         const baseDir = jsonUrl.slice(0, jsonUrl.lastIndexOf('/'));
         this.loading += atlas.pages.length;
+        this.atlasPrescale = atlas.prescale || 4;
 
-        this.atlasPages = await Promise.all(atlas.pages.map(p => new Promise((resolve, reject) => {
+        // Load this atlas's pages. Can be called more than once (e.g. a small
+        // boot atlas first, then the full atlas); each sprite stores a direct
+        // reference to its page image so page indices never collide between
+        // atlases. Later calls merge into the same key tables.
+        const pages = await Promise.all(atlas.pages.map(p => new Promise((resolve, reject) => {
             const img = new Image();
             img.onload = async () => {
                 if (img.decode) { try { await img.decode(); } catch { /* drawImage still works */ } }
@@ -43,10 +48,18 @@ export class AssetLoader {
             img.onerror = () => reject(new Error(`Failed to load atlas page: ${p.file}`));
             img.src = `${baseDir}/${p.file}`;
         })));
+        this.atlasPages.push(...pages);
 
-        this.atlasImages = atlas.images || {};
-        this.atlasAnims = atlas.animations || {};
-        this.atlasPrescale = atlas.prescale || 4;
+        if (!this.atlasImages) this.atlasImages = {};
+        if (!this.atlasAnims) this.atlasAnims = {};
+        for (const [key, m] of Object.entries(atlas.images || {})) {
+            this.atlasImages[key] = { x: m.x, y: m.y, w: m.w, h: m.h, img: pages[m.page] };
+        }
+        for (const [key, a] of Object.entries(atlas.animations || {})) {
+            this.atlasAnims[key] = {
+                frames: a.frames.map(f => ({ x: f.x, y: f.y, w: f.w, h: f.h, delay: f.delay, img: pages[f.page] })),
+            };
+        }
     }
 
     // Slice a rect out of its atlas page into a prescaled canvas, matching the
@@ -60,7 +73,7 @@ export class AssetLoader {
         ctx.imageSmoothingEnabled = false;
         ctx.webkitImageSmoothingEnabled = false;
         ctx.msImageSmoothingEnabled = false;
-        ctx.drawImage(this.atlasPages[meta.page], meta.x, meta.y, meta.w, meta.h,
+        ctx.drawImage(meta.img, meta.x, meta.y, meta.w, meta.h,
             0, 0, canvas.width, canvas.height);
         return { canvas, width: meta.w, height: meta.h, prescale };
     }

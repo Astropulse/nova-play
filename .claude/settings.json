@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(node --check src/states/menuState.js)",
-      "Bash(node --check src/entities/spaceCache.js)"
+      "Bash(node --check src/entities/spaceCache.js)",
+      "Bash(unset ELECTRON_RUN_AS_NODE)",
+      "Bash(timeout 18 npx electron scripts/_perf_test.cjs)"
     ]
   }
 }

@@ -40,6 +40,11 @@ export class SoundManager {
         this.musicBaseVolume = 0.4;
         this.unlocked = false;
 
+        // Background music preloading (warms tracks one-by-one on the title
+        // screen so there's no fetch delay when a track first plays).
+        this._musicPreloadStarted = false;
+        this._destroyed = false;
+
         // Hard lock — when true, NO music changes are allowed (setTargetState, playSpecific, restore, stop all blocked)
         this.musicLocked = false;
 
@@ -88,11 +93,16 @@ export class SoundManager {
         this.combatTracks = paths.map(p => this._createMusicElement(p));
     }
 
-    _createMusicElement(path) {
-        const audio = new Audio(path);
-        audio.preload = 'auto';
+    _createMusicElement(path, preload = 'none') {
+        // Lazy by default: with preload 'none' the browser doesn't fetch the
+        // file until the track is first played, so only the title song and
+        // SFX load at startup. Set preload BEFORE src so no eager fetch starts.
+        // Pass 'auto' for tracks that must be ready immediately (title music).
+        const audio = new Audio();
+        audio.preload = preload;
         audio.loop = false;
         audio.crossOrigin = "anonymous";
+        audio.src = path;
 
         let trackGain = null;
         if (this.ctx) {
@@ -310,11 +320,63 @@ export class SoundManager {
     }
 
     registerTitleMusic(path) {
-        this.titleTrack = this._createMusicElement(path);
+        // Eager: the title song plays on the menu, so it loads at startup.
+        this.titleTrack = this._createMusicElement(path, 'auto');
     }
 
     registerGameOverMusic(path) {
         this.gameOverTrack = this._createMusicElement(path);
+    }
+
+    // Warm every (lazy) music track in the background, one at a time. Called
+    // from the title screen, where the player typically spends several seconds
+    // making selections — more than enough time to buffer the tracks so the
+    // first play of exploration/combat/boss/game-over music has no delay.
+    // Sequential (not parallel) to avoid the bandwidth contention that the old
+    // all-at-once eager preload caused. Safe to call repeatedly (no-op after
+    // the first call); the title song is excluded since it loads eagerly.
+    async preloadAllMusic() {
+        if (this._musicPreloadStarted) return;
+        this._musicPreloadStarted = true;
+
+        const tracks = [
+            ...this.explorationTracks,
+            ...this.combatTracks,
+            ...Object.values(this.bossTracks),
+            this.gameOverTrack,
+        ].filter(Boolean);
+
+        for (const track of tracks) {
+            if (this._destroyed) return;
+            await this._preloadTrack(track);
+        }
+    }
+
+    // Buffer a single track to the point it can play through, then resolve.
+    // Resolves early on error or after a timeout so one slow/failed track can't
+    // stall the rest of the queue.
+    _preloadTrack(audio) {
+        return new Promise((resolve) => {
+            if (audio.readyState >= 4) { resolve(); return; } // HAVE_ENOUGH_DATA
+
+            let timer = null;
+            const finish = () => {
+                if (timer === null) return;
+                clearTimeout(timer);
+                timer = null;
+                audio.removeEventListener('canplaythrough', finish);
+                audio.removeEventListener('error', finish);
+                resolve();
+            };
+
+            audio.addEventListener('canplaythrough', finish);
+            audio.addEventListener('error', finish);
+            timer = setTimeout(finish, 20000);
+
+            // Switching preload from 'none' to 'auto' starts buffering the
+            // already-assigned src (no .load() — that would fetch twice).
+            audio.preload = 'auto';
+        });
     }
 
     playGameOverMusic() {
@@ -436,6 +498,7 @@ export class SoundManager {
     }
 
     destroy() {
+        this._destroyed = true;
         this.stopMusic();
         if (this.ctx) {
             this.ctx.close().catch(err => console.error('Failed to close AudioContext:', err));

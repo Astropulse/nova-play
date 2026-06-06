@@ -89,19 +89,36 @@ export class Game {
 
 
     async init() {
-        // Preferred path: load everything from the packed atlas (one fetch per
-        // page + atlas.json). Falls back to per-file loading if the atlas is
-        // missing or fails to load (e.g. before running `npm run pack-assets`).
+        // Two-phase atlas load. The small boot atlas holds just the title-screen
+        // sprites, so the menu appears as fast as possible; the full atlas (all
+        // sprites + animations) streams in behind it while the player is on the
+        // title screen. `_atlasReady` resolves when the full set is available
+        // (MenuState waits on the starfield sprites before building the World).
+        let bootLoaded = false;
         try {
-            await this.assets.loadAtlas('Assets/atlas/atlas.json');
+            await this.assets.loadAtlas('Assets/atlas/atlas_boot.json');
+            bootLoaded = true;
         } catch (err) {
+            console.warn('[Game] Boot atlas unavailable:', err);
+        }
+
+        // Full atlas is self-contained (it includes the boot sprites too), with
+        // a per-file fallback if the atlas hasn't been packed yet.
+        this._atlasReady = this.assets.loadAtlas('Assets/atlas/atlas.json').catch(async (err) => {
             console.warn('[Game] Atlas unavailable, falling back to per-file asset loading:', err);
             await this.assets.loadAll(this._getAssetManifest());
             await this.assets.loadAllGifs(this._getGifManifest());
-        }
+        });
 
-        // Register sound effects
-        await Promise.all([
+        // If the boot atlas didn't load, we can't show the menu until the full
+        // set is ready.
+        if (!bootLoaded) await this._atlasReady;
+
+        // Register sound effects in the background. SFX aren't needed until the
+        // player interacts (which is also what unlocks audio), so we don't block
+        // the title screen on ~50 fetch+decode calls. play() safely no-ops for
+        // any SFX that hasn't finished decoding yet.
+        this._sfxReady = Promise.all([
             this.sounds.register('laser', [
                 'Assets/Sounds/Effects/laser_ball_1.wav',
                 'Assets/Sounds/Effects/laser_ball_2.wav',

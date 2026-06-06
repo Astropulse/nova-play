@@ -48,7 +48,14 @@ export class MenuState {
         // World + Camera off to the new PlayingState, making the transition
         // visually seamless. Seeded randomly per visit so the title isn't
         // always the same patch of space.
-        this.world = new World(this.game, Math.floor(Math.random() * 1000000));
+        // Defer the World build (WebGL texture atlas + starfield generation,
+        // ~200ms) until the title screen has painted once. The menu UI appears
+        // immediately over a black background, then the starfield builds on the
+        // first update after the first draw (see _ensureWorld / _painted).
+        this.world = null;
+        this._worldSeed = Math.floor(Math.random() * 1000000);
+        this._painted = false;
+        this._worldFade = 0; // 0..1 fade-in once the World is built, so it doesn't pop in hard
         this.camera = new Camera(this.game);
 
         this.time = 0;
@@ -102,6 +109,9 @@ export class MenuState {
         document.body.classList.remove('playing');
         this._computeLayout();
         this.game.sounds.playTitleMusic();
+        // Warm the rest of the music (one track at a time) while the player is
+        // on the title screen, so later tracks play with no fetch delay.
+        this.game.sounds.preloadAllMusic();
         window.addEventListener('mousedown', this._onMouseDown);
     }
 
@@ -111,6 +121,16 @@ export class MenuState {
 
     update(dt) {
         this.time += dt;
+
+        // Build the starfield once the menu has painted at least one frame, so
+        // the title screen shows immediately and the ~200ms World build lands
+        // on the following frame instead of blocking the first paint.
+        if (this._painted) this._ensureWorld();
+        // Ease the starfield in over ~0.6s once it's built.
+        if (this.world && this._worldFade < 1) {
+            this._worldFade = Math.min(1, this._worldFade + dt / 0.6);
+        }
+
         const mouse = this.game.getMousePos();
 
         this._computeLayout();
@@ -412,8 +432,19 @@ export class MenuState {
     // drawing the HUD inside the same zoom transform so it scales with the
     // world. The Player+HUD pair we build here gets handed to PlayingState
     // so the visual is literally continuous (same objects, same state).
+    // Build the deferred World on demand (idempotent). The starfield sprites
+    // live in the full atlas, which loads in the background after the boot
+    // atlas — so we wait until they're available before building.
+    _ensureWorld() {
+        if (this.world) return;
+        if (!this.game.assets.get('starfield_0')) return; // full atlas not ready yet
+        this.world = new World(this.game, this._worldSeed);
+    }
+
     _beginStartTransition() {
         if (this.transition) return;
+        this._ensureWorld();
+        if (!this.world) return; // full atlas still loading — ignore the click until ready
         const shipCenter = this._currentShipCenter();
         const transitionPlayer = new Player(this.game, SHIPS[this.selectedShipIndex]);
         const transitionHud = new HUD(this.game, transitionPlayer);
@@ -568,7 +599,21 @@ export class MenuState {
         const baseWorldScale = game.worldScale;
         const renderScale = game.uiScale + (baseWorldScale - game.uiScale) * animT;
         game.worldScale = renderScale;
-        this.world.draw(ctx, this.camera, null, this.time);
+        // World may not be built yet on the very first frame; the game loop has
+        // already cleared to black, so the menu UI simply draws over black until
+        // the starfield comes up next frame.
+        if (this.world) {
+            this.world.draw(ctx, this.camera, null, this.time);
+            // Fade the starfield in from black so it doesn't pop in hard. Drawn
+            // over the world but under the UI, so only the background fades.
+            if (this._worldFade < 1) {
+                ctx.save();
+                ctx.globalAlpha = 1 - this._worldFade;
+                ctx.fillStyle = '#000';
+                ctx.fillRect(0, 0, cw, ch);
+                ctx.restore();
+            }
+        }
 
         const ship = SHIPS[this.selectedShipIndex];
         const shipSize = game.spriteSize(ship.assets.still, game.uiScale);
@@ -684,6 +729,9 @@ export class MenuState {
 
         game.worldScale = baseWorldScale;
         ctx.restore();
+
+        // First paint done — update() will build the World on the next frame.
+        this._painted = true;
     }
 
 

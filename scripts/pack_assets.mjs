@@ -45,6 +45,19 @@ const PRESCALE = 4;                              // recorded for the loader
 // A page must satisfy both the dimension cap and the memory budget.
 const MAX_AREA = Math.min(MAX_DIM * MAX_DIM, Math.floor(MEMORY_BUDGET_BYTES / 4));
 
+// Sprites the title screen draws. These are packed into a small extra "boot"
+// atlas (atlas_boot.*) that the game loads first so the menu appears fast; the
+// full atlas (which also contains these) streams in behind it. Keep in sync
+// with what MenuState.draw renders — a missing key just means that sprite waits
+// for the full atlas (brief), never a crash. Starfield/World sprites are NOT
+// here on purpose: the World build is deferred, so it can wait for the full atlas.
+const BOOT_KEYS = [
+    'title', 'pixel_wordmark',
+    'left_arrow_off', 'left_arrow_on', 'right_arrow_off', 'right_arrow_on',
+    'start_flight_off', 'start_flight_on', 'tutorial_off', 'tutorial_on',
+    'fighter_still', 'cruiser_still', 'bruiser_still', 'looper_still',
+];
+
 // ============================================================================
 // PNG decoding (8-bit; color types 0/2/3/4/6, all filters, non-interlaced)
 // ============================================================================
@@ -504,14 +517,37 @@ function main() {
         for (const d of derived) console.log('   ' + d);
     }
 
-    // Build the flat rect list (one rect per image, one per animation frame).
+    if (!existsSync(OUT_DIR)) mkdirSync(OUT_DIR, { recursive: true });
+
+    // Full atlas: every sprite + animation (self-contained).
+    writeAtlas('atlas.json', 'atlas', images, animations);
+
+    // Boot atlas: just the title-screen sprites, so the menu loads fast. These
+    // keys are also in the full atlas; the small duplication is the cost of a
+    // quick first paint.
+    const bootImages = {};
+    const missing = [];
+    for (const key of BOOT_KEYS) {
+        if (images[key]) bootImages[key] = images[key];
+        else missing.push(key);
+    }
+    if (missing.length) console.warn(`\n  ! boot keys not found as images (skipped): ${missing.join(', ')}`);
+    writeAtlas('atlas_boot.json', 'atlas_boot', bootImages, {});
+
+    console.log('\nDone.');
+}
+
+// Pack the given images + animations into pages and write them plus a json
+// manifest. Returns nothing; logs a short summary.
+function writeAtlas(jsonName, pagePrefix, images, animations) {
+    // Flat rect list (one rect per image, one per animation frame).
     const rects = [];
     for (const [key, img] of Object.entries(images))
         rects.push({ key, kind: 'image', w: img.width, h: img.height, src: img.rgba });
     for (const [key, frames] of Object.entries(animations))
         frames.forEach((f, i) => rects.push({ key, kind: 'frame', frame: i, w: f.width, h: f.height, src: f.rgba, delay: f.delay }));
 
-    console.log(`\nPacking ${rects.length} rects (${Object.keys(images).length} images, ${Object.keys(animations).length} animations)...`);
+    console.log(`\nPacking ${jsonName}: ${rects.length} rects (${Object.keys(images).length} images, ${Object.keys(animations).length} animations)...`);
     const pageDims = packRects(rects);
 
     // Allocate page buffers and blit every rect in.
@@ -527,16 +563,15 @@ function main() {
     }
 
     // Write pages.
-    if (!existsSync(OUT_DIR)) mkdirSync(OUT_DIR, { recursive: true });
     const pageFiles = [];
     pageDims.forEach((d, i) => {
-        const name = `atlas_${i}.png`;
+        const name = `${pagePrefix}_${i}.png`;
         writeFileSync(join(OUT_DIR, name), encodePNG(d.w, d.h, pageBuffers[i]));
         pageFiles.push({ file: name, w: d.w, h: d.h });
         console.log(`  ${name}: ${d.w}x${d.h}  (${(d.w * d.h * 4 / 1048576).toFixed(1)} MB decoded)`);
     });
 
-    // Build atlas.json.
+    // Build manifest.
     const atlas = { version: 1, prescale: PRESCALE, pages: pageFiles, images: {}, animations: {} };
     for (const r of rects) {
         if (r.kind === 'image') {
@@ -546,12 +581,7 @@ function main() {
                 { page: r.page, x: r.x, y: r.y, w: r.w, h: r.h, delay: r.delay };
         }
     }
-    writeFileSync(join(OUT_DIR, 'atlas.json'), JSON.stringify(atlas));
-
-    const totalBytes = pageDims.reduce((s, d) => s + d.w * d.h * 4, 0);
-    console.log(`\nWrote ${pageFiles.length} page(s) + atlas.json to Assets/atlas/`);
-    console.log(`Total decoded footprint: ${(totalBytes / 1048576).toFixed(1)} MB across ${pageFiles.length} page(s)`);
-    console.log('Done.');
+    writeFileSync(join(OUT_DIR, jsonName), JSON.stringify(atlas));
 }
 
 main();
