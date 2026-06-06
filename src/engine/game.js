@@ -89,8 +89,16 @@ export class Game {
 
 
     async init() {
-        await this.assets.loadAll(this._getAssetManifest());
-        await this.assets.loadAllGifs(this._getGifManifest());
+        // Preferred path: load everything from the packed atlas (one fetch per
+        // page + atlas.json). Falls back to per-file loading if the atlas is
+        // missing or fails to load (e.g. before running `npm run pack-assets`).
+        try {
+            await this.assets.loadAtlas('Assets/atlas/atlas.json');
+        } catch (err) {
+            console.warn('[Game] Atlas unavailable, falling back to per-file asset loading:', err);
+            await this.assets.loadAll(this._getAssetManifest());
+            await this.assets.loadAllGifs(this._getGifManifest());
+        }
 
         // Register sound effects
         await Promise.all([

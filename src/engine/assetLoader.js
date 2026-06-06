@@ -6,6 +6,63 @@ export class AssetLoader {
         this.cache = new Map();
         this.loading = 0;
         this.loaded = 0;
+
+        // Atlas state (populated by loadAtlas). When present, get() lazily
+        // slices + prescales sprites out of the atlas pages on first access.
+        this.atlasPages = [];      // HTMLImageElement per page
+        this.atlasImages = null;   // key -> { page, x, y, w, h }
+        this.atlasAnims = null;    // key -> { frames: [{ page, x, y, w, h, delay }] }
+        this.atlasPrescale = 4;
+    }
+
+    /**
+     * Load the packed atlas: fetch atlas.json, load every page image, and
+     * register the sprite/animation rects. Individual sprites are NOT decoded
+     * here — they're sliced and prescaled lazily on first get(), which keeps
+     * startup fast and memory bounded even when large unused assets are packed.
+     *
+     * Throws if the atlas can't be fetched/parsed so callers can fall back to
+     * the per-file manifest loader.
+     * @param {string} jsonUrl Path to atlas.json (e.g. 'Assets/atlas/atlas.json').
+     */
+    async loadAtlas(jsonUrl) {
+        const resp = await fetch(jsonUrl);
+        if (!resp.ok) throw new Error(`Atlas fetch failed: ${resp.status} ${jsonUrl}`);
+        const atlas = await resp.json();
+
+        const baseDir = jsonUrl.slice(0, jsonUrl.lastIndexOf('/'));
+        this.loading += atlas.pages.length;
+
+        this.atlasPages = await Promise.all(atlas.pages.map(p => new Promise((resolve, reject) => {
+            const img = new Image();
+            img.onload = async () => {
+                if (img.decode) { try { await img.decode(); } catch { /* drawImage still works */ } }
+                this.loaded++;
+                resolve(img);
+            };
+            img.onerror = () => reject(new Error(`Failed to load atlas page: ${p.file}`));
+            img.src = `${baseDir}/${p.file}`;
+        })));
+
+        this.atlasImages = atlas.images || {};
+        this.atlasAnims = atlas.animations || {};
+        this.atlasPrescale = atlas.prescale || 4;
+    }
+
+    // Slice a rect out of its atlas page into a prescaled canvas, matching the
+    // output of loadImage (sharp nearest-neighbour upscale).
+    _materializeRect(meta) {
+        const prescale = this.atlasPrescale;
+        const canvas = document.createElement('canvas');
+        canvas.width = meta.w * prescale;
+        canvas.height = meta.h * prescale;
+        const ctx = canvas.getContext('2d');
+        ctx.imageSmoothingEnabled = false;
+        ctx.webkitImageSmoothingEnabled = false;
+        ctx.msImageSmoothingEnabled = false;
+        ctx.drawImage(this.atlasPages[meta.page], meta.x, meta.y, meta.w, meta.h,
+            0, 0, canvas.width, canvas.height);
+        return { canvas, width: meta.w, height: meta.h, prescale };
     }
 
     loadImage(key, path) {
@@ -64,7 +121,25 @@ export class AssetLoader {
     }
 
     get(key) {
-        return this.cache.get(key);
+        const cached = this.cache.get(key);
+        if (cached) return cached;
+
+        // Lazily materialize from the atlas on first access.
+        if (this.atlasImages && this.atlasImages[key]) {
+            const asset = this._materializeRect(this.atlasImages[key]);
+            this.cache.set(key, asset);
+            return asset;
+        }
+        if (this.atlasAnims && this.atlasAnims[key]) {
+            const frames = this.atlasAnims[key].frames.map(f => {
+                const frame = this._materializeRect(f);
+                frame.delay = f.delay;
+                return frame;
+            });
+            this.cache.set(key, frames);
+            return frames;
+        }
+        return undefined;
     }
 
     getProgress() {
@@ -90,6 +165,13 @@ export class AssetLoader {
             }
         }
         this.cache.clear();
+
+        // Release atlas page images + rect tables.
+        for (const page of this.atlasPages) page.src = '';
+        this.atlasPages = [];
+        this.atlasImages = null;
+        this.atlasAnims = null;
+
         this.loading = 0;
         this.loaded = 0;
     }
