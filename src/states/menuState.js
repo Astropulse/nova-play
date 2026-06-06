@@ -16,6 +16,14 @@ export class MenuState {
         this.game = game;
         this.selectedShipIndex = 0;
 
+        // Reset the dynamic FOV scale. PlayingState inflates worldScaleModifier
+        // (and thus worldScale) as the player picks up FOV upgrades; that state
+        // lives on `game` and persists after a run ends. Without this reset, the
+        // Start Flight transition — which zooms the world out to the current
+        // game.worldScale — would target the previous run's blown-out FOV.
+        this.game.worldScaleModifier = 1.0;
+        this.game.resize();
+
         // Button hit areas (screen pixels)
         this.leftArrowBtn = { x: 0, y: 0, w: 0, h: 0, hovered: false };
         this.rightArrowBtn = { x: 0, y: 0, w: 0, h: 0, hovered: false };
