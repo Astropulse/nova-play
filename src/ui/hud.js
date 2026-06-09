@@ -264,7 +264,7 @@ export class HUD {
             const cy = Math.floor((rh / 2) / uiScale) * uiScale;
 
             const fovMult = (this.game.currentState && this.game.currentState.currentFovMult) || 1.0;
-            const radarRange = 2000 * (fovMult * 0.75);
+            const radarRange = 2800 * (fovMult * 0.75);
             const radarRangeSq = radarRange * radarRange;
             const radarSize = (rw / 2) - (2 * uiScale);
 

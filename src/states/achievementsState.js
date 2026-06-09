@@ -453,6 +453,12 @@ export class AchievementsState {
         const gridBlockH = rowsPerPage * cardH + Math.max(0, rowsPerPage - 1) * rowGap;
         const gridTop = listTop + Math.max(0, Math.floor((listH - gridBlockH) / 2));
 
+        // Achievements unlocked this run (when opened from the pause menu) or
+        // last run (from the title) get a "NEW" marker on their card. Mirrors
+        // the run/lifetime split the progress bars use above.
+        const inRun = !!this.returnState;
+        const recentUnlocks = mgr ? mgr.getRecentUnlocks(inRun) : null;
+
         const gpActive = game.input.isGamepadActive();
         for (let i = startIdx; i < endIdx; i++) {
             const localIdx = i - startIdx;
@@ -462,6 +468,7 @@ export class AchievementsState {
             const y = gridTop + row * (cardH + rowGap);
             const ach = ACHIEVEMENTS[i];
             const isUnlocked = mgr ? mgr.unlocked.has(ach.id) : false;
+            const isRecent = isUnlocked && !!recentUnlocks && recentUnlocks.has(ach.id);
 
             // Hit rect for controller spatial nav. Pushed before the card
             // draws so an early bail-out (none today) couldn't strand update()
@@ -469,7 +476,7 @@ export class AchievementsState {
             const cardId = `card:${i}`;
             this._cardRects.push({ id: cardId, x, y, w: cardW, h: cardH });
 
-            this._drawCard(ctx, ach, isUnlocked, x, y, cardW, cardH, uiScale);
+            this._drawCard(ctx, ach, isUnlocked, x, y, cardW, cardH, uiScale, isRecent);
 
             // Controller focus ring — sits just outside the card so it doesn't
             // fight the card's own 1px border. Only shown while the gamepad is
@@ -558,7 +565,7 @@ export class AchievementsState {
 
     // Fixed-size card. Description and flavor wrap to two lines each
     // (ellipsized on overflow) so a 3-column grid still reads cleanly.
-    _drawCard(ctx, ach, unlocked, x, y, w, h, uiScale) {
+    _drawCard(ctx, ach, unlocked, x, y, w, h, uiScale, isRecent = false) {
         const showDescription = unlocked || !ach.hidden;
         const padX = Math.floor(uiScale * 6);
 
@@ -581,6 +588,13 @@ export class AchievementsState {
             const probeLabel = '★ TRACKED';
             topRightReservedW = Math.ceil(ctx.measureText(probeLabel).width)
                 + Math.floor(uiScale * 6); // matches the button's interior padding
+        } else if (isRecent) {
+            // Unlocked cards normally have no top-right chrome, but a recent
+            // unlock shows a "NEW" chip there — reserve room so the title can't
+            // run under it.
+            ctx.font = `${Math.floor(4 * uiScale)}px Astro4x`;
+            topRightReservedW = Math.ceil(ctx.measureText('NEW').width)
+                + Math.floor(uiScale * 6);
         }
         const nameMaxW = textMaxW - topRightReservedW - Math.floor(uiScale * 6);
 
@@ -634,8 +648,9 @@ export class AchievementsState {
             }
         }
 
-        // Card border
-        ctx.strokeStyle = unlocked ? '#22556a' : '#1a2233';
+        // Card border — recent unlocks get a brighter cyan accent so they
+        // stand out from the wall of earned cards.
+        ctx.strokeStyle = isRecent ? '#44ddff' : (unlocked ? '#22556a' : '#1a2233');
         ctx.lineWidth = 1;
         ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
 
@@ -709,7 +724,36 @@ export class AchievementsState {
         // flavor hint to the HUD.
         if (!unlocked) {
             this._drawTrackButton(ctx, ach, x, y, w, h, textRightEdge, firstNameTop, nameLineH, uiScale);
+        } else if (isRecent) {
+            // "NEW" marker for achievements unlocked this run / last run.
+            // Occupies the top-right slot the track button uses on locked cards.
+            this._drawNewBadge(ctx, textRightEdge, firstNameTop, nameLineH, uiScale);
         }
+    }
+
+    // Small "NEW" chip pinned to the top-right of a recently-unlocked card,
+    // centered on the first name line so it reads as a tag beside the title.
+    _drawNewBadge(ctx, textRightEdge, firstNameTop, nameLineH, uiScale) {
+        const label = 'NEW';
+        ctx.font = `${Math.floor(4 * uiScale)}px Astro4x`;
+        const padX = Math.floor(uiScale * 3);
+        const labelW = Math.ceil(ctx.measureText(label).width);
+        const btnW = labelW + padX * 2;
+        const btnH = Math.floor(uiScale * 8);
+        const btnX = Math.floor(textRightEdge - btnW);
+        const btnY = Math.floor(firstNameTop + (nameLineH - btnH) / 2);
+
+        ctx.fillStyle = 'rgba(20, 50, 66, 0.95)';
+        ctx.fillRect(btnX, btnY, btnW, btnH);
+        ctx.strokeStyle = '#44ddff';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(btnX + 0.5, btnY + 0.5, btnW - 1, btnH - 1);
+
+        ctx.fillStyle = '#44ddff';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(label, btnX + btnW / 2, btnY + btnH / 2 + Math.floor(uiScale * 0.5));
+        ctx.textBaseline = 'alphabetic';
     }
 
     _drawTrackButton(ctx, ach, x, y, w, h, textRightEdge, firstNameTop, nameLineH, uiScale) {

@@ -13,6 +13,14 @@ export class AchievementManager {
         this.run = this._newRunState();
         this.unlocked = new Set();
 
+        // Achievement ids unlocked during the live run vs. the most recently
+        // finished run. The achievements menu marks these "NEW" — runUnlocked
+        // while a run is in progress, lastRunUnlocked once back on the title.
+        // Both persist so the markers survive a save/resume or a reload at the
+        // title screen.
+        this.runUnlocked = new Set();
+        this.lastRunUnlocked = new Set();
+
         // Player-pinned achievements rendered on the in-game HUD. Persisted
         // alongside unlocks. Cleared automatically when the achievement is
         // unlocked (see _unlock).
@@ -136,10 +144,17 @@ export class AchievementManager {
         switch (event) {
             case 'run_started':
                 this.run = this._newRunState();
+                // Fresh run — clear the "unlocked this run" markers. Anything
+                // earned in the run just finishing already moved to
+                // lastRunUnlocked on 'run_ended'.
+                this.runUnlocked = new Set();
                 break;
 
             case 'run_ended': {
                 this.lifetime.runsCompleted++;
+                // Snapshot this run's unlocks as the "last run" set so the
+                // title-screen menu can mark them after we leave the run.
+                this.lastRunUnlocked = new Set(this.runUnlocked);
                 const payloadTime = (payload && typeof payload.time === 'number') ? payload.time : 0;
                 if (payloadTime > 0) {
                     this.lifetime.timeAlive += payloadTime;
@@ -473,6 +488,9 @@ export class AchievementManager {
     _unlock(ach) {
         if (this.unlocked.has(ach.id)) return;
         this.unlocked.add(ach.id);
+        // Tag it as unlocked during the current run so the menu can mark it
+        // "NEW" (in-run now, last-run once the run ends).
+        this.runUnlocked.add(ach.id);
         // Auto-untrack: once it's earned, the HUD shouldn't keep promoting it.
         this.tracked.delete(ach.id);
         this.toastQueue.push(ach);
@@ -522,6 +540,12 @@ export class AchievementManager {
             if (this.tracked.has(ach.id) && !this.unlocked.has(ach.id)) out.push(ach);
         }
         return out;
+    }
+
+    // Set of achievement ids the menu should flag "NEW": the live run's
+    // unlocks while a run is in progress, otherwise the most recent run's.
+    getRecentUnlocks(inRun) {
+        return inRun ? this.runUnlocked : this.lastRunUnlocked;
     }
 
     // Microtask-debounced save — multiple notifies in the same frame all
@@ -638,7 +662,9 @@ export class AchievementManager {
             const data = {
                 lifetime: this.lifetime,
                 unlocked: [...this.unlocked],
-                tracked: [...this.tracked]
+                tracked: [...this.tracked],
+                runUnlocked: [...this.runUnlocked],
+                lastRunUnlocked: [...this.lastRunUnlocked]
             };
             localStorage.setItem(AchievementManager.STORAGE_KEY, JSON.stringify(data));
         } catch (err) {
@@ -671,6 +697,15 @@ export class AchievementManager {
                 // use for tracking it any more.
                 this.tracked = new Set(data.tracked.filter(id => !this.unlocked.has(id)));
             }
+            // Recent-unlock markers. Filter against the unlocked set so a
+            // hand-edited or stale save can't flag something as "NEW" that
+            // isn't actually earned.
+            if (Array.isArray(data.runUnlocked)) {
+                this.runUnlocked = new Set(data.runUnlocked.filter(id => this.unlocked.has(id)));
+            }
+            if (Array.isArray(data.lastRunUnlocked)) {
+                this.lastRunUnlocked = new Set(data.lastRunUnlocked.filter(id => this.unlocked.has(id)));
+            }
         } catch (err) {
             console.error('Failed to load achievements:', err);
         }
@@ -682,6 +717,8 @@ export class AchievementManager {
         this.lifetime = this._newLifetimeState();
         this.run = this._newRunState();
         this.unlocked = new Set();
+        this.runUnlocked = new Set();
+        this.lastRunUnlocked = new Set();
         this.tracked = new Set();
         this.toastQueue = [];
         this.currentToast = null;
