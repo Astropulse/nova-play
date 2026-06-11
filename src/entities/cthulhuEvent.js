@@ -21,6 +21,12 @@ export class CthulhuEvent {
 
         this.state = CTHULHU_STATE.DORMANT;
 
+        // Per-event seeded RNG (from the events stream) for its enemy/scrap
+        // spawn rolls, so the encounter is reproducible. Falls back outside a
+        // run. Spawned enemies still derive their own loot from the enemies
+        // stream. Not serialized (event spawn progress isn't persisted).
+        this.contentRng = game.rng ? game.rng.deriveEntity('events').rng : null;
+
         this.angle = 0;
 
         // Visuals
@@ -87,11 +93,12 @@ export class CthulhuEvent {
             if (this.enemiesToSpawn > 0) {
                 this.spawnTimer -= dt;
                 if (this.spawnTimer <= 0) {
-                    this.spawnTimer = 1.0 + Math.random();
+                    const rand = () => this.contentRng ? this.contentRng.next() : Math.random();
+                    this.spawnTimer = 1.0 + rand();
                     this.enemiesToSpawn--;
                     // Spawn far away relative to the player
-                    const angle = Math.random() * Math.PI * 2;
-                    const dist = 1800 + Math.random() * 600; // Match standard wave spawn distance 
+                    const angle = rand() * Math.PI * 2;
+                    const dist = 1800 + rand() * 600; // Match standard wave spawn distance
                     const ex = player.worldX + Math.cos(angle) * dist;
                     const ey = player.worldY + Math.sin(angle) * dist;
 

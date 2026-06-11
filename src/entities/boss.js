@@ -35,6 +35,18 @@ export class Boss {
         this.alive = true;
         this.difficultyScale = difficultyScale;
 
+        // Spawn-time content RNG (from the enemies stream) for the boss loot
+        // table, so kills yield reproducible rewards. AI/attack patterns stay on
+        // Math.random() (allowed to differ). Falls back outside a run.
+        if (game.rng) {
+            const d = game.rng.deriveEntity('enemies');
+            this.contentRng = d.rng;
+            this.contentSeed = d.seed;
+        } else {
+            this.contentRng = null;
+            this.contentSeed = null;
+        }
+
         this.phase = BOSS_PHASE.INTRO;
         this.phaseTimer = 2.0; // Intro duration
         this.state = BOSS_STATE.IDLE;
@@ -362,6 +374,10 @@ export class Boss {
     getSpawnOnDeath() {
         const spawns = [];
 
+        // Loot rolls (drop chances, counts, types, upgrade pick) seeded via the
+        // boss's content RNG; debris/scatter geometry stays on Math.random().
+        const rand = () => this.contentRng ? this.contentRng.next() : Math.random();
+
         // Shatter effect: use Voronoi seeds to place scrap/rubble
         const asset = this.game.assets.get(this.spriteKey);
         if (asset) {
@@ -399,13 +415,16 @@ export class Boss {
         const expAmount = Math.floor(15 + 3 * difficultyScale);
         for (let i = 0; i < expAmount; i++) spawns.push(new ExpOrb(this.game, this.worldX, this.worldY, 1));
 
-        // Add extra loot spread around (Reduced scrap as requested)
-        for (let i = 0; i < 3 + Math.random() * 2; i++) {
+        // Add extra loot spread around (Reduced scrap as requested). Counts are
+        // seeded; scatter positions stay visual.
+        const bigScrapCount = Math.floor(3 + rand() * 2);
+        for (let i = 0; i < bigScrapCount; i++) {
             const angle = Math.random() * Math.PI * 2;
             const dist = Math.random() * 100;
             spawns.push(new Scrap(this.game, this.worldX + Math.cos(angle) * dist, this.worldY + Math.sin(angle) * dist, 'big'));
         }
-        for (let i = 0; i < 4 + Math.random() * 4; i++) {
+        const smallScrapCount = Math.floor(4 + rand() * 4);
+        for (let i = 0; i < smallScrapCount; i++) {
             const angle = Math.random() * Math.PI * 2;
             const dist = Math.random() * 80;
             spawns.push(new Scrap(this.game, this.worldX + Math.cos(angle) * dist, this.worldY + Math.sin(angle) * dist, 'small'));
@@ -413,7 +432,7 @@ export class Boss {
 
         // --- Special Boss Loot ---
         // 1. Small Batteries (1-2)
-        const batteryCount = 1 + (Math.random() < 0.5 ? 1 : 0);
+        const batteryCount = 1 + (rand() < 0.5 ? 1 : 0);
         const batteryData = UPGRADES.find(u => u.id === 'small_battery');
         if (batteryData) {
             for (let i = 0; i < batteryCount; i++) {
@@ -424,7 +443,7 @@ export class Boss {
         }
 
         // 2. Advanced Locator (20% chance)
-        if (Math.random() < 0.20) {
+        if (rand() < 0.20) {
             const locatorData = UPGRADES.find(u => u.id === 'advanced_locator');
             if (locatorData) {
                 const angle = Math.random() * Math.PI * 2;
@@ -434,10 +453,10 @@ export class Boss {
         }
 
         // 3. Common Upgrade (10% chance)
-        if (Math.random() < 0.10) {
+        if (rand() < 0.10) {
             const commonUpgrades = UPGRADES.filter(u => u.rarity === 'common' && !u.consumable);
             if (commonUpgrades.length > 0) {
-                const randomUpgrade = commonUpgrades[Math.floor(Math.random() * commonUpgrades.length)];
+                const randomUpgrade = commonUpgrades[Math.floor(rand() * commonUpgrades.length)];
                 const angle = Math.random() * Math.PI * 2;
                 const dist = 50 + Math.random() * 20;
                 spawns.push(new ItemPickup(this.game, this.worldX + Math.cos(angle) * dist, this.worldY + Math.sin(angle) * dist, randomUpgrade));

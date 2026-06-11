@@ -31,6 +31,7 @@ import { SpaceCache, CacheSpawner, CACHE_STATE, CACHE_CONFIG } from '../entities
 import { CacheUI } from '../ui/cacheUI.js';
 import { LevelUpDialog } from '../ui/levelUpDialog.js';
 import { GP } from '../engine/inputManager.js';
+import { RandomStreams, randomSeed, RNG } from '../engine/rng.js';
 
 export class PlayingState {
     constructor(game, shipData, { skipInit = false, handoff = null } = {}) {
@@ -38,6 +39,16 @@ export class PlayingState {
         this.shipData = shipData;
         this.paused = false;
         this.skipClear = false;
+
+        // ── Deterministic run seed ──────────────────────────────────────────
+        // Rolled once per fresh run; drives all gameplay randomness via the
+        // per-domain streams in `this.rng`. Set on `game.rng` BEFORE any
+        // spawner/entity is constructed below so they can derive content RNGs.
+        // On a save-resume (skipInit) the rolled value + stream states are
+        // overwritten by deserialize(). Settable mid-run via /seed.
+        this.runSeed = randomSeed();
+        this.rng = new RandomStreams(this.runSeed);
+        game.rng = this.rng;
 
         // Reset per-run achievement counters before any side effects that
         // could record into them — _onInventoryChanged in particular fires
@@ -77,7 +88,8 @@ export class PlayingState {
         this.expOrbs = [];
         // Encounter system
         this.encounters = [];
-        this.encounterSpawnTimer = 60 + Math.random() * 10; // First encounter around ~1 minute
+        // First encounter around ~1 minute (seeded; not serialized).
+        this.encounterSpawnTimer = 60 + (this.rng ? this.rng.encounters.next() : Math.random()) * 10;
         this.isEncounterOpen = false;
         this.activeEncounterDialog = null;
         this.canInteractEncounter = false;
@@ -323,9 +335,13 @@ export class PlayingState {
     }
 
     _spawnEvents() {
+        // Event placement is seeded so the world's points of interest are in the
+        // same spots for the same run seed. Falls back outside a run.
+        const rand = () => this.game.rng ? this.game.rng.events.next() : Math.random();
+
         // Spawn Cthulhu very far away
-        const angle = Math.random() * Math.PI * 2;
-        const dist = 20000 + Math.random() * 10000;
+        const angle = rand() * Math.PI * 2;
+        const dist = 20000 + rand() * 10000;
         const cx = Math.cos(angle) * dist;
         const cy = Math.sin(angle) * dist;
 
@@ -333,8 +349,8 @@ export class PlayingState {
         this.events.push(cthulhu);
 
         // Spawn Cargo Ship Event
-        const cargoAngle = Math.random() * Math.PI * 2;
-        const cargoDist = 3000 + Math.random() * 3000;
+        const cargoAngle = rand() * Math.PI * 2;
+        const cargoDist = 3000 + rand() * 3000;
         const csx = Math.cos(cargoAngle) * cargoDist;
         const csy = Math.sin(cargoAngle) * cargoDist;
 
@@ -343,20 +359,20 @@ export class PlayingState {
 
         // Spawn Fractured Station Event
         // Station 1: Randomized distance for discovery
-        const f1Angle = Math.random() * Math.PI * 2;
-        const f1Dist = 4000 + Math.random() * 2000;
+        const f1Angle = rand() * Math.PI * 2;
+        const f1Dist = 4000 + rand() * 2000;
         const f1x = Math.cos(f1Angle) * f1Dist;
         const f1y = Math.sin(f1Angle) * f1Dist;
 
         // Station 2: Medium distance
-        const f2Angle = Math.random() * Math.PI * 2;
-        const f2Dist = 6000 + Math.random() * 2000;
+        const f2Angle = rand() * Math.PI * 2;
+        const f2Dist = 6000 + rand() * 2000;
         const f2x = Math.cos(f2Angle) * f2Dist;
         const f2y = Math.sin(f2Angle) * f2Dist;
 
         // Station 3: Far away
-        const f3Angle = Math.random() * Math.PI * 2;
-        const f3Dist = 15000 + Math.random() * 5000;
+        const f3Angle = rand() * Math.PI * 2;
+        const f3Dist = 15000 + rand() * 5000;
         const f3x = Math.cos(f3Angle) * f3Dist;
         const f3y = Math.sin(f3Angle) * f3Dist;
 
@@ -367,39 +383,41 @@ export class PlayingState {
         ]));
 
         // Spawn Knowledge Event (Extreme distance)
-        const kAngle = Math.random() * Math.PI * 2;
-        const kDist = 30000 + Math.random() * 15000;
+        const kAngle = rand() * Math.PI * 2;
+        const kDist = 30000 + rand() * 15000;
         const kx = Math.cos(kAngle) * kDist;
         const ky = Math.sin(kAngle) * kDist;
         this.events.push(new KnowledgeEvent(this.game, kx, ky));
 
         // Spawn Yellow One (Extreme distance, opposite direction from Knowledge)
-        const yoAngle = kAngle + Math.PI + (Math.random() - 0.5) * 1.0;
-        const yoDist = 35000 + Math.random() * 15000;
+        const yoAngle = kAngle + Math.PI + (rand() - 0.5) * 1.0;
+        const yoDist = 35000 + rand() * 15000;
         const yox = Math.cos(yoAngle) * yoDist;
         const yoy = Math.sin(yoAngle) * yoDist;
         this.events.push(new YellowOne(this.game, yox, yoy));
     }
 
     _spawnInitialAsteroids() {
-        const numAsteroids = 6 + Math.floor(Math.random() * 8); // Reduced from 18-35 to 6-13
+        // Seeded initial field via the asteroids stream.
+        const rand = () => this.game.rng ? this.game.rng.asteroids.next() : Math.random();
+        const numAsteroids = 6 + Math.floor(rand() * 8); // Reduced from 18-35 to 6-13
         for (let i = 0; i < numAsteroids; i++) {
-            const angle = Math.random() * Math.PI * 2;
-            const dist = 400 + Math.random() * 2500; // Wider initial spread
+            const angle = rand() * Math.PI * 2;
+            const dist = 400 + rand() * 2500; // Wider initial spread
             // Player starts near 0,0, but using their actual pos is safest
             const ax = this.player.worldX + Math.cos(angle) * dist;
             const ay = this.player.worldY + Math.sin(angle) * dist;
 
-            const roll = Math.random();
+            const roll = rand();
             let size = 'medium';
             if (roll < 0.05) size = 'big'; // reduced from 0.15 to 0.05
             else if (roll < 0.45) size = 'small';
             else if (roll < 0.60) size = 'tiny';
 
             let vx = 0, vy = 0;
-            if (Math.random() > 0.5) {
-                const driftAngle = Math.random() * Math.PI * 2;
-                const speed = 10 + Math.random() * 20;
+            if (rand() > 0.5) {
+                const driftAngle = rand() * Math.PI * 2;
+                const speed = 10 + rand() * 20;
                 vx = Math.cos(driftAngle) * speed;
                 vy = Math.sin(driftAngle) * speed;
             }
@@ -408,10 +426,63 @@ export class PlayingState {
         }
     }
 
+    // Dev/testing: re-seed the run AND rebuild the procedural world from scratch
+    // so the new seed actually takes effect — event/shop/asteroid placement is
+    // baked in at run start, so just swapping the streams wouldn't move anything
+    // already spawned. Keeps the player's ship/inventory/progress but snaps them
+    // back to the spawn origin so player-relative initial asteroids and the
+    // origin-relative events line up exactly with a fresh run on this seed.
+    reseedRun(seed) {
+        this.runSeed = seed;
+        this.rng = new RandomStreams(seed);
+        this.game.rng = this.rng;
 
+        // Fresh spawners reset their distance/time accumulators and wave/phase
+        // state so future spawns follow the new seed deterministically.
+        this.asteroidSpawner = new AsteroidSpawner(this.game);
+        this.enemySpawner = new EnemySpawner(this.game);
+        this.cacheSpawner = new CacheSpawner(this.game);
+
+        // Snap to spawn so the regenerated world matches the canonical layout.
+        this.player.worldX = 0;
+        this.player.worldY = 0;
+        this.player.vx = 0;
+        this.player.vy = 0;
+        if (this.camera && this.camera.snapTo) this.camera.snapTo(this.player);
+
+        // Clear all procedural + transient world entities.
+        this.events = [];
+        this.shops = [];
+        this.revealedShops = [];
+        this.asteroids = [];
+        this.enemies = [];
+        this.caches = [];
+        this.encounters = [];
+        this.scrapEntities = [];
+        this.itemPickups = [];
+        this.expOrbs = [];
+        this.projectiles = [];
+        this.rubble = [];
+        this.activeBeams = [];
+        this.explosions = [];
+        this.sparks = [];
+        this.floatingTexts = [];
+
+        // First encounters-stream draw — matches the constructor's ordering.
+        this.encounterSpawnTimer = 60 + this.rng.encounters.next() * 10;
+
+        // Regenerate the world in the same order as the constructor so each
+        // domain stream is consumed identically to a fresh run on this seed.
+        this._spawnInitialShops();
+        this._spawnEvents();
+        this._spawnInitialAsteroids();
+    }
 
     exit() {
         document.body.classList.remove('playing');
+        // Drop the shared run RNG reference so post-run states fall back to
+        // Math.random() (MenuState also clears this on enter).
+        if (this.game.rng === this.rng) this.game.rng = null;
     }
 
     update(dt) {
@@ -1568,7 +1639,8 @@ export class PlayingState {
                 );
                 const baseWait = 140; // ~2.3 minutes base
                 const minWait = 45;   // 45 seconds minimum
-                const wait = Math.max(minWait, baseWait / explorationFactor + (Math.random() - 0.5) * 40);
+                const encR = this.game.rng ? this.game.rng.encounters.next() : Math.random();
+                const wait = Math.max(minWait, baseWait / explorationFactor + (encR - 0.5) * 40);
                 this.encounterSpawnTimer = wait / Math.max(0.1, this.player.lvlEncounterFreqMult);
             }
         }
@@ -1700,6 +1772,10 @@ export class PlayingState {
 
     serialize() {
         return {
+            // Run seed + per-domain stream states so a resumed run continues
+            // deterministically (see deserialize, which restores these last).
+            runSeed: this.runSeed,
+            rng: this.rng.serialize(),
             totalGameTime: this.totalGameTime,
             trueTotalTime: this.trueTotalTime,
             difficultyScale: this.difficultyScale,
@@ -1748,6 +1824,12 @@ export class PlayingState {
     }
 
     async deserialize(data) {
+        // Restore the run seed; stream STATES are restored at the very end of
+        // this method (after all entity reconstruction) so the throwaway draws
+        // entity constructors make during rebuild don't corrupt the streams.
+        if (data.runSeed != null) this.runSeed = data.runSeed;
+        this.game.rng = this.rng;
+
         this.totalGameTime = data.totalGameTime;
         this.trueTotalTime = data.trueTotalTime || 0;
         this.difficultyScale = data.difficultyScale;
@@ -1892,6 +1974,12 @@ export class PlayingState {
             ast.rotation = aData.rotation;
             ast.rotSpeed = aData.rotSpeed;
             ast.assetKey = aData.assetKey;
+            // Restore the saved content seed so this asteroid's loot reproduces
+            // (overrides the throwaway seed drawn by the constructor above).
+            if (aData.contentSeed != null) {
+                ast.contentSeed = aData.contentSeed;
+                ast.contentRng = new RNG(aData.contentSeed);
+            }
             this.asteroids.push(ast);
         }
 
@@ -1934,6 +2022,12 @@ export class PlayingState {
 
         // Recalculate all stats and multipliers based on loaded inventory
         this._onInventoryChanged();
+
+        // Restore RNG stream states LAST — every entity reconstructed above drew
+        // a throwaway content seed from its domain stream during construction;
+        // overwriting the stream states here neutralizes those draws so future
+        // spawns continue deterministically from where the save left off.
+        if (data.rng) this.rng.deserialize(data.rng);
     }
 
     _spawnExplosion(x, y, damage) {
@@ -4713,10 +4807,12 @@ export class PlayingState {
     }
 
     spawnDistantShop() {
+        // Seeded placement via the shops stream (reproducible).
+        const rand = () => this.game.rng ? this.game.rng.shops.next() : Math.random();
         // Random direction
-        const angle = Math.random() * Math.PI * 2;
+        const angle = rand() * Math.PI * 2;
         // 6,000 to 10,000 pixels away
-        const dist = 6000 + Math.random() * 4000;
+        const dist = 6000 + rand() * 4000;
 
         const sx = this.player.worldX + Math.cos(angle) * dist;
         const sy = this.player.worldY + Math.sin(angle) * dist;
@@ -4753,9 +4849,12 @@ export class PlayingState {
 
 
     _spawnEncounter(specificType) {
-        const type = specificType || rollEncounterType();
-        const angle = Math.random() * Math.PI * 2;
-        const dist = 2000 + Math.random() * 500;
+        // Encounter type + placement seeded via the encounters stream.
+        const er = this.game.rng ? this.game.rng.encounters : null;
+        const rand = () => er ? er.next() : Math.random();
+        const type = specificType || rollEncounterType(er);
+        const angle = rand() * Math.PI * 2;
+        const dist = 2000 + rand() * 500;
         const wx = this.player.worldX + Math.cos(angle) * dist;
         const wy = this.player.worldY + Math.sin(angle) * dist;
 

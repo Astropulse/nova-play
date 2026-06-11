@@ -67,6 +67,20 @@ export class Enemy {
         this.alive = true;
         this.difficultyScale = difficultyScale;
 
+        // Spawn-time content seed: this enemy's gameplay attributes (upgrade
+        // path) and loot drops are fixed at spawn for reproducibility. AI/combat
+        // micro-decisions stay on Math.random() (allowed to differ between
+        // same-seed runs). Falls back outside a run. Enemies aren't serialized,
+        // so this seed is ephemeral across save/load.
+        if (game.rng) {
+            const d = game.rng.deriveEntity('enemies');
+            this.contentRng = d.rng;
+            this.contentSeed = d.seed;
+        } else {
+            this.contentRng = null;
+            this.contentSeed = null;
+        }
+
         const variant = Math.floor(Math.random() * 5);
         this.spriteKey = `enemy_ship_${variant}`;
         this.img = game.assets.get(this.spriteKey);
@@ -153,14 +167,16 @@ export class Enemy {
     _applyUpgrades() {
         if (this.isUpgraded) return;
         this.isUpgraded = true;
-        const roll = Math.random();
+        // Seeded so enemy strength is reproducible at the same spawn point.
+        const rand = () => this.contentRng ? this.contentRng.next() : Math.random();
+        const roll = rand();
 
         if (roll < 0.4) {
             // Stats Path (40%)
             const options = ['health', 'speed', 'firerate'];
-            const count = Math.random() < 0.5 ? 1 : 2;
+            const count = rand() < 0.5 ? 1 : 2;
             for (let i = 0; i < count; i++) {
-                const choice = options.splice(Math.floor(Math.random() * options.length), 1)[0];
+                const choice = options.splice(Math.floor(rand() * options.length), 1)[0];
                 this.selectedUpgrades.push(choice);
                 if (choice === 'health') this.health = Math.ceil(this.health * 1.5);
                 if (choice === 'speed') this.speedMult = 1.4;
@@ -170,7 +186,7 @@ export class Enemy {
         } else if (roll < 0.8) {
             // Weapon Path (40%)
             const weaponOptions = ['bigBall', 'beam', 'multishot'];
-            this.upgradeType = weaponOptions[Math.floor(Math.random() * weaponOptions.length)];
+            this.upgradeType = weaponOptions[Math.floor(rand() * weaponOptions.length)];
             this.selectedUpgrades.push(this.upgradeType);
         } else {
             // Kamikaze Path (20%)
@@ -959,8 +975,12 @@ export class Enemy {
     }
 
     getSpawnOnDeath() {
+        // Loot rolls (scrap count, battery/locator drops) use the spawn-time
+        // content RNG so an enemy's drops are fixed at spawn, not at kill time.
+        const rand = () => this.contentRng ? this.contentRng.next() : Math.random();
+
         const spawns = this._generateProceduralDebris();
-        const count = 3 + Math.floor(Math.random() * 3);
+        const count = 3 + Math.floor(rand() * 3);
         const difficultyScale = (this.game.currentState && this.game.currentState.difficultyScale) || 1.0;
         const expAmount = Math.floor((4 + 1 * difficultyScale) * (this.isUpgraded ? 1.5 : 1));
 
@@ -973,14 +993,14 @@ export class Enemy {
         }
 
         // 25% chance to drop a small battery
-        if (Math.random() < 0.25) {
+        if (rand() < 0.25) {
             const battery = UPGRADES.find(u => u.id === 'small_battery');
             if (battery) {
                 spawns.push(new ItemPickup(this.game, this.worldX, this.worldY, battery));
             }
         }
 
-        if (Math.random() < 0.01) {
+        if (rand() < 0.01) {
             const locator = UPGRADES.find(u => u.id === 'advanced_locator');
             if (locator) {
                 spawns.push(new ItemPickup(this.game, this.worldX, this.worldY, locator));
@@ -1097,7 +1117,9 @@ export class Enemy {
     static rollUpgrade(enemy, player) {
         if (!player || !player.inventory) return;
         const chance = player.inventory.items.length * 0.03;
-        if (Math.random() < chance) {
+        // Seeded at spawn so the set of upgraded enemies is reproducible.
+        const r = enemy.contentRng ? enemy.contentRng.next() : Math.random();
+        if (r < chance) {
             enemy._applyUpgrades();
         }
     }
@@ -1132,13 +1154,14 @@ export class EnemySpawner {
     }
 
     forceBoss(playerX, playerY, difficultyScale) {
+        const rand = () => this.game.rng ? this.game.rng.enemies.next() : Math.random();
         const bosses = [Starcore, AsteroidCrusher, EventHorizon];
-        const BossClass = bosses[Math.floor(Math.random() * bosses.length)];
+        const BossClass = bosses[Math.floor(rand() * bosses.length)];
         this.lastBossType = BossClass.name;
 
         const fov = (this.game.currentState && this.game.currentState.currentFovMult) || 1.0;
         const dist = 1600 * fov;
-        const angle = Math.random() * Math.PI * 2;
+        const angle = rand() * Math.PI * 2;
         const boss = new BossClass(this.game, playerX + Math.cos(angle) * dist, playerY + Math.sin(angle) * dist, difficultyScale);
         const resolved = resolveSpawnOverlap(this.game, boss.worldX, boss.worldY, boss.radius);
         boss.worldX = resolved.x;
@@ -1157,6 +1180,11 @@ export class EnemySpawner {
         const spawned = [];
         const player = this.game.currentState.player;
 
+        // Seeded enemy stream drives burst sizes, spawn positions, and burst/
+        // peace timers so the wave/ambient cadence is reproducible. Per-enemy AI
+        // stays on Math.random(). Falls back outside a run.
+        const rand = () => this.game.rng ? this.game.rng.enemies.next() : Math.random();
+
         // --- Drain wave bursts (dynamic sizing) ---
         if (this.waveQueue > 0) {
             this.waveBurstTimer -= dt;
@@ -1170,7 +1198,7 @@ export class EnemySpawner {
                 } else {
                     // Random size in [minBurst, waveMaxBurstSize]. May overshoot the
                     // queue — that's intentional: harder wave, no normalization.
-                    burstSize = minBurst + Math.floor(Math.random() * (this.waveMaxBurstSize - minBurst + 1));
+                    burstSize = minBurst + Math.floor(rand() * (this.waveMaxBurstSize - minBurst + 1));
                 }
 
                 this.waveQueue -= burstSize;
@@ -1179,8 +1207,8 @@ export class EnemySpawner {
                 const fov = (this.game.currentState && this.game.currentState.currentFovMult) || 1.0;
 
                 for (let i = 0; i < burstSize; i++) {
-                    const angle = Math.random() * Math.PI * 2;
-                    const dist = (1800 + Math.random() * 640) * fov;
+                    const angle = rand() * Math.PI * 2;
+                    const dist = (1800 + rand() * 640) * fov;
                     const en = new Enemy(this.game, playerX + Math.cos(angle) * dist, playerY + Math.sin(angle) * dist, this.waveSpawnScale);
                     const resolved = resolveSpawnOverlap(this.game, en.worldX, en.worldY, en.radius);
                     en.worldX = resolved.x;
@@ -1192,7 +1220,7 @@ export class EnemySpawner {
 
                 // Schedule next burst (7-12s) if queue still has enemies
                 if (this.waveQueue > 0) {
-                    this.waveBurstTimer = 7 + Math.random() * 5;
+                    this.waveBurstTimer = 7 + rand() * 5;
                 }
             }
             return spawned;  // Don't run ambient burst spawns during a wave
@@ -1206,9 +1234,9 @@ export class EnemySpawner {
                 // Peace is over — start a burst
                 this.phase = 'burst';
                 // 1-3 enemies per burst, scaling with difficulty
-                this.burstQueue = Math.floor(1 + Math.random() * Math.min(3, 1 + difficultyScale * 0.5));
+                this.burstQueue = Math.floor(1 + rand() * Math.min(3, 1 + difficultyScale * 0.5));
                 this.burstSpawnTimer = 0; // First enemy spawns immediately
-                this.phaseTimer = 12 + Math.random() * 6; // Burst window ~12-18s
+                this.phaseTimer = 12 + rand() * 6; // Burst window ~12-18s
             }
             return [];
         }
@@ -1219,11 +1247,11 @@ export class EnemySpawner {
             if (this.burstSpawnTimer <= 0) {
                 this.burstQueue--;
                 // Stagger spawns 3-6s apart within the burst
-                this.burstSpawnTimer = 3 + Math.random() * 3;
+                this.burstSpawnTimer = 3 + rand() * 3;
 
-                const angle = Math.random() * Math.PI * 2;
+                const angle = rand() * Math.PI * 2;
                 const fov = (this.game.currentState && this.game.currentState.currentFovMult) || 1.0;
-                const dist = (1400 + Math.random() * 600) * fov;
+                const dist = (1400 + rand() * 600) * fov;
                 const en = new Enemy(this.game, playerX + Math.cos(angle) * dist, playerY + Math.sin(angle) * dist, difficultyScale);
                 const resolved = resolveSpawnOverlap(this.game, en.worldX, en.worldY, en.radius);
                 en.worldX = resolved.x;
@@ -1237,7 +1265,7 @@ export class EnemySpawner {
         if (this.phaseTimer <= 0 || this.burstQueue <= 0) {
             this.phase = 'peace';
             // Peace lasts 30-50s, shortens slightly with difficulty (floor 20s)
-            const basePeace = 30 + Math.random() * 20;
+            const basePeace = 30 + rand() * 20;
             this.phaseTimer = Math.max(20, basePeace / (1 + (difficultyScale - 1) * 0.15));
         }
 
@@ -1255,8 +1283,11 @@ export class EnemySpawner {
             this.waveBurstTimer = 0;
             this.waveSpawnScale = difficultyScale;
 
+            // Seeded so boss waves (type + placement) are reproducible.
+            const rand = () => this.game.rng ? this.game.rng.enemies.next() : Math.random();
+
             // Spawn boss at a distance
-            const angle = Math.random() * Math.PI * 2;
+            const angle = rand() * Math.PI * 2;
             const dist = 1600;
 
             // Randomly choose between available bosses, excluding the last one
@@ -1265,7 +1296,7 @@ export class EnemySpawner {
 
             // Final fallback if all filtered (shouldn't happen with 2+ bosses)
             const pool = availableBosses.length > 0 ? availableBosses : bosses;
-            const BossClass = pool[Math.floor(Math.random() * pool.length)];
+            const BossClass = pool[Math.floor(rand() * pool.length)];
 
             this.lastBossType = BossClass.name;
             const boss = new BossClass(this.game, playerX + Math.cos(angle) * dist, playerY + Math.sin(angle) * dist, difficultyScale);
@@ -1796,11 +1827,13 @@ export class HostileEncounter extends Enemy {
             }
         }
 
-        const scrapCount = 8 + Math.floor(Math.random() * 5);
+        // Loot count + scrap type seeded (contentRng); scatter stays visual.
+        const rand = () => this.contentRng ? this.contentRng.next() : Math.random();
+        const scrapCount = 8 + Math.floor(rand() * 5);
         for (let i = 0; i < scrapCount; i++) {
             const outAngle = Math.random() * Math.PI * 2;
             const dist = Math.random() * 60;
-            spawns.push(new Scrap(this.game, this.worldX + Math.cos(outAngle) * dist, this.worldY + Math.sin(outAngle) * dist, Math.random() > 0.4 ? 'big' : 'small'));
+            spawns.push(new Scrap(this.game, this.worldX + Math.cos(outAngle) * dist, this.worldY + Math.sin(outAngle) * dist, rand() > 0.4 ? 'big' : 'small'));
         }
 
         // Dialog-defined item drops (add_upgrade actions) are handled by

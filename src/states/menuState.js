@@ -8,6 +8,7 @@ import { World } from '../world/world.js';
 import { Camera } from '../world/camera.js';
 import { Player } from '../entities/player.js';
 import { HUD } from '../ui/hud.js';
+import { randomSeed } from '../engine/rng.js';
 
 // Scaling is now dynamic via game properties
 
@@ -52,8 +53,13 @@ export class MenuState {
         // ~200ms) until the title screen has painted once. The menu UI appears
         // immediately over a black background, then the starfield builds on the
         // first update after the first draw (see _ensureWorld / _painted).
+        // World (background) seed. Lives on `game` so it persists across title
+        // visits and into any run started from this screen (the World object is
+        // handed off to PlayingState). Rolled once if unset; settable via the
+        // dev console (/seed world N). Future multiplayer: a player joining
+        // another player's world adopts the run creator's world seed here.
         this.world = null;
-        this._worldSeed = Math.floor(Math.random() * 1000000);
+        if (this.game.worldSeed == null) this.game.worldSeed = randomSeed();
         this._painted = false;
         this._worldFade = 0; // 0..1 fade-in once the World is built, so it doesn't pop in hard
         this.camera = new Camera(this.game);
@@ -107,6 +113,9 @@ export class MenuState {
 
     enter() {
         document.body.classList.remove('playing');
+        // No deterministic run in progress on the title screen — entities built
+        // here (none gameplay-affecting) use the Math.random() fallback.
+        this.game.rng = null;
         this._computeLayout();
         this.game.sounds.playTitleMusic();
         // Warm the rest of the music (one track at a time) while the player is
@@ -438,7 +447,16 @@ export class MenuState {
     _ensureWorld() {
         if (this.world) return;
         if (!this.game.assets.get('starfield_0')) return; // full atlas not ready yet
-        this.world = new World(this.game, this._worldSeed);
+        this.world = new World(this.game, this.game.worldSeed);
+    }
+
+    // Rebuild the starfield from the current game.worldSeed. Called by the dev
+    // console after `/seed world N` so the change is visible immediately, and
+    // re-eases the new background in from black.
+    rebuildWorld() {
+        if (!this.game.assets.get('starfield_0')) return; // full atlas not ready yet
+        this.world = new World(this.game, this.game.worldSeed);
+        this._worldFade = 0;
     }
 
     _beginStartTransition() {

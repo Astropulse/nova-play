@@ -12,7 +12,19 @@ export class Shop {
         // Shops don't rotate
         this.angle = 0;
 
-        // Random shop sprite
+        // Spawn-time content RNG (from the seeded shops stream) so stock is
+        // reproducible. Falls back outside a run. Shop inventory is fully
+        // serialized, so this seed itself isn't persisted.
+        if (game.rng) {
+            const d = game.rng.deriveEntity('shops');
+            this.contentRng = d.rng;
+            this.contentSeed = d.seed;
+        } else {
+            this.contentRng = null;
+            this.contentSeed = null;
+        }
+
+        // Random shop sprite (cosmetic — stays on Math.random())
         const shopIdx = Math.floor(Math.random() * 3);
         this.assetKey = `shop_${shopIdx}`;
         this.img = game.assets.get(this.assetKey);
@@ -34,9 +46,11 @@ export class Shop {
     }
 
     _generateInventory() {
+        // Seeded stock selection + placement for reproducibility.
+        const rand = () => this.contentRng ? this.contentRng.next() : Math.random();
         // At least 4 random upgrades + 1 map = 5 total minimum
         // Up to 7 random upgrades + 1 map = 8 total maximum
-        const count = 3 + Math.floor(Math.random() * 4);
+        const count = 3 + Math.floor(rand() * 4);
 
         // Filter upgrades that can actually fit in 6x4, excluding the map from random rolls
         const possibleUpgrades = UPGRADES.filter(u =>
@@ -68,8 +82,8 @@ export class Shop {
             let placed = false;
             // Try random spots first for natural look
             for (let attempt = 0; attempt < 15; attempt++) {
-                const rx = Math.floor(Math.random() * (this.inventory.cols - upgrade.width + 1));
-                const ry = Math.floor(Math.random() * (this.inventory.rows - upgrade.height + 1));
+                const rx = Math.floor(rand() * (this.inventory.cols - upgrade.width + 1));
+                const ry = Math.floor(rand() * (this.inventory.rows - upgrade.height + 1));
 
                 if (this.inventory.addItem(upgrade, rx, ry)) {
                     placed = true;
@@ -99,7 +113,7 @@ export class Shop {
             return w;
         });
 
-        let roll = Math.random() * totalWeight;
+        let roll = (this.contentRng ? this.contentRng.next() : Math.random()) * totalWeight;
         for (let i = 0; i < pool.length; i++) {
             roll -= weights[i];
             if (roll <= 0) return pool[i];

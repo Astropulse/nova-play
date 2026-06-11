@@ -15,7 +15,10 @@ export class CargoShipEvent {
         this.discovered = false; // Track for stats
 
         this.state = CARGO_SHIP_STATE.OPENED;
-        this.angle = Math.random() * Math.PI * 2;
+        this.angle = Math.random() * Math.PI * 2; // cosmetic
+
+        // Per-event seeded RNG (events stream) for its scrap reward rolls.
+        this.contentRng = game.rng ? game.rng.deriveEntity('events').rng : null;
 
         // Visuals
         this.img = game.assets.get('cargo_ship');
@@ -42,8 +45,8 @@ export class CargoShipEvent {
                 this.spawnedInitialScrap = true;
                 this.revealed = true; // Reveal on radar when close
 
-                // Queue 50-80 scrap to be spawned gradually
-                const scrapCount = 50 + Math.floor(Math.random() * 31);
+                // Queue 50-80 scrap to be spawned gradually (seeded count)
+                const scrapCount = 50 + Math.floor((this.contentRng ? this.contentRng.next() : Math.random()) * 31);
                 this._scrapQueue = scrapCount;
 
                 this.game.sounds.play('asteroid_break', { volume: 0.6, x: this.worldX, y: this.worldY });
@@ -54,13 +57,14 @@ export class CargoShipEvent {
         if (this._scrapQueue > 0) {
             const numToSpawn = Math.min(this._scrapQueue, 5);
             for (let i = 0; i < numToSpawn; i++) {
-                const angle = Math.random() * Math.PI * 2;
-                const spawnDist = Math.random() * this.radius * 1.5;
+                const rand = () => this.contentRng ? this.contentRng.next() : Math.random();
+                const angle = rand() * Math.PI * 2;
+                const spawnDist = rand() * this.radius * 1.5;
                 const sx = this.worldX + Math.cos(angle) * spawnDist;
                 const sy = this.worldY + Math.sin(angle) * spawnDist;
 
                 let type = 'small';
-                if (Math.random() > 0.85) type = 'big';
+                if (rand() > 0.85) type = 'big'; // scrap value — seeded
 
                 this.pendingSpawns.push(new Scrap(this.game, sx, sy, type));
             }

@@ -140,11 +140,13 @@ const CAT_BASE_W   = { common: 60, uncommon: 25, rare: 12, epic: 2, cursed: 3 };
 const BONUS_BASE_W = { common: 67, uncommon: 20, rare: 8, epic: 4, legendary: 1 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-function _wrand(weights) {
+// `rng` (the seeded levelup stream) is optional — falls back to Math.random()
+// outside a run so the menu/tutorial still work.
+function _wrand(weights, rng = null) {
     const entries = Object.entries(weights);
     let total = 0;
     for (const [, w] of entries) total += w;
-    let r = Math.random() * total;
+    let r = (rng ? rng.next() : Math.random()) * total;
     for (const [key, w] of entries) {
         r -= w;
         if (r <= 0) return key;
@@ -164,14 +166,14 @@ function _bonusRarity(pct) {
 // high end of its band: u^(1/luck). At luck = 1 it's uniform; luck > 1 pushes
 // the result toward 1 (higher %), luck < 1 toward 0 (lower %). This stacks on
 // top of luck's existing influence over which tier gets rolled.
-function _luckyUnit(luck) {
-    return Math.pow(Math.random(), 1 / Math.max(0.1, luck));
+function _luckyUnit(luck, rng = null) {
+    return Math.pow(rng ? rng.next() : Math.random(), 1 / Math.max(0.1, luck));
 }
 
 // ─── Choice generation ────────────────────────────────────────────────────────
 // typePickCounts: { offense: n, defense: n, ... } — accumulated across the run.
 // bonusMult: scalar applied to the rolled %/flat (from the skip-stacking system).
-function rollChoices(luck, typePickCounts = {}, bonusMult = 1) {
+function rollChoices(luck, typePickCounts = {}, bonusMult = 1, rng = null) {
     const lk = Math.max(0.1, luck);
 
     // Neither stat-category nor bonus-tier selection is influenced by luck —
@@ -203,7 +205,7 @@ function rollChoices(luck, typePickCounts = {}, bonusMult = 1) {
         });
         let total = 0;
         for (const w of weights) total += w;
-        let r = Math.random() * total;
+        let r = (rng ? rng.next() : Math.random()) * total;
         for (let i = 0; i < pool.length; i++) {
             r -= weights[i];
             if (r <= 0) return pool[i];
@@ -212,9 +214,9 @@ function rollChoices(luck, typePickCounts = {}, bonusMult = 1) {
     };
 
     for (let i = 0; i < 4; i++) {
-        let cat = _wrand(catW);
+        let cat = _wrand(catW, rng);
         const isCursed = cat === 'cursed';
-        if (isCursed) cat = _wrand({ common: 60, uncommon: 25, rare: 15, epic: 2 });
+        if (isCursed) cat = _wrand({ common: 60, uncommon: 25, rare: 15, epic: 2 }, rng);
 
         // Prefer pool that satisfies diversity cap; fall back to broader pools.
         let pool = _filterByDiversity(STAT_DEFS[cat].filter(s => !used.has(s.id)));
@@ -230,12 +232,12 @@ function rollChoices(luck, typePickCounts = {}, bonusMult = 1) {
         const stat = _pickFromPool(pool);
         used.add(stat.id);
         rollTypeCounts[STAT_TYPE[stat.id]] = (rollTypeCounts[STAT_TYPE[stat.id]] || 0) + 1;
-        choices.push(_makeChoice(stat, isCursed, bonusW, bonusMult, lk));
+        choices.push(_makeChoice(stat, isCursed, bonusW, bonusMult, lk, rng));
     }
     return choices;
 }
 
-function _makeChoice(stat, isCursed, bonusW, bonusMult = 1, luck = 1) {
+function _makeChoice(stat, isCursed, bonusW, bonusMult = 1, luck = 1, rng = null) {
     if (stat.flat) {
         // Flat upgrades: scale the count by bonusMult.
         // extra_projectile is integer (round), hp_regen is float (0.1 * mult).
@@ -276,7 +278,7 @@ function _makeChoice(stat, isCursed, bonusW, bonusMult = 1, luck = 1) {
     if (stat.id === 'luck') {
         // Non-cursed luck rolls lean high with luck; cursed stays uniform so
         // good luck never deepens a curse.
-        const luckUnit    = isCursed ? Math.random() : _luckyUnit(luck);
+        const luckUnit    = isCursed ? (rng ? rng.next() : Math.random()) : _luckyUnit(luck, rng);
         const baseLuckPct = LUCK_TIER.min + luckUnit * (LUCK_TIER.max - LUCK_TIER.min);
         const luckPct     = Math.min(LUCK_MAX_PCT, baseLuckPct * bonusMult);
         return {
@@ -293,11 +295,11 @@ function _makeChoice(stat, isCursed, bonusW, bonusMult = 1, luck = 1) {
         };
     }
 
-    const tierName   = _wrand(bonusW);
+    const tierName   = _wrand(bonusW, rng);
     const tier       = BONUS_TIERS[tierName];
     // Luck biases the roll toward the top of the chosen tier's band (cursed
     // rolls stay uniform so luck doesn't make the penalty worse).
-    const tierUnit   = isCursed ? Math.random() : _luckyUnit(luck);
+    const tierUnit   = isCursed ? (rng ? rng.next() : Math.random()) : _luckyUnit(luck, rng);
     const basePct    = tier.min + tierUnit * (tier.max - tier.min);
     const pct        = basePct * bonusMult;
     const bonusRarity = _bonusRarity(pct);
@@ -412,7 +414,8 @@ export class LevelUpDialog {
         this.closed      = false;
         this.hoveredChoice = -1;
         this.bonusMult   = playingState ? (playingState.pendingLevelUpMult || 1) : 1;
-        this.choices     = rollChoices(player.luck, player.upgradeTypeCounts || {}, this.bonusMult);
+        // Level-up choices use the seeded levelup stream (reproducible).
+        this.choices     = rollChoices(player.luck, player.upgradeTypeCounts || {}, this.bonusMult, game.rng ? game.rng.levelup : null);
         this.skipsRemaining = playingState ? (playingState.levelUpSkipsRemaining || 0) : 0;
         this.canSkip     = this.skipsRemaining > 0;
         this.appearTimer = 0;

@@ -70,8 +70,11 @@ export class CacheUI {
             this._skipToIdle      = true;
             this.uiState          = CUI_STATE.IDLE;
         } else {
-            const cols = UI.gridMin + Math.floor(Math.random() * (UI.gridMax - UI.gridMin + 1));
-            const rows = UI.gridMin + Math.floor(Math.random() * (UI.gridMax - UI.gridMin + 1));
+            // Grid size + loot rolls use the cache's spawn-time content RNG so a
+            // given cache's contents are reproducible. Falls back outside a run.
+            const r = () => cache.contentRng ? cache.contentRng.next() : Math.random();
+            const cols = UI.gridMin + Math.floor(r() * (UI.gridMax - UI.gridMin + 1));
+            const rows = UI.gridMin + Math.floor(r() * (UI.gridMax - UI.gridMin + 1));
             this.cacheInventory   = new Inventory(cols, rows);
             this.revealedItems    = [];
             this._extraRollsGiven = 0;
@@ -146,7 +149,7 @@ export class CacheUI {
             return w;
         });
 
-        let roll = Math.random() * total;
+        let roll = (this.cache.contentRng ? this.cache.contentRng.next() : Math.random()) * total;
         for (let i = 0; i < possible.length; i++) {
             roll -= weights[i];
             if (roll <= 0) return possible[i];
@@ -302,7 +305,7 @@ export class CacheUI {
 
         const luck   = (this.game.currentState?.player?.luck) ?? 1.0;
         const chance = Math.min(0.9, 0.25 * luck);
-        if (Math.random() < chance) {
+        if ((this.cache.contentRng ? this.cache.contentRng.next() : Math.random()) < chance) {
             this._extraRollsGiven++;
             this._startNextRoll();
         } else {

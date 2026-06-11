@@ -21,6 +21,10 @@ export class KnowledgeEvent {
         this.discovered = false;
         this.state = KNOWLEDGE_STATE.DORMANT;
 
+        // Per-event seeded RNG (events stream) for loot rolls. Combat AI/attack
+        // patterns and visual scatter stay on Math.random() (allowed to differ).
+        this.contentRng = game.rng ? game.rng.deriveEntity('events').rng : null;
+
         // Visuals
         this.baseImg = game.assets.get('knowledge');
         this.eyeGif = game.assets.get('knowledge_eye');
@@ -97,10 +101,12 @@ export class KnowledgeEvent {
                     const sound = Math.random() > 0.3 ? 'ship_explode' : 'asteroid_break';
                     this.game.sounds.play(sound, { volume: 0.7 + Math.random() * 0.3, x: this.worldX + offX, y: this.worldY + offY });
 
-                    // Staggered scrap spawning (1-4 pieces per explosion)
-                    const count = 2 + Math.floor(Math.random() * 8);
+                    // Staggered scrap spawning (1-4 pieces per explosion). Loot
+                    // count + type seeded; scatter velocity stays visual.
+                    const lootRand = () => this.contentRng ? this.contentRng.next() : Math.random();
+                    const count = 2 + Math.floor(lootRand() * 8);
                     for (let i = 0; i < count; i++) {
-                        const size = Math.random() > 0.6 ? 'big' : 'small';
+                        const size = lootRand() > 0.6 ? 'big' : 'small';
                         const s = new Scrap(this.game, this.worldX, this.worldY, size);
                         const angle = Math.random() * Math.PI * 2;
                         const speed = 100 + Math.random() * 300;

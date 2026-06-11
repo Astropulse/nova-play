@@ -862,7 +862,20 @@ export class Asteroid {
         this.rubbleCount = type.rubbleCount;
         this.scrapAmount = type.scrap; // Number of physical scrap pieces
 
-        // Pick random asset
+        // Spawn-time content seed: this asteroid's loot (scrap counts/types,
+        // splits) is fixed now, independent of when/if it's later destroyed, so
+        // kill order can't desync rewards. Falls back to Math.random() outside a
+        // run (game.rng null — tutorial/menu). See engine/rng.js.
+        if (game.rng) {
+            const d = game.rng.deriveEntity('asteroids');
+            this.contentRng = d.rng;
+            this.contentSeed = d.seed;
+        } else {
+            this.contentRng = null;
+            this.contentSeed = null;
+        }
+
+        // Pick random asset (cosmetic — stays on Math.random())
         this.assetKey = type.keys[Math.floor(Math.random() * type.keys.length)];
         this.img = game.assets.get(this.assetKey);
 
@@ -901,7 +914,8 @@ export class Asteroid {
             hp: this.hp,
             rotation: this.rotation,
             rotSpeed: this.rotSpeed,
-            assetKey: this.assetKey
+            assetKey: this.assetKey,
+            contentSeed: this.contentSeed
         };
     }
 
@@ -1001,6 +1015,11 @@ export class Asteroid {
 
     // Returns array of new entities to spawn on death
     getSpawnOnDeath() {
+        // Gameplay rolls (drop chance, scrap counts/types, split placement) use
+        // this asteroid's spawn-time content RNG so they're reproducible. Scatter
+        // positions of rubble/scrap stay on Math.random() (visual only).
+        const rand = () => this.contentRng ? this.contentRng.next() : Math.random();
+
         const spawns = this._generateProceduralDebris();
 
         // Always spawn rubble spread across the asteroid's shape
@@ -1024,7 +1043,7 @@ export class Asteroid {
         // so overflow past 100% keeps adding scrap instead of being wasted.
         const dropChance = 0.8 * drillMult;
         let drops = Math.floor(dropChance);
-        if (Math.random() < dropChance - drops) drops++;
+        if (rand() < dropChance - drops) drops++;
 
         if (drops > 0) {
             let count = 0;
@@ -1032,10 +1051,10 @@ export class Asteroid {
 
             for (let d = 0; d < drops; d++) {
                 if (this.size === 'big') {
-                    count += 2 + Math.floor(Math.random() * 3);
+                    count += 2 + Math.floor(rand() * 3);
                 } else if (this.size === 'medium') {
-                    count += Math.random() < 0.4 ? 2 : 1; // 40% chance for 2 scrap
-                    if (Math.random() < 0.1) forceBig = true; // 10% chance for a big scrap
+                    count += rand() < 0.4 ? 2 : 1; // 40% chance for 2 scrap
+                    if (rand() < 0.1) forceBig = true; // 10% chance for a big scrap
                 } else {
                     count += 1;
                 }
@@ -1057,12 +1076,13 @@ export class Asteroid {
             }
         }
 
-        // Big asteroids also split into tiny asteroids
+        // Big asteroids also split into tiny asteroids — these are new gameplay
+        // entities, so their placement/velocity is seeded for reproducibility.
         if (this.splitInto === 'tiny') {
             for (let i = 0; i < this.splitCount; i++) {
-                const angle = Math.random() * Math.PI * 2;
-                const speed = 15 + Math.random() * 45;
-                const dist = Math.random() * Math.min(w, h) * 0.3;
+                const angle = rand() * Math.PI * 2;
+                const speed = 15 + rand() * 45;
+                const dist = rand() * Math.min(w, h) * 0.3;
                 spawns.push(new Asteroid(
                     this.game,
                     this.worldX + Math.cos(angle) * dist,
@@ -1345,6 +1365,12 @@ export class AsteroidSpawner {
     update(dt, playerWorldX, playerWorldY, playerVx, playerVy, spawnMult = 1.0) {
         const spawned = [];
 
+        // Seeded asteroid stream drives spawn chance/size/position/drift so the
+        // field is reproducible along the same flight path. Tiny cosmetic belt
+        // wobble stays on Math.random(). Falls back outside a run.
+        const R = this.game.rng ? this.game.rng.asteroids : null;
+        const rand = () => R ? R.next() : Math.random();
+
         if (this.lastPlayerX === null || this.lastPlayerY === null) {
             this.lastPlayerX = playerWorldX;
             this.lastPlayerY = playerWorldY;
@@ -1368,12 +1394,12 @@ export class AsteroidSpawner {
             const fov = (this.game.currentState && this.game.currentState.currentFovMult) || 1.0;
 
             // Normal asteroid spawn
-            const spawnChance = Math.random();
+            const spawnChance = rand();
             if (spawnChance < 0.1 * spawnMult * fov) {
                 // Chance to spawn one normal asteroid
 
                 // Pick size
-                const roll = Math.random();
+                const roll = rand();
                 let size;
                 if (roll < 0.08) size = 'big';
                 else if (roll < 0.30) size = 'tiny';
@@ -1390,32 +1416,32 @@ export class AsteroidSpawner {
                 const moveAngle = Math.atan2(playerVy, playerVx);
                 let ox, oy;
 
-                if (Math.random() < 0.7) {
+                if (rand() < 0.7) {
                     // Spawn ahead of player in their approximate direction
-                    const spread = (Math.random() - 0.5) * Math.PI * 0.8;
+                    const spread = (rand() - 0.5) * Math.PI * 0.8;
                     const angle = moveAngle + spread;
                     const dist = Math.max(halfW, halfH) + margin;
                     ox = Math.cos(angle) * dist;
                     oy = Math.sin(angle) * dist;
                 } else {
                     // Random edge
-                    const edge = Math.floor(Math.random() * 4);
+                    const edge = Math.floor(rand() * 4);
                     switch (edge) {
                         case 0:
-                            ox = (Math.random() - 0.5) * this.game.width / this.game.worldScale;
+                            ox = (rand() - 0.5) * this.game.width / this.game.worldScale;
                             oy = -halfH - margin;
                             break;
                         case 1:
                             ox = halfW + margin;
-                            oy = (Math.random() - 0.5) * this.game.height / this.game.worldScale;
+                            oy = (rand() - 0.5) * this.game.height / this.game.worldScale;
                             break;
                         case 2:
-                            ox = (Math.random() - 0.5) * this.game.width / this.game.worldScale;
+                            ox = (rand() - 0.5) * this.game.width / this.game.worldScale;
                             oy = halfH + margin;
                             break;
                         default:
                             ox = -halfW - margin;
-                            oy = (Math.random() - 0.5) * this.game.height / this.game.worldScale;
+                            oy = (rand() - 0.5) * this.game.height / this.game.worldScale;
                             break;
                     }
                 }
@@ -1425,9 +1451,9 @@ export class AsteroidSpawner {
 
                 // Drift velocity
                 let vx = 0, vy = 0;
-                if (Math.random() > 0.3) {
-                    const towardAngle = Math.atan2(-oy, -ox) + (Math.random() - 0.5) * 1.2;
-                    const speed = 10 + Math.random() * 30;
+                if (rand() > 0.3) {
+                    const towardAngle = Math.atan2(-oy, -ox) + (rand() - 0.5) * 1.2;
+                    const speed = 10 + rand() * 30;
                     vx = Math.cos(towardAngle) * speed;
                     vy = Math.sin(towardAngle) * speed;
                 }
@@ -1442,29 +1468,30 @@ export class AsteroidSpawner {
                 // --- Belt Spawning Logic ---
                 if (this.beltCooldown <= 0) {
                     // 15% chance to spawn a belt when the cooldown is ready
-                    if (Math.random() < 0.15) {
-                        this.beltCooldown = 20 + Math.floor(Math.random() * 25); // Next belt check after 20-45 spawns
+                    if (rand() < 0.15) {
+                        this.beltCooldown = 20 + Math.floor(rand() * 25); // Next belt check after 20-45 spawns
                         // Spawn 4-10 asteroids
-                        const numAsteroids = 4 + Math.floor(Math.random() * 6);
+                        const numAsteroids = 4 + Math.floor(rand() * 6);
 
                         const moveAngle = Math.atan2(playerVy, playerVx);
-                        const spread = (Math.random() - 0.5) * Math.PI * 0.5;
+                        const spread = (rand() - 0.5) * Math.PI * 0.5;
                         const beltCenterAngle = moveAngle + spread;
                         const dist = Math.max(this.game.width, this.game.height) / 2 / this.game.worldScale + 1000;
 
                         const beltCx = playerWorldX + Math.cos(beltCenterAngle) * dist;
                         const beltCy = playerWorldY + Math.sin(beltCenterAngle) * dist;
 
-                        const arcStartAngle = Math.random() * Math.PI * 2;
-                        const arcExtent = (Math.random() * 0.5 + 0.3) * Math.PI; // 0.3 to 0.8 PI
-                        const beltRadius = 200 + Math.random() * 400;
-                        const beltRotation = Math.random() * Math.PI * 2;
+                        const arcStartAngle = rand() * Math.PI * 2;
+                        const arcExtent = (rand() * 0.5 + 0.3) * Math.PI; // 0.3 to 0.8 PI
+                        const beltRadius = 200 + rand() * 400;
+                        const beltRotation = rand() * Math.PI * 2;
 
                         for (let i = 0; i < numAsteroids; i++) {
                             const t = i / (numAsteroids - 1 || 1);
                             const angle = arcStartAngle + t * arcExtent;
 
                             // Add some random wobble so it's not perfectly uniform
+                            // (cosmetic position jitter — stays on Math.random())
                             const wobbleX = (Math.random() - 0.5) * 100;
                             const wobbleY = (Math.random() - 0.5) * 100;
 
@@ -1472,7 +1499,7 @@ export class AsteroidSpawner {
                             const ay = beltCy + Math.sin(angle + beltRotation) * beltRadius + wobbleY;
 
                             // Belts have a higher mix of big and medium asteroids
-                            const roll = Math.random();
+                            const roll = rand();
                             let size = 'medium';
                             if (roll < 0.05) size = 'big';
                             else if (roll < 0.15) size = 'small';
@@ -1480,9 +1507,9 @@ export class AsteroidSpawner {
 
                             // Belt asteroids inherit a slow group drift or are relatively stationary
                             let vx = 0, vy = 0;
-                            if (Math.random() > 0.5) {
-                                const driftAngle = Math.random() * Math.PI * 2;
-                                const speed = 10 + Math.random() * 20;
+                            if (rand() > 0.5) {
+                                const driftAngle = rand() * Math.PI * 2;
+                                const speed = 10 + rand() * 20;
                                 vx = Math.cos(driftAngle) * speed;
                                 vy = Math.sin(driftAngle) * speed;
                             }

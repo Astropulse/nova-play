@@ -152,7 +152,10 @@ function resolveVars(varDefs, player, state) {
                 break;
             }
             case 'random_int': {
-                resolved[key] = def.min + Math.floor(Math.random() * (def.max - def.min + 1));
+                // Seeded so encounter reward amounts are reproducible.
+                const er = (state && state.rng) ? state.rng.encounters : null;
+                const u = er ? er.next() : Math.random();
+                resolved[key] = def.min + Math.floor(u * (def.max - def.min + 1));
                 break;
             }
             case 'kill_reward': {
@@ -396,7 +399,9 @@ function buildOption(opt, scenario, vars) {
         return {
             label,
             action: (p, s, enc) => {
-                const success = Math.random() < opt.negotiate.chance;
+                // Seeded encounter outcome (reproducible).
+                const er = (s && s.rng) ? s.rng.encounters : null;
+                const success = (er ? er.next() : Math.random()) < opt.negotiate.chance;
                 if (success) {
                     const result = executeActions(opt.actions, vars, p, s, enc);
                     if (result === 'not_enough_scrap') return { message: "Not enough scrap.", close: true };
@@ -441,7 +446,8 @@ function buildOption(opt, scenario, vars) {
                 }
                 const outcomes = opt.gamble;
                 const totalWeight = outcomes.reduce((sum, o) => sum + (o.weight || 1), 0);
-                let roll = Math.random() * totalWeight;
+                const ger = (s && s.rng) ? s.rng.encounters : null;
+                let roll = (ger ? ger.next() : Math.random()) * totalWeight;
                 let chosen = outcomes[outcomes.length - 1];
                 for (const outcome of outcomes) {
                     roll -= (outcome.weight || 1);
@@ -503,10 +509,11 @@ function buildDialog(scenario, vars, player, state) {
 
 // ── Public API ───────────────────────────────────────────────────
 
-export function rollEncounterType() {
+// `rng` (seeded encounters stream) is optional; falls back to Math.random().
+export function rollEncounterType(rng = null) {
     const entries = Object.entries(ENCOUNTER_WEIGHTS);
     let total = entries.reduce((s, [, w]) => s + w, 0);
-    let roll = Math.random() * total;
+    let roll = (rng ? rng.next() : Math.random()) * total;
     for (const [type, weight] of entries) {
         roll -= weight;
         if (roll <= 0) return type;
@@ -519,8 +526,12 @@ export function generateEncounterDialog(type, player, state) {
     const scenarios = DIALOG_SCENARIOS.filter(s => s.type === type);
     if (scenarios.length === 0) return _fallback();
 
-    // Shuffle and try each
-    const shuffled = [...scenarios].sort(() => Math.random() - 0.5);
+    // Shuffle and try each. Seeded so which matching scenario is selected is
+    // reproducible (the dialog content is part of the run outcome).
+    const shuffled = [...scenarios];
+    const er = (state && state.rng) ? state.rng.encounters : null;
+    if (er) er.shuffle(shuffled);
+    else shuffled.sort(() => Math.random() - 0.5);
     for (const scenario of shuffled) {
         if (!checkCondition(scenario.condition, player, state)) continue;
         const vars = resolveVars(scenario.vars, player, state);

@@ -45,8 +45,11 @@ export class FracturedStationEvent {
         this._beltQueue = [];
 
         this.musicStarted = false;
-        // Random angles for stations
+        // Random angles for stations (cosmetic orientation)
         this.angles = [Math.random() * Math.PI * 2, Math.random() * Math.PI * 2, Math.random() * Math.PI * 2];
+
+        // Per-event seeded RNG (events stream) for enemy/asteroid-belt spawns.
+        this.contentRng = game.rng ? game.rng.deriveEntity('events').rng : null;
 
         // Asteroid belt size probabilities (roll thresholds)
         this.beltSizeProbs = {
@@ -98,8 +101,8 @@ export class FracturedStationEvent {
                 const enemy = this.spawnQueue.shift();
                 this.activeEnemies.push(enemy);
                 this.pendingEnemies.push(enemy);
-                // Matched to wave stagger: 1.5-3s
-                this.spawnTimer = 1.5 + Math.random() * 1.5;
+                // Matched to wave stagger: 1.5-3s (seeded)
+                this.spawnTimer = 1.5 + (this.contentRng ? this.contentRng.next() : Math.random()) * 1.5;
             }
         }
 
@@ -177,11 +180,12 @@ export class FracturedStationEvent {
     }
 
     _spawnWave(playerX, playerY, count) {
+        const rand = () => this.contentRng ? this.contentRng.next() : Math.random();
         const difficulty = this.game.currentState.difficultyScale || 1.0;
         for (let i = 0; i < count; i++) {
-            const angle = Math.random() * Math.PI * 2;
+            const angle = rand() * Math.PI * 2;
             // Spawn further out so they arrive staggered (1800-2400) like standard waves
-            const dist = 1800 + Math.random() * 600;
+            const dist = 1800 + rand() * 600;
             const ex = playerX + Math.cos(angle) * dist;
             const ey = playerY + Math.sin(angle) * dist;
 
@@ -199,15 +203,16 @@ export class FracturedStationEvent {
     }
 
     _spawnAsteroidBelt(x, y) {
+        const rand = () => this.contentRng ? this.contentRng.next() : Math.random();
         this._beltQueue = [];
-        const count = 80 + Math.floor(Math.random() * 20);
+        const count = 80 + Math.floor(rand() * 20);
         for (let i = 0; i < count; i++) {
-            const angle = Math.random() * Math.PI * 2;
-            const dist = 400 + Math.random() * 1200;
+            const angle = rand() * Math.PI * 2;
+            const dist = 400 + rand() * 1200;
             const ax = x + Math.cos(angle) * dist;
             const ay = y + Math.sin(angle) * dist;
 
-            const roll = Math.random();
+            const roll = rand();
             let size = 'medium';
             if (roll < this.beltSizeProbs.big) size = 'big';
             else if (roll < this.beltSizeProbs.small) size = 'small';

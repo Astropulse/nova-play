@@ -1,14 +1,9 @@
 // Scaling is dynamic via game properties
 
-// Seeded pseudo-random for deterministic star placement
-function mulberry32(seed) {
-    return function () {
-        seed |= 0; seed = seed + 0x6D2B79F5 | 0;
-        let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
-        t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
-        return ((t ^ t >>> 14) >>> 0) / 4294967296;
-    };
-}
+// Seeded pseudo-random for deterministic star placement. Shared with the
+// gameplay RNG infrastructure so the starfield and the run seed use one
+// implementation.
+import { mulberry32 } from '../engine/rng.js';
 
 export class World {
     constructor(game, seed = 42) {

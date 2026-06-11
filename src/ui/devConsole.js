@@ -1,4 +1,5 @@
 import { SaveManager } from '../engine/saveManager.js';
+import { formatSeed, parseSeed, randomSeed } from '../engine/rng.js';
 
 export class DevConsole {
     constructor(game) {
@@ -25,6 +26,7 @@ export class DevConsole {
             'hp': () => this._cmdHP(),
             'encounter': (args) => this._cmdEncounter(args),
             'cache': (args) => this._cmdCache(args),
+            'seed': (args) => this._cmdSeed(args),
             'dev': () => this._cmdDev(),
             'fps_uncap': () => this._cmdFPSUncap(),
             'perf': () => this._cmdPerf(),
@@ -411,8 +413,65 @@ export class DevConsole {
         console.log(`Spawned cache at ${Math.floor(cache.worldX)}, ${Math.floor(cache.worldY)}`);
     }
 
+    // /seed                — print both the world (background) and run seeds
+    // /seed <n>             — set the gameplay run seed (0 = randomize)
+    // /seed world <n>       — set the background world seed (0 = randomize)
+    // Seeds display as 8 digits, zero-padded; smaller inputs are accepted.
+    _cmdSeed(args) {
+        const state = this.game.currentState;
+
+        // No args: report both.
+        if (args.length < 1) {
+            const world = this.game.worldSeed != null ? formatSeed(this.game.worldSeed) : '(unset)';
+            const run = state && state.runSeed != null ? formatSeed(state.runSeed) : '(no run)';
+            console.log(`Seeds — World: ${world}  Run: ${run}`);
+            return;
+        }
+
+        // /seed world [n]
+        if (args[0].toLowerCase() === 'world') {
+            let val;
+            if (args.length < 2) {
+                console.log(`World seed: ${formatSeed(this.game.worldSeed ?? randomSeed())}`);
+                return;
+            }
+            const parsed = parseSeed(args[1]);
+            if (parsed === null) {
+                console.log(`Invalid seed: ${args[1]}`);
+                return;
+            }
+            val = parsed === 0 ? randomSeed() : parsed;
+            this.game.worldSeed = val;
+            // Rebuild the starfield immediately if we're on the title screen.
+            if (state && typeof state.rebuildWorld === 'function') {
+                state.rebuildWorld();
+                console.log(`World seed set to ${formatSeed(val)} (starfield rebuilt)`);
+            } else {
+                console.log(`World seed set to ${formatSeed(val)} (applies to next title screen)`);
+            }
+            return;
+        }
+
+        // /seed <n> — run seed
+        const parsed = parseSeed(args[0]);
+        if (parsed === null) {
+            console.log(`Invalid seed: ${args[0]}`);
+            return;
+        }
+        const val = parsed === 0 ? randomSeed() : parsed;
+        if (!state || typeof state.reseedRun !== 'function') {
+            console.log('Not in a run — start a flight first, or use "/seed world <n>".');
+            return;
+        }
+        // Rebuild the procedural world (events/shops/asteroids/spawners) from
+        // the new seed and snap the player to spawn, so the same seed always
+        // produces the same layout.
+        state.reseedRun(val);
+        console.log(`Run seed set to ${formatSeed(val)} (world rebuilt)`);
+    }
+
     _cmdHelp() {
-        console.log("Available commands: time, spawn, stat, wave, scrap, exp, locate, save, load, record, boss, hp, encounter, cache, dev, perf, help");
+        console.log("Available commands: time, spawn, stat, wave, scrap, exp, locate, save, load, record, boss, hp, encounter, cache, seed, dev, perf, help");
     }
 
     draw(ctx) {

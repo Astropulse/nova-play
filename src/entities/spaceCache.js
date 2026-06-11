@@ -88,6 +88,19 @@ export class SpaceCache {
         this.glowTimer  = 0;
         this.cacheRotation = Math.random() * Math.PI * 2;
 
+        // Spawn-time content seed — the cache's loot is fixed now (rolled lazily
+        // by CacheUI on first open) so it doesn't depend on when it's opened.
+        // Falls back to Math.random() outside a run. NOTE: caches aren't
+        // serialized, so this seed is ephemeral across save/load.
+        if (game.rng) {
+            const d = game.rng.deriveEntity('caches');
+            this.contentRng = d.rng;
+            this.contentSeed = d.seed;
+        } else {
+            this.contentRng = null;
+            this.contentSeed = null;
+        }
+
         // Persistent CacheUI — created on first open, reused on subsequent opens
         this._cachedUI  = null;
 
@@ -713,10 +726,14 @@ export class CacheSpawner {
         this.lastPlayerX = playerWorldX;
         this.lastPlayerY = playerWorldY;
 
+        // Seeded cache stream drives spawn chance + placement so cache spawns
+        // are reproducible along the same flight path. Falls back outside a run.
+        const rand = () => this.game.rng ? this.game.rng.caches.next() : Math.random();
+
         const C = CACHE_CONFIG;
         if (this.distAccumulator >= C.spawnDistThreshold) {
             this.distAccumulator -= C.spawnDistThreshold;
-            if (activeCacheCount < C.maxActiveCaches && Math.random() < C.spawnChance * freqMult) {
+            if (activeCacheCount < C.maxActiveCaches && rand() < C.spawnChance * freqMult) {
                 spawned.push(this._spawnCache(playerWorldX, playerWorldY));
             }
         }
@@ -724,18 +741,20 @@ export class CacheSpawner {
     }
 
     _spawnCache(px, py) {
+        const rand   = () => this.game.rng ? this.game.rng.caches.next() : Math.random();
         const fov    = (this.game.currentState?.currentFovMult) || 1.0;
         const hw     = this.game.width  / 2 / this.game.worldScale;
         const hh     = this.game.height / 2 / this.game.worldScale;
         const margin = 600 * fov;
-        const angle  = Math.random() * Math.PI * 2;
-        const dist   = Math.max(hw, hh) + margin + Math.random() * 400;
+        const angle  = rand() * Math.PI * 2;
+        const dist   = Math.max(hw, hh) + margin + rand() * 400;
         return new SpaceCache(this.game, px + Math.cos(angle) * dist, py + Math.sin(angle) * dist);
     }
 
     spawnNear(px, py, distMin = 300, distMax = 600) {
-        const angle = Math.random() * Math.PI * 2;
-        const dist  = distMin + Math.random() * (distMax - distMin);
+        const rand  = () => this.game.rng ? this.game.rng.caches.next() : Math.random();
+        const angle = rand() * Math.PI * 2;
+        const dist  = distMin + rand() * (distMax - distMin);
         return new SpaceCache(this.game, px + Math.cos(angle) * dist, py + Math.sin(angle) * dist);
     }
 
