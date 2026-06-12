@@ -1,0 +1,962 @@
+// Multiplayer screen — host a world or join one with a code, hang out in the
+// lobby (pick ships, chat), then launch the shared run.
+//
+// Flow:
+//   MENU → [HOST]  → server starts → join code on screen → friends connect →
+//                    START FLIGHT → everyone spawns into the same seeded world.
+//   MENU → [JOIN]  → enter code → lobby (or instantly into a run in progress).
+//
+// Visual language mirrors the achievements screen (header bar, card panels,
+// text buttons, home-button footer) with the title screen's ship presentation
+// (arrow sprites + stat bars) for the ship selector.
+//
+// The lobby survives into the run: the same NetSession object moves onto
+// game.net and PlayingState picks it up from there.
+
+import { SHIPS } from '../data/ships.js';
+import { PlayingState } from './playingState.js';
+import { MenuState } from './menuState.js';
+import { HostSession, ClientSession } from '../net/netSession.js';
+import { hostingAvailable } from '../net/transport.js';
+import { relayAvailable, looksLikeRelayCode, normalizeRelayCode, formatRelayCode } from '../net/relayConfig.js';
+import { encodeJoinCode, decodeJoinCode } from '../net/joinCode.js';
+import { NET_DEFAULT_PORT, NET_MAX_PLAYERS } from '../net/protocol.js';
+import { playerColor } from '../ui/chat.js';
+
+const NAME_KEY = 'nova_mp_name';
+
+// Deterministic spawn ring for synchronized starts — every machine computes
+// every pilot's spawn the same way, so the initial world lines up exactly.
+export function spawnForPid(pid) {
+    if (pid === 0) return { x: 0, y: 0 };
+    const angle = ((pid - 1) / (NET_MAX_PLAYERS - 1)) * Math.PI * 2;
+    return { x: Math.round(Math.cos(angle) * 150), y: Math.round(Math.sin(angle) * 150) };
+}
+
+export class MultiplayerState {
+    constructor(game) {
+        this.game = game;
+        this.mode = 'menu';   // 'menu' | 'hostStarting' | 'lobby' | 'joinEntry' | 'connecting'
+        this.session = null;
+        this.error = '';
+        this.statusText = '';
+        this.shipIndex = 0;
+        this.time = 0;
+
+        this.pilotName = (localStorage.getItem(NAME_KEY) || '').slice(0, 16) || `PILOT${Math.floor(Math.random() * 900 + 100)}`;
+        this.codeInput = '';
+        this.activeField = null; // 'name' | 'code' | 'chat'
+        this.chatInput = '';
+        this.cursorTimer = 0;
+        this.showCursor = true;
+
+        this._buttons = {};        // id -> rect (rebuilt every draw)
+        this._hovered = null;      // id under the mouse this frame
+        this._starting = false;
+
+        // "COPIED!" feedback for the join-code copy buttons
+        this._copiedId = null;
+        this._copiedTimer = 0;
+
+        this._keydownListener = (e) => this._handleKeydown(e);
+    }
+
+    enter() {
+        document.body.classList.remove('playing');
+        this.game.rng = null;
+        window.addEventListener('keydown', this._keydownListener);
+    }
+
+    exit() {
+        window.removeEventListener('keydown', this._keydownListener);
+        // If we leave this screen without entering a run, tear the session down
+        // — unless a run start is in flight (PlayingState owns it from here).
+        if (this.session && !this._starting) {
+            this.session.destroy();
+            this.session = null;
+            this.game.net = null;
+        }
+    }
+
+    // ── Text input ───────────────────────────────────────────────────────────
+    _handleKeydown(e) {
+        if (!this.activeField) return;
+        if (e.key === 'Escape') {
+            this.activeField = null;
+        } else if (e.key === 'Enter') {
+            if (this.activeField === 'code') {
+                this.activeField = null;
+                this._tryJoin();
+            } else if (this.activeField === 'chat') {
+                const text = this.chatInput.trim();
+                if (text && this.session) this.session.sendChat(text);
+                this.chatInput = '';
+                this.activeField = null;
+            } else {
+                this.activeField = null;
+            }
+        } else if (e.key === 'Backspace') {
+            if (this.activeField === 'name') this.pilotName = this.pilotName.slice(0, -1);
+            else if (this.activeField === 'code') this.codeInput = this.codeInput.slice(0, -1);
+            else if (this.activeField === 'chat') this.chatInput = this.chatInput.slice(0, -1);
+        } else if ((e.ctrlKey || e.metaKey) && (e.key === 'v' || e.key === 'V')) {
+            // Ctrl+V pastes into whichever field is focused (and never types a
+            // literal "V").
+            this._pasteFromClipboard();
+        } else if (e.ctrlKey || e.metaKey) {
+            return; // other shortcuts — don't type their letters
+        } else if (e.key.length === 1) {
+            if (this.activeField === 'name' && this.pilotName.length < 16) {
+                if (/[a-zA-Z0-9_\- ]/.test(e.key)) this.pilotName += e.key.toUpperCase();
+            } else if (this.activeField === 'code' && this.codeInput.length < 24) {
+                this.codeInput += e.key.toUpperCase();
+            } else if (this.activeField === 'chat' && this.chatInput.length < 200) {
+                this.chatInput += e.key;
+            }
+        } else {
+            return;
+        }
+        e.preventDefault();
+        e.stopPropagation();
+    }
+
+    _saveName() {
+        const name = this.pilotName.trim() || 'PILOT';
+        this.pilotName = name;
+        localStorage.setItem(NAME_KEY, name);
+        return name;
+    }
+
+    // ── Clipboard (join-code copy buttons) ───────────────────────────────────
+    _copyToClipboard(text, id) {
+        const done = () => {
+            this._copiedId = id;
+            this._copiedTimer = 1.6;
+            this.game.sounds.play('select', 0.8);
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done).catch(() => { this._legacyCopy(text); done(); });
+        } else {
+            this._legacyCopy(text);
+            done();
+        }
+    }
+
+    // Paste clipboard text into the focused (or join-code) field.
+    async _pasteFromClipboard(targetField = null) {
+        const field = targetField || this.activeField || 'code';
+        let text = '';
+        try {
+            text = await navigator.clipboard.readText();
+        } catch {
+            this.error = 'Could not read the clipboard.';
+            return;
+        }
+        text = (text || '').trim();
+        if (!text) return;
+        if (field === 'code') {
+            this.codeInput = text.toUpperCase().slice(0, 24);
+        } else if (field === 'name') {
+            this.pilotName = text.toUpperCase().replace(/[^A-Z0-9_\- ]/g, '').slice(0, 16);
+        } else if (field === 'chat') {
+            this.chatInput = (this.chatInput + text).slice(0, 200);
+        }
+        this.game.sounds.play('select', 0.6);
+    }
+
+    _legacyCopy(text) {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand('copy'); } catch { /* best effort */ }
+        ta.remove();
+    }
+
+    // ── Session wiring ───────────────────────────────────────────────────────
+    _wireSession(session) {
+        this.session = session;
+        this.game.net = session;
+        session.onLobbyChanged = () => { /* redrawn every frame */ };
+        session.onEnded = (reason) => {
+            if (this._starting) return;
+            this.session = null;
+            this.game.net = null;
+            this.mode = 'menu';
+            this.error = reason || 'Session ended.';
+        };
+        session.onStartRun = (info) => this._launchRun(info);
+    }
+
+    async _startHosting() {
+        this.error = '';
+        if (!hostingAvailable() && !relayAvailable()) {
+            this.error = 'Hosting needs the NOVA desktop app (the web version can only join).';
+            return;
+        }
+        this.mode = 'hostStarting';
+        this.statusText = 'Starting host server...';
+        const name = this._saveName();
+        const session = new HostSession(this.game, name, SHIPS[this.shipIndex].id);
+        const res = await session.start(NET_DEFAULT_PORT);
+        if (!res.ok) {
+            this.error = res.error || 'Could not start the host server.';
+            this.mode = 'menu';
+            session.destroy();
+            return;
+        }
+        this._wireSession(session);
+        this.mode = 'lobby';
+    }
+
+    async _tryJoin() {
+        this.error = '';
+        const target = decodeJoinCode(this.codeInput);
+        const relayCode = !target && looksLikeRelayCode(this.codeInput) && relayAvailable()
+            ? normalizeRelayCode(this.codeInput) : null;
+        if (!target && !relayCode) {
+            this.error = 'That join code doesn\'t look right.';
+            return;
+        }
+        this.mode = 'connecting';
+        this.statusText = target ? `Connecting to ${target.ip}...` : 'Connecting through the relay...';
+        const name = this._saveName();
+        const session = new ClientSession(this.game, name, SHIPS[this.shipIndex].id);
+        this._wireSession(session);
+        const res = target
+            ? await session.connect(target.ip, target.port)
+            : await session.connectRelay(relayCode);
+        if (!res.ok) {
+            this.error = res.error || 'Could not connect.';
+            this.mode = 'joinEntry';
+            this.session = null;
+            this.game.net = null;
+            return;
+        }
+        // If the host is mid-run, START/JOIN_SNAPSHOT arrives next and
+        // onStartRun fires; otherwise we sit in the lobby.
+        this.mode = 'lobby';
+        this.statusText = res.inRun ? 'World in progress — joining...' : '';
+    }
+
+    _launchRun({ runSeed, worldSeed, joinSnapshot }) {
+        if (this._starting) return;
+        this._starting = true;
+        const game = this.game;
+        game.worldSeed = worldSeed != null ? worldSeed : game.worldSeed;
+
+        const me = this.session.players.get(this.session.pid);
+        const shipId = (me && me.shipId) || SHIPS[this.shipIndex].id;
+        const shipData = SHIPS.find(s => s.id === shipId) || SHIPS[0];
+
+        if (joinSnapshot) {
+            const state = new PlayingState(game, shipData, {
+                skipInit: true,
+                netRun: { runSeed: joinSnapshot.runSeed, spawnX: joinSnapshot.spawnX, spawnY: joinSnapshot.spawnY },
+            });
+            game.setState(state);
+            state.applyNetJoinSnapshot(joinSnapshot);
+        } else {
+            const spawn = spawnForPid(this.session.pid);
+            const state = new PlayingState(game, shipData, {
+                netRun: { runSeed, spawnX: spawn.x, spawnY: spawn.y },
+            });
+            game.setState(state);
+        }
+    }
+
+    _leaveToMenu() {
+        this.game.sounds.play('click', 0.6);
+        this.game.setState(new MenuState(this.game));
+    }
+
+    _leaveLobby() {
+        this.game.sounds.play('click', 0.6);
+        if (this.session) {
+            this.session.destroy();
+            this.session = null;
+            this.game.net = null;
+        }
+        this.mode = 'menu';
+        this.error = '';
+    }
+
+    // ── Update ───────────────────────────────────────────────────────────────
+    update(dt) {
+        this.time += dt;
+        this.cursorTimer += dt;
+        if (this.cursorTimer > 0.5) { this.cursorTimer = 0; this.showCursor = !this.showCursor; }
+        if (this._copiedTimer > 0) {
+            this._copiedTimer -= dt;
+            if (this._copiedTimer <= 0) this._copiedId = null;
+        }
+
+        const input = this.game.input;
+        const mouse = this.game.getMousePos();
+
+        // Hover tracking (buttons laid out by the last draw)
+        let hovered = null;
+        for (const [id, r] of Object.entries(this._buttons)) {
+            if (r && mouse.x >= r.x && mouse.x <= r.x + r.w && mouse.y >= r.y && mouse.y <= r.y + r.h) {
+                hovered = id;
+                break;
+            }
+        }
+        if (hovered !== this._hovered && hovered) this.game.sounds.play('click', 0.35);
+        this._hovered = hovered;
+
+        if (input.isKeyJustPressed('Escape') && !this.activeField) {
+            if (this.mode === 'lobby' || this.mode === 'connecting') {
+                this._leaveLobby();
+            } else if (this.mode === 'joinEntry') {
+                this.mode = 'menu';
+            } else {
+                this._leaveToMenu();
+                return;
+            }
+        }
+
+        if (!input.isMouseJustPressed(0)) return;
+
+        const hit = (id) => hovered === id;
+
+        this.activeField = null;
+        if (hit('name')) { this.activeField = 'name'; return; }
+
+        if (this.mode === 'menu') {
+            if (hit('host')) { this.game.sounds.play('select', 1.0); this._startHosting(); }
+            else if (hit('join')) { this.game.sounds.play('select', 1.0); this.mode = 'joinEntry'; this.error = ''; }
+            else if (hit('home')) { this._leaveToMenu(); }
+        } else if (this.mode === 'joinEntry') {
+            if (hit('code')) { this.activeField = 'code'; }
+            else if (hit('paste')) { this._pasteFromClipboard('code'); this.activeField = 'code'; }
+            else if (hit('connect')) { this.game.sounds.play('select', 1.0); this._tryJoin(); }
+            else if (hit('home')) { this.game.sounds.play('click', 0.6); this.mode = 'menu'; }
+        } else if (this.mode === 'lobby' && this.session) {
+            if (hit('shipLeft') || hit('shipRight')) {
+                this.shipIndex = (this.shipIndex + (hit('shipLeft') ? -1 : 1) + SHIPS.length) % SHIPS.length;
+                this.session.setMyShip(SHIPS[this.shipIndex].id);
+                this.game.sounds.play('select', 0.8);
+            } else if (hit('chat')) {
+                this.activeField = 'chat';
+            } else if (hit('copyLan') && this._lanCode) {
+                this._copyToClipboard(this._lanCode, 'copyLan');
+            } else if (hit('copyNet') && this._netCode) {
+                this._copyToClipboard(this._netCode, 'copyNet');
+            } else if (hit('copyRelay') && this._relayCode) {
+                this._copyToClipboard(this._relayCode, 'copyRelay');
+            } else if (hit('start') && this.session.isHost) {
+                this.game.sounds.play('select', 1.0);
+                this.session.startRun();
+            } else if (hit('home') || hit('leave')) {
+                this._leaveLobby();
+            }
+        }
+    }
+
+    // ── Draw ─────────────────────────────────────────────────────────────────
+    draw(ctx) {
+        const game = this.game;
+        const uiScale = game.uiScale;
+        const cw = game.width, ch = game.height;
+        const margin = Math.floor(uiScale * 12);
+        this._buttons = {};
+
+        ctx.save();
+        ctx.imageSmoothingEnabled = false;
+        ctx.textBaseline = 'alphabetic';
+
+        // Background + header bar (matches the achievements screen)
+        ctx.fillStyle = '#050a14';
+        ctx.fillRect(0, 0, cw, ch);
+
+        const headerH = Math.floor(uiScale * 32);
+        ctx.fillStyle = '#0a1220';
+        ctx.fillRect(0, 0, cw, headerH);
+
+        ctx.fillStyle = '#44ddff';
+        ctx.font = `${Math.floor(11 * uiScale)}px Astro5x`;
+        ctx.textAlign = 'center';
+        ctx.fillText('MULTIPLAYER', cw / 2, Math.floor(headerH * 0.66));
+
+        // Header sub-line
+        ctx.fillStyle = '#667788';
+        ctx.font = `${Math.floor(5 * uiScale)}px Astro4x`;
+        let subline = 'CO-OP FOR UP TO 8 PILOTS · ONE SHARED WORLD';
+        if (this.mode === 'lobby' && this.session) {
+            if (this.session.isHost) {
+                // Web hosts run the world in this tab — browsers throttle hidden
+                // tabs hard, which would freeze the run for everyone.
+                subline = hostingAvailable()
+                    ? 'SHARE A JOIN CODE — FRIENDS CAN ALSO JOIN MID-FLIGHT'
+                    : 'YOU ARE THE WORLD — KEEP THIS TAB VISIBLE OR EVERYONE FREEZES';
+            } else {
+                subline = this.statusText || 'WAITING FOR THE HOST TO START THE FLIGHT';
+            }
+        } else if (this.mode === 'joinEntry') {
+            subline = 'ENTER THE JOIN CODE YOUR FRIEND SHARED (RAW IP:PORT ALSO WORKS)';
+        }
+        ctx.fillText(subline.toUpperCase(), cw / 2, headerH + Math.floor(uiScale * 8));
+
+        // Mode content
+        if (this.mode === 'menu') this._drawModeMenu(ctx, headerH);
+        else if (this.mode === 'hostStarting' || this.mode === 'connecting') this._drawBusy(ctx);
+        else if (this.mode === 'joinEntry') this._drawJoinEntry(ctx, headerH);
+        else if (this.mode === 'lobby' && this.session) this._drawLobby(ctx, headerH);
+
+        // Footer: home button (back / leave) bottom-left, like achievements
+        const homeSize = game.spriteSize('home_button_off', uiScale);
+        this._buttons.home = { x: margin, y: ch - margin - homeSize.h, w: homeSize.w, h: homeSize.h };
+        game.drawSprite(ctx, this._hovered === 'home' ? 'home_button_on' : 'home_button_off',
+            this._buttons.home.x, this._buttons.home.y, uiScale);
+
+        // Error line above the footer
+        if (this.error) {
+            ctx.fillStyle = '#ff8866';
+            ctx.font = `${Math.floor(5 * uiScale)}px Astro4x`;
+            ctx.textAlign = 'center';
+            ctx.fillText(this.error, cw / 2, ch - margin - Math.floor(uiScale * 2));
+        }
+
+        ctx.restore();
+    }
+
+    // ── Screens ──────────────────────────────────────────────────────────────
+    _drawModeMenu(ctx, headerH) {
+        const game = this.game;
+        const uiScale = game.uiScale;
+        const cw = game.width, ch = game.height;
+
+        const colW = Math.min(Math.floor(cw * 0.42), Math.floor(uiScale * 240));
+        const colX = Math.floor(cw / 2 - colW / 2);
+        // Center the column in the space between header and footer.
+        const contentH = Math.floor(uiScale * 95);
+        let y = headerH + Math.max(Math.floor(uiScale * 26),
+            Math.floor((ch - headerH - contentH) * 0.36));
+
+        // Pilot name
+        y = this._drawField(ctx, 'name', 'PILOT NAME', this.pilotName, colX, y, colW);
+        y += Math.floor(uiScale * 14);
+
+        // Host / Join cards
+        const canHost = hostingAvailable() || relayAvailable();
+        let hostDesc = 'Hosting needs the NOVA desktop app — the web version can only join.';
+        if (hostingAvailable()) hostDesc = 'Open a world on this PC and invite up to 7 friends with a join code.';
+        else if (relayAvailable()) hostDesc = 'Host through the NOVA relay — friends join with your code, no setup.';
+        y = this._drawCardButton(ctx, 'host', 'HOST WORLD', hostDesc, colX, y, colW, canHost);
+        y += Math.floor(uiScale * 8);
+        this._drawCardButton(ctx, 'join', 'JOIN WORLD',
+            'Enter a friend\'s join code and fly in their world — even mid-flight.',
+            colX, y, colW, true);
+    }
+
+    _drawBusy(ctx) {
+        const game = this.game;
+        const uiScale = game.uiScale;
+        ctx.fillStyle = '#9fe8ff';
+        ctx.font = `${Math.floor(7 * uiScale)}px Astro4x`;
+        ctx.textAlign = 'center';
+        const dots = '.'.repeat(1 + Math.floor(this.time * 2) % 3);
+        ctx.fillText(this.statusText + dots, game.width / 2, game.height / 2);
+        ctx.fillStyle = '#667788';
+        ctx.font = `${Math.floor(5 * uiScale)}px Astro4x`;
+        ctx.fillText('ESC to cancel', game.width / 2, game.height / 2 + Math.floor(uiScale * 12));
+    }
+
+    _drawJoinEntry(ctx, headerH) {
+        const game = this.game;
+        const uiScale = game.uiScale;
+        const cw = game.width;
+
+        const colW = Math.min(Math.floor(cw * 0.42), Math.floor(uiScale * 240));
+        const colX = Math.floor(cw / 2 - colW / 2);
+        const ch = game.height;
+        const contentH = Math.floor(uiScale * 90);
+        let y = headerH + Math.max(Math.floor(uiScale * 26),
+            Math.floor((ch - headerH - contentH) * 0.36));
+
+        y = this._drawField(ctx, 'name', 'PILOT NAME', this.pilotName, colX, y, colW);
+        y += Math.floor(uiScale * 14);
+
+        // Join code field with a PASTE button at its right edge.
+        const pasteW = Math.floor(uiScale * 34);
+        const pasteGap = Math.floor(uiScale * 4);
+        const fieldBottom = this._drawField(ctx, 'code', 'JOIN CODE', this.codeInput,
+            colX, y, colW - pasteW - pasteGap, 'e.g. 60N0S-84V41 or 8Q3K-F7NA');
+        const fieldH = fieldBottom - y;
+        this._buttons.paste = { x: colX + colW - pasteW, y, w: pasteW, h: fieldH };
+        this._drawTextButton(ctx, this._buttons.paste, 'PASTE',
+            this._hovered === 'paste' ? '#ffffff' : '#9fe8ff',
+            this._hovered === 'paste' ? 'rgba(30, 55, 80, 0.95)' : 'rgba(10, 18, 28, 0.85)');
+        y = fieldBottom;
+
+        y += Math.floor(uiScale * 14);
+        this._drawCardButton(ctx, 'connect', 'CONNECT', 'Fly to your friend\'s world.', colX, y, colW, true);
+    }
+
+    _drawLobby(ctx, headerH) {
+        const game = this.game;
+        const uiScale = game.uiScale;
+        const cw = game.width, ch = game.height;
+        const s = this.session;
+        const margin = Math.floor(uiScale * 12);
+
+        // Content column — same 70% page width the achievements grid uses.
+        const pageW = Math.floor(cw * 0.7);
+        const pageX = Math.floor(cw / 2 - pageW / 2);
+        const gap = Math.floor(uiScale * 8);
+
+        let topY = headerH + Math.floor(uiScale * 16);
+
+        // ── Join codes (host) ─────────────────────────────────────────────
+        if (s.isHost && s.joinCodeInfo) {
+            const info = s.joinCodeInfo;
+            const lanIP = info.lanIPs && info.lanIPs[0];
+            this._lanCode = lanIP ? (encodeJoinCode(lanIP, info.port) || `${lanIP}:${info.port}`) : null;
+            this._netCode = info.publicIP ? (encodeJoinCode(info.publicIP, info.port) || `${info.publicIP}:${info.port}`) : null;
+            this._relayCode = info.relayCode ? formatRelayCode(info.relayCode) : null;
+
+            // Up to three panels share the row: LAN · INTERNET · RELAY.
+            const panels = [];
+            if (this._relayCode) {
+                panels.push(['copyRelay', 'RELAY', this._relayCode, '#66ff99',
+                    'works everywhere — no port forwarding']);
+            }
+            if (this._lanCode) {
+                panels.push(['copyLan', 'SAME NETWORK', this._lanCode, '#44ddff',
+                    `${lanIP}:${info.port}`]);
+            }
+            if (this._netCode) {
+                panels.push(['copyNet', 'INTERNET', this._netCode, '#ffd27a',
+                    `needs TCP port ${info.port} forwarded to this PC`]);
+            }
+            if (panels.length > 0) {
+                const codeH = Math.floor(uiScale * 34);
+                const codeColW = panels.length > 1
+                    ? Math.floor((pageW - gap * (panels.length - 1)) / panels.length)
+                    : Math.floor(pageW * 0.6);
+                let codeX = panels.length > 1 ? pageX : Math.floor(cw / 2 - codeColW / 2);
+                for (const [id, label, code, color, note] of panels) {
+                    this._drawCodePanel(ctx, id, codeX, topY, codeColW, codeH, label, code, color, note);
+                    codeX += codeColW + gap;
+                }
+                topY += codeH + gap;
+            }
+        } else {
+            this._lanCode = this._netCode = this._relayCode = null;
+        }
+
+        // ── Main panels: pilots (left) · your ship (right) ────────────────
+        const footerReserve = Math.floor(uiScale * 46);
+        const chatH = Math.floor(uiScale * 44);
+        const panelsH = Math.max(Math.floor(uiScale * 80), ch - topY - chatH - gap - footerReserve - margin);
+        const leftW = Math.floor(pageW * 0.52);
+        const rightW = pageW - leftW - gap;
+
+        this._drawPilotsPanel(ctx, pageX, topY, leftW, panelsH);
+        this._drawShipPanel(ctx, pageX + leftW + gap, topY, rightW, panelsH);
+
+        // ── Chat ──────────────────────────────────────────────────────────
+        const chatY = topY + panelsH + gap;
+        this._drawChatPanel(ctx, pageX, chatY, pageW, chatH);
+
+        // ── Footer: start flight (host) / waiting (client), leave right ───
+        const homeSize = game.spriteSize('home_button_off', uiScale);
+        if (s.isHost) {
+            const startSize = game.spriteSize('start_flight_off', uiScale);
+            const sx = Math.floor(cw / 2 - startSize.w / 2);
+            const sy = ch - margin - startSize.h;
+            this._buttons.start = { x: sx, y: sy, w: startSize.w, h: startSize.h };
+            game.drawSprite(ctx, this._hovered === 'start' ? 'start_flight_on' : 'start_flight_off', sx, sy, uiScale);
+        } else {
+            ctx.fillStyle = '#667788';
+            ctx.font = `${Math.floor(6 * uiScale)}px Astro4x`;
+            ctx.textAlign = 'center';
+            const dots = '.'.repeat(1 + Math.floor(this.time * 2) % 3);
+            ctx.fillText(`waiting for ${s.playerName(0)} to start the flight${dots}`,
+                cw / 2, ch - margin - Math.floor(uiScale * 8));
+        }
+
+        const leaveW = Math.floor(uiScale * 64);
+        this._buttons.leave = { x: cw - margin - leaveW, y: ch - margin - homeSize.h, w: leaveW, h: homeSize.h };
+        this._drawTextButton(ctx, this._buttons.leave, s.isHost ? 'CLOSE WORLD' : 'LEAVE',
+            this._hovered === 'leave' ? '#ff8844' : '#aa4444',
+            this._hovered === 'leave' ? 'rgba(60, 18, 12, 0.92)' : 'rgba(28, 10, 10, 0.85)');
+    }
+
+    // ── Lobby panels ─────────────────────────────────────────────────────────
+    _drawPilotsPanel(ctx, x, y, w, h) {
+        const game = this.game;
+        const uiScale = game.uiScale;
+        const s = this.session;
+
+        this._panel(ctx, x, y, w, h, `PILOTS  ${s.playerCount} / ${NET_MAX_PLAYERS}`);
+
+        const padX = Math.floor(uiScale * 6);
+        const headerSpace = Math.floor(uiScale * 16);
+        const slotH = Math.floor((h - headerSpace - padX) / NET_MAX_PLAYERS);
+        const iconH = Math.floor(slotH * 0.78);
+
+        const players = [...s.players.values()].sort((a, b) => a.pid - b.pid);
+        for (let i = 0; i < NET_MAX_PLAYERS; i++) {
+            const rowY = y + headerSpace + i * slotH;
+            const p = players[i];
+
+            // Row separator
+            ctx.strokeStyle = 'rgba(34, 85, 106, 0.25)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(x + padX, rowY + slotH - 0.5);
+            ctx.lineTo(x + w - padX, rowY + slotH - 0.5);
+            ctx.stroke();
+
+            if (!p) {
+                ctx.fillStyle = '#2a3646';
+                ctx.font = `${Math.floor(5 * uiScale)}px Astro4x`;
+                ctx.textAlign = 'left';
+                ctx.fillText('— open slot —', x + padX + Math.floor(iconH * 1.4), rowY + Math.floor(slotH * 0.62));
+                continue;
+            }
+
+            const ship = SHIPS.find(sh => sh.id === p.shipId) || SHIPS[0];
+
+            // Ship icon — scaled to a FIXED slot height so every ship reads at
+            // the same size regardless of its native sprite dimensions. Drawn
+            // with smoothing ON (like world rendering): the 4×-prescaled sprite
+            // downsamples cleanly, so small icons stay crisp instead of
+            // nearest-neighbor crunchy.
+            const asset = game.assets.get(ship.assets.still);
+            if (asset) {
+                const img = asset.canvas || asset;
+                const aw = asset.width || img.width;
+                const ah = asset.height || img.height;
+                const scale = iconH / Math.max(aw, ah);
+                const dw = aw * scale, dh = ah * scale;
+                ctx.imageSmoothingEnabled = true;
+                ctx.drawImage(img, x + padX + (iconH - dw) / 2, rowY + (slotH - dh) / 2, dw, dh);
+                ctx.imageSmoothingEnabled = false;
+            }
+
+            const textX = x + padX + Math.floor(iconH * 1.4);
+            const midY = rowY + Math.floor(slotH * 0.45);
+            ctx.textAlign = 'left';
+            ctx.fillStyle = playerColor(p.pid);
+            ctx.font = `${Math.floor(6 * uiScale)}px Astro5x`;
+            ctx.fillText(p.name, textX, midY);
+
+            ctx.fillStyle = '#8899aa';
+            ctx.font = `${Math.floor(5 * uiScale)}px Astro4x`;
+            ctx.fillText(ship.name.toUpperCase(), textX, midY + Math.floor(uiScale * 7));
+
+            // Tags as right-aligned chips
+            const tags = [];
+            if (p.pid === 0) tags.push('HOST');
+            if (p.pid === s.pid) tags.push('YOU');
+            let chipRight = x + w - padX;
+            ctx.font = `${Math.floor(4 * uiScale)}px Astro4x`;
+            for (const tag of tags) {
+                const tw = ctx.measureText(tag).width + Math.floor(uiScale * 5);
+                const chipH = Math.floor(uiScale * 8);
+                const chipX = chipRight - tw;
+                const chipY = rowY + Math.floor((slotH - chipH) / 2);
+                ctx.fillStyle = 'rgba(68, 221, 255, 0.12)';
+                ctx.fillRect(chipX, chipY, tw, chipH);
+                ctx.strokeStyle = 'rgba(68, 221, 255, 0.45)';
+                ctx.strokeRect(chipX + 0.5, chipY + 0.5, tw - 1, chipH - 1);
+                ctx.fillStyle = '#9fe8ff';
+                ctx.textAlign = 'center';
+                ctx.fillText(tag, chipX + tw / 2, chipY + chipH - Math.floor(uiScale * 2.2));
+                ctx.textAlign = 'left';
+                chipRight = chipX - Math.floor(uiScale * 3);
+            }
+        }
+    }
+
+    _drawShipPanel(ctx, x, y, w, h) {
+        const game = this.game;
+        const uiScale = game.uiScale;
+        const ship = SHIPS[this.shipIndex];
+
+        this._panel(ctx, x, y, w, h, 'YOUR SHIP');
+
+        const cx = x + Math.floor(w / 2);
+        const headerSpace = Math.floor(uiScale * 16);
+        const availH = h - headerSpace - Math.floor(uiScale * 8);
+
+        // Ship preview — the hero of the panel: a BIG sprite filling roughly
+        // the upper half, flanked by the title-screen arrow buttons.
+        // The special-tag line is ALWAYS reserved (even for ships without one)
+        // so the vertical centering doesn't shift when cycling past the Looper.
+        const nameBlockH = Math.floor(uiScale * (12 + 9 + 9));
+        const statsBlockH = Math.floor(uiScale * (12 + 9 * 5));
+        const previewH = Math.max(Math.floor(uiScale * 40),
+            Math.min(Math.floor(availH - nameBlockH - statsBlockH - uiScale * 6), Math.floor(uiScale * 110)));
+        const contentH = previewH + nameBlockH + statsBlockH + Math.floor(uiScale * 6);
+        const blockTop = y + headerSpace + Math.max(0, Math.floor((availH - contentH) / 2));
+        const previewCY = blockTop + Math.floor(previewH / 2);
+
+        const asset = game.assets.get(ship.assets.still);
+        if (asset) {
+            const img = asset.canvas || asset;
+            const aw = asset.width || img.width;
+            const ah = asset.height || img.height;
+            // Whole-integer pixel scale (same snapping as uiScale elsewhere) so
+            // the sprite's pixels stay perfectly square at any panel size.
+            const scale = Math.max(1, Math.floor(previewH / Math.max(aw, ah)));
+            const dw = aw * scale, dh = ah * scale;
+            ctx.imageSmoothingEnabled = false;
+            ctx.drawImage(img, Math.floor(cx - dw / 2), Math.floor(previewCY - dh / 2), dw, dh);
+        }
+
+        // Arrows anchor on the preview BOX, not the sprite's own width, so they
+        // don't slide around as ships of different sizes cycle through.
+        const arrowSize = game.spriteSize('left_arrow_off', uiScale);
+        const arrowGapX = Math.floor(previewH / 2 + uiScale * 12);
+        this._buttons.shipLeft = { x: cx - arrowGapX - arrowSize.w, y: previewCY - arrowSize.h / 2, w: arrowSize.w, h: arrowSize.h };
+        this._buttons.shipRight = { x: cx + arrowGapX, y: previewCY - arrowSize.h / 2, w: arrowSize.w, h: arrowSize.h };
+        game.drawSprite(ctx, this._hovered === 'shipLeft' ? 'left_arrow_on' : 'left_arrow_off',
+            this._buttons.shipLeft.x, this._buttons.shipLeft.y, uiScale);
+        game.drawSprite(ctx, this._hovered === 'shipRight' ? 'right_arrow_on' : 'right_arrow_off',
+            this._buttons.shipRight.x, this._buttons.shipRight.y, uiScale);
+
+        // Name + special. The special line's slot is always consumed (the tag
+        // just stays blank for ships without one) — stable layout across ships.
+        let textY = blockTop + previewH + Math.floor(uiScale * 12);
+        ctx.fillStyle = '#ffffff';
+        ctx.font = `${Math.floor(8 * uiScale)}px Astro5x`;
+        ctx.textAlign = 'center';
+        ctx.fillText(ship.name.toUpperCase(), cx, textY);
+        textY += Math.floor(uiScale * 9);
+        if (ship.special) {
+            ctx.fillStyle = '#44ddff';
+            ctx.font = `${Math.floor(5 * uiScale)}px Astro4x`;
+            ctx.fillText(`[${ship.special.toUpperCase()}]`, cx, textY);
+        }
+
+        // Stat bars — same set as the title screen, centered as a block
+        // (label column + bar column together straddle the panel's midline).
+        const stats = [
+            { label: 'HEALTH', value: ship.health, max: 200, color: '#44ff66' },
+            { label: 'SHIELD', value: ship.shield, max: 60, color: '#44aaff' },
+            { label: 'SPEED', value: ship.speed, max: 10, color: '#aa66ff' },
+            { label: 'DAMAGE', value: ship.baseDamage, max: 15, color: '#ff4444' },
+            { label: 'CARGO', value: ship.storage.rows, max: 5, color: '#ffaa44' },
+        ];
+        const lineH = Math.floor(uiScale * 9);
+        const barH = Math.floor(uiScale * 3);
+        const labelW = Math.floor(uiScale * 30);
+        const labelGap = Math.floor(uiScale * 4);
+        const barW = Math.min(Math.floor(w * 0.45), Math.floor(uiScale * 110));
+        const blockW = labelW + labelGap + barW;
+        const blockX = Math.floor(cx - blockW / 2);
+        const labelRight = blockX + labelW;
+        const barX = labelRight + labelGap;
+        let sy = textY + Math.floor(uiScale * 12);
+
+        ctx.font = `${Math.floor(6 * uiScale)}px Astro4x`;
+        for (const stat of stats) {
+            if (sy + barH > y + h - Math.floor(uiScale * 6)) break;
+            ctx.fillStyle = '#667788';
+            ctx.textAlign = 'right';
+            ctx.fillText(stat.label, labelRight, sy + barH);
+
+            ctx.fillStyle = '#1a2233';
+            ctx.fillRect(barX, sy, barW, barH);
+            ctx.fillStyle = stat.color;
+            ctx.fillRect(barX, sy, Math.floor((stat.value / stat.max) * barW), barH);
+            sy += lineH;
+        }
+        ctx.textAlign = 'center';
+    }
+
+    _drawChatPanel(ctx, x, y, w, h) {
+        const game = this.game;
+        const uiScale = game.uiScale;
+        const s = this.session;
+
+        this._panel(ctx, x, y, w, h, 'COMMS');
+
+        const padX = Math.floor(uiScale * 6);
+        const headerSpace = Math.floor(uiScale * 14);
+        const inputH = Math.floor(uiScale * 10);
+        const lineH = Math.floor(uiScale * 7);
+
+        // Messages — newest at the bottom, clipped to the panel
+        const msgBottom = y + h - inputH - Math.floor(uiScale * 4);
+        const maxLines = Math.max(1, Math.floor((msgBottom - (y + headerSpace)) / lineH));
+        const lines = s.chatLog.slice(-maxLines);
+        ctx.textAlign = 'left';
+        ctx.font = `${Math.floor(5 * uiScale)}px Astro4x`;
+        let cy = msgBottom - (lines.length - 1) * lineH;
+        for (const m of lines) {
+            ctx.fillStyle = playerColor(m.pid);
+            const nameStr = `${m.name}: `;
+            ctx.fillText(nameStr, x + padX, cy);
+            ctx.fillStyle = '#ccddee';
+            ctx.fillText(m.text, x + padX + ctx.measureText(nameStr).width, cy);
+            cy += lineH;
+        }
+        if (lines.length === 0) {
+            ctx.fillStyle = '#2a3646';
+            ctx.fillText('say hi while you wait...', x + padX, y + headerSpace + lineH);
+        }
+
+        // Input row
+        const inputY = y + h - inputH - Math.floor(uiScale * 2);
+        this._buttons.chat = { x: x + 2, y: inputY, w: w - 4, h: inputH };
+        const active = this.activeField === 'chat';
+        ctx.fillStyle = active ? 'rgba(68, 221, 255, 0.10)' : 'rgba(255, 255, 255, 0.04)';
+        ctx.fillRect(x + 2, inputY, w - 4, inputH);
+        ctx.strokeStyle = active ? '#44ddff' : 'rgba(34, 85, 106, 0.6)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x + 2.5, inputY + 0.5, w - 5, inputH - 1);
+        ctx.fillStyle = active ? '#ffffff' : '#556677';
+        let chatText = active ? this.chatInput : 'click to chat...';
+        if (active && this.showCursor) chatText += '_';
+        ctx.fillText(chatText, x + padX, inputY + inputH - Math.floor(uiScale * 3));
+    }
+
+    _drawCodePanel(ctx, id, x, y, w, h, label, code, color, note) {
+        const game = this.game;
+        const uiScale = game.uiScale;
+
+        // Panel
+        ctx.fillStyle = 'rgba(20, 40, 60, 0.92)';
+        ctx.fillRect(x, y, w, h);
+        ctx.strokeStyle = '#22556a';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+
+        const padX = Math.floor(uiScale * 6);
+
+        // Label + note
+        ctx.textAlign = 'left';
+        ctx.fillStyle = '#667788';
+        ctx.font = `${Math.floor(4 * uiScale)}px Astro4x`;
+        ctx.fillText(label, x + padX, y + Math.floor(uiScale * 7));
+        ctx.fillStyle = '#556677';
+        ctx.fillText(note, x + padX, y + h - Math.floor(uiScale * 4));
+
+        // The code itself — shrink to fit beside the copy button (three panels
+        // side by side leave less room than the old two-panel layout).
+        const btnW = Math.floor(uiScale * 36);
+        const codeMaxW = w - padX * 3 - btnW;
+        ctx.fillStyle = color;
+        for (let size = 9; size >= 5; size--) {
+            ctx.font = `${Math.floor(size * uiScale)}px Astro5x`;
+            if (ctx.measureText(code).width <= codeMaxW || size === 5) break;
+        }
+        ctx.fillText(code, x + padX, y + Math.floor(uiScale * 20));
+
+        // Copy button — right side, full of feedback
+        const copied = this._copiedId === id;
+        const btnH = Math.floor(uiScale * 12);
+        const btn = { x: x + w - padX - btnW, y: y + Math.floor((h - btnH) / 2) - Math.floor(uiScale * 2), w: btnW, h: btnH };
+        this._buttons[id] = btn;
+        this._drawTextButton(ctx, btn,
+            copied ? 'COPIED!' : 'COPY',
+            copied ? '#44ff88' : (this._hovered === id ? '#ffffff' : '#9fe8ff'),
+            copied ? 'rgba(20, 60, 35, 0.92)' : (this._hovered === id ? 'rgba(30, 55, 80, 0.95)' : 'rgba(10, 18, 28, 0.85)'));
+    }
+
+    // ── Shared widgets ───────────────────────────────────────────────────────
+    _panel(ctx, x, y, w, h, title) {
+        const uiScale = this.game.uiScale;
+        ctx.fillStyle = 'rgba(10, 14, 22, 0.92)';
+        ctx.fillRect(x, y, w, h);
+        ctx.strokeStyle = '#22556a';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+        if (title) {
+            ctx.fillStyle = '#44ddff';
+            ctx.font = `${Math.floor(6 * uiScale)}px Astro5x`;
+            ctx.textAlign = 'left';
+            ctx.fillText(title, x + Math.floor(uiScale * 6), y + Math.floor(uiScale * 9));
+        }
+    }
+
+    _drawTextButton(ctx, rect, label, color, bg) {
+        const uiScale = this.game.uiScale;
+        ctx.fillStyle = bg;
+        ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(rect.x + 0.5, rect.y + 0.5, rect.w - 1, rect.h - 1);
+        ctx.fillStyle = color;
+        ctx.font = `${Math.floor(5 * uiScale)}px Astro5x`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(label, rect.x + rect.w / 2, rect.y + rect.h / 2 + 1);
+        ctx.textBaseline = 'alphabetic';
+    }
+
+    // Big menu card (HOST WORLD / JOIN WORLD / CONNECT) — achievement-card
+    // styling: dark panel, cyan border, title + description.
+    _drawCardButton(ctx, id, title, description, x, y, w, enabled) {
+        const uiScale = this.game.uiScale;
+        const h = Math.floor(uiScale * 28);
+        const hovered = enabled && this._hovered === id;
+        this._buttons[id] = enabled ? { x, y, w, h } : null;
+
+        ctx.fillStyle = !enabled ? 'rgba(10, 14, 22, 0.6)'
+            : hovered ? 'rgba(30, 55, 80, 0.95)' : 'rgba(20, 40, 60, 0.92)';
+        ctx.fillRect(x, y, w, h);
+        ctx.strokeStyle = !enabled ? '#1a2233' : hovered ? '#44ddff' : '#22556a';
+        ctx.lineWidth = hovered ? 2 : 1;
+        ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+
+        const padX = Math.floor(uiScale * 8);
+        ctx.textAlign = 'left';
+        ctx.fillStyle = !enabled ? '#445566' : hovered ? '#ffffff' : '#9fe8ff';
+        ctx.font = `${Math.floor(8 * uiScale)}px Astro5x`;
+        ctx.fillText(title, x + padX, y + Math.floor(uiScale * 12));
+
+        ctx.fillStyle = !enabled ? '#334455' : '#8899aa';
+        ctx.font = `${Math.floor(5 * uiScale)}px Astro4x`;
+        ctx.fillText(description, x + padX, y + h - Math.floor(uiScale * 6));
+
+        return y + h;
+    }
+
+    // Labeled input field. Returns the y below it.
+    _drawField(ctx, id, label, value, x, y, w, placeholder = '') {
+        const uiScale = this.game.uiScale;
+        const h = Math.floor(uiScale * 13);
+        const active = this.activeField === id;
+        this._buttons[id] = { x, y, w, h };
+
+        ctx.textAlign = 'left';
+        ctx.font = `${Math.floor(4 * uiScale)}px Astro4x`;
+        ctx.fillStyle = '#667788';
+        ctx.fillText(label, x, y - Math.floor(uiScale * 2));
+
+        ctx.fillStyle = active ? 'rgba(68, 221, 255, 0.10)' : 'rgba(20, 40, 60, 0.92)';
+        ctx.fillRect(x, y, w, h);
+        ctx.strokeStyle = active ? '#44ddff' : (this._hovered === id ? '#9fe8ff' : '#22556a');
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+
+        ctx.font = `${Math.floor(6 * uiScale)}px Astro5x`;
+        const textX = x + Math.floor(uiScale * 4);
+        const textY = y + h - Math.floor(uiScale * 4);
+        if (value) {
+            ctx.fillStyle = '#ffffff';
+            let text = value;
+            if (active && this.showCursor) text += '_';
+            ctx.fillText(text, textX, textY);
+        } else if (active) {
+            // Focused + empty: just the blinking cursor — never flash the
+            // placeholder in and out underneath it.
+            if (this.showCursor) {
+                ctx.fillStyle = '#ffffff';
+                ctx.fillText('_', textX, textY);
+            }
+        } else {
+            ctx.fillStyle = '#445566';
+            ctx.fillText(placeholder, textX, textY);
+        }
+        return y + h;
+    }
+}

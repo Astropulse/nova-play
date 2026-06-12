@@ -1,6 +1,7 @@
 import { SHIPS } from '../data/ships.js';
 import { PlayingState } from './playingState.js';
 import { TutorialState } from './tutorialState.js';
+import { MultiplayerState } from './multiplayerState.js';
 import { AchievementsState } from './achievementsState.js';
 import { ACHIEVEMENTS } from '../data/achievements.js';
 import { GP } from '../engine/inputManager.js';
@@ -39,6 +40,7 @@ export class MenuState {
         // Text-only button — no sprite asset. Layout + hit rect computed each
         // frame in _computeLayout below.
         this.achievementsBtn = { x: 0, y: 0, w: 0, h: 0, hovered: false };
+        this.multiplayerBtn = { x: 0, y: 0, w: 0, h: 0, hovered: false };
 
         // Track last hover state for click sound
         this.lastHovered = { left: false, right: false, start: false, tutorial: false, mDec: false, mInc: false, sDec: false, sInc: false };
@@ -158,6 +160,7 @@ export class MenuState {
             { id: 'musicDec',  rect: this.musicDecBtn },
             { id: 'musicInc',  rect: this.musicIncBtn },
             { id: 'achievements', rect: this.achievementsBtn },
+            { id: 'multiplayer',  rect: this.multiplayerBtn },
         ];
         if (this.focusIndex >= focusables.length) this.focusIndex = 0;
 
@@ -226,6 +229,7 @@ export class MenuState {
         this.sfxIncBtn.hovered = this._isInside(mouse, this.sfxIncBtn);
         this.wordmarkBtn.hovered = this._isInside(mouse, this.wordmarkBtn);
         this.achievementsBtn.hovered = this._isInside(mouse, this.achievementsBtn);
+        this.multiplayerBtn.hovered = this._isInside(mouse, this.multiplayerBtn);
 
         // Hover sounds - literal "play once on hover start" logic
         if (this.leftArrowBtn.hovered && !this.lastHovered.left) {
@@ -292,6 +296,11 @@ export class MenuState {
             if (this.achievementsBtn.hovered) {
                 this.game.input.consumeMouseButton(0);
                 this.game.setState(new AchievementsState(this.game));
+                return;
+            }
+            if (this.multiplayerBtn.hovered) {
+                this.game.input.consumeMouseButton(0);
+                this.game.setState(new MultiplayerState(this.game));
                 return;
             }
         }
@@ -368,6 +377,9 @@ export class MenuState {
                 case 'achievements':
                     this.game.setState(new AchievementsState(this.game));
                     return 'transition';
+                case 'multiplayer':
+                    this.game.setState(new MultiplayerState(this.game));
+                    return 'transition';
                 case 'sfxDec':   this.game.sounds.setSfxVolume(this.game.sounds.sfxVolume - 0.1); break;
                 case 'sfxInc':   this.game.sounds.setSfxVolume(this.game.sounds.sfxVolume + 0.1); break;
                 case 'musicDec': this.game.sounds.setMusicVolume(this.game.sounds.musicVolume - 0.1); break;
@@ -432,6 +444,7 @@ export class MenuState {
             this.musicDecBtn.hovered   = id === 'musicDec';
             this.musicIncBtn.hovered   = id === 'musicInc';
             this.achievementsBtn.hovered = id === 'achievements';
+            this.multiplayerBtn.hovered = id === 'multiplayer';
         }
     }
 
@@ -585,6 +598,12 @@ export class MenuState {
         this.achievementsBtn.y = marginTR;
         this.achievementsBtn.w = labelW;
         this.achievementsBtn.h = labelH;
+
+        // Multiplayer text button — stacked under achievements.
+        this.multiplayerBtn.x = cw - marginTR - labelW;
+        this.multiplayerBtn.y = marginTR + labelH + Math.floor(game.uiScale * 4);
+        this.multiplayerBtn.w = labelW;
+        this.multiplayerBtn.h = Math.floor(game.uiScale * 12);
     }
 
     draw(ctx) {
@@ -703,6 +722,15 @@ export class MenuState {
                 ctx.fillStyle = '#667788';
                 ctx.fillText(`${mgr.unlocked.size} / ${ACHIEVEMENTS.length}`, btn.x + btn.w, btn.y + Math.floor(game.uiScale * 16));
             }
+        }
+
+        // Multiplayer text button — stacked under achievements.
+        {
+            const btn = this.multiplayerBtn;
+            ctx.font = `${8 * game.uiScale}px Astro5x`;
+            ctx.textAlign = 'right';
+            ctx.fillStyle = btn.hovered ? '#ffffff' : '#44ddff';
+            ctx.fillText('MULTIPLAYER ►', btn.x + btn.w, btn.y + Math.floor(game.uiScale * 8));
         }
 
         this._drawControls(ctx);

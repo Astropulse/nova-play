@@ -1,5 +1,5 @@
 import { Projectile } from './projectile.js';
-import { Scrap, VoronoiSlicer, ProceduralDebris, ItemPickup, Asteroid, ExpOrb } from './asteroid.js';
+import { Scrap, VoronoiSlicer, ProceduralDebris, ItemPickup, Asteroid, ExpOrb, getCachedShatter } from './asteroid.js';
 import { UPGRADES } from '../data/upgrades.js';
 
 export const BOSS_PHASE = {
@@ -381,8 +381,8 @@ export class Boss {
         // Shatter effect: use Voronoi seeds to place scrap/rubble
         const asset = this.game.assets.get(this.spriteKey);
         if (asset) {
-            // Pass the full asset object (or first frame of a GIF) to VoronoiSlicer to ensure it uses logical dimensions
-            const fragments = VoronoiSlicer.slice(asset, Math.floor(80 + Math.random() * 40));
+            // Cached per sprite — boss kills shouldn't stall the frame re-slicing
+            const fragments = getCachedShatter(asset, this.spriteKey, 100);
             for (const frag of fragments) {
                 const rotationAngle = this.angle + Math.PI / 2;
                 const cosA = Math.cos(rotationAngle);
@@ -416,14 +416,16 @@ export class Boss {
         for (let i = 0; i < expAmount; i++) spawns.push(new ExpOrb(this.game, this.worldX, this.worldY, 1));
 
         // Add extra loot spread around (Reduced scrap as requested). Counts are
-        // seeded; scatter positions stay visual.
-        const bigScrapCount = Math.floor(3 + rand() * 2);
+        // seeded; scatter positions stay visual. Multiplayer lobbies get more
+        // (netScrapMult is 1 in solo).
+        const bossScrapMult = (this.game.currentState && this.game.currentState.netScrapMult) || 1.0;
+        const bigScrapCount = Math.round((3 + rand() * 2) * bossScrapMult);
         for (let i = 0; i < bigScrapCount; i++) {
             const angle = Math.random() * Math.PI * 2;
             const dist = Math.random() * 100;
             spawns.push(new Scrap(this.game, this.worldX + Math.cos(angle) * dist, this.worldY + Math.sin(angle) * dist, 'big'));
         }
-        const smallScrapCount = Math.floor(4 + rand() * 4);
+        const smallScrapCount = Math.round((4 + rand() * 4) * bossScrapMult);
         for (let i = 0; i < smallScrapCount; i++) {
             const angle = Math.random() * Math.PI * 2;
             const dist = Math.random() * 80;

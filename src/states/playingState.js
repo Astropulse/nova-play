@@ -4,7 +4,7 @@ import { World } from '../world/world.js';
 import { Camera } from '../world/camera.js';
 import { Player } from '../entities/player.js';
 import { HUD } from '../ui/hud.js';
-import { Asteroid, AsteroidSpawner, Rubble, Scrap, ItemPickup, ProceduralDebris, VoronoiSlicer, ExpOrb } from '../entities/asteroid.js';
+import { Asteroid, AsteroidSpawner, Rubble, Scrap, ItemPickup, ProceduralDebris, VoronoiSlicer, ExpOrb, FractureModel, getCachedShatter } from '../entities/asteroid.js';
 import { EnemySpawner, Enemy, HostileEncounter } from '../entities/enemy.js';
 import { Shop } from '../entities/shop.js';
 import { Inventory } from '../engine/inventory.js';
@@ -32,13 +32,32 @@ import { CacheUI } from '../ui/cacheUI.js';
 import { LevelUpDialog } from '../ui/levelUpDialog.js';
 import { GP } from '../engine/inputManager.js';
 import { RandomStreams, randomSeed, RNG } from '../engine/rng.js';
+import { HostWorldSync, ClientWorldSync, mpQuantityMult, mpHealthMult, mpScrapMult } from '../net/netSync.js';
+import { MSG, KIND } from '../net/protocol.js';
+import { ChatOverlay, playerColor } from '../ui/chat.js';
+import { TradeUI } from '../ui/tradeUI.js';
+import { drawShipOutline } from '../net/remotePlayer.js';
 
 export class PlayingState {
-    constructor(game, shipData, { skipInit = false, handoff = null } = {}) {
+    constructor(game, shipData, { skipInit = false, handoff = null, netRun = null } = {}) {
         this.game = game;
         this.shipData = shipData;
         this.paused = false;
         this.skipClear = false;
+
+        // ── Multiplayer session (null in single player) ─────────────────────
+        // In a synchronized multiplayer start every machine builds the SAME
+        // initial world from netRun.runSeed; from then on the host is ground
+        // truth and this.netSync replicates everything else.
+        this.net = game.net || null;
+        this.netSync = null;
+        this.chatUI = null;
+        this.tradeUI = null;
+        this.isTradeOpen = false;
+        this._tradeRequestFrom = -1;     // incoming trade request pid
+        this._tradeRequestTimer = 0;
+        this._pendingLocks = new Map();  // "kind:id" -> callback (client lock requests)
+        this._respawnCooldown = 0;
 
         // ── Deterministic run seed ──────────────────────────────────────────
         // Rolled once per fresh run; drives all gameplay randomness via the
@@ -46,7 +65,7 @@ export class PlayingState {
         // spawner/entity is constructed below so they can derive content RNGs.
         // On a save-resume (skipInit) the rolled value + stream states are
         // overwritten by deserialize(). Settable mid-run via /seed.
-        this.runSeed = randomSeed();
+        this.runSeed = (netRun && netRun.runSeed != null) ? netRun.runSeed : randomSeed();
         this.rng = new RandomStreams(this.runSeed);
         game.rng = this.rng;
 
@@ -64,13 +83,21 @@ export class PlayingState {
         // and the Player+HUD pair the menu built so every drawn pixel is
         // continuous across the state boundary.
         this.camera = handoff && handoff.camera ? handoff.camera : new Camera(game);
-        this.world = handoff && handoff.world ? handoff.world : new World(game, Math.floor(Math.random() * 1000000));
+        this.world = handoff && handoff.world ? handoff.world : new World(game, game.worldSeed != null ? game.worldSeed : Math.floor(Math.random() * 1000000));
         this.player = handoff && handoff.player ? handoff.player : new Player(game, shipData);
         if (handoff && handoff.camera && !handoff.player) {
             // Align a fresh player's spawn with the menu camera position;
             // a handed-off player already sits at the right spot.
             this.player.worldX = handoff.camera.x;
             this.player.worldY = handoff.camera.y;
+        }
+        if (netRun && netRun.spawnX != null) {
+            // Multiplayer spawn point (small per-pid ring on fresh starts; a
+            // free spot near the host for join-in-progress). Set BEFORE the
+            // initial asteroid field spawns so nothing lands on top of us.
+            this.player.worldX = netRun.spawnX;
+            this.player.worldY = netRun.spawnY;
+            this.camera.snapTo(this.player);
         }
         this.hud = handoff && handoff.hud ? handoff.hud : new HUD(game, this.player);
 
@@ -148,6 +175,25 @@ export class PlayingState {
             this._spawnInitialShops();
             this._spawnEvents();
             this._spawnInitialAsteroids();
+        }
+
+        // ── Multiplayer wiring ───────────────────────────────────────────────
+        // Created after the initial world spawn so HostWorldSync/ClientWorldSync
+        // can number the (identical) initial entities deterministically on every
+        // machine. Join-in-progress arrives with skipInit=true and fills the
+        // world from the host's snapshot instead (applyNetJoinSnapshot).
+        if (this.net) {
+            this.netSync = this.net.isHost
+                ? new HostWorldSync(this.net, this)
+                : new ClientWorldSync(this.net, this);
+            this.net.sync = this.netSync;
+            this.netSync.bind();
+            this.chatUI = new ChatOverlay(game, this.net);
+            this._mpAsteroidSpawners = new Map(); // pid -> AsteroidSpawner (host)
+            this._mpCacheSpawners = new Map();    // pid -> CacheSpawner (host)
+            if (this.net.isHost) this.netSync.chooseWaveTarget();
+            // In multiplayer the world never pauses — `paused` only means
+            // "my pause menu is open".
         }
 
         // Player Inventory instance
@@ -269,6 +315,42 @@ export class PlayingState {
             const asset = game.assets.get(key);
             if (asset) Projectile._getGlowSprite(asset, color);
         }
+
+        // Warm the fracture/shatter caches in the background (one sprite every
+        // ~120ms) so the first shot/kill on each asteroid or enemy type never
+        // pays the slice cost mid-combat.
+        this._startFracturePrewarm();
+    }
+
+    // Background pre-warm of the per-sprite damage models. Each step costs a
+    // few ms; spreading them out keeps the frame budget intact while making
+    // first-hit chip damage and death shatters effectively free later.
+    _startFracturePrewarm() {
+        // Piece counts must match what _generateProceduralDebris asks for —
+        // the shatter cache keeps whichever layout is built first.
+        const keys = [];
+        for (const k of ['asteroid_big_0', 'asteroid_big_1', 'asteroid_big_2']) keys.push([k, 60]);
+        for (const k of ['asteroid_medium_0', 'asteroid_medium_1', 'asteroid_medium_2']) keys.push([k, 32]);
+        for (const k of ['asteroid_small_0', 'asteroid_small_1']) keys.push([k, 22]);
+        for (let i = 0; i <= 24; i++) keys.push([`asteroid_tiny_${String(i).padStart(2, '0')}`, 14]);
+        for (let i = 0; i <= 4; i++) keys.push([`enemy_ship_${i}`, 13]);
+
+        let idx = 0;
+        const step = () => {
+            this._prewarmTimer = null;
+            if (this.game.currentState !== this || idx >= keys.length) return;
+            const [key, pieces] = keys[idx++];
+            const img = this.game.assets.get(key);
+            if (img) {
+                FractureModel.get(img, key);      // chip-damage cell layout
+                getCachedShatter(img, key, pieces); // death shatter layout
+                if (key.startsWith('enemy_ship')) {
+                    Enemy.getGlowSprite(img, key, '#ff4444'); // upgraded-enemy glow
+                }
+            }
+            this._prewarmTimer = setTimeout(step, 150);
+        };
+        this._prewarmTimer = setTimeout(step, 1200);
     }
 
     // In-place removal of dead entities — avoids allocating a new array every frame
@@ -401,12 +483,16 @@ export class PlayingState {
         // Seeded initial field via the asteroids stream.
         const rand = () => this.game.rng ? this.game.rng.asteroids.next() : Math.random();
         const numAsteroids = 6 + Math.floor(rand() * 8); // Reduced from 18-35 to 6-13
+        // Multiplayer: anchor on the world origin instead of the local ship so
+        // every machine derives the exact same field (players spawn in a small
+        // ring around the origin; their positions differ slightly per pid).
+        const anchorX = this.net ? 0 : this.player.worldX;
+        const anchorY = this.net ? 0 : this.player.worldY;
         for (let i = 0; i < numAsteroids; i++) {
             const angle = rand() * Math.PI * 2;
             const dist = 400 + rand() * 2500; // Wider initial spread
-            // Player starts near 0,0, but using their actual pos is safest
-            const ax = this.player.worldX + Math.cos(angle) * dist;
-            const ay = this.player.worldY + Math.sin(angle) * dist;
+            const ax = anchorX + Math.cos(angle) * dist;
+            const ay = anchorY + Math.sin(angle) * dist;
 
             const roll = rand();
             let size = 'medium';
@@ -433,6 +519,12 @@ export class PlayingState {
     // back to the spawn origin so player-relative initial asteroids and the
     // origin-relative events line up exactly with a fresh run on this seed.
     reseedRun(seed) {
+        // Multiplayer worlds can't be reseeded mid-run — the seed is the
+        // shared contract between every machine in the session.
+        if (this.net) {
+            console.log('Cannot reseed a multiplayer world.');
+            return;
+        }
         this.runSeed = seed;
         this.rng = new RandomStreams(seed);
         this.game.rng = this.rng;
@@ -483,11 +575,37 @@ export class PlayingState {
         // Drop the shared run RNG reference so post-run states fall back to
         // Math.random() (MenuState also clears this on enter).
         if (this.game.rng === this.rng) this.game.rng = null;
+
+        if (this._prewarmTimer) {
+            clearTimeout(this._prewarmTimer);
+            this._prewarmTimer = null;
+        }
+
+        // Leaving a multiplayer run ends the session: the host closes the
+        // world for everyone, a client just disconnects.
+        if (this.chatUI) { this.chatUI.destroy(); this.chatUI = null; }
+        if (this.netSync) { this.netSync.destroy(); this.netSync = null; }
+        if (this.net) {
+            const session = this.net;
+            this.net = null;
+            if (session.state !== 'ended') session.destroy();
+        }
     }
 
     update(dt) {
+        // mp = multiplayer run. The cardinal rule: in multiplayer the WORLD
+        // NEVER PAUSES. Menus/shops/dialogs become overlays — the local ship
+        // just stops accepting input while they're open.
+        const mp = !!this.net;
+        if (mp) {
+            this._netPreFrame(dt);
+            // The session may have just ended (host left) — _netPreFrame swaps
+            // to the menu; don't run a frame on the dead state.
+            if (!this.net) return;
+        }
+
         // Increment true total time only if not paused, not in shop, and not dead
-        if (!this.paused && !this.isShopOpen && !this.isEncounterOpen && !this.isCacheOpen && !this.isLevelUpOpen && !this.isDead) {
+        if ((mp || (!this.paused && !this.isShopOpen && !this.isEncounterOpen && !this.isCacheOpen && !this.isLevelUpOpen && !this.isTradeOpen)) && !this.isDead) {
             this.trueTotalTime += dt;
             if (this.game.achievements) this.game.achievements.tickRun(dt);
         }
@@ -512,8 +630,11 @@ export class PlayingState {
                 this.deathTimer += dt;
                 // Update debris drift
                 for (const d of this.shipDebris) d.update(dt);
-                // Also update rubble so it keeps drifting
-                for (const r of this.rubble) r.update(dt);
+                if (!mp) {
+                    // Also update rubble so it keeps drifting (multiplayer ticks
+                    // rubble in the world update below)
+                    for (const r of this.rubble) r.update(dt);
+                }
                 if (this.deathTimer >= 3.0) {
                     this.showDeathScreen = true;
                     // Ensure d-pad/stick drive button selection rather than a
@@ -524,8 +645,24 @@ export class PlayingState {
                     }
                 }
             }
+            if (!mp) return;
+
+            // Multiplayer: being dead doesn't stop the world (the host must
+            // keep simulating it, and clients keep mirroring it). Spectate a
+            // living teammate until you respawn or leave.
+            this._respawnCooldown = Math.max(0, this._respawnCooldown);
+            this._updateSpectate(dt);
+            this.player.controlsEnabled = false;
+            this._updateWorld(dt, mp);
+            if (this.netSync) this.netSync.tick(dt);
             return;
         }
+
+        // ── UI overlay phase ─────────────────────────────────────────────────
+        // Single player: an open overlay freezes the world (early return at the
+        // bottom). Multiplayer: the overlay updates here, then we fall through
+        // to the world update with player controls disabled.
+        let uiBlocked = false;
 
         // --- Level-up dialog ---
         if (this.isLevelUpOpen && this.activeLevelUpDialog) {
@@ -542,40 +679,61 @@ export class PlayingState {
                     this._levelUpOrigin = null;
                 }
             }
-            return;
+            uiBlocked = true;
         }
 
         // --- Encounter Dialog ---
-        if (this.isEncounterOpen && this.activeEncounterDialog) {
+        else if (this.isEncounterOpen && this.activeEncounterDialog) {
             this.activeEncounterDialog.update(dt);
             if (this.activeEncounterDialog.closed) {
                 const enc = this.activeEncounterDialog.encounter;
                 this.isEncounterOpen = false;
                 this.paused = false;
-                if (enc.shouldConvertHostile) {
-                    this._convertEncounterToEnemy(enc);
-                } else if (!enc.shouldStay) {
-                    enc.depart();
-                }
-
-                // Clear the stay flag for next time it's approached
-                enc.shouldStay = false;
+                this._finishEncounterDialog(enc);
                 this.activeEncounterDialog = null;
             }
-            return;
+            uiBlocked = true;
         }
 
         // --- Cache UI ---
-        if (this.isCacheOpen && this.activeCacheUI) {
+        else if (this.isCacheOpen && this.activeCacheUI) {
             this._updateCacheUI(dt);
-            return;
+            uiBlocked = true;
         }
 
-        if (this.isShopOpen) {
+        else if (this.isShopOpen) {
             this._updateShopUI(dt);
-            return;
+            uiBlocked = true;
         }
 
+        // --- Trade dialog (multiplayer) ---
+        else if (this.isTradeOpen && this.tradeUI) {
+            this._updateTradeUI(dt);
+            uiBlocked = true;
+        }
+
+        // While typing in chat, keys belong to the chat box — skip pause/
+        // interact handling entirely.
+        const typingInChat = mp && this.chatUI && this.chatUI.active;
+        if (!uiBlocked && !typingInChat) {
+            this._updateInteractions(dt, mp);
+            if (this.paused) {
+                this._updatePauseUI(dt);
+                uiBlocked = true;
+            }
+        }
+
+        if (uiBlocked && !mp) return;
+        if (typingInChat) uiBlocked = true;
+
+        this.player.controlsEnabled = !uiBlocked;
+        this._updateWorld(dt, mp);
+        if (mp && this.netSync) this.netSync.tick(dt);
+    }
+
+    // The interact/pause input section — extracted from update() so multiplayer
+    // can skip it while an overlay is open without freezing the world.
+    _updateInteractions(dt, mp) {
         // Shop interaction check (moved up for input handling priority)
         const nearShop = this.shops.find(s => {
             const dx = s.worldX - this.player.worldX;
@@ -629,13 +787,58 @@ export class PlayingState {
             this.game.sounds.play('click', 0.5);
         }
 
+        // Multiplayer: nearby teammate → trade prompt, Enter → chat.
+        let nearPlayer = null;
+        if (mp && this.netSync) {
+            if ((this.game.input.isKeyJustPressed('KeyT') || this.game.input.isKeyJustPressed('Enter'))
+                && !this.chatUI.active && !this.game.devConsole.active) {
+                this.chatUI.open();
+            }
+            const TRADE_RANGE = 220;
+            for (const rp of this.netSync.remotePlayers.values()) {
+                if (!rp._hasState || rp.isDead) continue;
+                const dx = rp.worldX - this.player.worldX;
+                const dy = rp.worldY - this.player.worldY;
+                if (dx * dx + dy * dy < TRADE_RANGE * TRADE_RANGE) { nearPlayer = rp; break; }
+            }
+            this.canInteractPlayer = !!nearPlayer && !nearShop && !nearEncounter && !nearCache;
+
+            // Incoming trade request prompt — Y accepts, N declines.
+            if (this._tradeRequestFrom >= 0) {
+                this._tradeRequestTimer -= dt;
+                if (this._tradeRequestTimer <= 0 || !this.net.players.has(this._tradeRequestFrom)) {
+                    this._tradeRequestFrom = -1;
+                } else if (this.game.input.isKeyJustPressed('KeyY')) {
+                    const fromPid = this._tradeRequestFrom;
+                    this._tradeRequestFrom = -1;
+                    this.netSync.sendTradeMsg(MSG.TRADE_ACCEPT, { toPid: fromPid });
+                    this._openTrade(fromPid);
+                } else if (this.game.input.isKeyJustPressed('KeyN')) {
+                    this.netSync.sendTradeMsg(MSG.TRADE_CANCEL, { toPid: this._tradeRequestFrom });
+                    this._tradeRequestFrom = -1;
+                }
+            }
+        }
+
         const interactTriggered = this.game.input.isKeyJustPressed('KeyE') || gpInteract;
-        if (interactTriggered) {
+        if (interactTriggered && !(mp && this.chatUI.active)) {
             if (nearEncounter) {
                 // Prioritize encounter interaction
-                this._openEncounterDialog(nearEncounter);
+                if (mp) {
+                    this._netRequestLock('encounter', nearEncounter.netId, (granted) => {
+                        if (granted) this._openEncounterDialog(nearEncounter);
+                        else this.spawnFloatingText(nearEncounter.worldX, nearEncounter.worldY, 'IN USE', '#ff8866');
+                    });
+                } else {
+                    this._openEncounterDialog(nearEncounter);
+                }
             } else if (nearCache) {
-                if (nearCache.state === CACHE_STATE.OPEN) {
+                if (mp) {
+                    this._netRequestLock('cache', nearCache.netId, (granted) => {
+                        if (granted) this._netOpenCache(nearCache);
+                        else this.spawnFloatingText(nearCache.worldX, nearCache.worldY, 'IN USE', '#ff8866');
+                    });
+                } else if (nearCache.state === CACHE_STATE.OPEN) {
                     // Chest already open — show the UI immediately
                     this._openCacheUI(nearCache);
                 } else {
@@ -648,14 +851,19 @@ export class PlayingState {
                     }
                 }
             } else if (nearShop) {
-                // Shop interaction
-                this.activeShop = nearShop;
-                this.isShopOpen = true;
-                this.paused = true;
-                this.game.sounds.play('click', 0.5);
-                if (this.game.achievements) {
-                    this.game.achievements.notify('shop_opened', { shop: nearShop });
+                if (mp) {
+                    this._netRequestLock('shop', nearShop.netId, (granted) => {
+                        if (granted) this._openShop(nearShop);
+                        else this.spawnFloatingText(nearShop.worldX, nearShop.worldY, 'IN USE', '#ff8866');
+                    });
+                } else {
+                    this._openShop(nearShop);
                 }
+            } else if (nearPlayer) {
+                // Request a trade with the nearby pilot.
+                this.netSync.sendTradeMsg(MSG.TRADE_REQ, { toPid: nearPlayer.pid });
+                this.spawnFloatingText(this.player.worldX, this.player.worldY, `TRADE REQUEST SENT`, '#9fe8ff');
+                this.game.sounds.play('click', 0.5);
             } else {
                 // Nothing in range — fall back to toggling the pause menu.
                 if (this.paused) {
@@ -670,24 +878,53 @@ export class PlayingState {
                 this.game.sounds.play('click', 0.5);
             }
         }
+    }
 
-        if (this.paused) {
-            this._updatePauseUI(dt);
-            return;
+    _openShop(shop) {
+        this.activeShop = shop;
+        this.isShopOpen = true;
+        this.paused = true;
+        this.game.sounds.play('click', 0.5);
+        if (this.game.achievements) {
+            this.game.achievements.notify('shop_opened', { shop });
         }
+    }
+
+    // ── The world simulation ────────────────────────────────────────────────
+    // Extracted from update(). `mp` toggles the multiplayer paths; when mp is
+    // true and we're not the host, all authority-side systems (spawners, waves,
+    // enemy AI, despawns, drops) are skipped — the host's messages drive them.
+    _updateWorld(dt, mp = false) {
+        const isNetHost = !mp || (this.netSync && this.netSync.isHost);
+        const bodies = mp ? this.netSync.playerBodies() : null;
 
         // Update player (freeze during Yellow One scripted sequence)
         this.perf.begin('player');
-        if (!this.yellowOneScriptActive) {
+        if (!this.yellowOneScriptActive && !this.isDead) {
             this.player.update(dt);
         }
         this.perf.end('player');
         this.game.sounds.setListenerPosition(this.player.worldX, this.player.worldY);
 
+        // Advance replicated entities (remote players everywhere; enemy/
+        // encounter interpolation on clients).
+        if (mp && this.netSync) {
+            if (this.netSync.updateReplicas) this.netSync.updateReplicas(dt);
+            else this.netSync.updateRemotePlayers(dt);
+        }
+
         // --- Event Update ---
+        // Multiplayer: every machine runs event logic against the nearest
+        // pilot (so proximity behaviors feel right for whoever is actually
+        // there), while the host's EVENT_SYNC stream keeps the authoritative
+        // state/health/position converged.
         let isEventActive = false;
         for (const ev of this.events) {
-            ev.update(dt, this.player);
+            let evTarget = this.player;
+            if (mp && bodies && bodies.length) {
+                evTarget = this.netSync.nearestBodyTo(ev.worldX, ev.worldY) || this.player;
+            }
+            ev.update(dt, evTarget);
             // Discovery fires when the event physically enters the player's
             // viewport — either by exploration or by following a signal to
             // the event's actual location. `revealed` (radar/locator pings)
@@ -720,22 +957,33 @@ export class PlayingState {
             }
             if (ev.popEnemies) {
                 const newEnemies = ev.popEnemies();
-                if (newEnemies.length > 0) {
-                    this.enemies.push(...newEnemies);
+                if (newEnemies.length > 0 && isNetHost) {
+                    this._addEnemies(newEnemies);
                 }
             } else if (ev.activeEnemies && ev.activeEnemies.length > 0) {
                 // Add event enemies to the main list so they get drawn and hit by player projectiles
-                this.enemies.push(...ev.activeEnemies);
+                if (isNetHost) this._addEnemies(ev.activeEnemies);
                 ev.activeEnemies = [];
             }
             if (ev.popSpawns) {
                 const spawns = ev.popSpawns();
+                const gameplaySpawns = [];
                 for (const s of spawns) {
-                    if (s instanceof Scrap) { if (this.scrapEntities.length < 200) this.scrapEntities.push(s); }
-                    else if (s instanceof Rubble || s instanceof ProceduralDebris) { if (this.rubble.length < 250) this.rubble.push(s); }
-                    else if (s instanceof Asteroid) this.asteroids.push(s);
-                    else if (s instanceof ItemPickup) this.itemPickups.push(s);
-                    else if (s instanceof ExpOrb) { if (this.expOrbs.length < 150) this.expOrbs.push(s); }
+                    // Clients keep only the cosmetic spawns — gameplay drops
+                    // (scrap/asteroids/items/exp) arrive from the host as
+                    // explicit spawn events instead.
+                    if (s instanceof Rubble || s instanceof ProceduralDebris) {
+                        if (this.rubble.length < 250) this.rubble.push(s);
+                        continue;
+                    }
+                    if (!isNetHost) continue;
+                    if (s instanceof Scrap) { if (this.scrapEntities.length < 200) { this.scrapEntities.push(s); gameplaySpawns.push(s); } }
+                    else if (s instanceof Asteroid) { this.asteroids.push(s); gameplaySpawns.push(s); }
+                    else if (s instanceof ItemPickup) { this.itemPickups.push(s); gameplaySpawns.push(s); }
+                    else if (s instanceof ExpOrb) { if (this.expOrbs.length < 150) { this.expOrbs.push(s); gameplaySpawns.push(s); } }
+                }
+                if (mp && isNetHost && gameplaySpawns.length) {
+                    this.netSync.broadcastSpawns(gameplaySpawns);
                 }
             }
         }
@@ -799,6 +1047,8 @@ export class PlayingState {
                     const proj = new Projectile(this.game, this.player.worldX, this.player.worldY, aimAngle, 1200, spriteKey, this.player, damage);
                     proj.isRocket = true;
                     proj.target = target;
+                    proj.friendly = true;
+                    if (this.netSync) this.netSync.queueLocalShot(0, proj.worldX, proj.worldY, aimAngle, 1200, spriteKey);
                     this.projectiles.push(proj);
                     this.game.sounds.play('laser', { volume: 0.4, x: this.player.worldX, y: this.player.worldY });
                     this.player.rocketsTimer = this.rocketInterval;
@@ -885,9 +1135,10 @@ export class PlayingState {
                     const currentBaseDamage = (this.player.shipData.baseDamage * this.player.obedienceMult + this.player.permDamageBonus) * this.player.laserCartridgeMult;
                     const damage = currentBaseDamage * this.player.laserOverrideMult;
 
-                    this.projectiles.push(
-                        new Projectile(this.game, px, py, aimAngle, 2400, spriteKey, this.player, damage)
-                    );
+                    const turretProj = new Projectile(this.game, px, py, aimAngle, 2400, spriteKey, this.player, damage);
+                    turretProj.friendly = true;
+                    if (this.netSync) this.netSync.queueLocalShot(0, px, py, aimAngle, 2400, spriteKey);
+                    this.projectiles.push(turretProj);
                     this.game.sounds.play('laser', { volume: 0.2, x: px, y: py });
                     this.player.autoTurretTimer = 1.0;
                 }
@@ -906,6 +1157,11 @@ export class PlayingState {
                     const edist = Math.sqrt(edx * edx + edy * edy);
                     if (edist < 150) {
                         en.freeze(3.0);
+                        // Multiplayer client: the real enemy lives on the host —
+                        // ask it to apply the stun there too.
+                        if (this.netSync && !this.netSync.isHost && this.netSync.reportEnemyContact) {
+                            this.netSync.reportEnemyContact(en, 0, 3.0);
+                        }
                         triggered = true;
                     }
                 }
@@ -919,7 +1175,8 @@ export class PlayingState {
         if (this.yellowOneScriptActive) {
             // Hard lock camera centered on player during cutscene
             this.camera.snapTo(this.player);
-        } else {
+        } else if (!(mp && this.isDead)) {
+            // (While dead in multiplayer the spectate camera drives instead.)
             this.camera.update(dt, this.player);
         }
 
@@ -950,6 +1207,14 @@ export class PlayingState {
 
         // Collect projectiles from player
         if (this.player.pendingProjectiles.length > 0) {
+            for (const proj of this.player.pendingProjectiles) {
+                proj.friendly = true; // player-owned — never collides with player ships
+                if (mp && this.netSync) {
+                    // Replicate as a visual so the other pilots see our lasers.
+                    const speed = Math.hypot(proj.vx, proj.vy);
+                    this.netSync.queueLocalShot(0, proj.worldX, proj.worldY, proj.angle, speed, proj.spriteKey);
+                }
+            }
             this.projectiles.push(...this.player.pendingProjectiles);
             this.player.pendingProjectiles.length = 0;
         }
@@ -1000,23 +1265,76 @@ export class PlayingState {
 
         // Spawn asteroids always (not frozen by events)
         this.perf.begin('asteroids');
-        if (this.asteroids.length < 180) {
-            const newAsteroids = this.asteroidSpawner.update(
-                dt, this.player.worldX, this.player.worldY,
-                this.player.vx, this.player.vy, this.player.asteroidSpawnMult
-            );
-            this.asteroids.push(...newAsteroids);
+        if (isNetHost) {
+            // Multiplayer "blob" spawning: the host runs one spawner per pilot,
+            // each tracking that pilot's own movement (so everyone gets a field
+            // to fly through), but a rock is vetoed if it would pop into
+            // existence inside another pilot's no-spawn bubble.
+            const cap = 180 + (mp ? (this.net.playerCount - 1) * 60 : 0);
+            if (this.asteroids.length < cap) {
+                if (!mp) {
+                    const newAsteroids = this.asteroidSpawner.update(
+                        dt, this.player.worldX, this.player.worldY,
+                        this.player.vx, this.player.vy, this.player.asteroidSpawnMult
+                    );
+                    this.asteroids.push(...newAsteroids);
+                } else {
+                    this._mpSpawnAsteroidsFor(dt, this.asteroidSpawner, this.player, this.player.asteroidSpawnMult);
+                    for (const rp of this.netSync.remotePlayers.values()) {
+                        if (!rp._hasState || rp.isDead) continue;
+                        let spawner = this._mpAsteroidSpawners.get(rp.pid);
+                        if (!spawner) {
+                            spawner = new AsteroidSpawner(this.game);
+                            this._mpAsteroidSpawners.set(rp.pid, spawner);
+                        }
+                        this._mpSpawnAsteroidsFor(dt, spawner, rp, rp.asteroidSpawnMult || 1.0);
+                    }
+                }
+            }
         }
         this.perf.end('asteroids');
 
         // --- Freeze spawning if an event is active ---
-        if (!isEventActive && this.eventBufferTimer <= 0) {
+        // (Authority-side systems — clients only tick the cosmetic clocks in
+        // the else-branch below; the host's WORLD_STATE stream corrects them.)
+        if (isNetHost && !isEventActive && this.eventBufferTimer <= 0) {
 
-            // Spawn caches (rare, distance-accumulator based)
-            const newCaches = this.cacheSpawner.update(
-                this.player.worldX, this.player.worldY, this.caches.length, this.player.lvlCacheFreqMult
-            );
-            this.caches.push(...newCaches);
+            // Spawn caches (rare, distance-accumulator based). Multiplayer:
+            // one spawner per pilot so everyone finds caches on their own path.
+            if (!mp) {
+                const newCaches = this.cacheSpawner.update(
+                    this.player.worldX, this.player.worldY, this.caches.length, this.player.lvlCacheFreqMult
+                );
+                this.caches.push(...newCaches);
+            } else {
+                // Each pilot's travel still drives cache cadence (one accumulator
+                // per pilot), but every cache that spawns is placed near a randomly
+                // chosen live pilot — so caches aren't tied to whoever happened to
+                // trigger them. (Wave reward caches override this and target the
+                // wave's pilot; see the crash-cache drop above.)
+                const liveBodies = this.netSync.playerBodies();
+                const randTarget = () => {
+                    const b = liveBodies.length
+                        ? liveBodies[Math.floor(Math.random() * liveBodies.length)]
+                        : this.player;
+                    return { x: b.worldX, y: b.worldY };
+                };
+                const hostCaches = this.cacheSpawner.update(
+                    this.player.worldX, this.player.worldY, this.caches.length, this.player.lvlCacheFreqMult,
+                    randTarget()
+                );
+                for (const c of hostCaches) { this.caches.push(c); this.netSync.registerCache(c); }
+                for (const rp of this.netSync.remotePlayers.values()) {
+                    if (!rp._hasState || rp.isDead) continue;
+                    let cs = this._mpCacheSpawners.get(rp.pid);
+                    if (!cs) {
+                        cs = new CacheSpawner(this.game);
+                        this._mpCacheSpawners.set(rp.pid, cs);
+                    }
+                    const rpCaches = cs.update(rp.worldX, rp.worldY, this.caches.length, 1.0, randTarget());
+                    for (const c of rpCaches) { this.caches.push(c); this.netSync.registerCache(c); }
+                }
+            }
 
             // Update total game time
             this.totalGameTime += dt;
@@ -1059,6 +1377,8 @@ export class PlayingState {
                 if (this.game.achievements) {
                     this.game.achievements.notify('wave_cleared');
                 }
+                // Everyone in the lobby cleared it together.
+                if (mp) this.net.broadcast(MSG.WAVE_CLEARED, { num: currentWaveNum });
             }
             this._waveWasActive = waveActive;
 
@@ -1071,14 +1391,24 @@ export class PlayingState {
                 this._crashCacheTimer = 3.0; // brief beat before the drop streaks in
             }
 
-            // Deliver the queued resupply drop once the delay elapses, aimed at the
-            // player's position at arrival time.
+            // Deliver the queued resupply drop once the delay elapses, aimed at
+            // the wave target's position at arrival time (the player whose wave
+            // it was — in single player that's just you).
             if (this._crashCacheTimer > 0) {
                 this._crashCacheTimer -= dt;
                 if (this._crashCacheTimer <= 0) {
                     this._crashCacheTimer = 0;
                     if (this.caches.length < CACHE_CONFIG.maxActiveCaches + 2) {
-                        this.caches.push(this.cacheSpawner.spawnCrash(this.player.worldX, this.player.worldY));
+                        const crashTarget = mp ? this.netSync.waveTargetBody() : this.player;
+                        const crashCache = this.cacheSpawner.spawnCrash(crashTarget.worldX, crashTarget.worldY);
+                        this.caches.push(crashCache);
+                        if (mp) {
+                            this.netSync.registerCache(crashCache, {
+                                px: crashTarget.worldX, py: crashTarget.worldY,
+                                angle: crashCache.cacheRotation - Math.PI / 2,
+                                tx: crashCache.crashTargetX, ty: crashCache.crashTargetY,
+                            });
+                        }
                     }
                 }
             }
@@ -1117,35 +1447,82 @@ export class PlayingState {
                 this._triggerWave();
                 this.waveTimer = 120 * this.player.lvlWaveCountdownMult;
                 this.postWaveTimer = 0;
+                // Pick (and announce) who the NEXT wave will center on, so the
+                // countdown can show it for the whole two minutes.
+                if (mp) this.netSync.chooseWaveTarget();
             }
 
-            // Spawn enemies
+            // Spawn enemies. Multiplayer: ambient/wave spawns center on the
+            // wave target while a wave is draining, otherwise on a random
+            // living pilot — and quantity scales with the lobby size.
             this.perf.begin('enemies');
-            const newEnemies = this.enemySpawner.update(dt, this.player.worldX, this.player.worldY, this.difficultyScale * this.player.lvlEnemySpawnMult);
-            this.enemies.push(...newEnemies);
-            this.perf.end('enemies');
-
-            // Boss death immunity: while any boss is dying, and for 2 seconds after
-            const isBossDying = this.enemies.some(e => e.isBoss && e.state === BOSS_STATE.DYING);
-            if (isBossDying) {
-                this.bossDeathImmunityTimer = 2.0;
-            } else if (this.bossDeathImmunityTimer > 0) {
-                this.bossDeathImmunityTimer -= dt;
-            }
-
-            // Boss wreckage tracking - clean up when player is close OR too far
-            if (!this.player.isWarping) {
-                for (const wreck of this.bossWrecks) {
-                    const dx = wreck.worldX - this.player.worldX;
-                    const dy = wreck.worldY - this.player.worldY;
-                    const distSq = dx * dx + dy * dy;
-                    if (distSq < 450 * 450 || distSq > 15000 * 15000) {
-                        wreck.isFinished = true;
+            let spawnAnchor = this.player;
+            let quantityMult = 1.0;
+            if (mp) {
+                quantityMult = mpQuantityMult(this.net.playerCount);
+                if (this.enemySpawner.waveQueue > 0) {
+                    spawnAnchor = this.netSync.waveTargetBody();
+                } else {
+                    const liveBodies = this.netSync.playerBodies();
+                    if (liveBodies.length) {
+                        spawnAnchor = liveBodies[Math.floor(Math.random() * liveBodies.length)];
                     }
                 }
             }
-            this.bossWrecks = this.bossWrecks.filter(w => !w.isFinished);
+            const newEnemies = this.enemySpawner.update(
+                dt, spawnAnchor.worldX, spawnAnchor.worldY,
+                this.difficultyScale * this.player.lvlEnemySpawnMult, quantityMult
+            );
+            this._addEnemies(newEnemies);
+            this.perf.end('enemies');
+        } else if (mp && !isNetHost) {
+            // Client: cosmetic clocks tick locally between WORLD_STATE packets
+            // so the HUD counts smoothly; the host's values correct any drift.
+            if (!isEventActive && this.eventBufferTimer <= 0) {
+                this.totalGameTime += dt;
+                if (this.waveTimer > 0) this.waveTimer = Math.max(0, this.waveTimer - dt);
+            }
+            // Music transitions still react to local combat presence.
+            if (this.waveTimer <= 6 && !this.musicCombatTriggered) {
+                this.game.sounds.setTargetState(MUSIC_STATE.COMBAT);
+                this.musicCombatTriggered = true;
+            }
+            this.postWaveTimer += dt;
+            if (this.musicCombatTriggered && this.postWaveTimer >= 10 && this.waveTimer > 10) {
+                if (this.enemies.length === 0) {
+                    this.quietTimer += dt;
+                    if (this.quietTimer >= 3.0) {
+                        this.game.sounds.setTargetState(MUSIC_STATE.EXPLORATION);
+                        this.musicCombatTriggered = false;
+                        this.quietTimer = 0;
+                    }
+                } else {
+                    this.quietTimer = 0;
+                }
+            }
         }
+
+        // Boss death immunity: while any boss is dying, and for 2 seconds after
+        // (runs on every machine — clients have boss replicas in DYING too)
+        const isBossDying = this.enemies.some(e => e.isBoss && e.state === BOSS_STATE.DYING);
+        if (isBossDying) {
+            this.bossDeathImmunityTimer = 2.0;
+        } else if (this.bossDeathImmunityTimer > 0) {
+            this.bossDeathImmunityTimer -= dt;
+        }
+
+        // Boss wreckage tracking - clean up when player is close OR too far
+        if (!this.player.isWarping) {
+            for (const wreck of this.bossWrecks) {
+                const dx = wreck.worldX - this.player.worldX;
+                const dy = wreck.worldY - this.player.worldY;
+                const distSq = dx * dx + dy * dy;
+                if (distSq < 450 * 450 || distSq > 15000 * 15000) {
+                    wreck.isFinished = true;
+                }
+            }
+        }
+        this.bossWrecks = this.bossWrecks.filter(w => !w.isFinished);
 
         if (this.flashTimer > 0) {
             this.flashTimer -= dt;
@@ -1157,31 +1534,63 @@ export class PlayingState {
             ? this.asteroids.filter(a => a._nearPlayer)
             : this.asteroids;
 
-        this.perf.begin('enemies');
-        this.perf.begin('boss');
-        for (const e of this.enemies) {
-            if (!e.isBoss) continue;
-            e.update(dt, this.player, enemyAvoidAsteroids, this.projectiles, this.enemies);
+        // Multiplayer host: each enemy hunts whichever pilot is closest.
+        // Clients don't run AI at all — replicas are driven by snapshots.
+        const enemyTarget = (e) => {
+            if (!mp || !bodies || bodies.length === 0) return this.player;
+            let best = this.player, bestD = Infinity;
+            for (const b of bodies) {
+                const dx = b.worldX - e.worldX, dy = b.worldY - e.worldY;
+                const d = dx * dx + dy * dy;
+                if (d < bestD) { bestD = d; best = b; }
+            }
+            return best;
+        };
+        const collectEnemyProjectiles = (e) => {
             if (e.pendingProjectiles.length > 0) {
+                if (mp) {
+                    for (const proj of e.pendingProjectiles) this.netSync.queueEnemyProjectile(proj, e);
+                }
                 this.projectiles.push(...e.pendingProjectiles);
                 e.pendingProjectiles.length = 0;
             }
-        }
-        this.perf.end('boss');
-        for (const e of this.enemies) {
-            if (e.isBoss) continue;
-            e.update(dt, this.player, enemyAvoidAsteroids, this.projectiles, this.enemies);
-            if (e.pendingProjectiles.length > 0) {
-                this.projectiles.push(...e.pendingProjectiles);
-                e.pendingProjectiles.length = 0;
-            }
+        };
 
-            // Despawn if way too far
-            const dxArr = e.worldX - this.player.worldX;
-            const dyArr = e.worldY - this.player.worldY;
-            const despawnR = 3500 * this.currentFovMult;
-            if (dxArr * dxArr + dyArr * dyArr > despawnR * despawnR && !e.isBoss) {
-                e.alive = false;
+        this.perf.begin('enemies');
+        if (isNetHost) {
+            this.perf.begin('boss');
+            for (const e of this.enemies) {
+                if (!e.isBoss) continue;
+                e.update(dt, enemyTarget(e), enemyAvoidAsteroids, this.projectiles, this.enemies);
+                collectEnemyProjectiles(e);
+            }
+            this.perf.end('boss');
+            const despawnedEnemies = mp ? [] : null;
+            for (const e of this.enemies) {
+                if (e.isBoss) continue;
+                e.update(dt, enemyTarget(e), enemyAvoidAsteroids, this.projectiles, this.enemies);
+                collectEnemyProjectiles(e);
+
+                // Despawn if way too far — from EVERY pilot, not just us.
+                const despawnR = 3500 * this.currentFovMult;
+                let minDistSq = Infinity;
+                if (mp && bodies) {
+                    for (const b of bodies) {
+                        const dx = e.worldX - b.worldX, dy = e.worldY - b.worldY;
+                        minDistSq = Math.min(minDistSq, dx * dx + dy * dy);
+                    }
+                } else {
+                    const dxArr = e.worldX - this.player.worldX;
+                    const dyArr = e.worldY - this.player.worldY;
+                    minDistSq = dxArr * dxArr + dyArr * dyArr;
+                }
+                if (minDistSq > despawnR * despawnR && !e.isBoss) {
+                    e.alive = false;
+                    if (despawnedEnemies) despawnedEnemies.push(e);
+                }
+            }
+            if (mp && despawnedEnemies && despawnedEnemies.length) {
+                this.netSync.broadcastDespawn(KIND.ENEMY, despawnedEnemies);
             }
         }
         this.perf.end('enemies');
@@ -1194,30 +1603,56 @@ export class PlayingState {
         this.perf.end('projectiles');
 
         // --- Collision Handling ---
-        // Update asteroids
+        // Update asteroids (linear drift — identical math on every machine, so
+        // multiplayer replicas integrate for free). Despawn is host-authority:
+        // a rock has to be far from EVERY pilot before it's culled.
         this.perf.begin('asteroids');
+        const despawnedAsteroids = (mp && isNetHost) ? [] : null;
         for (const a of this.asteroids) {
             a.update(dt);
-            const dx = a.worldX - this.player.worldX;
-            const dy = a.worldY - this.player.worldY;
-            if (dx * dx + dy * dy > a.despawnDist * a.despawnDist) {
-                a.alive = false;
+            if (!isNetHost) continue; // clients: host broadcasts despawns
+            let minDistSq;
+            if (mp && bodies && bodies.length) {
+                minDistSq = Infinity;
+                for (const b of bodies) {
+                    const dx = a.worldX - b.worldX, dy = a.worldY - b.worldY;
+                    minDistSq = Math.min(minDistSq, dx * dx + dy * dy);
+                }
+            } else {
+                const dx = a.worldX - this.player.worldX;
+                const dy = a.worldY - this.player.worldY;
+                minDistSq = dx * dx + dy * dy;
             }
+            if (minDistSq > a.despawnDist * a.despawnDist) {
+                a.alive = false;
+                if (despawnedAsteroids) despawnedAsteroids.push(a);
+            }
+        }
+        if (despawnedAsteroids && despawnedAsteroids.length) {
+            this.netSync.broadcastDespawn(KIND.ASTEROID, despawnedAsteroids);
         }
         this.perf.end('asteroids');
 
-        // Tag entities near the player for broad-phase collision/AI culling
+        // Tag entities near ANY pilot for broad-phase collision/AI culling
         {
-            const cpx = this.player.worldX, cpy = this.player.worldY;
             const cullRange = 3000 * this.currentFovMult;
             const cullRangeSq = cullRange * cullRange;
+            const nearAnyBody = (x, y) => {
+                if (mp && bodies && bodies.length) {
+                    for (const b of bodies) {
+                        const dx = x - b.worldX, dy = y - b.worldY;
+                        if (dx * dx + dy * dy < cullRangeSq) return true;
+                    }
+                    return false;
+                }
+                const dx = x - this.player.worldX, dy = y - this.player.worldY;
+                return dx * dx + dy * dy < cullRangeSq;
+            };
             for (const a of this.asteroids) {
-                const dx = a.worldX - cpx, dy = a.worldY - cpy;
-                a._nearPlayer = (dx * dx + dy * dy < cullRangeSq);
+                a._nearPlayer = nearAnyBody(a.worldX, a.worldY);
             }
             for (const en of this.enemies) {
-                const dx = en.worldX - cpx, dy = en.worldY - cpy;
-                en._nearPlayer = (dx * dx + dy * dy < cullRangeSq);
+                en._nearPlayer = nearAnyBody(en.worldX, en.worldY);
             }
         }
 
@@ -1246,6 +1681,11 @@ export class PlayingState {
             for (const enc of this.encounters) liveEntities.add(enc);
             for (const w of this.bossWrecks) liveEntities.add(w);
             for (const c of this.caches) liveEntities.add(c);
+            // Teammates' HUD dots fade in via the same opacity map — without
+            // this they'd be purged every frame and never become visible.
+            if (this.netSync) {
+                for (const rp of this.netSync.remotePlayers.values()) liveEntities.add(rp);
+            }
             for (const entity of this.indicatorOpacities.keys()) {
                 if (!liveEntities.has(entity)) {
                     this.indicatorOpacities.delete(entity);
@@ -1253,45 +1693,117 @@ export class PlayingState {
             }
         }
 
-        // Update scrap entities (magnetized to player)
-        for (const s of this.scrapEntities) {
-            if (!this.player.isWarping) {
-                s.update(dt, this.player.worldX, this.player.worldY, this.player.scrapRangeMult);
+        // Magnet anchor: in multiplayer a pickup vacuums toward whichever
+        // pilot is closest (so loot doesn't fly across the screen to the wrong
+        // ship); collection itself is still strictly local + host-arbitrated.
+        const magnetTargetFor = (ent) => {
+            if (mp && bodies && bodies.length) {
+                let best = null, bestD = Infinity;
+                for (const b of bodies) {
+                    if (b === this.player && (this.player.isWarping || this.isDead)) continue;
+                    if (b.isWarping) continue;
+                    const dx = b.worldX - ent.worldX, dy = b.worldY - ent.worldY;
+                    const d = dx * dx + dy * dy;
+                    if (d < bestD) { bestD = d; best = b; }
+                }
+                return best;
+            }
+            return (!this.player.isWarping && !this.isDead) ? this.player : null;
+        };
+        const canCollect = !this.player.isWarping && !this.isDead;
 
-                // Collection collision
+        // Update scrap entities (magnetized to nearest pilot)
+        for (const s of this.scrapEntities) {
+            const target = magnetTargetFor(s);
+            if (target) {
+                const magnetMult = target === this.player ? this.player.scrapRangeMult : (target.scrapRangeMult || 1.0);
+                s.update(dt, target.worldX, target.worldY, magnetMult);
+            } else {
+                s.update(dt, -99999, -99999); // drift only
+            }
+
+            // Collection collision — local pilot only
+            if (canCollect && s.alive) {
                 const dx = s.worldX - this.player.worldX;
                 const dy = s.worldY - this.player.worldY;
                 const collectRange = (s.collectRange + this.player.radius);
                 if (dx * dx + dy * dy < collectRange * collectRange) {
-                    s.alive = false;
-                    this.player.scrap += s.value;
-                    this.stats.scrapCollected += s.value;
-                    if (this.game.achievements) {
-                        this.game.achievements.notify('scrap_collected', { amount: s.value });
+                    if (mp) {
+                        if (this.netSync.isHost) {
+                            if (this.netSync.localTake(s)) {
+                                s.alive = false;
+                                this.player.scrap += s.value;
+                                this.stats.scrapCollected += s.value;
+                                if (this.game.achievements) {
+                                    this.game.achievements.notify('scrap_collected', { amount: s.value });
+                                }
+                                this.game.sounds.play('scrap', { volume: 0.4, x: s.worldX, y: s.worldY });
+                                this.spawnFloatingText(s.worldX, s.worldY, `+${s.value}`, '#ffff00');
+                            }
+                        } else {
+                            // Effects play on the host's TOOK confirmation
+                            // (sub-100ms) so a lost race can't double-count.
+                            this.netSync.requestTake(s);
+                        }
+                    } else {
+                        s.alive = false;
+                        this.player.scrap += s.value;
+                        this.stats.scrapCollected += s.value;
+                        if (this.game.achievements) {
+                            this.game.achievements.notify('scrap_collected', { amount: s.value });
+                        }
+                        this.game.sounds.play('scrap', { volume: 0.4, x: s.worldX, y: s.worldY });
+                        this.spawnFloatingText(s.worldX, s.worldY, `+${s.value}`, '#ffff00');
                     }
-                    this.game.sounds.play('scrap', { volume: 0.4, x: s.worldX, y: s.worldY });
-                    this.spawnFloatingText(s.worldX, s.worldY, `+${s.value}`, '#ffff00');
                 }
-            } else {
-                // Just update drift/friction if not magnetized (Scrap.update handles it if player coords are not passed? No, it needs them)
-                // Actually Scrap.update has a dist check internal. Let's just skip it so they drift.
-                s.update(dt, -99999, -99999); // Pass dummy coords to prevent magnetization
             }
         }
 
-        // Update item pickups (magnetized to player)
+        // Update item pickups (magnetized to nearest pilot)
         for (const it of this.itemPickups) {
-            if (!this.player.isWarping) {
-                it.update(dt, this.player.worldX, this.player.worldY, this.player.scrapRangeMult);
+            const target = magnetTargetFor(it);
+            if (target) {
+                const magnetMult = target === this.player ? this.player.scrapRangeMult : (target.scrapRangeMult || 1.0);
+                it.update(dt, target.worldX, target.worldY, magnetMult);
+            } else {
+                it.update(dt, -99999, -99999); // Pass dummy coords to prevent magnetization
+            }
 
-                // Collection collision
+            // Collection collision — local pilot only
+            if (canCollect && it.alive) {
                 const dx = it.worldX - this.player.worldX;
                 const dy = it.worldY - this.player.worldY;
                 const collectRange = (it.collectRange + this.player.radius);
 
                 if (dx * dx + dy * dy < collectRange * collectRange && (it.pickupDelay || 0) <= 0) {
-                    // Try to add to inventory
-                    if (this.player.inventory.autoAdd(it.item)) {
+                    if (mp) {
+                        if (this.netSync.isHost) {
+                            if (this.player.inventory.autoAdd(it.item)) {
+                                if (this.netSync.localTake(it)) {
+                                    it.alive = false;
+                                    this.game.sounds.play('select', 0.5);
+                                    if (this.game.achievements) {
+                                        this.game.achievements.notify('upgrade_collected', { item: it.item });
+                                    }
+                                    this._onInventoryChanged();
+                                } else {
+                                    // Already claimed — undo the optimistic add.
+                                    const entry = this.player.inventory.items.find(e => e.item === it.item);
+                                    if (entry) this.player.inventory.removeItemAt(entry.x, entry.y);
+                                }
+                            } else {
+                                it.markEncountered(this.player.worldX, this.player.worldY);
+                            }
+                        } else {
+                            // requestTake handles the optimistic inventory add +
+                            // host arbitration; full inventory → leash like SP.
+                            const before = it._pendingTake;
+                            this.netSync.requestTake(it);
+                            if (!it._pendingTake && !before) {
+                                it.markEncountered(this.player.worldX, this.player.worldY);
+                            }
+                        }
+                    } else if (this.player.inventory.autoAdd(it.item)) {
                         it.alive = false;
                         this.game.sounds.play('select', 0.5);
                         if (this.game.achievements) {
@@ -1304,43 +1816,74 @@ export class PlayingState {
                         it.markEncountered(this.player.worldX, this.player.worldY);
                     }
                 }
-            } else {
-                it.update(dt, -99999, -99999); // Pass dummy coords to prevent magnetization
             }
             // Despawn check (only for non-encountered items — encountered ones
-            // ride the follow-leash and despawn on their own timer)
-            if (!it.encountered) {
+            // ride the follow-leash and despawn on their own timer). Host-only
+            // in multiplayer; clients mirror the host's despawn broadcasts.
+            if (!it.encountered && isNetHost) {
                 const ddx = it.worldX - this.player.worldX;
                 const ddy = it.worldY - this.player.worldY;
-                if (ddx * ddx + ddy * ddy > 4000 * 4000) it.alive = false;
+                if (ddx * ddx + ddy * ddy > 4000 * 4000 && (!mp || !this._anyBodyNear(it.worldX, it.worldY, 4000))) {
+                    it.alive = false;
+                }
             }
         }
 
-        // Update ExpOrbs
+        // Update ExpOrbs. Owned orbs (multiplayer: XP belongs to the pilot who
+        // landed the kill) home to their owner and ignore everyone else.
         for (let i = this.expOrbs.length - 1; i >= 0; i--) {
             const orb = this.expOrbs[i];
-            orb.update(dt, this.player.worldX, this.player.worldY);
+            let target = null;
+            const owned = mp && orb.ownerPid != null;
+            if (owned) {
+                if (orb.ownerPid === this.netSync.myPid) {
+                    target = this.player;
+                } else {
+                    target = this.netSync.remotePlayers.get(orb.ownerPid) || null;
+                    // Owner left the session → the XP is up for grabs.
+                    if (!target && !this.net.players.has(orb.ownerPid)) orb.ownerPid = null;
+                }
+            }
+            if (!target) target = magnetTargetFor(orb) || this.player;
+            orb.update(dt, target.worldX, target.worldY);
 
-            // Collection collision
+            // Collection collision — local pilot only (and only OUR orbs when owned)
+            const canTakeOrb = !owned || orb.ownerPid === this.netSync.myPid;
             const dx = orb.worldX - this.player.worldX;
             const dy = orb.worldY - this.player.worldY;
             const distSq = dx * dx + dy * dy;
             const collectRange = (orb.collectRange + this.player.radius);
 
-            if (distSq < collectRange * collectRange) {
-                orb.alive = false;
-                const finalExp = Math.ceil(orb.amount * (this.player.experienceCondenserMult || 1.0));
-                this.player.addExp(finalExp);
-                this.game.sounds.play('exp', { volume: 0.15, pitch: 1.5, x: orb.worldX, y: orb.worldY });
+            if (canCollect && canTakeOrb && orb.alive && distSq < collectRange * collectRange) {
+                if (mp) {
+                    if (this.netSync.isHost) {
+                        if (this.netSync.localTake(orb)) {
+                            orb.alive = false;
+                            const finalExp = Math.ceil(orb.amount * (this.player.experienceCondenserMult || 1.0));
+                            this.player.addExp(finalExp);
+                            this.game.sounds.play('exp', { volume: 0.15, pitch: 1.5, x: orb.worldX, y: orb.worldY });
+                            this.spawnFloatingText(orb.worldX + (Math.random() - 0.5) * 20, orb.worldY + (Math.random() - 0.5) * 20, `+${finalExp} XP`, '#915dbf');
+                        }
+                    } else {
+                        this.netSync.requestTake(orb);
+                    }
+                } else {
+                    orb.alive = false;
+                    const finalExp = Math.ceil(orb.amount * (this.player.experienceCondenserMult || 1.0));
+                    this.player.addExp(finalExp);
+                    this.game.sounds.play('exp', { volume: 0.15, pitch: 1.5, x: orb.worldX, y: orb.worldY });
 
-                // Floating text for every collection
-                const offsetX = (Math.random() - 0.5) * 20;
-                const offsetY = (Math.random() - 0.5) * 20;
-                this.spawnFloatingText(orb.worldX + offsetX, orb.worldY + offsetY, `+${finalExp} XP`, '#915dbf');
+                    // Floating text for every collection
+                    const offsetX = (Math.random() - 0.5) * 20;
+                    const offsetY = (Math.random() - 0.5) * 20;
+                    this.spawnFloatingText(orb.worldX + offsetX, orb.worldY + offsetY, `+${finalExp} XP`, '#915dbf');
+                }
             }
 
-            // Despawn check
-            if (distSq > 25000000) orb.alive = false; // 5000^2
+            // Despawn check (host authority in multiplayer)
+            if (distSq > 25000000 && isNetHost && (!mp || !this._anyBodyNear(orb.worldX, orb.worldY, 5000))) {
+                orb.alive = false; // 5000^2
+            }
         }
 
         // --- Collision: Projectiles vs Everything ---
@@ -1365,16 +1908,20 @@ export class PlayingState {
                         dir: Math.atan2(proj.worldY - ast.worldY, proj.worldX - ast.worldX),
                         spread: Math.PI * 0.9
                     });
-                    if (ast.hit(proj.damage)) {
-                        this._onEntityDestroyed(ast);
-                    } else {
-                        this._triggerShakeAt(proj.worldX, proj.worldY, 0.4);
-                        // Break a few outer chips off where the laser landed
-                        const chips = ast.chipHit(proj.worldX, proj.worldY);
-                        for (const d of chips) { if (this.rubble.length < 250) this.rubble.push(d); }
+                    // Replicated visual shots stop on rocks but deal no damage
+                    // (the shooter's own machine reports the real hit).
+                    if (!proj.netVisual) {
+                        if (this._routeDamage(ast, proj.damage, proj.worldX, proj.worldY)) {
+                            this._onEntityDestroyed(ast);
+                        } else {
+                            this._triggerShakeAt(proj.worldX, proj.worldY, 0.4);
+                            // Break a few outer chips off where the laser landed
+                            const chips = ast.chipHit(proj.worldX, proj.worldY);
+                            for (const d of chips) { if (this.rubble.length < 250) this.rubble.push(d); }
+                        }
                     }
                     // Player-only Explosives Unit vs Shared Rockets
-                    if ((proj.owner === this.player && this.player.hasExplosivesUnit) || proj.isRocket) {
+                    if (!proj.netVisual && ((proj.owner === this.player && this.player.hasExplosivesUnit) || proj.isRocket)) {
                         this._spawnExplosion(proj.worldX, proj.worldY, proj.damage * 0.5);
                     }
                     break;
@@ -1392,7 +1939,7 @@ export class PlayingState {
                     const cr = proj.radius + ev.radius;
                     if (dx * dx + dy * dy < cr * cr) {
                         proj.alive = false;
-                        if (ev.hit(proj.damage)) {
+                        if (this._routeDamage(ev, proj.damage, proj.worldX, proj.worldY)) {
                             this._onEntityDestroyed(ev);
                         } else {
                             this._triggerShakeAt(proj.worldX, proj.worldY, 0.6);
@@ -1424,7 +1971,7 @@ export class PlayingState {
                             dir: Math.atan2(proj.worldY - en.worldY, proj.worldX - en.worldX),
                             spread: Math.PI * 0.9, color: '#fff2b0'
                         });
-                        if (en.hit(proj.damage)) {
+                        if (this._routeDamage(en, proj.damage, proj.worldX, proj.worldY)) {
                             this._onEntityDestroyed(en);
                         } else {
                             this._triggerShakeAt(proj.worldX, proj.worldY, 0.5);
@@ -1436,8 +1983,9 @@ export class PlayingState {
                     }
                 }
             }
-            // Enemy projectiles vs Player
-            else if (proj.owner !== this.player) {
+            // Enemy projectiles vs Player. `friendly` covers other players'
+            // replicated shots — teammates can never hit each other.
+            else if (proj.owner !== this.player && !proj.friendly && !this.isDead) {
                 const dx = proj.worldX - this.player.worldX;
                 const dy = proj.worldY - this.player.worldY;
                 const cr = proj.radius + this.player.radius;
@@ -1468,7 +2016,7 @@ export class PlayingState {
         }
 
         // --- Collision: Player vs Everything (Physical) ---
-        if (!this.player.isWarping) {
+        if (!this.player.isWarping && !this.isDead) {
             // Player vs Asteroids
             for (const ast of this.asteroids) {
                 if (!ast.alive) continue;
@@ -1480,8 +2028,14 @@ export class PlayingState {
                     const dist = Math.sqrt(dx * dx + dy * dy);
                     ast.onCollision(this.player);
                     this._damagePlayer(ast.damage * this.player.lvlAsteroidResistanceMult, ast.worldX, ast.worldY);
-                    ast.alive = false;
-                    this._onEntityDestroyed(ast);
+                    if (this.netSync && !this.netSync.isHost) {
+                        // Replica: cosmetic shatter now, host arbitrates the kill + loot.
+                        this.netSync.reportAsteroidRam(ast);
+                    } else {
+                        if (this.netSync) ast._lastDamageBy = this.netSync.myPid;
+                        ast.alive = false;
+                        this._onEntityDestroyed(ast);
+                    }
                     this._applyKnockback(dx, dy, dist, 200);
                     if (this.game.achievements) {
                         this.game.achievements.notify('asteroid_rammed');
@@ -1504,8 +2058,21 @@ export class PlayingState {
                 if (dx * dx + dy * dy < cr * cr) {
                     const dist = Math.sqrt(dx * dx + dy * dy);
                     this._damagePlayer(20, en.worldX, en.worldY); // Ramming hurts!
-                    en.onCollision(this.player);
-                    if (!en.alive) this._onEntityDestroyed(en);
+                    if (this.netSync && !this.netSync.isHost) {
+                        // Compute the contact damage we deal (shield capacitor
+                        // builds hit harder) and let the host apply it.
+                        let ramDmg = 20;
+                        if (this.player.shielding && this.player.shieldCapacitorCount > 0) {
+                            ramDmg = (20.0 + this.player.shieldCapacitorCount * 40.0) * (this.player.lvlShieldDamageMult || 1.0);
+                        }
+                        this.netSync.reportEnemyContact(en, ramDmg);
+                        // Brief local invuln mirror so the replica can't re-ram every frame.
+                        en.invulnTimer = Math.max(en.invulnTimer, 0.4);
+                    } else {
+                        if (this.netSync) en._lastDamageBy = this.netSync.myPid;
+                        en.onCollision(this.player);
+                        if (!en.alive) this._onEntityDestroyed(en);
+                    }
                     this._applyKnockback(dx, dy, dist, 300);
                 }
             }
@@ -1519,41 +2086,58 @@ export class PlayingState {
                 if (dx * dx + dy * dy < cr * cr) { // Smaller inner radius for waking
                     const dist = Math.sqrt(dx * dx + dy * dy);
                     this._damagePlayer(20, ev.worldX, ev.worldY);
-                    ev.hit(1); // Triggers wake
+                    this._routeDamage(ev, 1); // Triggers wake (host-arbitrated in MP)
                     this._applyKnockback(dx, dy, dist, 600); // Big knockback from boss
                 }
             }
         }
 
         // --- Collision: Enemies vs Asteroids ---
-        // (Note: still inside collisions timing block)
-        for (const en of this.enemies) {
-            if (!en.alive || !en._nearPlayer) continue;
-            for (const ast of this.asteroids) {
-                if (!ast.alive || !ast._nearPlayer) continue;
-                const dx = en.worldX - ast.worldX;
-                const dy = en.worldY - ast.worldY;
-                const cr = en.radius + ast.radius;
-                if (dx * dx + dy * dy < cr * cr) {
-                    // Bosses take nearly no damage from asteroids (1.0 damage per hit)
-                    // AsteroidCrusher takes NO damage from asteroids
-                    const damage = (en instanceof AsteroidCrusher) ? 0 : (en.isBoss ? 1.0 : 10);
-                    en.hit(damage);
+        // (Note: still inside collisions timing block. Host-authority: both
+        // sides are replicas on clients, so the host resolves these.)
+        if (isNetHost) {
+            for (const en of this.enemies) {
+                if (!en.alive || !en._nearPlayer) continue;
+                for (const ast of this.asteroids) {
+                    if (!ast.alive || !ast._nearPlayer) continue;
+                    const dx = en.worldX - ast.worldX;
+                    const dy = en.worldY - ast.worldY;
+                    const cr = en.radius + ast.radius;
+                    if (dx * dx + dy * dy < cr * cr) {
+                        // Bosses take nearly no damage from asteroids (1.0 damage per hit)
+                        // AsteroidCrusher takes NO damage from asteroids
+                        const damage = (en instanceof AsteroidCrusher) ? 0 : (en.isBoss ? 1.0 : 10);
+                        en.hit(damage);
+                        if (mp && en.alive) this.netSync.markHpDirty(KIND.ENEMY, en);
 
-                    // Don't break if tractored by THIS enemy OR recently released by a crusher
-                    if (ast.tractoredBy === en || (en instanceof AsteroidCrusher && ast.tractorCooldown > 0)) continue;
+                        // Don't break if tractored by THIS enemy OR recently released by a crusher
+                        if (ast.tractoredBy === en || (en instanceof AsteroidCrusher && ast.tractorCooldown > 0)) continue;
 
-                    if (ast.hit(1)) {
-                        this._onEntityDestroyed(ast);
-                    }
-                    if (!en.alive) {
-                        this._onEntityDestroyed(en);
+                        if (ast.hit(1)) {
+                            this._onEntityDestroyed(ast);
+                        } else if (mp) {
+                            this.netSync.markHpDirty(KIND.ASTEROID, ast);
+                        }
+                        if (!en.alive) {
+                            this._onEntityDestroyed(en);
+                        }
                     }
                 }
             }
         }
 
         this.perf.end('collisions');
+
+        // Multiplayer host: anything that died without an explicit KILL/TOOK
+        // broadcast (lifetimes, despawn rules) gets a batched DESPAWN so the
+        // clients' nid maps never leak.
+        if (mp && isNetHost) {
+            this.netSync.broadcastDespawn(KIND.PICKUP, this.scrapEntities.filter(e => !e.alive && e.netId !== undefined));
+            this.netSync.broadcastDespawn(KIND.PICKUP, this.expOrbs.filter(e => !e.alive && e.netId !== undefined));
+            this.netSync.broadcastDespawn(KIND.PICKUP, this.itemPickups.filter(e => !e.alive && e.netId !== undefined));
+            this.netSync.broadcastDespawn(KIND.ENEMY, this.encounters.filter(e => !e.alive && e.netId !== undefined));
+            this.netSync.broadcastDespawn(KIND.CACHE, this.caches.filter(e => !e.alive && e.netId !== undefined));
+        }
 
         // Cleanup dead entities (in-place compaction to avoid allocating new arrays)
         this._compactAlive(this.projectiles);
@@ -1603,9 +2187,16 @@ export class PlayingState {
         this._lastPlayerX = this.player.worldX;
         this._lastPlayerY = this.player.worldY;
 
-        // Update existing encounters
-        for (const enc of this.encounters) {
-            enc.update(dt, this.player);
+        // Update existing encounters. Host simulates them against the pilot
+        // they spawned for; clients interpolate replicas (netSync) instead.
+        if (isNetHost) {
+            for (const enc of this.encounters) {
+                let encTarget = this.player;
+                if (mp && enc.netTargetPid !== undefined && enc.netTargetPid !== this.netSync.myPid) {
+                    encTarget = this.netSync.remotePlayers.get(enc.netTargetPid) || this.player;
+                }
+                enc.update(dt, encTarget);
+            }
         }
 
         // Spawn timer — scales with exploration, must have NO combatants visibly attacking
@@ -1627,10 +2218,16 @@ export class PlayingState {
             if (bossAlive2 && enemiesOnScreen) break;
         }
 
-        if (!bossAlive2 && !isEventActive && !enemiesOnScreen && this.encounters.length === 0) {
+        if (isNetHost && !bossAlive2 && !isEventActive && !enemiesOnScreen && this.encounters.length === 0) {
             this.encounterSpawnTimer -= dt;
             if (this.encounterSpawnTimer <= 0) {
-                this._spawnEncounter();
+                // Multiplayer: the visitor seeks out a random living pilot.
+                let encAnchor = null;
+                if (mp) {
+                    const liveBodies = this.netSync.playerBodies();
+                    if (liveBodies.length) encAnchor = liveBodies[Math.floor(Math.random() * liveBodies.length)];
+                }
+                this._spawnEncounter(undefined, encAnchor);
                 // Frequency scales with exploration: more travel/events/shops = shorter wait
                 const explorationFactor = Math.min(4.0,
                     1.0 + (this.playerDistanceTraveled / 15000) * 0.3
@@ -1646,7 +2243,15 @@ export class PlayingState {
         }
     }
 
-    _onEntityDestroyed(entity) {
+    // killerPid (multiplayer): who actually landed the kill. Defaults to the
+    // entity's last damage source, falling back to the local pilot.
+    _onEntityDestroyed(entity, killerPid = undefined) {
+        const mp = !!this.netSync;
+        if (mp && killerPid === undefined) {
+            killerPid = entity._lastDamageBy !== undefined ? entity._lastDamageBy : this.netSync.myPid;
+        }
+        const killerIsLocal = !mp || killerPid === this.netSync.myPid;
+
         this._triggerShakeAt(entity.worldX, entity.worldY, entity instanceof Asteroid ? 1.5 : 1.8);
         this.game.sounds.play(entity instanceof Asteroid ? 'asteroid_break' : 'ship_explode', { volume: 0.4, x: entity.worldX, y: entity.worldY });
 
@@ -1665,36 +2270,647 @@ export class PlayingState {
             if (this.caches.length < CACHE_CONFIG.maxActiveCaches + 2) {
                 const bossCache = this.cacheSpawner.spawnNear(entity.worldX, entity.worldY, 0, 0);
                 this.caches.push(bossCache);
+                if (mp) this.netSync.registerCache(bossCache);
             }
         }
-        // Track stats
+        // Track stats — in multiplayer these are personal: only the pilot who
+        // landed the kill counts it (remote machines do the same via KILL).
         if (entity instanceof Asteroid) {
-            this.stats.asteroidsDestroyed++;
-            if (this.game.achievements) {
-                this.game.achievements.notify('asteroid_destroyed', {
-                    entity,
-                    playerShieldBroken: this.player.shieldBroken && !this.player.shielding
-                });
+            if (killerIsLocal) {
+                this.stats.asteroidsDestroyed++;
+                if (this.game.achievements) {
+                    this.game.achievements.notify('asteroid_destroyed', {
+                        entity,
+                        playerShieldBroken: this.player.shieldBroken && !this.player.shielding
+                    });
+                }
             }
         } else if (!(entity instanceof CthulhuEvent) && !(entity instanceof CargoShipEvent)) {
-            this.stats.enemiesDefeated++;
-            if (this.game.achievements) {
-                this.game.achievements.notify('enemy_killed', { entity });
+            if (killerIsLocal) {
+                this.stats.enemiesDefeated++;
+                if (this.game.achievements) {
+                    this.game.achievements.notify('enemy_killed', { entity });
+                }
             }
         }
+
+        // Loot rolls credit the killer's drill build (asteroids only).
+        if (mp && entity instanceof Asteroid) {
+            if (killerIsLocal) entity._killerDrillMult = this.player.asteroidDrillMult;
+            else {
+                const rp = this.netSync.remotePlayers.get(killerPid);
+                entity._killerDrillMult = rp ? (rp.asteroidDrillMult || 1.0) : 1.0;
+            }
+        }
+
         const spawns = entity.getSpawnOnDeath();
+        const gameplaySpawns = mp ? [] : null;
+        // Multiplayer: EXP belongs to whoever landed the final blow — the orbs
+        // home to and can only be collected by the killer.
+        if (mp) {
+            for (const s of spawns) {
+                if (s instanceof ExpOrb) s.ownerPid = killerPid;
+            }
+        }
         for (const s of spawns) {
-            if (s instanceof Scrap) { if (this.scrapEntities.length < 200) this.scrapEntities.push(s); }
+            if (s instanceof Scrap) { if (this.scrapEntities.length < 200) { this.scrapEntities.push(s); if (gameplaySpawns) gameplaySpawns.push(s); } }
             else if (s instanceof Rubble || s instanceof ProceduralDebris) { if (this.rubble.length < 250) this.rubble.push(s); }
             else if (s instanceof Asteroid) {
                 // Mid-tick spawns won't have _nearPlayer set yet, which would cause
                 // projectiles fired this frame to skip them via the broad-phase filter.
                 s._nearPlayer = true;
                 this.asteroids.push(s);
+                if (gameplaySpawns) gameplaySpawns.push(s);
             }
-            else if (s instanceof ItemPickup) this.itemPickups.push(s);
-            else if (s instanceof ExpOrb) { if (this.expOrbs.length < 150) this.expOrbs.push(s); }
+            else if (s instanceof ItemPickup) { this.itemPickups.push(s); if (gameplaySpawns) gameplaySpawns.push(s); }
+            else if (s instanceof ExpOrb) { if (this.expOrbs.length < 150) { this.expOrbs.push(s); if (gameplaySpawns) gameplaySpawns.push(s); } }
         }
+
+        // Replicate the kill + its loot (multiplayer host).
+        if (mp && this.netSync.isHost) {
+            this.netSync.onEntityKilled(entity, killerPid, gameplaySpawns);
+        }
+    }
+
+    // ── Multiplayer helpers ──────────────────────────────────────────────────
+
+    // Every pilot's ship as a targetable "body" (single player: just you).
+    getPlayerBodies() {
+        return this.netSync ? this.netSync.playerBodies() : [this.player];
+    }
+
+    // Enemy scrap drops scale with lobby size (read by getSpawnOnDeath rolls
+    // on the host — clients receive the resulting spawns over the wire).
+    get netScrapMult() {
+        return this.net ? mpScrapMult(this.net.playerCount) : 1.0;
+    }
+
+    // Drop an item into space. Single player / host: spawn it (and replicate).
+    // Multiplayer client: ask the host to spawn it so EVERY pilot can see and
+    // grab it — never a local-only ghost item.
+    _dropItemToSpace(item, x, y, vx = null, vy = null, pickupDelay = 0) {
+        if (this.netSync && !this.netSync.isHost) {
+            this.net.send(MSG.DROP_ITEM, {
+                id: item.id, tier: item.tier || 0,
+                x: Math.round(x * 100) / 100, y: Math.round(y * 100) / 100,
+                vx: vx != null ? Math.round(vx * 100) / 100 : null,
+                vy: vy != null ? Math.round(vy * 100) / 100 : null,
+            });
+            return;
+        }
+        const it = new ItemPickup(this.game, x, y, item, pickupDelay);
+        if (vx != null) { it.vx = vx; it.vy = vy; }
+        this.itemPickups.push(it);
+        if (this.netSync) this.netSync.broadcastSpawns([it]);
+    }
+
+    // Route damage from a host-side world check to whichever pilot it hit.
+    damagePlayerBody(body, amount, x, y) {
+        if (this.netSync) this.netSync.damagePlayerBody(body, amount, x, y);
+        else this._damagePlayer(amount, x, y);
+    }
+
+    // Local damage to a (possibly replicated) world entity. Returns true if it
+    // died — on multiplayer clients that's always false; the host's KILL
+    // message is what actually destroys things.
+    _routeDamage(ent, amount, hitX, hitY) {
+        if (this.netSync) return this.netSync.damageEntity(ent, amount, hitX, hitY);
+        return ent.hit(amount);
+    }
+
+    _anyBodyNear(x, y, range) {
+        if (!this.netSync) {
+            const dx = x - this.player.worldX, dy = y - this.player.worldY;
+            return dx * dx + dy * dy < range * range;
+        }
+        for (const b of this.netSync.playerBodies()) {
+            const dx = x - b.worldX, dy = y - b.worldY;
+            if (dx * dx + dy * dy < range * range) return true;
+        }
+        return false;
+    }
+
+    // Central enemy intake: applies the multiplayer health curve and
+    // replicates spawns (host). Use this instead of pushing into this.enemies.
+    _addEnemies(arr) {
+        if (!arr || !arr.length) return;
+        const mpHost = !!this.netSync && this.netSync.isHost;
+        for (const en of arr) {
+            if (mpHost && this.net.playerCount > 1 && !en._mpScaled) {
+                en._mpScaled = true;
+                const hm = mpHealthMult(this.net.playerCount);
+                en.health = Math.ceil(en.health * hm);
+                en.maxHealth = Math.ceil((en.maxHealth || en.health) * hm);
+            }
+            this.enemies.push(en);
+            if (mpHost) this.netSync.registerEnemy(en);
+        }
+    }
+
+    // Host: run one pilot's asteroid spawner, vetoing rocks that would pop
+    // into existence inside another pilot's view bubble ("blob" spawning).
+    _mpSpawnAsteroidsFor(dt, spawner, body, mult) {
+        const spawned = spawner.update(dt, body.worldX, body.worldY, body.vx || 0, body.vy || 0, mult || 1.0);
+        if (!spawned.length) return;
+        const NO_SPAWN_R = 1500;
+        const bodies = this.netSync.playerBodies();
+        for (const ast of spawned) {
+            let vetoed = false;
+            for (const b of bodies) {
+                if (b === body) continue;
+                const dx = ast.worldX - b.worldX, dy = ast.worldY - b.worldY;
+                if (dx * dx + dy * dy < NO_SPAWN_R * NO_SPAWN_R) { vetoed = true; break; }
+            }
+            if (vetoed) continue;
+            this.asteroids.push(ast);
+            this.netSync.registerAsteroid(ast);
+        }
+    }
+
+    // Per-frame multiplayer upkeep that runs before anything else.
+    _netPreFrame(dt) {
+        if (this.chatUI) this.chatUI.update(dt);
+        if (this._respawnCooldown > 0) this._respawnCooldown -= dt;
+        if (!this.net || this.net.state === 'ended') {
+            // Session dropped (host left / connection lost) — back to title.
+            this.net = null;
+            this.netSync = null;
+            this.game.setState(new MenuState(this.game));
+        }
+    }
+
+    // Dead in multiplayer: camera follows the nearest living teammate.
+    _updateSpectate(dt) {
+        if (!this.netSync) return;
+        let target = null, bestD = Infinity;
+        for (const rp of this.netSync.remotePlayers.values()) {
+            if (!rp._hasState || rp.isDead) continue;
+            const dx = rp.worldX - this.camera.x, dy = rp.worldY - this.camera.y;
+            const d = dx * dx + dy * dy;
+            if (d < bestD) { bestD = d; target = rp; }
+        }
+        if (target) this.camera.update(dt, target);
+    }
+
+    // ── Interactable locks (one pilot per shop/cache/encounter at a time) ──
+    _netRequestLock(kind, id, cb) {
+        if (!this.netSync) { cb(true); return; }
+        if (this.netSync.isHost) {
+            cb(this.netSync.tryLock(kind, id, this.netSync.myPid));
+            return;
+        }
+        const key = `${kind}:${id}`;
+        if (this._pendingLocks.has(key)) return;
+        this._pendingLocks.set(key, cb);
+        this.net.send(MSG.LOCK_REQ, { kind, id });
+        setTimeout(() => {
+            if (this._pendingLocks.get(key) === cb) this._pendingLocks.delete(key);
+        }, 4000);
+    }
+
+    onLockResult(m) {
+        const key = `${m.kind}:${m.id}`;
+        const cb = this._pendingLocks.get(key);
+        if (cb) {
+            this._pendingLocks.delete(key);
+            cb(!!m.granted);
+        }
+    }
+
+    _netReleaseLock(kind, id) {
+        if (!this.netSync) return;
+        if (this.netSync.isHost) this.netSync.releaseLock(kind, id, this.netSync.myPid);
+        else this.net.send(MSG.UNLOCK, { kind, id });
+    }
+
+    _netSendCacheState(m) {
+        if (!this.netSync) return;
+        if (this.netSync.isHost) this.net.broadcast(MSG.CACHE_STATE, m);
+        else this.net.send(MSG.CACHE_STATE, m);
+    }
+
+    _netSendShopState(shop) {
+        if (!this.netSync || shop.netId === undefined) return;
+        const m = { idx: shop.netId, inv: shop.inventory.serialize(), perm: { ...shop.permUpgrades } };
+        if (this.netSync.isHost) this.net.broadcast(MSG.SHOP_STATE, m);
+        else this.net.send(MSG.SHOP_STATE, m);
+    }
+
+    // Lock-holder opens a cache: everyone sees the lid fly off.
+    _netOpenCache(cache) {
+        if (cache.state === CACHE_STATE.OPEN) {
+            this._openCacheUI(cache);
+        } else if (cache.state === CACHE_STATE.FOUND || cache.state === CACHE_STATE.CLOSED) {
+            cache.open();
+            this._pendingCache = cache;
+            this._netSendCacheState({ nid: cache.netId, action: 'open' });
+            if (this.game.achievements) {
+                this.game.achievements.notify('cache_opened', { cache });
+            }
+        }
+    }
+
+    // ── Encounter dialog outcome (multiplayer-aware) ────────────────────────
+    _finishEncounterDialog(enc) {
+        if (!this.netSync) {
+            if (enc.shouldConvertHostile) {
+                this._convertEncounterToEnemy(enc);
+            } else if (!enc.shouldStay) {
+                enc.depart();
+            }
+            enc.shouldStay = false;
+            return;
+        }
+
+        const outcome = enc.shouldConvertHostile ? 'hostile' : (enc.shouldStay ? 'stay' : 'depart');
+        const maxScrap = outcome === 'hostile' ? this._encounterMaxScrap(enc.dialogData) : 0;
+        const forced = !!(enc.dialogData && enc.dialogData.forced);
+        enc.shouldStay = false;
+
+        if (outcome === 'hostile') {
+            // Same grace window the SP path grants.
+            this.player.invulnTimer = Math.max(this.player.invulnTimer, 1.5);
+        }
+
+        if (this.netSync.isHost) {
+            this.netSync.releaseLock('encounter', enc.netId, this.netSync.myPid);
+            if (outcome === 'hostile') {
+                this._convertEncounterToEnemyNet(enc, maxScrap, forced);
+            } else if (outcome === 'depart') {
+                enc.depart();
+                this.net.broadcast(MSG.ENCOUNTER_OUTCOME, { nid: enc.netId, outcome: 'depart' });
+            }
+        } else {
+            this.net.send(MSG.ENCOUNTER_OUTCOME, { nid: enc.netId, outcome, maxScrap, forced });
+        }
+    }
+
+    // Wealth scan extracted from _convertEncounterToEnemy so clients can report
+    // it to the host (the host never saw the dialog).
+    _encounterMaxScrap(dialogData) {
+        let maxScrap = 0;
+        if (dialogData && dialogData.vars) {
+            for (const val of Object.values(dialogData.vars)) {
+                if (typeof val === 'number') {
+                    maxScrap = Math.max(maxScrap, val);
+                } else if (val && typeof val === 'object') {
+                    if (val.item && typeof val.item.cost === 'number') maxScrap = Math.max(maxScrap, val.item.cost);
+                    else if (typeof val.cost === 'number') maxScrap = Math.max(maxScrap, val.cost);
+                    else if (typeof val.offer === 'number') maxScrap = Math.max(maxScrap, val.offer);
+                    else if (typeof val.negotiate === 'number') maxScrap = Math.max(maxScrap, val.negotiate);
+                }
+            }
+        }
+        return maxScrap;
+    }
+
+    // Host-side hostile conversion when any pilot picked a fight (mirrors
+    // _convertEncounterToEnemy with the wealth scaling reported over the wire).
+    _convertEncounterToEnemyNet(encounter, maxScrap, forced) {
+        const en = new HostileEncounter(this.game, encounter.worldX, encounter.worldY, this.difficultyScale, null);
+        const wealthBonus = 1.0 + Math.max(0, (maxScrap - 100) / 400);
+        en.initEncounterData(encounter.img, encounter.assetKey);
+
+        const curvedDifficultyScale = Math.pow(this.difficultyScale, 0.6);
+        const bossBaseHealth = (220 * curvedDifficultyScale) + 70 * this.difficultyScale;
+        const healthMult = forced ? 0.45 : 0.9;
+        en.health = Math.ceil(bossBaseHealth * healthMult * wealthBonus);
+        en.maxHealth = en.health;
+        en.speedMult = 1.5 + (wealthBonus - 1) * 0.5;
+        en.fireRateMult = 1.8 * wealthBonus;
+        en.damageMult = 1.0 * wealthBonus;
+        en.isUpgraded = true;
+        en.selectedUpgrades = ['bigBall', 'beam', 'multishot'];
+        en.weaponCycle = 0;
+
+        this._addEnemies([en]);
+        encounter.alive = false;
+        if (this.netSync) this.netSync.broadcastDespawn(KIND.ENEMY, [encounter]);
+
+        const targetBody = (encounter.netTargetPid !== undefined && this.netSync.remotePlayers.get(encounter.netTargetPid)) || this.player;
+        en.startEvasiveEntry(targetBody, 1.5);
+    }
+
+    // ── Trading ─────────────────────────────────────────────────────────────
+    onTradeMessage(type, m, fromPid) {
+        const pid = m.pid !== undefined ? m.pid : fromPid;
+        switch (type) {
+            case MSG.TRADE_REQ: {
+                if (this.isTradeOpen || this.isShopOpen || this.isCacheOpen || this.isEncounterOpen || this.isDead) return;
+                this._tradeRequestFrom = pid;
+                this._tradeRequestTimer = 12;
+                this.game.sounds.play('click', 0.8);
+                break;
+            }
+            case MSG.TRADE_ACCEPT:
+                if (!this.isTradeOpen) this._openTrade(pid);
+                break;
+            default:
+                if (this.tradeUI && this.tradeUI.partnerPid === pid) {
+                    this.tradeUI.onMessage(type, m);
+                }
+        }
+    }
+
+    _openTrade(partnerPid) {
+        this.tradeUI = new TradeUI(this.game, this, partnerPid);
+        this.isTradeOpen = true;
+        this._tradeRequestFrom = -1;
+        this._tradeButtons = {};
+        this.shopScrollX = 0;
+        this.shopScrollY = 0;
+        this.playerScrollX = 0;
+        this.playerScrollY = 0;
+        this.game.sounds.play('select', 0.8);
+    }
+
+    // ── Trade overlay — built on the same inventory panels the shop uses ────
+    _updateTradeUI(dt) {
+        const t = this.tradeUI;
+        t.update(dt);
+        if (t.closed) {
+            this.isTradeOpen = false;
+            this.tradeUI = null;
+            this.paused = false;
+            this._releaseGamepadCursor();
+            return;
+        }
+
+        const theirInv = t.partnerInventory;
+        const playerInv = this.player.inventory;
+        const theirLayout = this._getInventoryLayout(theirInv, 'shop');
+        const playerLayout = this._getInventoryLayout(playerInv, 'player');
+
+        const panels = [
+            { layout: theirLayout, scrollXKey: 'shopScrollX', scrollYKey: 'shopScrollY', inv: theirInv, panelKey: 'shop' },
+            { layout: playerLayout, scrollXKey: 'playerScrollX', scrollYKey: 'playerScrollY', inv: playerInv, panelKey: 'player' }
+        ];
+
+        const mouse = this.game.getMousePos();
+        if (this._applyScrollPanels(dt, mouse, panels)) return;
+
+        if (this.game.input.isMouseJustPressed(0)) {
+            // Buttons (accept/decline/scrap) — rects from the last draw.
+            for (const [id, r] of Object.entries(this._tradeButtons || {})) {
+                if (r && mouse.x >= r.x && mouse.x <= r.x + r.w && mouse.y >= r.y && mouse.y <= r.y + r.h) {
+                    if (id === 'accept') t.toggleAccept();
+                    else if (id === 'decline') t.cancel();
+                    else if (id.startsWith('scrap')) t.adjustScrap(parseInt(id.slice(5), 10) || 0);
+                    return;
+                }
+            }
+
+            // Your grid: toggle offered
+            const myCell = this._tradeCellAt(playerLayout, this.playerScrollX, this.playerScrollY, mouse, playerInv);
+            if (myCell) {
+                const entry = playerInv.getItemAt(myCell.col, myCell.row);
+                if (entry) t.toggleOfferEntry(entry);
+                return;
+            }
+
+            // Their grid: toggle "I want this"
+            const theirCell = this._tradeCellAt(theirLayout, this.shopScrollX, this.shopScrollY, mouse, theirInv);
+            if (theirCell) {
+                const entry = theirInv.getItemAt(theirCell.col, theirCell.row);
+                if (entry) t.toggleWantAt(entry.x, entry.y);
+                return;
+            }
+        }
+
+        // Close keys — same set the shop uses.
+        const input = this.game.input;
+        const closePressed =
+            input.isKeyJustPressed('KeyE') ||
+            input.isKeyJustPressed('Escape') ||
+            input.isGamepadJustPressed(GP.B) ||
+            input.isGamepadJustPressed(GP.BACK) ||
+            input.isGamepadJustPressed(GP.START);
+        if (closePressed) {
+            t.cancel();
+        }
+    }
+
+    _tradeCellAt(layout, scrollX, scrollY, mouse, inv) {
+        if (mouse.x < layout.gridVisX || mouse.x >= layout.gridVisX + layout.visW) return null;
+        if (mouse.y < layout.gridVisY || mouse.y >= layout.gridVisY + layout.visH) return null;
+        const col = Math.floor((mouse.x - layout.gridVisX + scrollX) / layout.slotSize);
+        const row = Math.floor((mouse.y - layout.gridVisY + scrollY) / layout.slotSize);
+        if (col < 0 || row < 0 || col >= inv.cols || row >= inv.rows) return null;
+        return { col, row };
+    }
+
+    _drawTradeOverlay(ctx) {
+        const t = this.tradeUI;
+        if (!t) return;
+        const cw = this.game.width;
+        const ch = this.game.height;
+        const uiScale = this.game.uiScale;
+        this._tradeButtons = {};
+
+        const theirInv = t.partnerInventory;
+        const playerInv = this.player.inventory;
+        const theirLayout = this._getInventoryLayout(theirInv, 'shop');
+        const playerLayout = this._getInventoryLayout(playerInv, 'player');
+        const partnerColor = playerColor(t.partnerPid);
+        const myColor = playerColor(this.netSync ? this.netSync.myPid : 0);
+
+        ctx.save();
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.82)';
+        ctx.fillRect(0, 0, cw, ch);
+
+        // ── Partner cargo panel (top — where the shop's stock goes) ─────────
+        this._draw9Slice(ctx, this.inventoryImg, theirLayout.panelX, theirLayout.panelY, theirLayout.totalW, theirLayout.totalH);
+        ctx.fillStyle = partnerColor;
+        ctx.font = `${8 * uiScale}px Astro5x`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'alphabetic';
+        ctx.fillText(`${t.partnerName.toUpperCase()}'S CARGO`, cw / 2, theirLayout.panelY - uiScale * 10);
+        this._drawInventoryGrid(ctx, theirInv, theirLayout, this.shopScrollX, this.shopScrollY);
+        this._drawTradeHighlights(ctx, theirInv, theirLayout, this.shopScrollX, this.shopScrollY,
+            (entry) => t.partnerOffered.has(`${entry.x},${entry.y}`),
+            (entry) => t.wants.has(`${entry.x},${entry.y}`));
+        this._draw9Slice(ctx, this.inventoryBorderImg, theirLayout.panelX, theirLayout.panelY, theirLayout.totalW, theirLayout.totalH);
+        this._drawScrollbars(ctx, theirLayout, this.shopScrollX, this.shopScrollY);
+
+        // Partner's scrap offer + status — right of their panel
+        const theirSideX = theirLayout.panelX + theirLayout.totalW + uiScale * 10;
+        ctx.textAlign = 'left';
+        ctx.font = `${6 * uiScale}px Astro4x`;
+        ctx.fillStyle = '#ffff66';
+        ctx.fillText(`OFFERS ${t.partnerScrap} SCRAP`, theirSideX, theirLayout.panelY + uiScale * 10);
+        ctx.fillStyle = t.partnerLocked ? '#44ff88' : '#667788';
+        ctx.fillText(t.partnerLocked ? 'ACCEPTED ✓' : 'CHOOSING...', theirSideX, theirLayout.panelY + uiScale * 19);
+
+        // ── Middle bar: accept / decline between the two panels ─────────────
+        const midTop = theirLayout.panelY + theirLayout.totalH;
+        const midBottom = playerLayout.panelY;
+        const midY = Math.floor((midTop + midBottom) / 2);
+        const btnW = Math.floor(uiScale * 56);
+        const btnH = Math.floor(uiScale * 14);
+        this._tradeButtons.accept = { x: Math.floor(cw / 2 - btnW - uiScale * 6), y: Math.floor(midY - btnH / 2), w: btnW, h: btnH };
+        this._tradeButtons.decline = { x: Math.floor(cw / 2 + uiScale * 6), y: Math.floor(midY - btnH / 2), w: btnW, h: btnH };
+        this._drawTradeButton(ctx, this._tradeButtons.accept, t.locked ? 'ACCEPTED' : 'ACCEPT',
+            t.locked ? '#44ff88' : '#9fe8ff', t.locked ? 'rgba(20, 60, 35, 0.95)' : 'rgba(10, 28, 40, 0.95)');
+        this._drawTradeButton(ctx, this._tradeButtons.decline, 'DECLINE', '#ff8866', 'rgba(50, 16, 12, 0.95)');
+
+        // ── Your cargo panel (bottom — same place the shop puts it) ─────────
+        this._draw9Slice(ctx, this.inventoryImg, playerLayout.panelX, playerLayout.panelY, playerLayout.totalW, playerLayout.totalH);
+        ctx.fillStyle = myColor;
+        ctx.font = `${8 * uiScale}px Astro5x`;
+        ctx.textAlign = 'center';
+        ctx.fillText('YOUR CARGO', cw / 2, playerLayout.panelY - uiScale * 10);
+        this._drawInventoryGrid(ctx, playerInv, playerLayout, this.playerScrollX, this.playerScrollY);
+        this._drawTradeHighlights(ctx, playerInv, playerLayout, this.playerScrollX, this.playerScrollY,
+            (entry) => t.offered.has(entry),
+            (entry) => t.partnerWants.has(`${entry.x},${entry.y}`));
+        this._draw9Slice(ctx, this.inventoryBorderImg, playerLayout.panelX, playerLayout.panelY, playerLayout.totalW, playerLayout.totalH);
+        this._drawScrollbars(ctx, playerLayout, this.playerScrollX, this.playerScrollY);
+
+        // ── Scrap offer controls — right of your panel ───────────────────────
+        const scX = playerLayout.panelX + playerLayout.totalW + uiScale * 10;
+        let scY = playerLayout.panelY + uiScale * 4;
+        ctx.textAlign = 'left';
+        ctx.font = `${6 * uiScale}px Astro4x`;
+        ctx.fillStyle = '#8899aa';
+        ctx.fillText('OFFER SCRAP', scX, scY + uiScale * 5);
+        scY += uiScale * 9;
+        ctx.font = `${9 * uiScale}px Astro5x`;
+        ctx.fillStyle = '#ffff66';
+        ctx.fillText(`${t.scrapOffer}`, scX, scY + uiScale * 9);
+        scY += uiScale * 13;
+
+        const sBtnW = Math.floor(uiScale * 22);
+        const sBtnH = Math.floor(uiScale * 10);
+        const sGap = Math.floor(uiScale * 2);
+        const steps = [1, 10, 100];
+        for (let i = 0; i < steps.length; i++) {
+            const rowY = scY + i * (sBtnH + sGap);
+            this._tradeButtons[`scrap${steps[i]}`] = { x: scX, y: rowY, w: sBtnW, h: sBtnH };
+            this._tradeButtons[`scrap-${steps[i]}`] = { x: scX + sBtnW + sGap, y: rowY, w: sBtnW, h: sBtnH };
+            this._drawTradeButton(ctx, this._tradeButtons[`scrap${steps[i]}`], `+${steps[i]}`, '#9fe8ff', 'rgba(10, 28, 40, 0.95)');
+            this._drawTradeButton(ctx, this._tradeButtons[`scrap-${steps[i]}`], `-${steps[i]}`, '#8899aa', 'rgba(14, 20, 30, 0.95)');
+        }
+        scY += steps.length * (sBtnH + sGap) + uiScale * 6;
+        ctx.font = `${5 * uiScale}px Astro4x`;
+        ctx.fillStyle = '#667788';
+        ctx.fillText(`SCRAP: ${Math.floor(this.player.scrap)}`, scX, scY);
+
+        // ── Hints + tooltips ─────────────────────────────────────────────────
+        ctx.fillStyle = '#667788';
+        ctx.font = `${6 * uiScale}px Astro4x`;
+        ctx.textAlign = 'center';
+        ctx.fillText('Click your items to offer  •  click theirs to ask  •  E to cancel', cw / 2, ch - uiScale * 10);
+
+        this._drawInventoryTooltip(ctx, [
+            { inv: theirInv, layout: theirLayout, scrollX: this.shopScrollX, scrollY: this.shopScrollY },
+            { inv: playerInv, layout: playerLayout, scrollX: this.playerScrollX, scrollY: this.playerScrollY }
+        ]);
+
+        ctx.restore();
+    }
+
+    // Offer/want overlays painted over a grid: cyan = changing hands,
+    // pulsing yellow = requested by the other pilot.
+    _drawTradeHighlights(ctx, inv, layout, scrollX, scrollY, isOffered, isWanted) {
+        const { gridVisX: startX, gridVisY: startY, visW, visH, slotSize } = layout;
+        const t = this.tradeUI;
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(startX, startY, visW, visH);
+        ctx.clip();
+        for (const entry of inv.items) {
+            const x = startX + entry.x * slotSize - scrollX;
+            const y = startY + entry.y * slotSize - scrollY;
+            const w = entry.item.width * slotSize;
+            const h = entry.item.height * slotSize;
+            if (x + w < startX || x > startX + visW || y + h < startY || y > startY + visH) continue;
+
+            if (isOffered(entry)) {
+                ctx.fillStyle = 'rgba(68, 221, 255, 0.20)';
+                ctx.fillRect(x + 2, y + 2, w - 4, h - 4);
+                ctx.strokeStyle = '#44ddff';
+                ctx.lineWidth = 2;
+                ctx.strokeRect(x + 1.5, y + 1.5, w - 3, h - 3);
+            }
+            if (isWanted(entry)) {
+                const pulse = 0.55 + 0.45 * Math.sin(t.glowTimer * 6);
+                ctx.save();
+                ctx.globalAlpha = pulse;
+                ctx.strokeStyle = '#ffdd44';
+                ctx.lineWidth = 2;
+                ctx.strokeRect(x + 3.5, y + 3.5, w - 7, h - 7);
+                ctx.restore();
+            }
+        }
+        ctx.restore();
+    }
+
+    _drawTradeButton(ctx, rect, label, color, bg) {
+        const uiScale = this.game.uiScale;
+        ctx.fillStyle = bg;
+        ctx.fillRect(rect.x, rect.y, rect.w, rect.h);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(rect.x + 0.5, rect.y + 0.5, rect.w - 1, rect.h - 1);
+        ctx.fillStyle = color;
+        ctx.font = `${Math.floor(6 * uiScale)}px Astro5x`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(label, rect.x + rect.w / 2, rect.y + rect.h / 2 + 1);
+        ctx.textBaseline = 'alphabetic';
+    }
+
+    // ── Respawn (multiplayer): a fresh ship in the same shared world ────────
+    _netRespawn() {
+        const game = this.game;
+        this.player = new Player(game, this.shipData);
+        this.player.inventory = new Inventory(this.shipData.storage.cols, this.shipData.storage.rows);
+        this.player.inventory.isPlayerInventory = true;
+        this.player.inventory.playingState = this;
+        this.inventoryCols = this.shipData.storage.cols;
+        this.inventoryRows = this.shipData.storage.rows;
+        this.encounterBonuses = { speedMult: 1.0, fireRateMult: 1.0, turnMult: 1.0 };
+        this.levelUpQueue = [];
+        this.isLevelUpOpen = false;
+        this.activeLevelUpDialog = null;
+        this.levelUpSkipsRemaining = this.LEVELUP_MAX_SKIPS;
+        this.pendingLevelUpMult = 1;
+        this.fovUpgradeMult = 1.0;
+
+        // Fresh personal run stats (the shared world keeps going).
+        this.stats = {
+            asteroidsDestroyed: 0, enemiesDefeated: 0, wavesCleared: 0,
+            scrapCollected: 0, shopsUnlocked: 1, eventsDiscovered: 0,
+        };
+        this.trueTotalTime = 0;
+
+        // Spawn near a living teammate (or back at the origin).
+        let anchor = null;
+        for (const rp of this.netSync.remotePlayers.values()) {
+            if (rp._hasState && !rp.isDead) { anchor = rp; break; }
+        }
+        const angle = Math.random() * Math.PI * 2;
+        this.player.worldX = (anchor ? anchor.worldX : 0) + Math.cos(angle) * 300;
+        this.player.worldY = (anchor ? anchor.worldY : 0) + Math.sin(angle) * 300;
+        this.player.invulnTimer = 2.5;
+
+        this.isDead = false;
+        this.showDeathScreen = false;
+        this.deathTimer = 0;
+        this.shipDebris = [];
+        this.hud = new HUD(game, this.player);
+        this.camera.snapTo(this.player);
+        this._onInventoryChanged();
+        if (game.achievements) game.achievements.notify('run_started');
+
+        if (this.netSync.isHost) {
+            const info = this.net.players.get(0);
+            if (info) info.alive = true;
+            this.net.broadcast(MSG.PLAYER_RESPAWN, { pid: 0, shipId: this.shipData.id });
+        } else {
+            this.net.send(MSG.PLAYER_RESPAWN, { shipId: this.shipData.id });
+        }
+        this.game.sounds.startMusic();
     }
 
     _damagePlayer(amount, hitX, hitY) {
@@ -2150,6 +3366,11 @@ export class PlayingState {
         }
         this.perf.end('enemies');
 
+        // --- Other pilots (multiplayer) ---
+        if (this.netSync) {
+            this.netSync.drawRemotePlayers(ctx, this.camera);
+        }
+
         // --- Projectiles draw ---
         this.perf.begin('projectiles');
         for (const p of this.projectiles) {
@@ -2158,7 +3379,9 @@ export class PlayingState {
         this.perf.end('projectiles');
 
         // --- Railgun Visuals ---
-        if (this.player.hasRailgun) {
+        // (Also drawn without a local railgun so teammates' replicated beam
+        // flashes are visible in multiplayer.)
+        if (this.player.hasRailgun || (this.activeBeams && this.activeBeams.length)) {
             this._drawRailgunVisuals(ctx);
         }
 
@@ -2173,6 +3396,9 @@ export class PlayingState {
             if (this.showDeathScreen) {
                 this._drawDeathScreen(ctx);
             }
+
+            // Multiplayer: chat keeps working while dead/spectating.
+            if (this.chatUI) this.chatUI.draw(ctx, this.hud ? this.hud.shieldBarTopY : null);
 
             // Draw Yellow One fade overlays on top of death screen
             for (const ev of this.events) {
@@ -2191,10 +3417,15 @@ export class PlayingState {
         }
 
         this.perf.begin('player');
+        // Multiplayer: your own ship wears your pilot color too.
+        if (this.netSync && !this.player.isWarping) {
+            drawShipOutline(ctx, this.game, this.camera, this.player.stillImg, this.shipData.id,
+                playerColor(this.netSync.myPid), this.player.worldX, this.player.worldY, this.player.angle);
+        }
         this.player.draw(ctx, this.camera);
         this.perf.end('player');
 
-        if ((this.canInteractShop || this.canInteractEncounter || this.canInteractCache) && !this.isShopOpen && !this.isEncounterOpen && !this.isCacheOpen) {
+        if ((this.canInteractShop || this.canInteractEncounter || this.canInteractCache || this.canInteractPlayer) && !this.isShopOpen && !this.isEncounterOpen && !this.isCacheOpen && !this.isTradeOpen) {
             this._drawInteractPrompt(ctx);
         }
 
@@ -2239,6 +3470,11 @@ export class PlayingState {
 
             // --- Encounter Indicators ---
             this._drawEncounterIndicators(ctx);
+
+            // --- Teammate Indicators (multiplayer) ---
+            if (this.netSync) {
+                this._drawPlayerIndicators(ctx);
+            }
         }
 
         if (this.isLevelUpOpen && this.activeLevelUpDialog) {
@@ -2249,6 +3485,8 @@ export class PlayingState {
             this._drawCacheOverlay(ctx);
         } else if (this.isShopOpen) {
             this._drawShopOverlay(ctx);
+        } else if (this.isTradeOpen && this.tradeUI) {
+            this._drawTradeOverlay(ctx);
         } else if (this.paused) {
             this._drawPauseOverlay(ctx);
         }
@@ -2258,6 +3496,12 @@ export class PlayingState {
         // the Yellow One cutscene to match how the rest of the HUD behaves.
         if (!this.yellowOneScriptActive) {
             this.hud.drawToast(ctx);
+        }
+
+        // Multiplayer overlays: chat + incoming trade request prompt.
+        if (this.chatUI) this.chatUI.draw(ctx, this.hud ? this.hud.shieldBarTopY : null);
+        if (this._tradeRequestFrom >= 0 && this.net) {
+            this._drawTradeRequestPrompt(ctx);
         }
 
         // Screen Flash Effect (Vignette Pulse)
@@ -2378,7 +3622,12 @@ export class PlayingState {
     }
 
     _triggerWave() {
-        const waveEnemies = this.enemySpawner.spawnWave(this.player.worldX, this.player.worldY, this.difficultyScale);
+        // Multiplayer: the wave centers on the announced target pilot (chosen
+        // when the countdown started, shown in the HUD the whole time).
+        const mp = !!this.netSync;
+        const targetBody = mp ? this.netSync.waveTargetBody() : this.player;
+        const quantityMult = mp ? mpQuantityMult(this.net.playerCount) : 1.0;
+        const waveEnemies = this.enemySpawner.spawnWave(targetBody.worldX, targetBody.worldY, this.difficultyScale, quantityMult);
 
         // Check if a boss was spawned
         const boss = waveEnemies.find(e => e.isBoss);
@@ -2387,12 +3636,14 @@ export class PlayingState {
             const mKey = boss.musicKey || 'Starcore Showdown';
             this.game.sounds.playSpecificMusic(mKey);
             this.game.camera.shake(1.5);
+            if (mp) this.netSync.broadcastMusicCue(mKey);
         } else {
             this.triggerFlash('#ff0000', 0.8, 0.35); // Standard red wave flash
             this.game.sounds.play('ship_explode', 0.6); // Use explosion sound for wave impact
         }
+        if (mp) this.netSync.announceWave(this.enemySpawner.waveNumber, boss ? (boss.musicKey || 'boss') : null);
 
-        this.enemies.push(...waveEnemies);
+        this._addEnemies(waveEnemies);
     }
 
     _drawShopIndicators(ctx) {
@@ -4028,7 +5279,7 @@ export class PlayingState {
                         const worldMouse = this.camera.screenToWorld(mouse.x, mouse.y, this.game.width, this.game.height);
                         const dropOffset  = (Math.random() - 0.5) * 20;
                         const dropOffset2 = (Math.random() - 0.5) * 20;
-                        this.itemPickups.push(new ItemPickup(this.game, worldMouse.x + dropOffset, worldMouse.y + dropOffset2, this.draggedItem.item));
+                        this._dropItemToSpace(this.draggedItem.item, worldMouse.x + dropOffset, worldMouse.y + dropOffset2);
                         if (this.draggedItem.originInventory === playerInv) this._onInventoryChanged();
                         if (this.draggedItem.originInventory === cacheInv && cacheInv.items.length === 0) {
                             if (this._activeCache) this._activeCache.markEmptied();
@@ -4075,7 +5326,23 @@ export class PlayingState {
         if (ui.isClosed) {
             this.isCacheOpen = false;
             this.paused      = false;
-            if (this._activeCache) this._activeCache.close();
+            if (this._activeCache) {
+                this._activeCache.close();
+                // Multiplayer: publish what's left in the chest + release the
+                // lock so the next pilot sees exactly the remaining loot.
+                if (this.netSync && this._activeCache.netId !== undefined) {
+                    const remaining = ui.cacheInventory
+                        ? ui.cacheInventory.items.map(e => ({ id: e.item.id, tier: e.item.tier || 0, x: e.x, y: e.y }))
+                        : [];
+                    this._activeCache.netItems = remaining;
+                    this._netSendCacheState({
+                        nid: this._activeCache.netId,
+                        items: remaining,
+                        emptied: remaining.length === 0,
+                    });
+                    this._netReleaseLock('cache', this._activeCache.netId);
+                }
+            }
             this.activeCacheUI  = null;
             this._activeCache   = null;
             this.cacheScrollX   = 0;
@@ -4214,7 +5481,7 @@ export class PlayingState {
                     const worldMouse = this.camera.screenToWorld(mouse.x, mouse.y, this.game.width, this.game.height);
                     const dropOffset  = (Math.random() - 0.5) * 20;
                     const dropOffset2 = (Math.random() - 0.5) * 20;
-                    this.itemPickups.push(new ItemPickup(this.game, worldMouse.x + dropOffset, worldMouse.y + dropOffset2, this.draggedItem.item));
+                    this._dropItemToSpace(this.draggedItem.item, worldMouse.x + dropOffset, worldMouse.y + dropOffset2);
                     this._onInventoryChanged();
                     this.game.sounds.play('click', 0.5);
                 }
@@ -4237,6 +5504,11 @@ export class PlayingState {
                 this.draggedItem.originInventory.addItem(this.draggedItem.item, this.draggedItem.x, this.draggedItem.y);
                 if (this.draggedItem.originInventory === playerInv) this._onInventoryChanged();
                 this.draggedItem = null;
+            }
+            // Multiplayer: publish the shop's new stock + release the lock.
+            if (this.netSync && this.activeShop && this.activeShop.netId !== undefined) {
+                this._netSendShopState(this.activeShop);
+                this._netReleaseLock('shop', this.activeShop.netId);
             }
             this.isShopOpen = false;
             this.paused = false;
@@ -4449,7 +5721,7 @@ export class PlayingState {
                 const worldMouse = this.camera.screenToWorld(mouse.x, mouse.y, this.game.width, this.game.height);
                 const dropOffset  = (Math.random() - 0.5) * 20;
                 const dropOffset2 = (Math.random() - 0.5) * 20;
-                this.itemPickups.push(new ItemPickup(this.game, worldMouse.x + dropOffset, worldMouse.y + dropOffset2, this.draggedItem.item));
+                this._dropItemToSpace(this.draggedItem.item, worldMouse.x + dropOffset, worldMouse.y + dropOffset2);
                 this._onInventoryChanged();
                 this.game.sounds.play('click', 0.5);
             }
@@ -4806,7 +6078,14 @@ export class PlayingState {
         }
     }
 
-    spawnDistantShop() {
+    spawnDistantShop(targetBody = null) {
+        // Multiplayer client: only the host may add world objects — ask it to
+        // (it spawns the shop near us and broadcasts it back).
+        if (this.netSync && !this.netSync.isHost) {
+            this.net.send(MSG.SHOP_SPAWN_REQ, {});
+            return true;
+        }
+
         // Seeded placement via the shops stream (reproducible).
         const rand = () => this.game.rng ? this.game.rng.shops.next() : Math.random();
         // Random direction
@@ -4814,12 +6093,14 @@ export class PlayingState {
         // 6,000 to 10,000 pixels away
         const dist = 6000 + rand() * 4000;
 
-        const sx = this.player.worldX + Math.cos(angle) * dist;
-        const sy = this.player.worldY + Math.sin(angle) * dist;
+        const anchor = targetBody || this.player;
+        const sx = anchor.worldX + Math.cos(angle) * dist;
+        const sy = anchor.worldY + Math.sin(angle) * dist;
 
         const newShop = new Shop(this.game, sx, sy);
         this.shops.push(newShop);
         this._revealShop(newShop);
+        if (this.netSync) this.netSync.registerShop(newShop);
 
         this.stats.shopsUnlocked++;
         return true;
@@ -4848,19 +6129,28 @@ export class PlayingState {
     }
 
 
-    _spawnEncounter(specificType) {
+    _spawnEncounter(specificType, targetBody = null) {
         // Encounter type + placement seeded via the encounters stream.
         const er = this.game.rng ? this.game.rng.encounters : null;
         const rand = () => er ? er.next() : Math.random();
         const type = specificType || rollEncounterType(er);
         const angle = rand() * Math.PI * 2;
         const dist = 2000 + rand() * 500;
-        const wx = this.player.worldX + Math.cos(angle) * dist;
-        const wy = this.player.worldY + Math.sin(angle) * dist;
+        const anchor = targetBody || this.player;
+        const wx = anchor.worldX + Math.cos(angle) * dist;
+        const wy = anchor.worldY + Math.sin(angle) * dist;
 
         const encounter = new EncounterShip(this.game, wx, wy, type);
-        const dialog = generateEncounterDialog(type, this.player, this);
-        encounter.dialogData = dialog;
+        if (this.netSync) {
+            // Multiplayer: the dialog is generated lazily by whichever pilot
+            // interacts (offers scale with THEIR scrap/inventory). The host
+            // simulates the ship against the pilot it spawned for.
+            encounter.netTargetPid = (anchor === this.player || !anchor.pid) ? this.netSync.myPid : anchor.pid;
+            this.netSync.registerEncounter(encounter);
+        } else {
+            const dialog = generateEncounterDialog(type, this.player, this);
+            encounter.dialogData = dialog;
+        }
         this.encounters.push(encounter);
 
         // Notify player via sound
@@ -4902,6 +6192,12 @@ export class PlayingState {
 
     _openEncounterDialog(encounter) {
         encounter.startInteraction();
+
+        // Multiplayer: dialogs generate at interaction time for whoever locked
+        // the encounter, scaled to THEIR scrap/upgrades.
+        if (!encounter.dialogData) {
+            encounter.dialogData = generateEncounterDialog(encounter.encounterType, this.player, this);
+        }
 
         // Use the dialog that was generated when the encounter spawned
         this.activeEncounterDialog = new EncounterDialog(
@@ -4992,6 +6288,195 @@ export class PlayingState {
         // Give the enemy a matching grace window and have it quickly back away
         // to make some space before engaging.
         en.startEvasiveEntry(this.player, 1.5);
+    }
+
+    // Pixel-circle bitmaps for the teammate dots, by diameter in HUD pixels.
+    // Drawn cell-by-cell so they stay chunky/crisp like the rest of the HUD.
+    static PLAYER_DOT_MASKS = {
+        1: [[1]],
+        2: [[1, 1], [1, 1]],
+        3: [[0, 1, 0], [1, 1, 1], [0, 1, 0]],
+        4: [[0, 1, 1, 0], [1, 1, 1, 1], [1, 1, 1, 1], [0, 1, 1, 0]],
+        5: [[0, 1, 1, 1, 0], [1, 1, 1, 1, 1], [1, 1, 1, 1, 1], [1, 1, 1, 1, 1], [0, 1, 1, 1, 0]],
+        6: [
+            [0, 0, 1, 1, 0, 0],
+            [0, 1, 1, 1, 1, 0],
+            [1, 1, 1, 1, 1, 1],
+            [1, 1, 1, 1, 1, 1],
+            [0, 1, 1, 1, 1, 0],
+            [0, 0, 1, 1, 0, 0],
+        ],
+    };
+
+    // Teammate dots — works like the warning sensor's edge dots but with
+    // infinite range: a pixel circle in the pilot's color sits on the
+    // indicator ring pointing toward them. Size encodes distance in whole HUD
+    // pixels: 6px within 1000 units, shrinking to 1px at 25000 (and clamped
+    // there — it never disappears, no matter how far they roam). Their name
+    // (first 5 characters) sits above the dot.
+    _drawPlayerIndicators(ctx) {
+        const cw = this.game.width;
+        const ch = this.game.height;
+        const dt = this.game.lastDt || 0.016;
+        const hudScale = this.game.hudScale;
+
+        const NEAR = 1000, FAR = 25000;
+
+        for (const rp of this.netSync.remotePlayers.values()) {
+            if (!rp._hasState || rp.isDead) continue;
+            const screen = this.camera.worldToScreen(rp.worldX, rp.worldY, cw, ch);
+
+            const dx = rp.worldX - this.player.worldX;
+            const dy = rp.worldY - this.player.worldY;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const angle = Math.atan2(dy, dx);
+
+            const isOnScreen = screen.x >= 0 && screen.x <= cw && screen.y >= 0 && screen.y <= ch;
+            const opacity = this._getIndicatorOpacity(rp, !isOnScreen, dt);
+            if (opacity <= 0) continue;
+
+            // 6 HUD pixels at ≤1000 units → 1 at ≥25000, whole pixels only.
+            const t = Math.max(0, Math.min(1, (dist - NEAR) / (FAR - NEAR)));
+            const sizeUnits = Math.max(1, Math.min(6, Math.round(6 - t * 5)));
+            const px = sizeUnits * hudScale;
+
+            const cx = cw / 2;
+            const cy = ch / 2;
+            const radius = Math.min(cw, ch) * this.indicatorRadiusFactorExclamation;
+            const ix = cx + Math.cos(angle) * radius;
+            const iy = cy + Math.sin(angle) * radius;
+            const color = playerColor(rp.pid);
+
+            ctx.save();
+            ctx.globalAlpha = opacity;
+            ctx.fillStyle = color;
+            // Pixel circle, cell by cell (1 cell = 1 HUD pixel).
+            const mask = PlayingState.PLAYER_DOT_MASKS[sizeUnits] || PlayingState.PLAYER_DOT_MASKS[1];
+            const originX = Math.floor(ix - px / 2);
+            const originY = Math.floor(iy - px / 2);
+            for (let r = 0; r < mask.length; r++) {
+                for (let c = 0; c < mask[r].length; c++) {
+                    if (mask[r][c]) {
+                        ctx.fillRect(originX + c * hudScale, originY + r * hudScale, hudScale, hudScale);
+                    }
+                }
+            }
+
+            ctx.font = `${5 * hudScale}px Astro4x`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'alphabetic';
+            ctx.fillText(rp.name.toUpperCase().slice(0, 5), ix, Math.floor(iy - px / 2) - Math.floor(hudScale * 2));
+            ctx.restore();
+        }
+    }
+
+    _drawTradeRequestPrompt(ctx) {
+        const game = this.game;
+        const uiScale = game.uiScale;
+        const name = this.net.playerName(this._tradeRequestFrom).toUpperCase();
+        const text = `${name} WANTS TO TRADE — [Y] ACCEPT  [N] DECLINE`;
+        const y = Math.floor(game.height * 0.22);
+
+        ctx.save();
+        ctx.font = `${7 * uiScale}px Astro5x`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        const w = ctx.measureText(text).width + uiScale * 12;
+        const h = Math.floor(uiScale * 16);
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+        ctx.fillRect(game.width / 2 - w / 2, y - h / 2, w, h);
+        ctx.strokeStyle = '#44ddff';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(game.width / 2 - w / 2 + 0.5, y - h / 2 + 0.5, w - 1, h - 1);
+        ctx.fillStyle = '#9fe8ff';
+        ctx.fillText(text, game.width / 2, y);
+        ctx.restore();
+    }
+
+    // Join-in-progress (multiplayer): rebuild the entire shared world from the
+    // host's snapshot. Mirrors deserialize()'s entity reconstruction, but with
+    // network ids so ongoing replication lines up.
+    async applyNetJoinSnapshot(snap) {
+        const sync = this.netSync;
+        // Anything replicated in the gap between connect and this snapshot is
+        // already inside the snapshot — start the registry clean.
+        sync.byNid.clear();
+        this.runSeed = snap.runSeed;
+        this.rng = new RandomStreams(this.runSeed);
+        this.rng.deserialize(snap.rng);
+        this.game.rng = this.rng;
+
+        this.totalGameTime = snap.totalGameTime || 0;
+        this.difficultyScale = snap.difficultyScale || 1;
+        this.waveTimer = snap.waveTimer != null ? snap.waveTimer : 120;
+        this.enemySpawner.waveNumber = snap.waveNumber || 0;
+        sync.waveTargetPid = snap.waveTargetPid || 0;
+
+        // Player spawn near the host.
+        this.player.worldX = snap.spawnX || 0;
+        this.player.worldY = snap.spawnY || 0;
+        this.player.invulnTimer = 2.5;
+        this.camera.snapTo(this.player);
+
+        // Events (same classes/ordering as the save-file path).
+        const EVENT_CLASSES = {
+            'CthulhuEvent': CthulhuEvent,
+            'CargoShipEvent': CargoShipEvent,
+            'FracturedStationEvent': FracturedStationEvent,
+            'KnowledgeEvent': KnowledgeEvent,
+            'YellowOne': YellowOne
+        };
+        this.events = [];
+        for (const evData of (snap.events || [])) {
+            const Cls = EVENT_CLASSES[evData.type];
+            if (!Cls) continue;
+            let ev;
+            if (evData.type === 'FracturedStationEvent') {
+                ev = new Cls(this.game, evData.positions || [{ x: evData.worldX, y: evData.worldY }]);
+                if (evData.angles) ev.angles = evData.angles;
+            } else {
+                ev = new Cls(this.game, evData.worldX, evData.worldY);
+            }
+            if (evData.state !== undefined && evData.state !== null) ev.state = evData.state;
+            if (evData.wave !== undefined) ev.wave = evData.wave;
+            if (evData.spawnedInitialScrap !== undefined) ev.spawnedInitialScrap = evData.spawnedInitialScrap;
+            if (evData.health !== undefined && evData.health !== null) ev.health = evData.health;
+            if (evData.maxHealth !== undefined && evData.maxHealth !== null) ev.maxHealth = evData.maxHealth;
+            if (evData.isFinished) ev.isFinished = true;
+            if (evData.invulnerable !== undefined) ev.invulnerable = evData.invulnerable;
+            if (evData.phase1Triggered !== undefined) ev.phase1Triggered = evData.phase1Triggered;
+            ev.netId = evData.netId;
+            this.events.push(ev);
+        }
+
+        // Shops (with their current inventories).
+        this.shops = [];
+        this.revealedShops = [];
+        for (const shopData of (snap.shops || [])) {
+            const s = new Shop(this.game, shopData.worldX, shopData.worldY);
+            await s.deserialize(shopData);
+            s.netId = shopData.netId;
+            s.revealed = false; // radar reveals are personal — discover your own
+            this.shops.push(s);
+        }
+        // Always reveal the spawn shop if it's nearby (parity with a fresh run).
+        if (this.shops.length) this._revealShop(this.shops[0]);
+
+        // World entities via the same spawn handlers ongoing replication uses.
+        this.asteroids = [];
+        this.enemies = [];
+        this.encounters = [];
+        this.caches = [];
+        this.scrapEntities = [];
+        this.itemPickups = [];
+        this.expOrbs = [];
+        for (const d of (snap.asteroids || [])) sync._spawnAsteroid(d);
+        for (const d of (snap.enemies || [])) sync._spawnEnemy(d);
+        for (const d of (snap.encounters || [])) sync._spawnEncounter(d);
+        for (const d of (snap.caches || [])) sync._spawnCache(d);
+        for (const d of (snap.pickups || [])) sync._spawnPickup(d);
+
+        this._onInventoryChanged();
     }
 
     _drawEncounterIndicators(ctx) {
@@ -5182,10 +6667,8 @@ export class PlayingState {
             const vx = p.vx + Math.cos(throwAngle) * throwSpeed;
             const vy = p.vy + Math.sin(throwAngle) * throwSpeed;
 
-            const pickup = new ItemPickupClass(this.game, spawnX, spawnY, item, 1.0); // 1s delay
-            pickup.vx = vx;
-            pickup.vy = vy;
-            this.itemPickups.push(pickup);
+            // Networked drop in multiplayer (clients route through the host).
+            this._dropItemToSpace(item, spawnX, spawnY, vx, vy, 1.0); // 1s delay
         }
 
         this.game.sounds.play('asteroid_break', { volume: 0.6, x: p.worldX, y: p.worldY });
@@ -5586,12 +7069,17 @@ export class PlayingState {
     }
 
     _fireSingleBeam(startX, startY, dirX, dirY, length, damage) {
+        // Replicate the beam flash to the other pilots (visual only).
+        if (this.netSync) {
+            this.netSync.queueLocalShot(1, startX, startY, Math.atan2(dirY, dirX), 0, 'blue_laser_ball');
+        }
+
         // vs Asteroids
         for (const ast of this.asteroids) {
             if (!ast.alive) continue;
             if (this._rayIntersectsCircle(startX, startY, dirX, dirY, length, ast.worldX, ast.worldY, ast.radius)) {
                 this.game.sounds.play('hit', 0.6);
-                if (ast.hit(damage)) {
+                if (this._routeDamage(ast, damage)) {
                     this._onEntityDestroyed(ast);
                 }
                 if (this.player.hasExplosivesUnit) {
@@ -5610,7 +7098,7 @@ export class PlayingState {
             if (!en.alive) continue;
             if (this._rayIntersectsCircle(startX, startY, dirX, dirY, length, en.worldX, en.worldY, en.radius)) {
                 this.game.sounds.play('hit', 0.6);
-                if (en.hit(damage)) {
+                if (this._routeDamage(en, damage)) {
                     this._onEntityDestroyed(en);
                 }
                 if (this.player.hasExplosivesUnit) {
@@ -5628,7 +7116,7 @@ export class PlayingState {
             if (!ev.alive) continue;
             if (this._rayIntersectsCircle(startX, startY, dirX, dirY, length, ev.worldX, ev.worldY, ev.radius)) {
                 this.game.sounds.play('hit', 0.6);
-                if (ev.hit(damage)) {
+                if (this._routeDamage(ev, damage)) {
                     this._onEntityDestroyed(ev);
                 } else if (ev.state === CTHULHU_STATE.DESTRUCTIBLE) {
                     const dx = ev.worldX - startX, dy = ev.worldY - startY;
@@ -5757,7 +7245,7 @@ export class PlayingState {
             const dx = en.worldX - x;
             const dy = en.worldY - y;
             if (Math.sqrt(dx * dx + dy * dy) <= radius + en.radius) {
-                if (en.hit(damage)) {
+                if (this._routeDamage(en, damage, x, y)) {
                     this._onEntityDestroyed(en);
                 }
             }
@@ -5769,7 +7257,7 @@ export class PlayingState {
             const dx = ast.worldX - x;
             const dy = ast.worldY - y;
             if (Math.sqrt(dx * dx + dy * dy) <= radius + ast.radius) {
-                if (ast.hit(damage)) {
+                if (this._routeDamage(ast, damage, x, y)) {
                     this._onEntityDestroyed(ast);
                 }
             }
@@ -5856,6 +7344,18 @@ export class PlayingState {
 
         if (this.game.achievements) {
             this.game.achievements.notify('run_ended', { time: this.trueTotalTime, stats: this.stats });
+        }
+
+        // Multiplayer: announce it and arm the respawn cooldown.
+        if (this.net) {
+            this._respawnCooldown = 10.0;
+            if (this.net.isHost) {
+                const info = this.net.players.get(0);
+                if (info) info.alive = false;
+                this.net.broadcast(MSG.PLAYER_DIED, { pid: 0 });
+            } else {
+                this.net.send(MSG.PLAYER_DIED, {});
+            }
         }
 
         // Generate debris from ship sprite
@@ -5963,10 +7463,23 @@ export class PlayingState {
         ss.hovered = gamepadActive ? (this.deathScreenSelected === 1) : ssMouse;
 
         const flyAgain = () => {
+            if (this.net) {
+                // Multiplayer: respawn into the SAME shared world with a fresh
+                // ship (your run ended; the world didn't).
+                if (this._respawnCooldown > 0) {
+                    this.game.sounds.play('click', 0.4);
+                    return;
+                }
+                this.game.sounds.play('select', 1.0);
+                this._netRespawn();
+                return;
+            }
             this.game.sounds.play('select', 1.0);
             this.game.setState(new PlayingState(this.game, this.shipData));
         };
         const shipSelection = () => {
+            // Multiplayer: leaving the death screen leaves the session
+            // (exit() tears the connection down).
             this.game.sounds.play('select', 1.0);
             this.game.setState(new MenuState(this.game));
         };
@@ -6042,8 +7555,33 @@ export class PlayingState {
             const fa = this.deathScreenButtons.flyAgain;
             const ss = this.deathScreenButtons.shipSelection;
 
-            this.game.drawSprite(ctx, fa.hovered ? 'fly_again_on' : 'fly_again_off', fa.x, fa.y, uiScale);
+            // Multiplayer: FLY AGAIN = respawn into the shared world (after a
+            // short cooldown); SHIP SELECTION leaves the session.
+            if (this.net && this._respawnCooldown > 0) {
+                ctx.save();
+                ctx.globalAlpha = 0.45;
+                this.game.drawSprite(ctx, 'fly_again_off', fa.x, fa.y, uiScale);
+                ctx.restore();
+                ctx.fillStyle = '#9fe8ff';
+                ctx.font = `${6 * uiScale}px Astro4x`;
+                ctx.textAlign = 'center';
+                ctx.fillText(`RESPAWN IN ${Math.ceil(this._respawnCooldown)}`, fa.x + fa.w / 2, fa.y - Math.floor(uiScale * 4));
+            } else {
+                this.game.drawSprite(ctx, fa.hovered ? 'fly_again_on' : 'fly_again_off', fa.x, fa.y, uiScale);
+                if (this.net) {
+                    ctx.fillStyle = '#9fe8ff';
+                    ctx.font = `${6 * uiScale}px Astro4x`;
+                    ctx.textAlign = 'center';
+                    ctx.fillText('RESPAWN (FRESH SHIP)', fa.x + fa.w / 2, fa.y - Math.floor(uiScale * 4));
+                }
+            }
             this.game.drawSprite(ctx, ss.hovered ? 'ship_selection_on' : 'ship_selection_off', ss.x, ss.y, uiScale);
+            if (this.net) {
+                ctx.fillStyle = '#667788';
+                ctx.font = `${6 * uiScale}px Astro4x`;
+                ctx.textAlign = 'center';
+                ctx.fillText('LEAVE WORLD', ss.x + ss.w / 2, ss.y - Math.floor(uiScale * 4));
+            }
 
             if (this.game.input.isGamepadActive()) {
                 ctx.fillStyle = '#667788';

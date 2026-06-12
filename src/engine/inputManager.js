@@ -354,4 +354,14 @@ export class InputManager {
         this._mouseButtonsPrev.add(button); // Prevent it from being "just pressed" in the next update
         if (button === 0) this._gpVirtualMouseDown = false;
     }
+
+    // Swallow a key that a text-entry overlay (chat / dev console) just handled
+    // via its own window keydown listener, so the polled gameplay logic doesn't
+    // also see it as "just pressed" a frame later. Clears any pending edge and
+    // seeds _keysDownPrev so the diff in update() won't re-emit it. Works whether
+    // called before or after update() runs this frame.
+    consumeKey(code) {
+        this.keysJustPressed.delete(code);
+        this._keysDownPrev.add(code);
+    }
 }

@@ -67,19 +67,25 @@ export class Starcore extends Boss {
                 b.x = px;
                 b.y = py;
 
-                // Hit detection
-                const dx = player.worldX - b.x;
-                const dy = player.worldY - b.y;
-                const distSq = dx * dx + dy * dy;
-                if (distSq < 36000000) { // 6000 range
-                    const d = Math.sqrt(distSq);
-                    const dirX = Math.cos(b.angle);
-                    const dirY = Math.sin(b.angle);
-                    const dot = (dx * dirX + dy * dirY) / d;
-                    if (dot > 0.99) {
-                        const cross = Math.abs(dx * dirY - dy * dirX);
-                        if (cross < (player.radius + 30)) {
-                            this.game.currentState._damagePlayer(50.0 * dt * this.curvedDifficultyScale);
+                // Hit detection vs every player ship (multiplayer-aware)
+                const beamState = this.game.currentState;
+                const bodies = beamState.getPlayerBodies ? beamState.getPlayerBodies() : (beamState.player ? [beamState.player] : []);
+                for (const body of bodies) {
+                    const dx = body.worldX - b.x;
+                    const dy = body.worldY - b.y;
+                    const distSq = dx * dx + dy * dy;
+                    if (distSq < 36000000) { // 6000 range
+                        const d = Math.sqrt(distSq);
+                        const dirX = Math.cos(b.angle);
+                        const dirY = Math.sin(b.angle);
+                        const dot = (dx * dirX + dy * dirY) / d;
+                        if (dot > 0.99) {
+                            const cross = Math.abs(dx * dirY - dy * dirX);
+                            if (cross < (body.radius + 30)) {
+                                const dmg = 50.0 * dt * this.curvedDifficultyScale;
+                                if (beamState.damagePlayerBody) beamState.damagePlayerBody(body, dmg, b.x, b.y);
+                                else beamState._damagePlayer(dmg);
+                            }
                         }
                     }
                 }
@@ -293,6 +299,12 @@ export class Starcore extends Boss {
             angle: this.angle,
             timer: 1.0 // Longer beam duration
         });
+
+        // Replicate the mega-beam flash to clients (host-authoritative).
+        const state = this.game.currentState;
+        if (state && state.netSync && state.netSync.isHost) {
+            state.netSync.broadcastEnemyBeam(this, px, py, this.angle);
+        }
 
         this.game.sounds.play('railgun_shoot', { volume: 1.0, x: px, y: py });
         this.game.camera.shake(1.8);

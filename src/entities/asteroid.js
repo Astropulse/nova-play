@@ -60,6 +60,20 @@ function computeCollisionRadius(asset, key) {
     return radius;
 }
 
+// Tiny decorrelated PRNG for cosmetic picks derived from a content seed —
+// mulberry32 over (seed ^ salt) so it never advances the loot stream.
+class CosmeticRNG {
+    constructor(seed) {
+        this._state = (seed ^ 0x5f3759df) | 0;
+    }
+    next() {
+        this._state = (this._state + 0x6D2B79F5) | 0;
+        let t = Math.imul(this._state ^ this._state >>> 15, 1 | this._state);
+        t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+        return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    }
+}
+
 // Cache for computed collision radii (native pixels, before scale scaling)
 const _radiusCache = new Map();
 function getCachedRadius(img, key) {
@@ -169,6 +183,21 @@ export class VoronoiSlicer {
     }
 }
 
+// Cached death-shatter layouts, keyed by sprite asset key. Slicing a sprite
+// into shards costs several ms (pixel partition + dozens of canvas allocs) —
+// doing it fresh on EVERY kill caused visible frame hiccups during combat.
+// The shard canvases are immutable (debris only ever draws them), so one
+// layout per sprite is shared by every death; velocities/spins/rotations stay
+// per-death random, which preserves nearly all the visual variety.
+const _shatterCache = new Map();
+export function getCachedShatter(asset, key, numPieces) {
+    if (!asset) return [];
+    if (key && _shatterCache.has(key)) return _shatterCache.get(key);
+    const frags = VoronoiSlicer.slice(asset, numPieces);
+    if (key) _shatterCache.set(key, frags);
+    return frags;
+}
+
 // Module cache of persistent fracture layouts, keyed by asset + piece count.
 // Every entity sharing a sprite shares one cell layout; each entity keeps its
 // own removed-set, so the slice only ever runs once per sprite.
@@ -197,6 +226,11 @@ export class FractureModel {
         return model;
     }
 
+    // Single-pass build: ONE pixel readback of the sprite, partition + edge
+    // detection done directly on that buffer, then one small canvas per cell.
+    // (The previous implementation ran VoronoiSlicer and then re-read every
+    // cell canvas with getImageData — up to 320 synchronous readbacks, a
+    // 100ms+ frame stall the first time each sprite got shot.)
     constructor(asset) {
         const img = asset.canvas || asset;
         this.lw = asset.width || img.width;
@@ -207,23 +241,90 @@ export class FractureModel {
         this.ph = img.height;
         this.prescale = asset.prescale || (this.lw ? img.width / this.lw : 1);
 
+        const lw = this.lw, lh = this.lh;
+
         // Piece count scales with area → constant chunk size regardless of object.
-        const numPieces = Math.max(12, Math.min(320, Math.round((this.lw * this.lh) / (CHUNK_PX * CHUNK_PX))));
-        const cells = VoronoiSlicer.slice(asset, numPieces);
+        const numPieces = Math.max(12, Math.min(320, Math.round((lw * lh) / (CHUNK_PX * CHUNK_PX))));
 
-        // Logical-resolution alpha map of the full sprite, for edge detection.
-        const map = this._buildAlphaMap(img);
+        // One readback at logical resolution.
+        const canvas = document.createElement('canvas');
+        canvas.width = lw;
+        canvas.height = lh;
+        const ctx = canvas.getContext('2d');
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(img, 0, 0, img.width, img.height, 0, 0, lw, lh);
+        const data = ctx.getImageData(0, 0, lw, lh).data;
 
+        // Alpha map for edge detection.
+        const map = new Uint8Array(lw * lh);
+        for (let i = 0; i < map.length; i++) map[i] = data[i * 4 + 3] > 30 ? 1 : 0;
+
+        // Seeds + per-pixel nearest-seed partition, edge-flagging as we go.
+        const seeds = [];
+        for (let i = 0; i < numPieces; i++) {
+            seeds.push({
+                x: Math.floor(lw * (0.1 + Math.random() * 0.8)),
+                y: Math.floor(lh * (0.1 + Math.random() * 0.8)),
+            });
+        }
+        const shards = Array.from({ length: numPieces }, () => ({
+            minX: lw, minY: lh, maxX: 0, maxY: 0, count: 0, edge: false, pixels: [],
+        }));
+        for (let y = 0; y < lh; y++) {
+            for (let x = 0; x < lw; x++) {
+                if (!map[y * lw + x]) continue;
+                let minD = Infinity, nearest = 0;
+                for (let i = 0; i < numPieces; i++) {
+                    const dx = x - seeds[i].x, dy = y - seeds[i].y;
+                    const d = dx * dx + dy * dy;
+                    if (d < minD) { minD = d; nearest = i; }
+                }
+                const s = shards[nearest];
+                if (x < s.minX) s.minX = x;
+                if (y < s.minY) s.minY = y;
+                if (x > s.maxX) s.maxX = x;
+                if (y > s.maxY) s.maxY = y;
+                s.count++;
+                s.pixels.push(x, y);
+                // Silhouette test straight off the alpha map.
+                if (!s.edge) {
+                    if (x === 0 || y === 0 || x === lw - 1 || y === lh - 1 ||
+                        !map[(y - 1) * lw + x] || !map[(y + 1) * lw + x] ||
+                        !map[y * lw + (x - 1)] || !map[y * lw + (x + 1)]) {
+                        s.edge = true;
+                    }
+                }
+            }
+        }
+
+        // Describe cells WITHOUT creating canvases. Canvas elements are the
+        // expensive part (320 DOM allocations ≈ 40-150ms); a cell only needs a
+        // real canvas once it actually breaks off or gets erased from the
+        // composite — a handful per hit — so they materialize lazily in
+        // ensureCanvas() from the retained sprite pixels.
+        this._spriteData = data;
+        const cells = [];
         let maxDist = 1;
         let edgeCount = 0;
-        for (const c of cells) {
-            c.dist = Math.hypot(c.lx, c.ly);
-            // top-left of this cell within the full logical canvas
-            c.ox = Math.round(c.lx + this.lw / 2 - c.canvas.width / 2);
-            c.oy = Math.round(c.ly + this.lh / 2 - c.canvas.height / 2);
-            c.edge = this._touchesSilhouette(c, map);
-            if (c.edge) edgeCount++;
-            if (c.dist > maxDist) maxDist = c.dist;
+        for (const s of shards) {
+            if (s.count < 2) continue;
+            const cw = (s.maxX - s.minX) + 1;
+            const ch = (s.maxY - s.minY) + 1;
+            const cell = {
+                canvas: null,
+                w: cw,
+                h: ch,
+                pixels: Uint16Array.from(s.pixels),
+                lx: (s.minX + cw / 2 - lw / 2),
+                ly: (s.minY + ch / 2 - lh / 2),
+                ox: s.minX,
+                oy: s.minY,
+                edge: s.edge,
+            };
+            cell.dist = Math.hypot(cell.lx, cell.ly);
+            if (cell.edge) edgeCount++;
+            if (cell.dist > maxDist) maxDist = cell.dist;
+            cells.push(cell);
         }
         this.cells = cells;
         this.maxDist = maxDist;
@@ -231,35 +332,29 @@ export class FractureModel {
         this.maxRemovable = edgeCount;
     }
 
-    _buildAlphaMap(physImg) {
-        const c = document.createElement('canvas');
-        c.width = this.lw;
-        c.height = this.lh;
-        const ctx = c.getContext('2d');
-        ctx.imageSmoothingEnabled = false;
-        ctx.drawImage(physImg, 0, 0, physImg.width, physImg.height, 0, 0, this.lw, this.lh);
-        const data = ctx.getImageData(0, 0, this.lw, this.lh).data;
-        const map = new Uint8Array(this.lw * this.lh);
-        for (let i = 0; i < map.length; i++) map[i] = data[i * 4 + 3] > 30 ? 1 : 0;
-        return map;
-    }
-
-    // A cell is a shell cell if any of its pixels sits on the sprite border or
-    // borders a transparent pixel.
-    _touchesSilhouette(cell, map) {
-        const cw = cell.canvas.width, ch = cell.canvas.height;
-        const cdata = cell.canvas.getContext('2d').getImageData(0, 0, cw, ch).data;
-        const W = this.lw, H = this.lh;
-        for (let y = 0; y < ch; y++) {
-            for (let x = 0; x < cw; x++) {
-                if (cdata[(y * cw + x) * 4 + 3] <= 30) continue;
-                const gx = cell.ox + x, gy = cell.oy + y;
-                if (gx <= 0 || gy <= 0 || gx >= W - 1 || gy >= H - 1) return true;
-                if (!map[(gy - 1) * W + gx] || !map[(gy + 1) * W + gx] ||
-                    !map[gy * W + (gx - 1)] || !map[gy * W + (gx + 1)]) return true;
-            }
+    // Create a cell's canvas on first use (break-off debris / composite erase).
+    ensureCanvas(cell) {
+        if (cell.canvas) return cell.canvas;
+        const lw = this.lw;
+        const data = this._spriteData;
+        const cellCanvas = document.createElement('canvas');
+        cellCanvas.width = cell.w;
+        cellCanvas.height = cell.h;
+        const ctx = cellCanvas.getContext('2d');
+        const cellData = ctx.createImageData(cell.w, cell.h);
+        const px = cell.pixels;
+        for (let p = 0; p < px.length; p += 2) {
+            const x = px[p], y = px[p + 1];
+            const src = (y * lw + x) * 4;
+            const dst = ((y - cell.oy) * cell.w + (x - cell.ox)) * 4;
+            cellData.data[dst] = data[src];
+            cellData.data[dst + 1] = data[src + 1];
+            cellData.data[dst + 2] = data[src + 2];
+            cellData.data[dst + 3] = data[src + 3];
         }
-        return false;
+        ctx.putImageData(cellData, 0, 0);
+        cell.canvas = cellCanvas;
+        return cellCanvas;
     }
 }
 
@@ -300,6 +395,7 @@ export class HullFracture {
             if (best < 0) break;
             this._removedSet.add(best);
             this.removed.push(best);
+            m.ensureCanvas(m.cells[best]); // debris + composite need the bitmap
             taken.push(m.cells[best]);
         }
         if (taken.length) this.version++;
@@ -317,6 +413,7 @@ export class HullFracture {
             const d = dx * dx + dy * dy;
             if (d < bestD) { bestD = d; best = c; }
         }
+        if (best) m.ensureCanvas(best);
         return best;
     }
 
@@ -356,8 +453,9 @@ export class HullFracture {
         ctx.globalCompositeOperation = 'destination-out';
         for (const idx of this.removed) {
             const c = m.cells[idx];
-            ctx.drawImage(c.canvas, 0, 0, c.canvas.width, c.canvas.height,
-                c.ox * s, c.oy * s, c.canvas.width * s, c.canvas.height * s);
+            const cellCanvas = m.ensureCanvas(c);
+            ctx.drawImage(cellCanvas, 0, 0, cellCanvas.width, cellCanvas.height,
+                c.ox * s, c.oy * s, cellCanvas.width * s, cellCanvas.height * s);
         }
         ctx.globalCompositeOperation = 'source-over';
         this._compositeVer = this.version;
@@ -875,8 +973,15 @@ export class Asteroid {
             this.contentSeed = null;
         }
 
-        // Pick random asset (cosmetic — stays on Math.random())
-        this.assetKey = type.keys[Math.floor(Math.random() * type.keys.length)];
+        // Cosmetic picks (sprite variant, rotation, spin) derive from a side
+        // stream off the content seed — NOT from contentRng, so the loot draw
+        // sequence is unchanged. Seeding these makes the same asteroid use the
+        // same PNG and pose on every machine in multiplayer (and per-seed in
+        // single player). Falls back to Math.random() outside a run.
+        const cosmetic = this.contentSeed != null ? new CosmeticRNG(this.contentSeed) : null;
+        const cr = () => cosmetic ? cosmetic.next() : Math.random();
+
+        this.assetKey = type.keys[Math.floor(cr() * type.keys.length)];
         this.img = game.assets.get(this.assetKey);
 
         // Collision radius from actual opaque shape
@@ -887,8 +992,8 @@ export class Asteroid {
         this.vy = vy;
 
         // Slow rotation
-        this.rotation = Math.random() * Math.PI * 2;
-        this.rotSpeed = (Math.random() - 0.5) * 1.5;
+        this.rotation = cr() * Math.PI * 2;
+        this.rotSpeed = (cr() - 0.5) * 1.5;
         this.highlightRed = false;
 
         // Despawn if very far from player
@@ -976,16 +1081,13 @@ export class Asteroid {
     _generateProceduralDebris() {
         if (!this.img || !this.img.width) return [];
 
-        // Scale number of pieces based on asteroid size
-        let numPieces = 25 + Math.floor(Math.random() * 15); // Default (Medium)
-        if (this.size === 'big') {
-            numPieces = 50 + Math.floor(Math.random() * 20);
-        } else if (this.size === 'small') {
-            numPieces = 16 + Math.floor(Math.random() * 12);
-        } else if (this.size === 'tiny') {
-            numPieces = 10 + Math.floor(Math.random() * 8);
-        }
-        const shards = VoronoiSlicer.slice(this.img, numPieces);
+        // Scale number of pieces based on asteroid size. The layout is cached
+        // per sprite (see getCachedShatter) so kills don't re-slice mid-combat.
+        let numPieces = 32; // Default (Medium)
+        if (this.size === 'big') numPieces = 60;
+        else if (this.size === 'small') numPieces = 22;
+        else if (this.size === 'tiny') numPieces = 14;
+        const shards = getCachedShatter(this.img, this.assetKey, numPieces);
         const debris = [];
 
         for (const shard of shards) {
@@ -1037,7 +1139,11 @@ export class Asteroid {
         }
 
         // Spawn physical scrap
-        const drillMult = this.game.currentState?.player ? this.game.currentState.player.asteroidDrillMult : 1.0;
+        // Multiplayer: the host stamps _killerDrillMult with the killer's drill
+        // multiplier before rolling loot, so a teammate's drill build pays out
+        // for their kills too. Falls back to the local player (single player).
+        const drillMult = this._killerDrillMult
+            ?? (this.game.currentState?.player ? this.game.currentState.player.asteroidDrillMult : 1.0);
         // Base 80% drop chance scaled by drill. The chance can exceed 100%: each full
         // 1.0 is a guaranteed scrap roll, the leftover fraction is a probabilistic roll,
         // so overflow past 100% keeps adding scrap instead of being wasted.

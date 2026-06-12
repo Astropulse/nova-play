@@ -12,6 +12,8 @@ window.addEventListener('DOMContentLoaded', async () => {
 
     const canvas = document.getElementById('gameCanvas');
     game = new Game(canvas);
+    // Exposed for the dev console / automated multiplayer tests.
+    window.__novaGame = game;
 
     // Show loading text
     const ctx = canvas.getContext('2d');

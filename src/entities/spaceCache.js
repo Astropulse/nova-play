@@ -183,21 +183,28 @@ export class SpaceCache {
     // ── Kick off a crash-landing entrance ────────────────────────────────────
     // Spawns far off-screen and flies toward a point near the player, then slows
     // and drifts to rest once within crashLandRadius. Called right after construction.
-    startCrashLanding(playerX, playerY) {
+    // `opts` (multiplayer): explicit {angle, tx, ty} so every machine animates
+    // the exact same flight path for a host-spawned resupply drop.
+    startCrashLanding(playerX, playerY, opts = null) {
         const C = CACHE_CONFIG;
         const fov = (this.game.currentState?.currentFovMult) || 1.0;
         const landR = C.crashLandRadius * fov;
 
         // Travel direction (random) — the cache streaks across along this heading
-        const travelAngle = Math.random() * Math.PI * 2;
+        const travelAngle = opts && opts.angle != null ? opts.angle : Math.random() * Math.PI * 2;
         const dirX = Math.cos(travelAngle), dirY = Math.sin(travelAngle);
 
         // Land target: a point near the player but biased to the side so the drop
         // doesn't come down right on top of them.
-        const offAngle = Math.random() * Math.PI * 2;
-        const offDist  = landR * (0.35 + Math.random() * 0.4);
-        this.crashTargetX = playerX + Math.cos(offAngle) * offDist;
-        this.crashTargetY = playerY + Math.sin(offAngle) * offDist;
+        if (opts && opts.tx != null) {
+            this.crashTargetX = opts.tx;
+            this.crashTargetY = opts.ty;
+        } else {
+            const offAngle = Math.random() * Math.PI * 2;
+            const offDist  = landR * (0.35 + Math.random() * 0.4);
+            this.crashTargetX = playerX + Math.cos(offAngle) * offDist;
+            this.crashTargetY = playerY + Math.sin(offAngle) * offDist;
+        }
 
         // Spawn well beyond the screen border, back along the travel direction
         const spawnDist = this._screenRadius() + 500 + Math.random() * 300;
@@ -712,7 +719,11 @@ export class CacheSpawner {
         this.lastPlayerY = null;
     }
 
-    update(playerWorldX, playerWorldY, activeCacheCount, freqMult = 1.0) {
+    // `spawnAt` (multiplayer): optional {x, y} to place the cache near instead of
+    // the tracked player. The accumulator still follows the tracked player's
+    // travel (so every pilot's movement drives cadence), but the cache itself
+    // appears near a randomly chosen pilot, decided by the caller.
+    update(playerWorldX, playerWorldY, activeCacheCount, freqMult = 1.0, spawnAt = null) {
         const spawned = [];
         if (this.lastPlayerX === null) {
             this.lastPlayerX = playerWorldX;
@@ -734,7 +745,9 @@ export class CacheSpawner {
         if (this.distAccumulator >= C.spawnDistThreshold) {
             this.distAccumulator -= C.spawnDistThreshold;
             if (activeCacheCount < C.maxActiveCaches && rand() < C.spawnChance * freqMult) {
-                spawned.push(this._spawnCache(playerWorldX, playerWorldY));
+                const sx = spawnAt ? spawnAt.x : playerWorldX;
+                const sy = spawnAt ? spawnAt.y : playerWorldY;
+                spawned.push(this._spawnCache(sx, sy));
             }
         }
         return spawned;

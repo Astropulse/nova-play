@@ -83,21 +83,21 @@ export class DevConsole {
 
         if (e.key === 'Enter') {
             this._executeCommand();
-            e.preventDefault();
-            e.stopPropagation();
         } else if (e.key === 'Backspace') {
             this.inputBuffer = this.inputBuffer.slice(0, -1);
-            e.preventDefault();
-            e.stopPropagation();
         } else if (e.key === 'Escape') {
             this.active = false;
-            e.preventDefault();
-            e.stopPropagation();
         } else if (e.key.length === 1) {
             this.inputBuffer += e.key;
-            e.preventDefault();
-            e.stopPropagation();
+        } else {
+            return;
         }
+        // Swallow the keystroke from the polled InputManager too, so closing the
+        // console with Enter/Escape doesn't leak into gameplay a frame later
+        // (e.g. Enter opening the multiplayer chat, Escape toggling pause).
+        if (this.game.input) this.game.input.consumeKey(e.code);
+        e.preventDefault();
+        e.stopPropagation();
     }
 
     _executeCommand() {
@@ -291,10 +291,12 @@ export class DevConsole {
     }
 
     _cmdSave() {
+        if (this.game.net) { console.log('Save/load is disabled in multiplayer.'); return; }
         SaveManager.save(this.game.currentState);
     }
 
     _cmdLoad() {
+        if (this.game.net) { console.log('Save/load is disabled in multiplayer.'); return; }
         SaveManager.load(this.game);
     }
 
@@ -313,7 +315,7 @@ export class DevConsole {
                         state.player.worldY + Math.sin(angle) * dist,
                         state.difficultyScale
                     );
-                    state.enemies.push(boss);
+                    if (state._addEnemies) state._addEnemies([boss]); else state.enemies.push(boss);
                     state.triggerFlash('#ffffff', 1.2, 0.5);
                     this.game.sounds.playSpecificMusic(boss.musicKey || 'Starcore Showdown');
                 });
@@ -327,7 +329,7 @@ export class DevConsole {
                         state.player.worldY + Math.sin(angle) * dist,
                         state.difficultyScale
                     );
-                    state.enemies.push(boss);
+                    if (state._addEnemies) state._addEnemies([boss]); else state.enemies.push(boss);
                     state.triggerFlash('#ffffff', 1.2, 0.5);
                     this.game.sounds.playSpecificMusic(boss.musicKey || 'Asteroid Crusher');
                 });
@@ -341,7 +343,7 @@ export class DevConsole {
                         state.player.worldY + Math.sin(angle) * dist,
                         state.difficultyScale
                     );
-                    state.enemies.push(boss);
+                    if (state._addEnemies) state._addEnemies([boss]); else state.enemies.push(boss);
                     state.triggerFlash('#ffffff', 1.2, 0.5);
                     this.game.sounds.playSpecificMusic(boss.musicKey || 'Event Horizon Chase');
                 });

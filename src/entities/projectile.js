@@ -12,6 +12,7 @@ export class Projectile {
         this.lifetime = lifetime; // seconds before despawn
         this.damage = damage;
         this.owner = owner; // Who fired this (to prevent self-damage)
+        this.spriteKey = spriteKey; // kept for multiplayer replication
 
         // One-shot image for the laser ball
         this.img = game.assets.get(spriteKey);

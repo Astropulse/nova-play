@@ -78,6 +78,8 @@ export class HUD {
         const sbH = (this.shieldBarEmpty.height || sImg.height) * this.game.hudScale;
         const sbX = margin;
         const sbY = hbY - sbH - this.game.hudScale * 2;
+        // Exposed so overlays (multiplayer chat) can anchor just above the bars.
+        this.shieldBarTopY = sbY;
 
         if (p.shieldBroken) ctx.globalAlpha = 0.3;
 
@@ -123,7 +125,8 @@ export class HUD {
         // Radar
         this._drawRadar(ctx, cw, ch, margin);
 
-        // Wave Timer — top left
+        // Wave Timer — top left. Multiplayer: also shows which pilot the wave
+        // will center on, so the crew can rally to them (or leave them to it).
         const waveTimer = this.game.currentState.waveTimer;
         if (waveTimer !== undefined) {
             const mins = Math.floor(waveTimer / 60);
@@ -131,7 +134,20 @@ export class HUD {
             ctx.fillStyle = '#ff4444';
             ctx.font = `${8 * this.game.hudScale}px Astro4x`;
             ctx.textAlign = 'left';
-            ctx.fillText(`NEXT WAVE: ${mins}:${secs}`, margin, this.game.hudScale * 10);
+            const timerText = `NEXT WAVE: ${mins}:${secs}`;
+            ctx.fillText(timerText, margin, this.game.hudScale * 10);
+
+            const state = this.game.currentState;
+            const sync = state.netSync;
+            if (sync && state.net && state.net.playerCount > 1) {
+                const targetPid = sync.waveTargetPid;
+                const isMe = targetPid === sync.myPid;
+                const name = isMe ? 'YOU' : state.net.playerName(targetPid).toUpperCase();
+                const tw = ctx.measureText(timerText).width;
+                ctx.fillStyle = isMe ? '#ff8866' : '#ffd27a';
+                ctx.font = `${6 * this.game.hudScale}px Astro4x`;
+                ctx.fillText(`> TARGET: ${name}`, margin + tw + this.game.hudScale * 6, this.game.hudScale * 10);
+            }
         }
 
         this._drawExpBar(ctx, cw, ch);

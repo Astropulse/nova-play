@@ -18,7 +18,7 @@
  */
 
 import { Inventory } from '../engine/inventory.js';
-import { UPGRADES, RARITY_WEIGHTS, RARITY_COLORS } from '../data/upgrades.js';
+import { UPGRADES, RARITY_WEIGHTS, RARITY_COLORS, makeItem } from '../data/upgrades.js';
 
 // ─── Tunable UI constants ────────────────────────────────────────────────────
 const UI = {
@@ -69,6 +69,30 @@ export class CacheUI {
             this._extraRollsGiven = cache._cachedExtraRolls   || 0;
             this._skipToIdle      = true;
             this.uiState          = CUI_STATE.IDLE;
+        } else if (cache.netItems) {
+            // Multiplayer: another pilot already opened this cache and its
+            // remaining contents were synced over. Rebuild the same grid (the
+            // first two content-RNG draws are the grid size on every machine)
+            // and place the items where they left them — no re-rolling.
+            const r = () => cache.contentRng ? cache.contentRng.next() : Math.random();
+            const cols = UI.gridMin + Math.floor(r() * (UI.gridMax - UI.gridMin + 1));
+            const rows = UI.gridMin + Math.floor(r() * (UI.gridMax - UI.gridMin + 1));
+            this.cacheInventory = new Inventory(cols, rows);
+            for (const itData of cache.netItems) {
+                const item = makeItem(itData.id, itData.tier || 0);
+                if (!item) continue;
+                if (itData.x !== undefined && this.cacheInventory.canFit(item, itData.x, itData.y)) {
+                    this.cacheInventory.addItem(item, itData.x, itData.y);
+                } else {
+                    this.cacheInventory.autoAdd(item);
+                }
+            }
+            this.revealedItems    = this.cacheInventory.items.map(e => e.item);
+            this._extraRollsGiven = 0;
+            this._skipToIdle      = true;
+            this.uiState          = CUI_STATE.IDLE;
+            cache._cachedInventory     = this.cacheInventory;
+            cache._cachedRevealedItems = this.revealedItems;
         } else {
             // Grid size + loot rolls use the cache's spawn-time content RNG so a
             // given cache's contents are reproducible. Falls back outside a run.

@@ -2,6 +2,22 @@
 import { Projectile } from './projectile.js';
 import { GP } from '../engine/inputManager.js';
 
+// Inert input stub. In multiplayer the world never pauses, so when a UI
+// overlay is open the player's ship keeps simulating (drift, shields recharge,
+// timers tick) but must ignore the keyboard/mouse the UI is using. Swapping
+// the input source for this stub disables control without touching physics.
+const NULL_INPUT = {
+    isKeyDown: () => false,
+    isKeyJustPressed: () => false,
+    isMouseDown: () => false,
+    isMouseJustPressed: () => false,
+    isGamepadDown: () => false,
+    isGamepadJustPressed: () => false,
+    isTriggerDown: () => false,
+    isTriggerJustPressed: () => false,
+    leftStickX: 0, leftStickY: 0, rightStickX: 0, rightStickY: 0,
+};
+
 export class Player {
     constructor(game, shipData) {
         this.game = game;
@@ -320,7 +336,10 @@ export class Player {
     }
 
     update(dt) {
-        const input = this.game.input;
+        // controlsEnabled === false → run physics/timers but ignore all input
+        // (multiplayer: a menu/shop/trade overlay is open while the world runs).
+        const controls = this.controlsEnabled !== false;
+        const input = controls ? this.game.input : NULL_INPUT;
         const mouse = this.game.getMousePos();
         const centerX = this.game.width / 2;
         const centerY = this.game.height / 2;
@@ -409,7 +428,7 @@ export class Player {
                     }
                 }
 
-                if (!this.useKeyboardAim && Math.abs(this.rotationVelocity) < 0.1) {
+                if (controls && !this.useKeyboardAim && Math.abs(this.rotationVelocity) < 0.1) {
                     const dx = mouse.x - centerX;
                     const dy = mouse.y - centerY;
                     if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {

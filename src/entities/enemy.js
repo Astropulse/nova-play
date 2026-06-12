@@ -1,6 +1,6 @@
 // Scaling is now dynamic via game properties
 import { Projectile } from './projectile.js';
-import { Scrap, Rubble, ItemPickup, ProceduralDebris, VoronoiSlicer, ExpOrb, resolveSpawnOverlap } from './asteroid.js';
+import { Scrap, Rubble, ItemPickup, ProceduralDebris, VoronoiSlicer, ExpOrb, resolveSpawnOverlap, getCachedShatter } from './asteroid.js';
 import { UPGRADES } from '../data/upgrades.js';
 import { Starcore } from './starcore.js';
 import { AsteroidCrusher } from './asteroidCrusher.js';
@@ -863,24 +863,30 @@ export class Enemy {
             timer: 0.2
         });
 
-        // Hitscan logic vs Player
-        const player = this.game.currentState.player;
-        if (player) {
-            // Simplified hitscan check for enemy beams
-            const dx = player.worldX - startX;
-            const dy = player.worldY - startY;
+        // Hitscan vs every player ship (multiplayer-aware; single player this
+        // is just [player]). Damage routes to whichever pilot was hit.
+        const state = this.game.currentState;
+        const bodies = state.getPlayerBodies ? state.getPlayerBodies() : (state.player ? [state.player] : []);
+        for (const body of bodies) {
+            const dx = body.worldX - startX;
+            const dy = body.worldY - startY;
             const dist = Math.sqrt(dx * dx + dy * dy);
 
             if (dist < length) {
                 const dot = (dx * dirX + dy * dirY) / dist;
                 if (dot > 0.99) { // Very narrow beam
                     const cross = Math.abs(dx * dirY - dy * dirX);
-                    if (cross < player.radius) {
-                        this.game.currentState._damagePlayer(damage, this.worldX, this.worldY);
-                        this.game.sounds.play('hit', { volume: 0.5, x: player.worldX, y: player.worldY });
+                    if (cross < body.radius) {
+                        if (state.damagePlayerBody) state.damagePlayerBody(body, damage, this.worldX, this.worldY);
+                        else state._damagePlayer(damage, this.worldX, this.worldY);
+                        this.game.sounds.play('hit', { volume: 0.5, x: body.worldX, y: body.worldY });
                     }
                 }
             }
+        }
+        // Replicate the beam flash to other machines.
+        if (state.netSync && state.netSync.isHost) {
+            state.netSync.broadcastEnemyBeam(this, startX, startY, this.angle);
         }
         this.game.sounds.play('railgun_shoot', { volume: 0.6, x: startX, y: startY });
     }
@@ -943,9 +949,9 @@ export class Enemy {
     _generateProceduralDebris() {
         if (!this.img || !this.img.width) return [];
 
-        // 10-15 organic shards for enemies
-        const numPieces = 10 + Math.floor(Math.random() * 6);
-        const shards = VoronoiSlicer.slice(this.img, numPieces);
+        // ~13 organic shards for enemies (layout cached per sprite so kills
+        // don't re-slice mid-combat; trajectories stay per-death random)
+        const shards = getCachedShatter(this.img, this.spriteKey, 13);
         const debris = [];
 
         for (const shard of shards) {
@@ -980,7 +986,9 @@ export class Enemy {
         const rand = () => this.contentRng ? this.contentRng.next() : Math.random();
 
         const spawns = this._generateProceduralDebris();
-        const count = 3 + Math.floor(rand() * 3);
+        // Multiplayer: drops grow with the lobby (netScrapMult is 1 in solo).
+        const scrapMult = (this.game.currentState && this.game.currentState.netScrapMult) || 1.0;
+        const count = Math.round((3 + Math.floor(rand() * 3)) * scrapMult);
         const difficultyScale = (this.game.currentState && this.game.currentState.difficultyScale) || 1.0;
         const expAmount = Math.floor((4 + 1 * difficultyScale) * (this.isUpgraded ? 1.5 : 1));
 
@@ -1026,48 +1034,20 @@ export class Enemy {
 
         // Yellow Armada: use yellow glow sprite
         if (this.yellowArmada) {
-            if (!this._yellowGlowSprite) {
-                const srcImg = this.img.canvas || this.img;
-                const blur = 60;
-                const pad = blur * 2;
-                const c = document.createElement('canvas');
-                c.width = srcImg.width + pad * 2;
-                c.height = srcImg.height + pad * 2;
-                const gctx = c.getContext('2d');
-                gctx.shadowBlur = blur;
-                gctx.shadowColor = '#ffdd44';
-                gctx.drawImage(srcImg, pad, pad);
-                gctx.shadowBlur = 0;
-                gctx.drawImage(srcImg, pad, pad);
-                this._yellowGlowSprite = { canvas: c, srcW: srcImg.width };
-            }
-            const pxScale = w / this._yellowGlowSprite.srcW;
-            const gw = this._yellowGlowSprite.canvas.width * pxScale;
-            const gh = this._yellowGlowSprite.canvas.height * pxScale;
-            ctx.drawImage(this._yellowGlowSprite.canvas, -gw / 2, -gh / 2, gw, gh);
+            const glow = Enemy.getGlowSprite(this.img, this.spriteKey, '#ffdd44');
+            const pxScale = w / glow.srcW;
+            const gw = glow.canvas.width * pxScale;
+            const gh = glow.canvas.height * pxScale;
+            ctx.drawImage(glow.canvas, -gw / 2, -gh / 2, gw, gh);
         } else
         // Upgraded enemies: use pre-rendered glow sprite instead of per-frame shadowBlur
         if (this.isUpgraded) {
-            if (!this._glowSprite) {
-                const srcImg = this.img.canvas || this.img;
-                const blur = 60; // 15 * prescale(4) — matches shadowBlur=15*worldScale in screen space
-                const pad = blur * 2;
-                const c = document.createElement('canvas');
-                c.width = srcImg.width + pad * 2;
-                c.height = srcImg.height + pad * 2;
-                const gctx = c.getContext('2d');
-                gctx.shadowBlur = blur;
-                gctx.shadowColor = '#ff4444';
-                gctx.drawImage(srcImg, pad, pad);
-                gctx.shadowBlur = 0;
-                gctx.drawImage(srcImg, pad, pad);
-                this._glowSprite = { canvas: c, srcW: srcImg.width };
-            }
+            const glow = Enemy.getGlowSprite(this.img, this.spriteKey, '#ff4444');
             // Scale so sprite portion matches original w×h exactly
-            const pxScale = w / this._glowSprite.srcW;
-            const gw = this._glowSprite.canvas.width * pxScale;
-            const gh = this._glowSprite.canvas.height * pxScale;
-            ctx.drawImage(this._glowSprite.canvas, -gw / 2, -gh / 2, gw, gh);
+            const pxScale = w / glow.srcW;
+            const gw = glow.canvas.width * pxScale;
+            const gh = glow.canvas.height * pxScale;
+            ctx.drawImage(glow.canvas, -gw / 2, -gh / 2, gw, gh);
         } else {
             ctx.drawImage(this.img.canvas || this.img, -w / 2, -h / 2, w, h);
         }
@@ -1112,6 +1092,30 @@ export class Enemy {
                 }
             }
         }
+    }
+
+    // Shared glow-sprite cache (blur-60 canvas builds cost 5-15ms — once per
+    // sprite/color combo for the whole session, instead of once per enemy).
+    static _glowCache = new Map();
+    static getGlowSprite(imgAsset, spriteKey, color) {
+        const key = `${spriteKey || 'unknown'}|${color}`;
+        let glow = Enemy._glowCache.get(key);
+        if (glow) return glow;
+        const srcImg = imgAsset.canvas || imgAsset;
+        const blur = 60; // 15 * prescale(4) — matches shadowBlur=15*worldScale in screen space
+        const pad = blur * 2;
+        const c = document.createElement('canvas');
+        c.width = srcImg.width + pad * 2;
+        c.height = srcImg.height + pad * 2;
+        const gctx = c.getContext('2d');
+        gctx.shadowBlur = blur;
+        gctx.shadowColor = color;
+        gctx.drawImage(srcImg, pad, pad);
+        gctx.shadowBlur = 0;
+        gctx.drawImage(srcImg, pad, pad);
+        glow = { canvas: c, srcW: srcImg.width };
+        Enemy._glowCache.set(key, glow);
+        return glow;
     }
 
     static rollUpgrade(enemy, player) {
@@ -1169,7 +1173,9 @@ export class EnemySpawner {
         return [boss];
     }
 
-    update(rawDt, playerX, playerY, difficultyScale = 1.0) {
+    // quantityMult (multiplayer): scales how MANY enemies spawn — burst sizes
+    // and ambient counts — without inflating per-enemy stats.
+    update(rawDt, playerX, playerY, difficultyScale = 1.0, quantityMult = 1.0) {
         let dt = rawDt;
         if (this.spawnRateTimer > 0) {
             this.spawnRateTimer -= rawDt;
@@ -1233,8 +1239,8 @@ export class EnemySpawner {
             if (this.phaseTimer <= 0) {
                 // Peace is over — start a burst
                 this.phase = 'burst';
-                // 1-3 enemies per burst, scaling with difficulty
-                this.burstQueue = Math.floor(1 + rand() * Math.min(3, 1 + difficultyScale * 0.5));
+                // 1-3 enemies per burst, scaling with difficulty (and lobby size)
+                this.burstQueue = Math.max(1, Math.round(Math.floor(1 + rand() * Math.min(3, 1 + difficultyScale * 0.5)) * quantityMult));
                 this.burstSpawnTimer = 0; // First enemy spawns immediately
                 this.phaseTimer = 12 + rand() * 6; // Burst window ~12-18s
             }
@@ -1272,8 +1278,9 @@ export class EnemySpawner {
         return spawned;
     }
 
-    spawnWave(playerX, playerY, difficultyScale = 1.0) {
+    spawnWave(playerX, playerY, difficultyScale = 1.0, quantityMult = 1.0) {
         this.waveNumber++;
+        this._waveQuantityMult = quantityMult;
 
         // Boss wave every 4 waves
         if (this.waveNumber % 4 === 0) {
@@ -1307,13 +1314,15 @@ export class EnemySpawner {
             return [boss];
         }
 
-        // First wave: max 3 enemies. Later waves grow with difficulty.
+        // First wave: max 3 enemies. Later waves grow with difficulty
+        // (multiplied by lobby size in multiplayer).
         let count;
         if (this.waveNumber === 1) {
             count = 3;
         } else {
             count = Math.floor(2 + difficultyScale);
         }
+        count = Math.max(1, Math.round(count * quantityMult));
 
         // Burst sizing is fully dynamic now: each burst rolls its size at fire time,
         // can overshoot the queue (harder wave), and a sub-minimum remainder gets
@@ -1391,7 +1400,8 @@ export class KamikazeEnemy extends Enemy {
         const expAmount = Math.floor((4 + 1 * difficultyScale) * (this.isUpgraded ? 1.5 : 1));
         for (let i = 0; i < expAmount; i++) spawns.push(new ExpOrb(this.game, this.worldX, this.worldY, 1));
 
-        const count = 1 + Math.floor(Math.random() * 2);
+        const scrapMult = (this.game.currentState && this.game.currentState.netScrapMult) || 1.0;
+        const count = Math.round((1 + Math.floor(Math.random() * 2)) * scrapMult);
         for (let i = 0; i < count; i++) spawns.push(new Scrap(this.game, this.worldX, this.worldY));
         for (let i = 0; i < 4; i++) spawns.push(new Rubble(this.game, this.worldX, this.worldY));
 
@@ -1462,7 +1472,8 @@ export class CthulhuEnemy extends Enemy {
         const expAmount = Math.floor((4 + 1 * difficultyScale) * (this.isUpgraded ? 1.5 : 1));
         for (let i = 0; i < expAmount; i++) spawns.push(new ExpOrb(this.game, this.worldX, this.worldY, 1));
 
-        const count = 1 + Math.floor(Math.random() * 2);
+        const scrapMult = (this.game.currentState && this.game.currentState.netScrapMult) || 1.0;
+        const count = Math.round((1 + Math.floor(Math.random() * 2)) * scrapMult);
         for (let i = 0; i < count; i++) spawns.push(new Scrap(this.game, this.worldX, this.worldY));
         for (let i = 0; i < 4; i++) spawns.push(new Rubble(this.game, this.worldX, this.worldY));
 
@@ -1807,8 +1818,8 @@ export class HostileEncounter extends Enemy {
 
         const img = this.game.assets.get(this.spriteKey);
 
-        if (img && VoronoiSlicer) {
-            const fragments = VoronoiSlicer.slice(img, 80 + Math.floor(Math.random() * 40));
+        if (img) {
+            const fragments = getCachedShatter(img, this.spriteKey, 100);
             for (const frag of fragments) {
                 const rotAngle = this.angle + Math.PI / 2;
                 const cosA = Math.cos(rotAngle);
@@ -1829,7 +1840,8 @@ export class HostileEncounter extends Enemy {
 
         // Loot count + scrap type seeded (contentRng); scatter stays visual.
         const rand = () => this.contentRng ? this.contentRng.next() : Math.random();
-        const scrapCount = 8 + Math.floor(rand() * 5);
+        const hostileScrapMult = (this.game.currentState && this.game.currentState.netScrapMult) || 1.0;
+        const scrapCount = Math.round((8 + Math.floor(rand() * 5)) * hostileScrapMult);
         for (let i = 0; i < scrapCount; i++) {
             const outAngle = Math.random() * Math.PI * 2;
             const dist = Math.random() * 60;

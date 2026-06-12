@@ -24,8 +24,20 @@ export class Shop {
             this.contentSeed = null;
         }
 
-        // Random shop sprite (cosmetic — stays on Math.random())
-        const shopIdx = Math.floor(Math.random() * 3);
+        // Shop sprite variant — derived from the content seed (decorrelated so
+        // the stock rolls are untouched) so every machine in multiplayer shows
+        // the same building. Falls back to Math.random() outside a run.
+        let spriteRoll;
+        if (this.contentSeed != null) {
+            let s = (this.contentSeed ^ 0x5f3759df) | 0;
+            s = (s + 0x6D2B79F5) | 0;
+            let t = Math.imul(s ^ s >>> 15, 1 | s);
+            t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+            spriteRoll = ((t ^ t >>> 14) >>> 0) / 4294967296;
+        } else {
+            spriteRoll = Math.random();
+        }
+        const shopIdx = Math.floor(spriteRoll * 3);
         this.assetKey = `shop_${shopIdx}`;
         this.img = game.assets.get(this.assetKey);
 
