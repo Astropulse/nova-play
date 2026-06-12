@@ -60,6 +60,7 @@ export const MSG = {
     ASTEROID_VEL: 43,   // [[nid,x,y,vx,vy], ...] (velocity changed e.g. crusher tractor)
     MUSIC_CUE: 44,      // {key} boss music etc.
     WAVE_CLEARED: 45,   // h→c {num} (stats/achievements on every machine)
+    MUSIC_TRACK: 46,    // h→c {mode:'exploration'|'combat', index, pos} synced song choice + playhead
 
     // ── Client world actions (client → host) ───────────────────────────────
     DAMAGE: 50,         // {kind,nid,amount,hitX,hitY}

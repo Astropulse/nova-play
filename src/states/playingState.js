@@ -188,6 +188,16 @@ export class PlayingState {
                 : new ClientWorldSync(this.net, this);
             this.net.sync = this.netSync;
             this.netSync.bind();
+            // Music sync: the host picks exploration/combat songs and broadcasts
+            // each choice; clients play exactly what the host sends instead of
+            // rolling their own random track (boss cues already use MUSIC_CUE).
+            if (this.net.isHost) {
+                this.game.sounds.onSelectMusicTrack = (mode, index) => {
+                    if (this.netSync) this.netSync.broadcastMusicTrack(mode, index);
+                };
+            } else {
+                this.game.sounds.remoteMusicControl = true;
+            }
             this.chatUI = new ChatOverlay(game, this.net);
             this._mpAsteroidSpawners = new Map(); // pid -> AsteroidSpawner (host)
             this._mpCacheSpawners = new Map();    // pid -> CacheSpawner (host)
@@ -585,6 +595,9 @@ export class PlayingState {
         // world for everyone, a client just disconnects.
         if (this.chatUI) { this.chatUI.destroy(); this.chatUI = null; }
         if (this.netSync) { this.netSync.destroy(); this.netSync = null; }
+        // Hand music control back to single-player (host picks at random again).
+        this.game.sounds.onSelectMusicTrack = null;
+        this.game.sounds.remoteMusicControl = false;
         if (this.net) {
             const session = this.net;
             this.net = null;
@@ -668,9 +681,13 @@ export class PlayingState {
         if (this.isLevelUpOpen && this.activeLevelUpDialog) {
             this.activeLevelUpDialog.update(dt);
             if (this.activeLevelUpDialog.closed) {
+                // Esc-dismissed: bank this level back onto the queue (it wasn't
+                // spent) and exit the whole stack instead of advancing it.
+                const dismissed = this.activeLevelUpDialog.dismissed;
+                if (dismissed) this.levelUpQueue.unshift(this.activeLevelUpDialog.level);
                 this.isLevelUpOpen       = false;
                 this.activeLevelUpDialog = null;
-                if (this.levelUpQueue.length > 0) {
+                if (!dismissed && this.levelUpQueue.length > 0) {
                     this._openLevelUpDialog(this.levelUpQueue.shift());
                 } else {
                     // Return to pause menu if that's where we came from;
@@ -6372,6 +6389,11 @@ export class PlayingState {
             ctx.textAlign = 'center';
             ctx.textBaseline = 'alphabetic';
             ctx.fillText(rp.name.toUpperCase().slice(0, 5), ix, Math.floor(iy - px / 2) - Math.floor(hudScale * 2));
+
+            // Distance (Below the dot), matching shop/event indicators.
+            ctx.globalAlpha = opacity * 0.7;
+            ctx.textBaseline = 'top';
+            ctx.fillText(`${Math.floor(dist)}`, ix, Math.floor(iy + px / 2) + Math.floor(hudScale * 2));
             ctx.restore();
         }
     }
@@ -6481,6 +6503,12 @@ export class PlayingState {
         for (const d of (snap.encounters || [])) sync._spawnEncounter(d);
         for (const d of (snap.caches || [])) sync._spawnCache(d);
         for (const d of (snap.pickups || [])) sync._spawnPickup(d);
+
+        // Drop into the same song (and playhead) the rest of the lobby is hearing.
+        if (snap.music) {
+            if (snap.music.mode === 'boss') this.game.sounds.playSpecificMusic(snap.music.key);
+            else this.game.sounds.playSyncedTrack(snap.music.mode, snap.music.index, snap.music.pos || 0);
+        }
 
         this._onInventoryChanged();
     }

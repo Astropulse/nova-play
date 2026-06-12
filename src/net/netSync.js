@@ -634,6 +634,28 @@ export class HostWorldSync extends BaseWorldSync {
         this.session.broadcast(MSG.MUSIC_CUE, { key });
     }
 
+    // Host chose a new exploration/combat song — tell everyone which one (and,
+    // for late joiners, where the playhead is) so all clients stay in lockstep.
+    broadcastMusicTrack(mode, index, pos = 0) {
+        this.session.broadcast(MSG.MUSIC_TRACK, { mode, index, pos: q(pos) });
+    }
+
+    // Current exploration/combat/boss song for the join-in-progress snapshot, so
+    // a player joining mid-run drops straight into the music everyone else hears.
+    _musicSnapshot() {
+        const sm = this.game.sounds;
+        const cur = sm.currentMusic;
+        if (!cur) return null;
+        if (sm.explorationTracks.includes(cur))
+            return { mode: 'exploration', index: sm.explorationTracks.indexOf(cur), pos: q(cur.currentTime || 0) };
+        if (sm.combatTracks.includes(cur))
+            return { mode: 'combat', index: sm.combatTracks.indexOf(cur), pos: q(cur.currentTime || 0) };
+        for (const key in sm.bossTracks) {
+            if (sm.bossTracks[key] === cur) return { mode: 'boss', key };
+        }
+        return null;
+    }
+
     broadcastDespawn(kind, ents) {
         const nids = [];
         for (const e of ents) {
@@ -724,6 +746,7 @@ export class HostWorldSync extends BaseWorldSync {
             waveNumber: st.enemySpawner.waveNumber,
             waveTargetPid: this.waveTargetPid,
             spawnX: q(spawnX), spawnY: q(spawnY),
+            music: this._musicSnapshot(),
             players: this.session.lobbySnapshot(),
             events: st.events.map(ev => ({
                 netId: ev.netId,
@@ -1007,6 +1030,10 @@ export class ClientWorldSync extends BaseWorldSync {
 
         s.on(MSG.MUSIC_CUE, (m) => {
             this.game.sounds.playSpecificMusic(m.key);
+        });
+
+        s.on(MSG.MUSIC_TRACK, (m) => {
+            this.game.sounds.playSyncedTrack(m.mode, m.index, m.pos || 0);
         });
 
         s.on(MSG.WAVE_CLEARED, () => {

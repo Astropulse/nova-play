@@ -412,6 +412,7 @@ export class LevelUpDialog {
         this.playingState = playingState;
         this.level       = level;
         this.closed      = false;
+        this.dismissed   = false;
         this.hoveredChoice = -1;
         this.bonusMult   = playingState ? (playingState.pendingLevelUpMult || 1) : 1;
         // Level-up choices use the seeded levelup stream (reproducible).
@@ -444,6 +445,14 @@ export class LevelUpDialog {
         this.appearTimer = Math.min(this.appearDuration, this.appearTimer + dt);
 
         const input = this.game.input;
+
+        // Esc / gamepad-B exits the screen without spending this level-up. The
+        // current level (and any still queued) stay claimable later from the
+        // pause menu / stats panel.
+        if (input.isKeyJustPressed('Escape') || input.isGamepadJustPressed(GP.B)) {
+            this._dismiss();
+            return;
+        }
 
         // Number key shortcuts 1–4 (choices), 5 (skip)
         for (let i = 0; i < this.choices.length; i++) {
@@ -527,6 +536,14 @@ export class LevelUpDialog {
             });
         }
 
+        this.closed = true;
+    }
+
+    _dismiss() {
+        // Close without applying a choice or spending a skip. The owning
+        // playingState re-queues this.level so it isn't lost.
+        this.dismissed = true;
+        this.game.sounds.play('click', 0.5);
         this.closed = true;
     }
 

@@ -48,6 +48,13 @@ export class SoundManager {
         // Hard lock — when true, NO music changes are allowed (setTargetState, playSpecific, restore, stop all blocked)
         this.musicLocked = false;
 
+        // Multiplayer music sync. On the host, onSelectMusicTrack(mode, index) is
+        // invoked whenever an exploration/combat track is chosen, so the choice
+        // can be broadcast. On clients, remoteMusicControl suppresses local random
+        // selection — they only play tracks the host sends via playSyncedTrack().
+        this.onSelectMusicTrack = null;
+        this.remoteMusicControl = false;
+
         if (this.ctx) {
             // Main music gain (user volume control) — no analyser node
             this.musicGain = this.ctx.createGain();
@@ -206,6 +213,10 @@ export class SoundManager {
     _playExploration(oldState = null, forceNew = false) {
         if (!forceNew && this.currentMusic && this.explorationTracks.includes(this.currentMusic) && this.musicState === MUSIC_STATE.EXPLORATION) return;
 
+        // Multiplayer clients never pick their own track — the host broadcasts
+        // the choice (and playhead) and playSyncedTrack() drives the switch.
+        if (this.remoteMusicControl) return;
+
         const isStartup = !this.currentMusic ||
             this.currentMusic === this.titleTrack ||
             this.currentMusic === this.gameOverTrack ||
@@ -233,9 +244,14 @@ export class SoundManager {
         track.onended = () => {
             this._playExploration(this.musicState, true);
         };
+
+        this._notifyTrackSelected('exploration', this.explorationTracks.indexOf(track));
     }
 
     _playCombat(oldState = null, forceNew = false) {
+        // Clients defer to the host's broadcast track (see _playExploration).
+        if (this.remoteMusicControl) return;
+
         const current = this.currentMusic;
         const candidates = this.combatTracks.filter(t => t !== current);
         const pool = candidates.length > 0 ? candidates : this.combatTracks;
@@ -249,6 +265,37 @@ export class SoundManager {
         }
 
         this._switchTrack(track, oldState);
+        this._notifyTrackSelected('combat', this.combatTracks.indexOf(track));
+    }
+
+    // Host: report the freshly chosen exploration/combat track so it can be
+    // mirrored to every client. No-op in single-player (no callback set).
+    _notifyTrackSelected(mode, index) {
+        if (this.onSelectMusicTrack && index >= 0) this.onSelectMusicTrack(mode, index);
+    }
+
+    // Client: play an exact exploration/combat track (by registration index)
+    // at the host's playhead, so all players hear the same song in lockstep.
+    playSyncedTrack(mode, index, pos = 0) {
+        if (this.musicLocked) return;
+        const pool = mode === 'combat' ? this.combatTracks : this.explorationTracks;
+        const track = pool[index];
+        if (!track) return;
+
+        const oldState = this.musicState;
+        const targetState = mode === 'combat' ? MUSIC_STATE.COMBAT : MUSIC_STATE.EXPLORATION;
+        this.musicState = targetState;
+        this.targetMusicState = targetState;
+        this.isTransitioning = false;
+        if (mode === 'exploration') this.currentExplorationTrack = track;
+
+        // Already the active song — leave it playing rather than restarting it.
+        if (track === this.currentMusic) return;
+
+        try { track.currentTime = pos || 0; } catch (e) { /* not seekable yet */ }
+        this._switchTrack(track, oldState);
+        // The host cues the next track on its end; clients never self-advance.
+        track.onended = null;
     }
 
     _playTitle(oldState = null) {
