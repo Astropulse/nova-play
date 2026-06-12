@@ -721,6 +721,12 @@ export class PlayingState {
                 this._updatePauseUI(dt);
                 uiBlocked = true;
             }
+            // The pause menu's SHIP SELECTION confirm calls setState(MenuState)
+            // — in MP there's no early return below (the world keeps running
+            // through overlays), so without this bail the rest of this frame
+            // would run on the exited state (netSync already destroyed) and
+            // the resulting throw kills the rAF loop → black screen.
+            if (this.game.currentState !== this) return;
         }
 
         if (uiBlocked && !mp) return;
