@@ -137,6 +137,9 @@ export class PlayingState {
         this.isLevelUpOpen       = false;
         this.activeLevelUpDialog = null;
         this._levelUpOrigin      = null; // 'pause' | 'cache' | 'shop'
+        // Cached rolls (keyed by level) for level-ups the player Esc'd out of,
+        // so re-opening shows the same choices instead of re-rolling.
+        this._levelUpRolls       = {};
 
         // Skip-and-stack: skipping a level-up banks a multiplier for the next
         // roll. Picking cashes in the multiplier. The skip budget
@@ -682,9 +685,18 @@ export class PlayingState {
             this.activeLevelUpDialog.update(dt);
             if (this.activeLevelUpDialog.closed) {
                 // Esc-dismissed: bank this level back onto the queue (it wasn't
-                // spent) and exit the whole stack instead of advancing it.
-                const dismissed = this.activeLevelUpDialog.dismissed;
-                if (dismissed) this.levelUpQueue.unshift(this.activeLevelUpDialog.level);
+                // spent) and exit the whole stack instead of advancing it. The
+                // roll is cached so re-opening shows the same choices rather
+                // than re-rolling (which would advance the seeded stream).
+                const dlg = this.activeLevelUpDialog;
+                const dismissed = dlg.dismissed;
+                if (dismissed) {
+                    this.levelUpQueue.unshift(dlg.level);
+                    this._levelUpRolls[dlg.level] = { choices: dlg.choices, bonusMult: dlg.bonusMult };
+                } else {
+                    // Resolved (picked or skipped) — drop any cached roll.
+                    delete this._levelUpRolls[dlg.level];
+                }
                 this.isLevelUpOpen       = false;
                 this.activeLevelUpDialog = null;
                 if (!dismissed && this.levelUpQueue.length > 0) {
@@ -2896,6 +2908,7 @@ export class PlayingState {
         this.levelUpQueue = [];
         this.isLevelUpOpen = false;
         this.activeLevelUpDialog = null;
+        this._levelUpRolls = {};
         this.levelUpSkipsRemaining = this.LEVELUP_MAX_SKIPS;
         this.pendingLevelUpMult = 1;
         this.fovUpgradeMult = 1.0;
@@ -3245,6 +3258,7 @@ export class PlayingState {
         this.levelUpQueue = [];
         this.isLevelUpOpen = false;
         this.activeLevelUpDialog = null;
+        this._levelUpRolls = {};
         this.levelUpSkipsRemaining = data.levelUpSkipsRemaining != null
             ? data.levelUpSkipsRemaining
             : this.LEVELUP_MAX_SKIPS;
@@ -6207,7 +6221,10 @@ export class PlayingState {
     }
 
     _openLevelUpDialog(level) {
-        this.activeLevelUpDialog = new LevelUpDialog(this.game, this.player, this, level);
+        // Reuse the cached roll if the player previously Esc'd out of this level,
+        // so exiting can't re-roll the choices.
+        const savedRoll = this._levelUpRolls[level] || null;
+        this.activeLevelUpDialog = new LevelUpDialog(this.game, this.player, this, level, savedRoll);
         this.isLevelUpOpen = true;
         this.paused        = true;
         this.game.sounds.play('scrap', 0.8);

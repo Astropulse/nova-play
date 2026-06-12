@@ -406,7 +406,11 @@ export function applyLevelUpChoice(choice, player, playingState) {
 
 // ─── Dialog class ─────────────────────────────────────────────────────────────
 export class LevelUpDialog {
-    constructor(game, player, playingState, level) {
+    // `savedRoll` ({ choices, bonusMult }) reuses an earlier roll instead of
+    // generating a new one — set when re-opening a level the player previously
+    // Esc'd out of, so exiting can't re-roll the choices (each fresh roll would
+    // otherwise advance the seeded levelup stream).
+    constructor(game, player, playingState, level, savedRoll = null) {
         this.game        = game;
         this.player      = player;
         this.playingState = playingState;
@@ -414,9 +418,14 @@ export class LevelUpDialog {
         this.closed      = false;
         this.dismissed   = false;
         this.hoveredChoice = -1;
-        this.bonusMult   = playingState ? (playingState.pendingLevelUpMult || 1) : 1;
-        // Level-up choices use the seeded levelup stream (reproducible).
-        this.choices     = rollChoices(player.luck, player.upgradeTypeCounts || {}, this.bonusMult, game.rng ? game.rng.levelup : null);
+        if (savedRoll) {
+            this.bonusMult = savedRoll.bonusMult;
+            this.choices   = savedRoll.choices;
+        } else {
+            this.bonusMult = playingState ? (playingState.pendingLevelUpMult || 1) : 1;
+            // Level-up choices use the seeded levelup stream (reproducible).
+            this.choices   = rollChoices(player.luck, player.upgradeTypeCounts || {}, this.bonusMult, game.rng ? game.rng.levelup : null);
+        }
         this.skipsRemaining = playingState ? (playingState.levelUpSkipsRemaining || 0) : 0;
         this.canSkip     = this.skipsRemaining > 0;
         this.appearTimer = 0;
