@@ -23,12 +23,16 @@ export class ChatOverlay {
         this.cursorTimer = 0;
         this.showCursor = true;
         this.messages = [];         // {pid, name, text, age}
+        this.scroll = 0;            // lines scrolled back from the newest message
+        this._areaRect = null;      // last-drawn message area (mouse-wheel hover target)
 
         // Mirror chat arriving through the session.
         this._prevChatCb = session.onChat;
         session.onChat = (entry) => {
             this.messages.push({ pid: entry.pid, name: entry.name, text: entry.text, age: 0 });
             if (this.messages.length > 40) this.messages.shift();
+            // Keep the view anchored on what's being read while scrolled back.
+            if (this.scroll > 0) this.scroll++;
             if (this._prevChatCb) this._prevChatCb(entry);
         };
 
@@ -48,6 +52,7 @@ export class ChatOverlay {
             if (text) this.session.sendChat(text);
             this.inputBuffer = '';
             this.active = false;
+            this.scroll = 0; // sending snaps the view back to live
         } else if (e.key === 'Escape') {
             this.inputBuffer = '';
             this.active = false;
@@ -78,6 +83,20 @@ export class ChatOverlay {
             this.cursorTimer = 0;
             this.showCursor = !this.showCursor;
         }
+
+        // Mouse wheel over the chat area scrolls back through history.
+        const input = this.game.input;
+        const wheel = input ? input.mouseWheelDelta : 0;
+        if (wheel && this._areaRect) {
+            const m = this.game.getMousePos();
+            const r = this._areaRect;
+            if (m.x >= r.x && m.x <= r.x + r.w && m.y >= r.y && m.y <= r.y + r.h) {
+                const step = Math.max(1, Math.floor(Math.abs(wheel) / 60));
+                this.scroll += wheel < 0 ? step : -step;
+                const maxScroll = Math.max(0, this.messages.length - MAX_VISIBLE);
+                this.scroll = Math.max(0, Math.min(maxScroll, this.scroll));
+            }
+        }
     }
 
     // `anchorBottomY` — screen Y the chat block must stay above (the HUD's
@@ -100,16 +119,46 @@ export class ChatOverlay {
         const inputH = Math.floor(11 * uiScale);
         const msgBase = this.active ? bottom - inputH - Math.floor(uiScale * 3) : bottom;
 
-        // Messages (newest at the bottom)
-        const visible = this.messages.slice(-MAX_VISIBLE);
+        // The wheel-hover zone for scrolling — the strip where messages live.
+        this._areaRect = {
+            x: margin - uiScale,
+            y: msgBase - MAX_VISIBLE * lineH,
+            w: Math.floor(game.width * 0.4),
+            h: bottom - (msgBase - MAX_VISIBLE * lineH),
+        };
+
+        // Scrolled back: the bottom slot becomes a "newer messages" marker so
+        // it's obvious the view isn't live.
+        const maxScroll = Math.max(0, this.messages.length - MAX_VISIBLE);
+        if (this.scroll > maxScroll) this.scroll = maxScroll;
+        let slots = MAX_VISIBLE;
+        let baseY = msgBase;
+        if (this.scroll > 0) {
+            const marker = `-- ${this.scroll} newer message${this.scroll > 1 ? 's' : ''} below --`;
+            const markerW = ctx.measureText(marker).width;
+            ctx.globalAlpha = 0.55;
+            ctx.fillStyle = '#000000';
+            ctx.fillRect(margin - uiScale, msgBase - lineH + uiScale, markerW + uiScale * 2, lineH);
+            ctx.globalAlpha = 0.9;
+            ctx.fillStyle = '#8899aa';
+            ctx.fillText(marker, margin, msgBase);
+            baseY = msgBase - lineH;
+            slots = MAX_VISIBLE - 1;
+        }
+
+        // Messages (newest at the bottom of the window)
+        const end = this.messages.length - this.scroll;
+        const visible = this.messages.slice(Math.max(0, end - slots), Math.max(0, end));
         for (let i = 0; i < visible.length; i++) {
             const m = visible[visible.length - 1 - i];
             let alpha = 1;
-            if (!this.active) {
+            // While scrolled (or typing) history must stay readable — skip the
+            // age fade that normally hides old lines.
+            if (!this.active && this.scroll === 0) {
                 if (m.age > MSG_FADE_AFTER + MSG_FADE_TIME) continue;
                 if (m.age > MSG_FADE_AFTER) alpha = 1 - (m.age - MSG_FADE_AFTER) / MSG_FADE_TIME;
             }
-            const y = msgBase - i * lineH;
+            const y = baseY - i * lineH;
             const nameStr = `${m.name}: `;
             const nameW = ctx.measureText(nameStr).width;
             const textW = ctx.measureText(m.text).width;

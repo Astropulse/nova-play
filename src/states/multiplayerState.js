@@ -47,6 +47,8 @@ export class MultiplayerState {
         this.codeInput = '';
         this.activeField = null; // 'name' | 'code' | 'chat'
         this.chatInput = '';
+        this.chatScroll = 0;      // lines scrolled back from the newest message
+        this._chatMsgRect = null; // lobby chat message area (wheel hover target)
         this.cursorTimer = 0;
         this.showCursor = true;
 
@@ -180,6 +182,9 @@ export class MultiplayerState {
         this.session = session;
         this.game.net = session;
         session.onLobbyChanged = () => { /* redrawn every frame */ };
+        // Keep the chat view anchored while scrolled back (the window is
+        // relative to the newest message, so each arrival shifts it by one).
+        session.onChat = () => { if (this.chatScroll > 0) this.chatScroll++; };
         session.onEnded = (reason) => {
             if (this._starting) return;
             this.session = null;
@@ -306,6 +311,18 @@ export class MultiplayerState {
         }
         if (hovered !== this._hovered && hovered) this.game.sounds.play('click', 0.35);
         this._hovered = hovered;
+
+        // Mouse wheel over the lobby chat scrolls back through history.
+        const wheel = input.mouseWheelDelta;
+        if (wheel && this.mode === 'lobby' && this.session && this._chatMsgRect) {
+            const r = this._chatMsgRect;
+            if (mouse.x >= r.x && mouse.x <= r.x + r.w && mouse.y >= r.y && mouse.y <= r.y + r.h) {
+                const step = Math.max(1, Math.floor(Math.abs(wheel) / 60));
+                this.chatScroll += wheel < 0 ? step : -step;
+                // Clamped against the live log size in _drawChatPanel.
+                this.chatScroll = Math.max(0, this.chatScroll);
+            }
+        }
 
         if (input.isKeyJustPressed('Escape') && !this.activeField) {
             if (this.mode === 'lobby' || this.mode === 'connecting') {
@@ -783,10 +800,16 @@ export class MultiplayerState {
         const inputH = Math.floor(uiScale * 10);
         const lineH = Math.floor(uiScale * 7);
 
-        // Messages — newest at the bottom, clipped to the panel
+        // Messages — newest at the bottom, clipped to the panel. The wheel
+        // scrolls back through history (handled in update via _chatMsgRect).
         const msgBottom = y + h - inputH - Math.floor(uiScale * 4);
         const maxLines = Math.max(1, Math.floor((msgBottom - (y + headerSpace)) / lineH));
-        const lines = s.chatLog.slice(-maxLines);
+        const total = s.chatLog.length;
+        const maxScroll = Math.max(0, total - maxLines);
+        if (this.chatScroll > maxScroll) this.chatScroll = maxScroll;
+        const winEnd = total - this.chatScroll;
+        const lines = s.chatLog.slice(Math.max(0, winEnd - maxLines), winEnd);
+        this._chatMsgRect = { x: x + 2, y: y + Math.floor(uiScale * 4), w: w - 4, h: msgBottom - y - Math.floor(uiScale * 4) };
         ctx.textAlign = 'left';
         ctx.font = `${Math.floor(5 * uiScale)}px Astro4x`;
         let cy = msgBottom - (lines.length - 1) * lineH;
@@ -801,6 +824,20 @@ export class MultiplayerState {
         if (lines.length === 0) {
             ctx.fillStyle = '#2a3646';
             ctx.fillText('say hi while you wait...', x + padX, y + headerSpace + lineH);
+        }
+
+        // Slim scrollbar once the log overflows; thumb sits at the bottom
+        // while live and rides up as you scroll back.
+        if (total > maxLines) {
+            const trackX = x + w - Math.floor(uiScale * 2) - 2;
+            const trackY = y + headerSpace - Math.floor(lineH * 0.7);
+            const trackH = msgBottom - trackY;
+            ctx.fillStyle = 'rgba(34, 85, 106, 0.35)';
+            ctx.fillRect(trackX, trackY, 2, trackH);
+            const thumbH = Math.max(Math.floor(uiScale * 4), Math.floor(trackH * maxLines / total));
+            const thumbY = trackY + Math.floor((trackH - thumbH) * (maxScroll - this.chatScroll) / maxScroll);
+            ctx.fillStyle = this.chatScroll > 0 ? '#44ddff' : '#22556a';
+            ctx.fillRect(trackX, thumbY, 2, thumbH);
         }
 
         // Input row
