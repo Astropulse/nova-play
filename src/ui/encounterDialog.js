@@ -69,6 +69,13 @@ export class EncounterDialog {
         this._tooltipAnchor = null;
         this.gpFocusKind = 'option';
         this.gpUpgradeSel = 0;
+
+        // Transmission presentation: static-resolve on open, and (at high
+        // dread) occasional interference bursts while the channel is open.
+        this.openT = 0;
+        this._glitchIn = 5 + Math.random() * 8;
+        this._glitchT = 0;
+        if (game.sounds && game.sounds.playCommsStatic) game.sounds.playCommsStatic();
     }
 
     _parse(text) {
@@ -109,6 +116,20 @@ export class EncounterDialog {
 
     update(dt) {
         if (this.closed) return;
+
+        this.openT += dt;
+        // Corrupted transmissions: at dread 2+, rare brief interference
+        const dreadLvl = (this.playingState && this.playingState.dread && this.playingState.dread.level) || 0;
+        if (dreadLvl >= 2) {
+            if (this._glitchT > 0) this._glitchT -= dt;
+            else {
+                this._glitchIn -= dt;
+                if (this._glitchIn <= 0) {
+                    this._glitchT = 0.1 + Math.random() * 0.12;
+                    this._glitchIn = 6 + Math.random() * 10;
+                }
+            }
+        }
 
         const input = this.game.input;
 
@@ -424,6 +445,14 @@ export class EncounterDialog {
         ctx.fillRect(panelX, panelTop, panelW, panelH);
         ctx.strokeRect(panelX, panelTop, panelW, panelH);
 
+        // Forced encounters: you can't hang up — the frame pulses red
+        if (this.forced) {
+            ctx.strokeStyle = `rgba(255, 60, 60, ${0.25 + 0.2 * Math.sin(this.openT * 4)})`;
+            ctx.lineWidth = 2;
+            ctx.strokeRect(panelX - 3, panelTop - 3, panelW + 6, panelH + 6);
+            ctx.strokeStyle = '#223344';
+        }
+
         // Draw encounter portrait with colored 1-pixel border
         if (this.encounter.portraitImg) {
             const asset = this.encounter.portraitImg;
@@ -439,6 +468,23 @@ export class EncounterDialog {
                 avatarY + portraitScale,
                 portraitDrawSize, portraitDrawSize);
             ctx.imageSmoothingEnabled = prevSmoothing;
+
+            // Video-transmission framing: scanlines + the occasional flicker
+            ctx.save();
+            ctx.globalAlpha = 0.16;
+            ctx.fillStyle = '#000000';
+            const lineStep = Math.max(2, portraitScale);
+            for (let ly = avatarY + portraitScale; ly < avatarY + avatarSize - portraitScale; ly += lineStep * 2) {
+                ctx.fillRect(avatarX + portraitScale, ly, portraitDrawSize, lineStep);
+            }
+            // Interference band — rare normally, constant during dread glitches
+            if (this._glitchT > 0 || Math.random() < 0.025) {
+                ctx.globalAlpha = 0.22;
+                ctx.fillStyle = '#9fdcff';
+                const by = avatarY + portraitScale + Math.random() * (portraitDrawSize - 3);
+                ctx.fillRect(avatarX + portraitScale, by, portraitDrawSize, Math.max(1, lineStep));
+            }
+            ctx.restore();
         }
 
         // Draw ship type name
@@ -535,6 +581,32 @@ export class EncounterDialog {
             ctx.moveTo(a.x, a.y + a.h - 1);
             ctx.lineTo(a.x + a.w, a.y + a.h - 1);
             ctx.stroke();
+        }
+
+        // Static-resolve: the channel opens as noise that clears over ~0.35s
+        if (this.openT < 0.35) {
+            const clear = this.openT / 0.35;
+            const bands = Math.ceil((1 - clear) * 14);
+            ctx.save();
+            for (let i = 0; i < bands; i++) {
+                ctx.globalAlpha = 0.15 + Math.random() * 0.35;
+                ctx.fillStyle = Math.random() < 0.5 ? '#0a1420' : '#7894ac';
+                const by = panelTop + Math.random() * panelH;
+                ctx.fillRect(panelX + (Math.random() - 0.5) * 8, by, panelW, 1 + Math.random() * 4);
+            }
+            ctx.restore();
+        }
+
+        // Dread interference: brief noise bands tear across the transmission
+        if (this._glitchT > 0) {
+            ctx.save();
+            for (let i = 0; i < 3; i++) {
+                ctx.globalAlpha = 0.2 + Math.random() * 0.3;
+                ctx.fillStyle = Math.random() < 0.6 ? '#0a1420' : '#9fdcff';
+                const by = panelTop + Math.random() * panelH;
+                ctx.fillRect(panelX + (Math.random() - 0.5) * 12, by, panelW, 1 + Math.random() * 3);
+            }
+            ctx.restore();
         }
 
         // Draw tooltip

@@ -168,6 +168,8 @@ export class World {
         uniform vec2 u_streakOffset;
         uniform float u_virtualSize;
         uniform vec2 u_atlasSize;
+        uniform float u_time;
+        uniform float u_twinkle;
 
         out vec2 v_texCoord;
         out float v_alphaBoost;
@@ -231,6 +233,14 @@ export class World {
             
             v_texCoord = vec2(u, v);
             v_alphaBoost = a_alphaBoost;
+
+            // A hash-selected minority of stars pulsate slowly, each at its
+            // own rate and phase (derived from its stable world offset).
+            float h = fract(sin(dot(a_offset, vec2(12.9898, 78.233))) * 43758.5453);
+            if (h > 0.82) {
+                float tw = 0.5 + 0.5 * sin(u_time * (0.6 + h * 2.4) + h * 6.2831);
+                v_alphaBoost *= 1.0 - u_twinkle * 0.55 * tw;
+            }
         }`;
 
         const fsSource = `#version 300 es
@@ -286,6 +296,8 @@ export class World {
             u_globalAlpha: gl.getUniformLocation(this.program, "u_globalAlpha"),
             u_isBlackHole: gl.getUniformLocation(this.program, "u_isBlackHole"),
             u_texture: gl.getUniformLocation(this.program, "u_texture"),
+            u_time: gl.getUniformLocation(this.program, "u_time"),
+            u_twinkle: gl.getUniformLocation(this.program, "u_twinkle"),
         };
 
         // Quad Base
@@ -499,6 +511,8 @@ export class World {
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, this.texture);
         gl.uniform1i(this.locs.u_texture, 0);
+        gl.uniform1f(this.locs.u_time, worldTime);
+        gl.uniform1f(this.locs.u_twinkle, 0.65);
 
         for (const layer of this.layers) {
             const layerAlpha = layer.alpha * (0.95 + 0.05 * Math.sin(worldTime * (1 + layer.parallax * 2)));

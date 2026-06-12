@@ -240,6 +240,11 @@ class BaseWorldSync {
     cosmeticDeath(entity) {
         const state = this.state;
         state._triggerShakeAt(entity.worldX, entity.worldY, entity instanceof Asteroid ? 1.5 : 1.8);
+        // White silhouette death pop for ship kills (replicas mirror the
+        // shooter's local effect).
+        if (!(entity instanceof Asteroid) && !entity.isBoss && state.cinematics) {
+            state.cinematics.deathPop(entity);
+        }
         this.game.sounds.play(entity instanceof Asteroid ? 'asteroid_break' : 'ship_explode',
             { volume: 0.4, x: entity.worldX, y: entity.worldY });
         if (entity._generateProceduralDebris) {
@@ -1202,6 +1207,7 @@ export class ClientWorldSync extends BaseWorldSync {
             if (!item) return;
             ent = new ItemPickup(this.game, x, y, item);
             this.state.itemPickups.push(ent);
+            if (this.state._onItemDropped) this.state._onItemDropped(ent);
         }
         if (!ent) return;
         ent.vx = vx; ent.vy = vy;
@@ -1327,6 +1333,7 @@ export class ClientWorldSync extends BaseWorldSync {
                 }
             } else {
                 this.state.stats.enemiesDefeated++;
+                if (this.state.killStreak) this.state.killStreak.onKill(ent);
                 if (this.game.achievements) this.game.achievements.notify('enemy_killed', { entity: ent });
             }
         }
@@ -1359,7 +1366,7 @@ export class ClientWorldSync extends BaseWorldSync {
         } else if (ent instanceof ExpOrb) {
             const finalExp = Math.ceil(ent.amount * (p.experienceCondenserMult || 1.0));
             p.addExp(finalExp);
-            this.game.sounds.play('exp', { volume: 0.15, pitch: 1.5, x: ent.worldX, y: ent.worldY });
+            this.game.sounds.play('exp', { volume: 0.15, x: ent.worldX, y: ent.worldY });
             state.spawnFloatingText(ent.worldX + (Math.random() - 0.5) * 20, ent.worldY + (Math.random() - 0.5) * 20, `+${finalExp} XP`, '#915dbf');
         } else if (ent instanceof ItemPickup) {
             // Item was already optimistically added at request time.
@@ -1368,7 +1375,11 @@ export class ClientWorldSync extends BaseWorldSync {
                     this.game.sounds.play('select', 0.5);
                     if (this.game.achievements) this.game.achievements.notify('upgrade_collected', { item: ent.item });
                     state._onInventoryChanged();
+                    state.celebratePickup(ent.item);
                 }
+            } else {
+                // Optimistic add confirmed — the prize is officially ours.
+                state.celebratePickup(ent.item);
             }
         }
     }

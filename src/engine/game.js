@@ -4,6 +4,7 @@ import { SoundManager } from './soundManager.js';
 import { AchievementManager } from './achievementManager.js';
 import { MenuState } from '../states/menuState.js';
 import { DevConsole } from '../ui/devConsole.js';
+import { ScreenFX } from './screenFx.js';
 
 export class Game {
     constructor(canvas) {
@@ -323,6 +324,13 @@ export class Game {
             }
             this.devConsole.draw(this.ctx);
             this._drawCrosshair(this.ctx);
+
+            // Shader post-fx pass (kill-streak CRT + dread warps) —
+            // zero-cost no-op while the state reports nothing active.
+            if (!this.screenFx) this.screenFx = new ScreenFX(this);
+            const fx = (this.currentState && this.currentState.getScreenFx)
+                ? this.currentState.getScreenFx() : { crt: 0, warp: 0 };
+            this.screenFx.render(fx, now / 1000);
         }
 
         // --- Recording Timer ---
@@ -471,7 +479,7 @@ export class Game {
     }
 
     // Shared UI Component: Volume Control Row
-    // Bar is derived from decBtn/incBtn positions — no barW hint needed.
+    // Bar is derived from decBtn/incBtn positions â€” no barW hint needed.
     drawVolumeRow(ctx, label, volume, decBtn, incBtn) {
         ctx.save();
         const uiScale = this.uiScale;
@@ -644,6 +652,79 @@ export class Game {
             'yellow_laser_beam': 'Assets/VFX/yellow_laser_beam.png',
             'yellow_laser_beam_big': 'Assets/VFX/yellow_laser_beam_big.png',
             'yellow_laser_beam_targeting': 'Assets/VFX/yellow_laser_beam_targeting.png',
+            // Kill-streak particle sprites
+            'confetti_00': 'Assets/VFX/confetti/confetti_00.png',
+            'confetti_01': 'Assets/VFX/confetti/confetti_01.png',
+            'confetti_02': 'Assets/VFX/confetti/confetti_02.png',
+            'confetti_03': 'Assets/VFX/confetti/confetti_03.png',
+            'confetti_04': 'Assets/VFX/confetti/confetti_04.png',
+            'confetti_05': 'Assets/VFX/confetti/confetti_05.png',
+            'confetti_06': 'Assets/VFX/confetti/confetti_06.png',
+            'confetti_07': 'Assets/VFX/confetti/confetti_07.png',
+            'confetti_08': 'Assets/VFX/confetti/confetti_08.png',
+            'confetti_09': 'Assets/VFX/confetti/confetti_09.png',
+            'confetti_10': 'Assets/VFX/confetti/confetti_10.png',
+            'confetti_11': 'Assets/VFX/confetti/confetti_11.png',
+            'confetti_12': 'Assets/VFX/confetti/confetti_12.png',
+            'confetti_13': 'Assets/VFX/confetti/confetti_13.png',
+            'confetti_14': 'Assets/VFX/confetti/confetti_14.png',
+            'confetti_15': 'Assets/VFX/confetti/confetti_15.png',
+            'confetti_16': 'Assets/VFX/confetti/confetti_16.png',
+            'confetti_17': 'Assets/VFX/confetti/confetti_17.png',
+            'confetti_18': 'Assets/VFX/confetti/confetti_18.png',
+            'confetti_19': 'Assets/VFX/confetti/confetti_19.png',
+            'confetti_20': 'Assets/VFX/confetti/confetti_20.png',
+            'confetti_21': 'Assets/VFX/confetti/confetti_21.png',
+            'confetti_22': 'Assets/VFX/confetti/confetti_22.png',
+            'confetti_23': 'Assets/VFX/confetti/confetti_23.png',
+            'confetti_24': 'Assets/VFX/confetti/confetti_24.png',
+            'confetti_25': 'Assets/VFX/confetti/confetti_25.png',
+            'confetti_26': 'Assets/VFX/confetti/confetti_26.png',
+            'confetti_27': 'Assets/VFX/confetti/confetti_27.png',
+            'confetti_28': 'Assets/VFX/confetti/confetti_28.png',
+            'confetti_29': 'Assets/VFX/confetti/confetti_29.png',
+            'confetti_30': 'Assets/VFX/confetti/confetti_30.png',
+            'confetti_31': 'Assets/VFX/confetti/confetti_31.png',
+            'confetti_32': 'Assets/VFX/confetti/confetti_32.png',
+            'confetti_33': 'Assets/VFX/confetti/confetti_33.png',
+            'confetti_34': 'Assets/VFX/confetti/confetti_34.png',
+            'confetti_35': 'Assets/VFX/confetti/confetti_35.png',
+            'confetti_36': 'Assets/VFX/confetti/confetti_36.png',
+            'confetti_37': 'Assets/VFX/confetti/confetti_37.png',
+            'confetti_38': 'Assets/VFX/confetti/confetti_38.png',
+            'confetti_39': 'Assets/VFX/confetti/confetti_39.png',
+            'confetti_40': 'Assets/VFX/confetti/confetti_40.png',
+            'confetti_41': 'Assets/VFX/confetti/confetti_41.png',
+            'confetti_42': 'Assets/VFX/confetti/confetti_42.png',
+            'confetti_43': 'Assets/VFX/confetti/confetti_43.png',
+            'gore_00': 'Assets/VFX/gore/gore_00.png',
+            'gore_01': 'Assets/VFX/gore/gore_01.png',
+            'gore_02': 'Assets/VFX/gore/gore_02.png',
+            'gore_03': 'Assets/VFX/gore/gore_03.png',
+            'gore_04': 'Assets/VFX/gore/gore_04.png',
+            'gore_05': 'Assets/VFX/gore/gore_05.png',
+            'gore_06': 'Assets/VFX/gore/gore_06.png',
+            'gore_07': 'Assets/VFX/gore/gore_07.png',
+            'gore_08': 'Assets/VFX/gore/gore_08.png',
+            'gore_09': 'Assets/VFX/gore/gore_09.png',
+            'gore_10': 'Assets/VFX/gore/gore_10.png',
+            'gore_11': 'Assets/VFX/gore/gore_11.png',
+            'gore_12': 'Assets/VFX/gore/gore_12.png',
+            'gore_13': 'Assets/VFX/gore/gore_13.png',
+            'gore_14': 'Assets/VFX/gore/gore_14.png',
+            'gore_15': 'Assets/VFX/gore/gore_15.png',
+            'gore_16': 'Assets/VFX/gore/gore_16.png',
+            'gore_17': 'Assets/VFX/gore/gore_17.png',
+            'gore_18': 'Assets/VFX/gore/gore_18.png',
+            'gore_19': 'Assets/VFX/gore/gore_19.png',
+            'gore_20': 'Assets/VFX/gore/gore_20.png',
+            'gore_21': 'Assets/VFX/gore/gore_21.png',
+            'gore_22': 'Assets/VFX/gore/gore_22.png',
+            'gore_23': 'Assets/VFX/gore/gore_23.png',
+            'gore_24': 'Assets/VFX/gore/gore_24.png',
+            'gore_25': 'Assets/VFX/gore/gore_25.png',
+            'gore_26': 'Assets/VFX/gore/gore_26.png',
+            'gore_27': 'Assets/VFX/gore/gore_27.png',
             'enemy_ship_0': 'Assets/Ships/Enemy/enemy_ship_0.png',
             'enemy_ship_1': 'Assets/Ships/Enemy/enemy_ship_1.png',
             'enemy_ship_2': 'Assets/Ships/Enemy/enemy_ship_2.png',
@@ -810,7 +891,7 @@ export class Game {
             'asteroid_tiny_22': 'Assets/Asteroids/asteroid_tiny_22.png',
             'asteroid_tiny_23': 'Assets/Asteroids/asteroid_tiny_23.png',
             'asteroid_tiny_24': 'Assets/Asteroids/asteroid_tiny_24.png',
-            // Rubble (sample — load a subset for variety)
+            // Rubble (sample â€” load a subset for variety)
             'rubble_00': 'Assets/Asteroids/rubble_00.png',
             'rubble_01': 'Assets/Asteroids/rubble_01.png',
             'rubble_02': 'Assets/Asteroids/rubble_02.png',
@@ -878,7 +959,7 @@ export class Game {
             }
         }
 
-        // Achievement icons — keyed as `ach_<achievement_id>` so the icon
+        // Achievement icons â€” keyed as `ach_<achievement_id>` so the icon
         // field on each ACHIEVEMENTS entry can reference them directly. Add
         // a new id here whenever a new ach_*.png is dropped into the folder.
         const achievementIcons = [

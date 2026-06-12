@@ -217,6 +217,23 @@ export class CacheUI {
     update(dt) {
         if (this.uiState === CUI_STATE.DONE) return;
 
+        // Celebration extras: confetti from big reveals + the bonus-roll banner
+        if (this.uiConfetti && this.uiConfetti.length > 0) {
+            for (let i = this.uiConfetti.length - 1; i >= 0; i--) {
+                const p = this.uiConfetti[i];
+                p.life += dt;
+                p.vy += 320 * dt; // confetti falls inside the "machine"
+                p.x += p.vx * dt;
+                p.y += p.vy * dt;
+                p.rot += p.rotSpeed * dt;
+                if (p.life >= p.maxLife) {
+                    this.uiConfetti[i] = this.uiConfetti[this.uiConfetti.length - 1];
+                    this.uiConfetti.pop();
+                }
+            }
+        }
+        if (this.bonusBannerT > 0) this.bonusBannerT -= dt;
+
         this.glowTimer  += dt;
         this.stateTimer += dt;
 
@@ -258,7 +275,8 @@ export class CacheUI {
                     } else {
                         this.rollIndex = 0;
                     }
-                    this.game.sounds.play('select', 0.35);
+                    // Ticks pitch up as the reels spin faster — slot machine
+                    this.game.sounds.play('select', { volume: 0.35, pitch: 0.8 + progress * 0.65 });
                 }
                 if (this.skipRequested || progress >= 1.0) this._beginReveal();
                 break;
@@ -307,11 +325,46 @@ export class CacheUI {
         this.game.sounds.play('buy', 0.8);
     }
 
+    _spawnUiConfetti(count, cx, cy) {
+        if (!this.uiConfetti) this.uiConfetti = [];
+        const assets = [];
+        for (let i = 0; i < 44; i++) {
+            const a = this.game.assets.get(`confetti_${String(i).padStart(2, '0')}`);
+            if (a) assets.push(a);
+        }
+        if (assets.length === 0) return;
+        const hudScale = this.game.hudScale;
+        for (let i = 0; i < count; i++) {
+            const angle = -Math.PI / 2 + (Math.random() - 0.5) * 1.8; // fountain upward
+            const speed = (90 + Math.random() * 220) * (hudScale / 4);
+            this.uiConfetti.push({
+                asset: assets[Math.floor(Math.random() * assets.length)],
+                x: cx + (Math.random() - 0.5) * 8 * hudScale,
+                y: cy,
+                vx: Math.cos(angle) * speed,
+                vy: Math.sin(angle) * speed,
+                rot: Math.random() * Math.PI * 2,
+                rotSpeed: (Math.random() - 0.5) * 12,
+                life: 0,
+                maxLife: 1.2 + Math.random() * 0.8
+            });
+        }
+    }
+
     _finalizeReveal() {
         if (!this.revealItem) return;
         const { slotX, slotY } = this.currentRollItem;
         this.cacheInventory.addItem(this.revealItem, slotX, slotY);
         this.revealedItems.push(this.revealItem);
+
+        // Rare-or-better wins burst confetti from the item itself as it lands.
+        const jTier = { rare: 0, epic: 1, legendary: 2, unique: 2 }[this.revealItem.rarity];
+        if (jTier !== undefined && this._lastGrid) {
+            const g = this._lastGrid;
+            const cx = g.gx + (slotX + this.revealItem.width / 2) * g.slotSize;
+            const cy = g.gy + (slotY + this.revealItem.height / 2) * g.slotSize;
+            this._spawnUiConfetti(12 + jTier * 8, cx, cy);
+        }
         // Keep cache entity in sync so re-opens show the same state
         this.cache._cachedExtraRolls = this._extraRollsGiven;
         this.revealItem      = null;
@@ -331,6 +384,9 @@ export class CacheUI {
         const chance = Math.min(0.9, 0.25 * luck);
         if ((this.cache.contentRng ? this.cache.contentRng.next() : Math.random()) < chance) {
             this._extraRollsGiven++;
+            // The house gives you another pull — make it a moment
+            this.bonusBannerT = 1.4;
+            if (this.game.sounds.playJackpot) this.game.sounds.playJackpot(0);
             this._startNextRoll();
         } else {
             this.uiState = CUI_STATE.IDLE;
@@ -365,10 +421,55 @@ export class CacheUI {
     // ─── Draw — ONLY the animation overlay on top of the cache grid ──────────
     // Called by PlayingState._drawCacheOverlay() with the exact grid coords.
     draw(ctx, gx, gy, gw, gh, slotSize, us) {
+        this._lastGrid = { gx, gy, gw, gh, slotSize };
         if (this.uiState === CUI_STATE.ROLLING) {
             this._drawRolling(ctx, gx, gy, gw, gh, slotSize, us);
         } else if (this.uiState === CUI_STATE.REVEALING) {
             this._drawRevealing(ctx, gx, gy, gw, gh, slotSize, us);
+        }
+
+        // Payout confetti raining over the panel
+        if (this.uiConfetti && this.uiConfetti.length > 0) {
+            const partScale = this.game.hudScale * 0.5;
+            ctx.save();
+            for (const p of this.uiConfetti) {
+                const asset = p.asset;
+                const img = asset.canvas || asset;
+                const w = (asset.width || img.width) * partScale;
+                const h = (asset.height || img.height) * partScale;
+                const fade = p.life / p.maxLife;
+                ctx.globalAlpha = fade > 0.75 ? (1 - fade) / 0.25 : 1;
+                ctx.translate(p.x, p.y);
+                ctx.rotate(p.rot);
+                ctx.drawImage(img, -w / 2, -h / 2, w, h);
+                ctx.rotate(-p.rot);
+                ctx.translate(-p.x, -p.y);
+            }
+            ctx.restore();
+        }
+
+        // BONUS ROLL banner — the house grants another pull
+        if (this.bonusBannerT > 0) {
+            const hudScale = this.game.hudScale;
+            const t = 1.4 - this.bonusBannerT;
+            const pop = t < 0.12 ? 1.45 - (t / 0.12) * 0.45 : 1;
+            const fade = this.bonusBannerT < 0.4 ? this.bonusBannerT / 0.4 : 1;
+            const bx = Math.round(gx + gw / 2);
+            const by = Math.round(gy - 4 * hudScale);
+            const o = Math.max(1, Math.round(hudScale / 2));
+            ctx.save();
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.font = `${Math.floor(7 * hudScale * pop)}px Astro4x`;
+            ctx.globalAlpha = fade;
+            ctx.fillStyle = '#000000';
+            ctx.fillText('BONUS ROLL', bx - o, by);
+            ctx.fillText('BONUS ROLL', bx + o, by);
+            ctx.fillText('BONUS ROLL', bx, by - o);
+            ctx.fillText('BONUS ROLL', bx, by + o);
+            ctx.fillStyle = '#ffd24a';
+            ctx.fillText('BONUS ROLL', bx, by);
+            ctx.restore();
         }
     }
 

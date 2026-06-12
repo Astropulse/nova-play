@@ -14,6 +14,12 @@ export class Camera {
         this.shakeDecay = 10.0; // Higher = shorter duration
         this.shakeX = 0;
         this.shakeY = 0;
+
+        // Directional punch — a one-shot view kick (screen pixels) that decays
+        // exponentially. Unlike shake it has a direction, so explosions can
+        // visibly knock the view away from the blast.
+        this.punchX = 0;
+        this.punchY = 0;
     }
 
     /**
@@ -27,6 +33,18 @@ export class Camera {
         this.vy = target.vy || 0;
         this.displacementX = 0;
         this.displacementY = 0;
+        this.punchX = 0;
+        this.punchY = 0;
+    }
+
+    /**
+     * Kicks the view in the direction of (dx, dy) by `strength` screen pixels.
+     * Decays exponentially over ~a quarter second.
+     */
+    punch(dx, dy, strength) {
+        const len = Math.sqrt(dx * dx + dy * dy) || 1;
+        this.punchX += (dx / len) * strength;
+        this.punchY += (dy / len) * strength;
     }
 
     /**
@@ -82,6 +100,17 @@ export class Camera {
             this.shakeY = 0;
         }
 
+        // Decay directional punch
+        if (this.punchX !== 0 || this.punchY !== 0) {
+            const pd = Math.exp(-9 * dt);
+            this.punchX *= pd;
+            this.punchY *= pd;
+            if (Math.abs(this.punchX) < 0.05 && Math.abs(this.punchY) < 0.05) {
+                this.punchX = 0;
+                this.punchY = 0;
+            }
+        }
+
         this.displacementX = this.x - target.worldX;
         this.displacementY = this.y - target.worldY;
 
@@ -90,14 +119,14 @@ export class Camera {
         // instead of calling worldToScreen() and allocating {x,y} objects.
         const cw = this.game.width, ch = this.game.height;
         this.wtsScale = this.game.worldScale;
-        this.wtsOffX = -this.x * this.game.worldScale + cw / 2 + this.shakeX;
-        this.wtsOffY = -this.y * this.game.worldScale + ch / 2 + this.shakeY;
+        this.wtsOffX = -this.x * this.game.worldScale + cw / 2 + this.shakeX + this.punchX;
+        this.wtsOffY = -this.y * this.game.worldScale + ch / 2 + this.shakeY + this.punchY;
     }
 
     worldToScreen(wx, wy, canvasW, canvasH) {
         return {
-            x: (wx - this.x) * this.game.worldScale + canvasW / 2 + this.shakeX,
-            y: (wy - this.y) * this.game.worldScale + canvasH / 2 + this.shakeY
+            x: (wx - this.x) * this.game.worldScale + canvasW / 2 + this.shakeX + this.punchX,
+            y: (wy - this.y) * this.game.worldScale + canvasH / 2 + this.shakeY + this.punchY
         };
     }
 

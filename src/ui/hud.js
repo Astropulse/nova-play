@@ -105,21 +105,37 @@ export class HUD {
 
         if (p.shieldBroken) ctx.globalAlpha = 1;
 
-        // Scrap counter — upper right
+        // Scrap counter — upper right. Briefly garbles during dread glitches.
+        const dread = this.game.currentState && this.game.currentState.dread;
         ctx.fillStyle = '#ccddee';
         ctx.font = `${8 * this.game.hudScale}px Astro4x`;
         ctx.textAlign = 'right';
-        ctx.fillText(`SCRAP: ${p.scrap}`, cw - margin, this.game.hudScale * 10);
+        // Payout roll-up: after encounter rewards, the counter visibly climbs
+        const state = this.game.currentState;
+        let shownScrap = p.scrap;
+        if (state && state._scrapRoll) {
+            const roll = state._scrapRoll;
+            const rp = Math.min(1, roll.t / 0.8);
+            const eased = 1 - Math.pow(1 - rp, 3);
+            shownScrap = Math.round(roll.from + (p.scrap - roll.from) * eased);
+        }
+        const scrapText = (dread && dread.glitchScrap > 0)
+            ? `SCRAP: ${dread.garble(String(p.scrap).length + 1)}`
+            : `SCRAP: ${shownScrap}`;
+        ctx.fillText(scrapText, cw - margin, this.game.hudScale * 10);
         ctx.textAlign = 'left';
 
         // Tracked achievements — vertical stack below the scrap counter.
         this._drawTrackedAchievements(ctx, cw, ch, margin);
 
-        // Coordinates
+        // Coordinates — dread glitches read as a lost fix
         ctx.fillStyle = '#445566';
         ctx.font = `${8 * this.game.hudScale}px Astro4x`;
         ctx.textAlign = 'right';
-        ctx.fillText(`${Math.floor(p.worldX)}, ${Math.floor(p.worldY)}`, cw - margin, ch - margin);
+        const coordText = (dread && dread.glitchCoords > 0)
+            ? '??, ??'
+            : `${Math.floor(p.worldX)}, ${Math.floor(p.worldY)}`;
+        ctx.fillText(coordText, cw - margin, ch - margin);
         ctx.textAlign = 'left';
 
         // Radar
@@ -345,6 +361,19 @@ export class HUD {
                 drawDot(state.events, '#ffcc00', 1);
                 drawDot(state.enemies, '#ff4444', 1);
                 drawDot(state.encounters, '#44ffaa', 1);
+            }
+
+            // New-intel ping: one bright sweep pulse expanding across the dish
+            const pingT = (this.game.currentState && this.game.currentState.radarPingT) || 0;
+            if (pingT > 0) {
+                const p = 1 - pingT / 1.2;
+                this.radarCtx.globalAlpha = (1 - p) * 0.8;
+                this.radarCtx.strokeStyle = '#ffcc00';
+                this.radarCtx.lineWidth = Math.max(1, uiScale);
+                this.radarCtx.beginPath();
+                this.radarCtx.arc(cx, cy, Math.max(1, p * (rw / 2)), 0, Math.PI * 2);
+                this.radarCtx.stroke();
+                this.radarCtx.globalAlpha = 1;
             }
 
             this.radarCtx.restore();

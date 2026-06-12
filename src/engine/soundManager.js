@@ -59,7 +59,73 @@ export class SoundManager {
             // Main music gain (user volume control) — no analyser node
             this.musicGain = this.ctx.createGain();
             this.musicGain.gain.value = this.musicVolume * this.musicBaseVolume;
-            this.musicGain.connect(this.ctx.destination);
+
+            // Master corruption bus: ALL audio (music + SFX) funnels through
+            // here, splitting into a dry path and a parallel distorted path
+            // (waveshaper → darkening lowpass). Blending toward the wet path
+            // makes everything sound progressively broken — driven by the kill
+            // streak (and later, story dread). Dry=1/wet=0 at rest, so normal
+            // play is bit-identical passthrough.
+            this._fxBus = this.ctx.createGain();
+            this._busDry = this.ctx.createGain();
+            this._busDry.gain.value = 1;
+            this._busWet = this.ctx.createGain();
+            this._busWet.gain.value = 0;
+            this._busShaper = this.ctx.createWaveShaper();
+            const curve = new Float32Array(1024);
+            const drive = 8;
+            for (let i = 0; i < 1024; i++) {
+                const x = (i / 511.5) - 1;
+                curve[i] = (1 + drive) * x / (1 + drive * Math.abs(x));
+            }
+            this._busShaper.curve = curve;
+            this._busShaper.oversample = '2x';
+            this._busFilter = this.ctx.createBiquadFilter();
+            this._busFilter.type = 'lowpass';
+            this._busFilter.frequency.value = 4500;
+            this._corruption = 0;
+
+            // Stage 2 — dread warble: a copy of the signal through a slowly
+            // LFO-wobbled delay line, mixed quietly under the dry path. Reads
+            // as a queasy tape-warble/chorus: subtle and wrong, completely
+            // unlike the streak's clipping. Passthrough at rest.
+            this._stage2 = this.ctx.createGain();
+            this._warbleDry = this.ctx.createGain();
+            this._warbleDry.gain.value = 1;
+            this._warbleWet = this.ctx.createGain();
+            this._warbleWet.gain.value = 0;
+            this._warbleDelay = this.ctx.createDelay(0.1);
+            this._warbleDelay.delayTime.value = 0.028;
+            this._warbleLfo = this.ctx.createOscillator();
+            this._warbleLfo.type = 'sine';
+            this._warbleLfo.frequency.value = 0.31;
+            this._warbleLfoGain = this.ctx.createGain();
+            this._warbleLfoGain.gain.value = 0.011; // ±11ms — an unmistakable seasick bend
+            this._warbleLfo.connect(this._warbleLfoGain);
+            this._warbleLfoGain.connect(this._warbleDelay.delayTime);
+            this._warbleLfo.start();
+            this._warbleAmt = 0;
+
+            // Horror-proximity duck: music (only) fades as the player nears a
+            // dormant horror — the soundtrack going quiet before anything has
+            // actually happened. SFX stay full.
+            this._duckGain = this.ctx.createGain();
+            this._duckGain.gain.value = 1;
+            this._duckAmt = 0;
+
+            this.musicGain.connect(this._duckGain);
+            this._duckGain.connect(this._fxBus);
+            this._fxBus.connect(this._busDry);
+            this._busDry.connect(this._stage2);
+            this._fxBus.connect(this._busShaper);
+            this._busShaper.connect(this._busFilter);
+            this._busFilter.connect(this._busWet);
+            this._busWet.connect(this._stage2);
+            this._stage2.connect(this._warbleDry);
+            this._warbleDry.connect(this.ctx.destination);
+            this._stage2.connect(this._warbleDelay);
+            this._warbleDelay.connect(this._warbleWet);
+            this._warbleWet.connect(this.ctx.destination);
         }
 
         // Spatial Audio Properties
@@ -491,6 +557,294 @@ export class SoundManager {
         }
     }
 
+    // Blend ALL audio (music + SFX share the master bus) toward the distorted
+    // path. 0 = clean passthrough, 1 = heavily corrupted (clipped + darkened +
+    // static). Smoothed at the param level, and callers can fire this every
+    // frame — tiny deltas are ignored.
+    //
+    // Loudness-compensated: a soft-clipper massively raises RMS, so the wet
+    // gain is kept low and the dry path only ducks by what the wet path adds —
+    // the track should *degrade*, not swell. The blend curve is squared so the
+    // early tiers are barely-there.
+    setAudioCorruption(amount) {
+        if (!this.ctx || !this._busDry) return;
+        const a = Math.min(1, Math.max(0, amount));
+        if (Math.abs(a - this._corruption) < 0.01) return;
+        this._corruption = a;
+        const t = this.ctx.currentTime;
+        const blend = a * a; // gentle entry, committed by the top tiers
+        this._busDry.gain.setTargetAtTime(1 - 0.62 * blend, t, 0.1);
+        this._busWet.gain.setTargetAtTime(0.34 * blend, t, 0.1);
+        this._busFilter.frequency.setTargetAtTime(4500 - 2900 * blend, t, 0.1);
+
+        // Static crackle for the final phase only (fades in past ~0.75)
+        const staticAmt = a > 0.75 ? (a - 0.75) / 0.25 : 0;
+        if (staticAmt > 0 && !this._staticSource) this._initStatic();
+        if (this._staticGain) {
+            this._staticGain.gain.setTargetAtTime(staticAmt * 0.045, t, 0.15);
+        }
+    }
+
+    // Looping white-noise bed for the corruption static. Created on first use
+    // and left running at gain 0 afterward (a silent source is ~free).
+    _initStatic() {
+        if (!this.ctx || this._staticSource) return;
+        const sr = this.ctx.sampleRate;
+        const buf = this.ctx.createBuffer(1, sr, sr); // 1s loop
+        const data = buf.getChannelData(0);
+        for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+        const src = this.ctx.createBufferSource();
+        src.buffer = buf;
+        src.loop = true;
+        const lp = this.ctx.createBiquadFilter();
+        lp.type = 'lowpass';
+        lp.frequency.value = 3200;
+        const g = this.ctx.createGain();
+        g.gain.value = 0;
+        // Routed into the music bus pre-split, so it respects the music volume
+        // setting and picks up the same corruption shaping.
+        src.connect(lp);
+        lp.connect(g);
+        g.connect(this.musicGain);
+        src.start();
+        this._staticSource = src;
+        this._staticGain = g;
+    }
+
+    // Dread warble: mixes a pitch-wobbled copy under the dry signal during
+    // dread moments. 0 = passthrough. Kept gentle — at full it's still mostly
+    // dry, just... wrong.
+    setDreadWarble(amount) {
+        if (!this.ctx || !this._warbleDry) return;
+        const a = Math.min(1, Math.max(0, amount));
+        if (Math.abs(a - this._warbleAmt) < 0.01) return;
+        this._warbleAmt = a;
+        const t = this.ctx.currentTime;
+        this._warbleDry.gain.setTargetAtTime(1 - 0.45 * a, t, 0.08);
+        this._warbleWet.gain.setTargetAtTime(0.55 * a, t, 0.08);
+    }
+
+    // Duck the music toward silence (0 = full volume, 1 = nearly gone).
+    // Slow time constant — the quiet should creep in, not snap.
+    setMusicDuck(amount) {
+        if (!this.ctx || !this._duckGain) return;
+        const a = Math.min(1, Math.max(0, amount));
+        if (Math.abs(a - this._duckAmt) < 0.01) return;
+        this._duckAmt = a;
+        this._duckGain.gain.setTargetAtTime(1 - a, this.ctx.currentTime, 0.5);
+    }
+
+    // Casino jackpot jingle for rare+ pickups: a rising bell arpeggio, one
+    // extra note per rarity tier (3/4/5 notes).
+    playJackpot(tier = 0) {
+        if (!this.ctx) return;
+        if (this.ctx.state === 'suspended') this.ctx.resume();
+        const vol = Math.min(1, Math.max(0, 0.5 * this.sfxVolume));
+        if (vol <= 0) return;
+        const t0 = this.ctx.currentTime + 0.01;
+        const master = this.ctx.createGain();
+        master.gain.value = vol * 0.4;
+        master.connect(this._fxBus || this.ctx.destination);
+        const NOTES = [523.25, 659.25, 783.99, 1046.5, 1318.5]; // C5 E5 G5 C6 E6
+        const count = 3 + tier;
+        for (let i = 0; i < count; i++) {
+            const start = t0 + i * 0.085;
+            const f = NOTES[i];
+            // Bell-ish: sine fundamental + quiet triangle an octave up
+            for (const [type, mult, g0] of [['sine', 1, 1], ['triangle', 2, 0.25]]) {
+                const osc = this.ctx.createOscillator();
+                osc.type = type;
+                osc.frequency.value = f * mult;
+                const g = this.ctx.createGain();
+                g.gain.setValueAtTime(0, start);
+                g.gain.linearRampToValueAtTime(g0, start + 0.008);
+                g.gain.exponentialRampToValueAtTime(0.001, start + 0.24);
+                osc.connect(g);
+                g.connect(master);
+                osc.start(start);
+                osc.stop(start + 0.26);
+            }
+        }
+    }
+
+    // Short radio-static crackle for comms transmissions opening.
+    playCommsStatic() {
+        if (!this.ctx) return;
+        if (this.ctx.state === 'suspended') this.ctx.resume();
+        const vol = Math.min(1, Math.max(0, 0.5 * this.sfxVolume));
+        if (vol <= 0) return;
+        const sr = this.ctx.sampleRate;
+        const t0 = this.ctx.currentTime + 0.01;
+        const buf = this.ctx.createBuffer(1, Math.floor(sr * 0.3), sr);
+        const data = buf.getChannelData(0);
+        for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+        const src = this.ctx.createBufferSource();
+        src.buffer = buf;
+        const bp = this.ctx.createBiquadFilter();
+        bp.type = 'bandpass';
+        bp.frequency.value = 1900;
+        bp.Q.value = 0.8;
+        const g = this.ctx.createGain();
+        g.gain.setValueAtTime(vol * 0.14, t0);
+        g.gain.exponentialRampToValueAtTime(0.001, t0 + 0.28);
+        src.connect(bp);
+        bp.connect(g);
+        g.connect(this._fxBus || this.ctx.destination);
+        src.start(t0);
+        src.stop(t0 + 0.3);
+    }
+
+    // Rare, quiet ambient stings for the dread system. Three flavors, picked
+    // at random: a sub-bass swell with beat-frequency unease, a filtered-noise
+    // breath, or a dissonant tone cluster. All deliberately faint — the player
+    // should half-notice them.
+    playDreadSting(level = 1) {
+        if (!this.ctx) return;
+        if (this.ctx.state === 'suspended') this.ctx.resume();
+        const vol = Math.min(1, Math.max(0, this.sfxVolume * (0.7 + 0.1 * level)));
+        if (vol <= 0) return;
+        const t0 = this.ctx.currentTime + 0.05;
+        const out = this.ctx.createGain();
+        out.gain.value = vol;
+        out.connect(this._fxBus || this.ctx.destination);
+        const variant = Math.floor(Math.random() * 3);
+
+        if (variant === 0) {
+            // Sub swell — two sines a hair apart so they beat against each other
+            for (const f of [52, 52.8]) {
+                const osc = this.ctx.createOscillator();
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(f, t0);
+                osc.frequency.linearRampToValueAtTime(f * 0.82, t0 + 3.0);
+                const g = this.ctx.createGain();
+                g.gain.setValueAtTime(0, t0);
+                g.gain.linearRampToValueAtTime(0.10, t0 + 1.2);
+                g.gain.linearRampToValueAtTime(0, t0 + 3.0);
+                osc.connect(g); g.connect(out);
+                osc.start(t0); osc.stop(t0 + 3.1);
+            }
+        } else if (variant === 1) {
+            // Breath — bandpassed noise sweeping downward
+            const sr = this.ctx.sampleRate;
+            const buf = this.ctx.createBuffer(1, sr * 2, sr);
+            const data = buf.getChannelData(0);
+            for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+            const src = this.ctx.createBufferSource();
+            src.buffer = buf;
+            const bp = this.ctx.createBiquadFilter();
+            bp.type = 'bandpass';
+            bp.Q.value = 2.5;
+            bp.frequency.setValueAtTime(1400, t0);
+            bp.frequency.exponentialRampToValueAtTime(450, t0 + 2.0);
+            const g = this.ctx.createGain();
+            g.gain.setValueAtTime(0, t0);
+            g.gain.linearRampToValueAtTime(0.05, t0 + 0.7);
+            g.gain.linearRampToValueAtTime(0, t0 + 2.0);
+            src.connect(bp); bp.connect(g); g.connect(out);
+            src.start(t0); src.stop(t0 + 2.1);
+        } else {
+            // Dissonant cluster — minor-second rubs, drifting apart
+            for (const f of [220, 233.1, 277.2]) {
+                const osc = this.ctx.createOscillator();
+                osc.type = 'sine';
+                osc.frequency.setValueAtTime(f, t0);
+                osc.detune.linearRampToValueAtTime((Math.random() - 0.5) * 40, t0 + 2.5);
+                const g = this.ctx.createGain();
+                g.gain.setValueAtTime(0, t0);
+                g.gain.linearRampToValueAtTime(0.03, t0 + 0.9);
+                g.gain.linearRampToValueAtTime(0, t0 + 2.5);
+                osc.connect(g); g.connect(out);
+                osc.start(t0); osc.stop(t0 + 2.6);
+            }
+        }
+    }
+
+    // Short arcade stinger when the kill streak crosses into a new tier.
+    // Pitch climbs with the tier; the final (horror) tier gets a low,
+    // descending groan instead of a chime.
+    playStreakTier(tierIdx, horror = false) {
+        if (!this.ctx) return;
+        if (this.ctx.state === 'suspended') this.ctx.resume();
+        const vol = Math.min(1, Math.max(0, 0.5 * this.sfxVolume));
+        if (vol <= 0) return;
+        const t0 = this.ctx.currentTime + 0.01;
+        const master = this.ctx.createGain();
+        master.gain.value = vol * (horror ? 0.5 : 0.35);
+        master.connect(this._fxBus || this.ctx.destination);
+
+        if (horror) {
+            const osc = this.ctx.createOscillator();
+            osc.type = 'sawtooth';
+            osc.frequency.setValueAtTime(130, t0);
+            osc.frequency.exponentialRampToValueAtTime(48, t0 + 0.42);
+            const lp = this.ctx.createBiquadFilter();
+            lp.type = 'lowpass';
+            lp.frequency.value = 900;
+            const g = this.ctx.createGain();
+            g.gain.setValueAtTime(0, t0);
+            g.gain.linearRampToValueAtTime(1, t0 + 0.03);
+            g.gain.setValueAtTime(1, t0 + 0.25);
+            g.gain.linearRampToValueAtTime(0, t0 + 0.45);
+            osc.connect(lp); lp.connect(g); g.connect(master);
+            osc.start(t0); osc.stop(t0 + 0.5);
+            return;
+        }
+
+        // Two-note rising chime, a semitone-ish step higher per tier
+        const base = 392 * Math.pow(2, tierIdx * 0.17);
+        const notes = [base, base * 1.335];
+        for (let i = 0; i < notes.length; i++) {
+            const start = t0 + i * 0.07;
+            const osc = this.ctx.createOscillator();
+            osc.type = 'triangle';
+            osc.frequency.value = notes[i];
+            const g = this.ctx.createGain();
+            g.gain.setValueAtTime(0, start);
+            g.gain.linearRampToValueAtTime(1, start + 0.01);
+            g.gain.exponentialRampToValueAtTime(0.001, start + 0.16);
+            osc.connect(g); g.connect(master);
+            osc.start(start); osc.stop(start + 0.18);
+        }
+    }
+
+    // Two-tone arcade alarm for the boss warning telegraph, synthesized with
+    // WebAudio (square wave through a lowpass). Placeholder until a recorded
+    // klaxon SFX asset exists — swap this for `play('klaxon')` when it does.
+    playKlaxon(volume = 0.5) {
+        if (!this.ctx) return;
+        if (this.ctx.state === 'suspended') this.ctx.resume();
+        const vol = Math.min(1.0, Math.max(0.0, volume * this.sfxVolume));
+        if (vol <= 0) return;
+
+        const t0 = this.ctx.currentTime + 0.02;
+        const lp = this.ctx.createBiquadFilter();
+        lp.type = 'lowpass';
+        lp.frequency.value = 1400;
+        const master = this.ctx.createGain();
+        master.gain.value = vol * 0.16;
+        lp.connect(master);
+        master.connect(this._fxBus || this.ctx.destination);
+
+        // Three soft two-tone pulses, each quieter than the last.
+        for (let i = 0; i < 3; i++) {
+            const start = t0 + i * 0.5;
+            const peak = 1.0 - i * 0.2;
+            const osc = this.ctx.createOscillator();
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(370, start);        // F#4
+            osc.frequency.setValueAtTime(247, start + 0.18); // B3
+            const g = this.ctx.createGain();
+            g.gain.setValueAtTime(0, start);
+            g.gain.linearRampToValueAtTime(peak, start + 0.02);
+            g.gain.setValueAtTime(peak, start + 0.28);
+            g.gain.linearRampToValueAtTime(0, start + 0.38);
+            osc.connect(g);
+            g.connect(lp);
+            osc.start(start);
+            osc.stop(start + 0.4);
+        }
+    }
+
     play(key, options = 0.5) {
         if (!this.ctx) return;
 
@@ -528,12 +882,15 @@ export class SoundManager {
         const buffer = buffers[Math.floor(Math.random() * buffers.length)];
         const source = this.ctx.createBufferSource();
         source.buffer = buffer;
+        if (typeof options === 'object' && options.pitch) {
+            source.playbackRate.value = options.pitch;
+        }
 
         const gainNode = this.ctx.createGain();
         gainNode.gain.value = Math.min(1.0, Math.max(0.0, volume));
 
         source.connect(gainNode);
-        gainNode.connect(this.ctx.destination);
+        gainNode.connect(this._fxBus || this.ctx.destination);
 
         // Disconnect nodes after playback to prevent audio graph leak
         source.onended = () => {

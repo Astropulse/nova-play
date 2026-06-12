@@ -711,6 +711,26 @@ export class Scrap {
 
         ctx.save();
         ctx.globalAlpha = alpha;
+
+        // Gold tracer while being vacuumed in fast — payout streaking home
+        if (this.suckTimer > 0.05) {
+            const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+            if (speed > 250) {
+                const ws = this.game.worldScale;
+                const trail = Math.min(0.06, 18 / speed);
+                ctx.globalCompositeOperation = 'lighter';
+                ctx.globalAlpha = alpha * 0.4;
+                ctx.strokeStyle = '#ffd24a';
+                ctx.lineWidth = Math.max(1, ws * 0.6);
+                ctx.beginPath();
+                ctx.moveTo(sx, sy);
+                ctx.lineTo(sx - this.vx * trail * ws, sy - this.vy * trail * ws);
+                ctx.stroke();
+                ctx.globalCompositeOperation = 'source-over';
+                ctx.globalAlpha = alpha;
+            }
+        }
+
         ctx.translate(sx, sy);
         ctx.rotate(this.rotation);
         ctx.drawImage(this.img.canvas || this.img, -w / 2, -h / 2, w, h);

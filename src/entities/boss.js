@@ -136,11 +136,11 @@ export class Boss {
 
         this._updateBeams(dt);
 
-        // Check Phase Transition
+        // Check Phase Transition. The sound/shake/ring fanfare lives in the
+        // CinematicDirector, which watches for this flip — the phase bit is
+        // replicated to multiplayer clients, so every machine gets the show.
         if (this.phase === BOSS_PHASE.ATTACK1 && this.health < this.maxHealth * 0.4) {
             this.phase = BOSS_PHASE.ATTACK2;
-            this.game.sounds.play('ship_explode', { volume: 1.0, x: this.worldX, y: this.worldY });
-            this.game.camera.shake(2.0);
         }
     }
 
@@ -297,11 +297,48 @@ export class Boss {
         this.game.camera.shake(1.0);
     }
 
+    // Phase-2 aura, pre-rendered once per sprite. Per-frame shadowBlur on a
+    // boss-sized sprite is one of the most expensive Canvas2D operations; this
+    // bakes the same halo into an offscreen canvas on first use.
+    static _phaseGlowCache = new Map();
+    static _getPhaseGlow(game, spriteKey) {
+        let entry = Boss._phaseGlowCache.get(spriteKey);
+        if (entry !== undefined) return entry;
+        const asset = game.assets.get(spriteKey);
+        if (!asset) return null; // asset not ready — retry on a later call
+        const img = asset.canvas || (Array.isArray(asset) ? asset[0].canvas : asset);
+        const logicalW = asset.width || img.width;
+        // Match the old on-screen look (shadowBlur = 20 * worldScale) at any
+        // asset prescale: native blur = 20 * (native px per logical px).
+        const scale = img.width / logicalW;
+        const pad = Math.ceil(28 * scale);
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width + pad * 2;
+        canvas.height = img.height + pad * 2;
+        const g = canvas.getContext('2d');
+        g.shadowBlur = 20 * scale;
+        g.shadowColor = '#ff3300';
+        g.drawImage(img, pad, pad);
+        g.drawImage(img, pad, pad); // second pass strengthens the halo
+        g.shadowBlur = 0;
+        g.drawImage(img, pad, pad); // sharp pass on top
+        entry = { canvas, innerW: img.width };
+        Boss._phaseGlowCache.set(spriteKey, entry);
+        return entry;
+    }
+
     draw(ctx, camera) {
         if (!this.alive) return;
         if (this.phase === BOSS_PHASE.INTRO && Math.floor(Date.now() / 100) % 2 === 0) return;
 
         const screen = camera.worldToScreen(this.worldX, this.worldY, this.game.width, this.game.height);
+
+        // Off-screen cull — the sprite plus its death explosions fit well
+        // inside this margin, so skip all transform/draw work when far away.
+        const cullPad = 500 * this.game.worldScale;
+        if (screen.x < -cullPad || screen.x > this.game.width + cullPad ||
+            screen.y < -cullPad || screen.y > this.game.height + cullPad) return;
+
         const asset = this.game.assets.get(this.spriteKey);
         if (!asset) return;
 
@@ -315,12 +352,18 @@ export class Boss {
         ctx.translate(screen.x, screen.y);
         ctx.rotate(this.angle + Math.PI / 2);
 
+        let drewSprite = false;
         if (this.phase === BOSS_PHASE.ATTACK2) {
-            ctx.shadowBlur = 20 * this.game.worldScale;
-            ctx.shadowColor = '#ff3300';
+            const glow = Boss._getPhaseGlow(this.game, this.spriteKey);
+            if (glow) {
+                const s = logicalW / glow.innerW;
+                const gw = glow.canvas.width * s * this.game.worldScale;
+                const gh = glow.canvas.height * s * this.game.worldScale;
+                ctx.drawImage(glow.canvas, -gw / 2, -gh / 2, gw, gh);
+                drewSprite = true;
+            }
         }
-
-        ctx.drawImage(img, -w / 2, -h / 2, w, h);
+        if (!drewSprite) ctx.drawImage(img, -w / 2, -h / 2, w, h);
 
         // Draw death explosions
         if (this.state === BOSS_STATE.DYING && this.deathExplosions) {

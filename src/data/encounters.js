@@ -235,10 +235,19 @@ function executeActions(actions, vars, player, state, encounter) {
             case 'add_scrap': {
                 const amount = resolveParam();
                 if (typeof amount === 'number') {
+                    // Payout ceremony: the HUD counter rolls up to the new
+                    // total, gold sparks fountain off the ship
+                    if (amount > 0 && state._scrapRoll !== undefined) {
+                        state._scrapRoll = { from: player.scrap, t: 0 };
+                    }
                     player.scrap += amount;
                     state.stats.scrapCollected += amount;
                     state.spawnFloatingText(player.worldX, player.worldY, `+${amount} SCRAP`, '#ffff44');
                     state.game.sounds.play('scrap', { volume: 0.5 });
+                    if (amount > 0 && state._spawnSparks) {
+                        state._spawnSparks(player.worldX, player.worldY, 12,
+                            { color: '#ffd24a', speedMin: 100, speedMax: 320 });
+                    }
                 }
                 break;
             }
@@ -265,6 +274,7 @@ function executeActions(actions, vars, player, state, encounter) {
                 player.addPermHealthBonus(amt);
                 state.spawnFloatingText(player.worldX, player.worldY, `+${amt} MAX HP`, '#44ff44');
                 state.game.sounds.play('select', { volume: 0.8 });
+                if (state.cinematics) state.cinematics.spawnRing(player.worldX, player.worldY, { color: '#44ff44', maxR: 120, dur: 0.5, width: 3 });
                 state._onInventoryChanged();
                 break;
             }
@@ -273,6 +283,7 @@ function executeActions(actions, vars, player, state, encounter) {
                 player.updateMaxShield(amt);
                 state.spawnFloatingText(player.worldX, player.worldY, `+${Math.floor(amt)} SHIELD`, '#44ddff');
                 state.game.sounds.play('shield', { volume: 0.8 });
+                if (state.cinematics) state.cinematics.spawnRing(player.worldX, player.worldY, { color: '#44ddff', maxR: 120, dur: 0.5, width: 3 });
                 break;
             }
             case 'add_perm_damage': {
@@ -280,6 +291,7 @@ function executeActions(actions, vars, player, state, encounter) {
                 player.permDamageBonus += amt;
                 state.spawnFloatingText(player.worldX, player.worldY, `+${amt} DMG`, '#ff4444');
                 state.game.sounds.play('laser', { volume: 0.6 });
+                if (state.cinematics) state.cinematics.spawnRing(player.worldX, player.worldY, { color: '#ff4444', maxR: 120, dur: 0.5, width: 3 });
                 break;
             }
             case 'add_perm_capacity': {
@@ -288,6 +300,8 @@ function executeActions(actions, vars, player, state, encounter) {
                 if (state._ejectItems && ejected && ejected.length > 0) {
                     state._ejectItems(ejected);
                 }
+                state.spawnFloatingText(player.worldX, player.worldY, `+${amt} CARGO`, '#ffd24a');
+                if (state.cinematics) state.cinematics.spawnRing(player.worldX, player.worldY, { color: '#ffd24a', maxR: 120, dur: 0.5, width: 3 });
                 state._onInventoryChanged();
                 break;
             }
@@ -308,13 +322,17 @@ function executeActions(actions, vars, player, state, encounter) {
             }
             case 'reveal_event': {
                 const events = state.events.filter(ev => !ev.revealed && !ev.isFinished);
-                if (events.length > 0) events[0].revealed = true;
+                if (events.length > 0) {
+                    events[0].revealed = true;
+                    state.radarPingT = 1.2; // new intel pings the radar
+                }
                 break;
             }
             case 'reveal_event_2': {
                 const events = state.events.filter(ev => !ev.revealed && !ev.isFinished);
                 if (events.length > 0) events[0].revealed = true;
                 if (events.length > 1) events[1].revealed = true;
+                if (events.length > 0) state.radarPingT = 1.2;
                 break;
             }
             case 'reveal_event_specific': {

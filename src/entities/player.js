@@ -673,12 +673,17 @@ export class Player {
         if (this._boostWasOnCooldown && this.boostCooldownTimer <= 0) {
             this.boostFlash = 1;
             this._boostWasOnCooldown = false;
+            // Energy motes drawn into the hull — the drive is charged
+            const st = this.game.currentState;
+            if (st && st._spawnReadyAbsorb) st._spawnReadyAbsorb();
         }
         this.boostFlash = Math.max(0, this.boostFlash - dt * 2);
 
         if (this._teleportWasOnCooldown && this.boostCooldownTimer <= 0) {
             this.teleportFlash = 1;
             this._teleportWasOnCooldown = false;
+            const st = this.game.currentState;
+            if (st && st._spawnReadyAbsorb) st._spawnReadyAbsorb();
         }
         this.teleportFlash = Math.max(0, this.teleportFlash - dt * 4);
 
@@ -793,6 +798,12 @@ export class Player {
             // Un-break when recharged to 30%
             if (this.shieldBroken && this.shieldEnergy >= this.maxShieldEnergy * 0.3) {
                 this.shieldBroken = false;
+                // Regen glint: a sweep around the bubble as the shield returns
+                const st = this.game.currentState;
+                if (st && st.shieldGlint !== undefined) {
+                    st.shieldGlint = 0.15;
+                    this.game.sounds.play('shield', { volume: 0.3, x: this.worldX, y: this.worldY });
+                }
             }
         }
 
@@ -926,6 +937,12 @@ export class Player {
                 // Lower volume if firing very fast
                 const vol = 0.3 * Math.max(0.5, this.fireRateMult);
                 this.game.sounds.play('laser', { volume: vol, x: px, y: py });
+
+                // Muzzle glint at each firing origin
+                const st = this.game.currentState;
+                if (st && st._addMuzzleFlash) {
+                    for (const o of origins) st._addMuzzleFlash(o.px, o.py, fireAngle);
+                }
             }
         }
 
@@ -1186,12 +1203,22 @@ export class Player {
 
         ctx.restore();
 
-        // Shield visual — proper asset, 70% transparent
+        // Shield visual — proper asset, 70% transparent. Impacts surge the
+        // brightness briefly; the actual ripple distortion is a displacement
+        // wave rendered by the ScreenFX post-pass (see getScreenFx).
         if (this.shielding && this.shieldImg) {
             const sw = (this.shieldImg.width || this.shieldImg.canvas.width) * this.game.worldScale;
             const sh = (this.shieldImg.height || this.shieldImg.canvas.height) * this.game.worldScale;
+
+            let surge = 0;
+            const st = this.game.currentState;
+            if (st && st.shieldRipples && st.shieldRipples.length) {
+                const rip = st.shieldRipples[st.shieldRipples.length - 1];
+                surge = Math.exp(-5 * Math.min(1, rip.t / 0.35));
+            }
+
             ctx.save();
-            ctx.globalAlpha = 0.3; // 70% transparent
+            ctx.globalAlpha = 0.3 + 0.3 * surge;
             ctx.translate(screen.x, screen.y);
             ctx.rotate(this.angle + Math.PI / 2);
             ctx.drawImage(this.shieldImg.canvas || this.shieldImg, -sw / 2, -sh / 2, sw, sh);
@@ -1202,6 +1229,15 @@ export class Player {
 
         // Shield bar dimming when broken
         // (HUD handles visual, but we expose state via shieldBroken)
+    }
+
+    // The shield bubble's visual radius in world units (from the actual
+    // shield sprite), so ring/sweep/ripple effects match what's on screen.
+    get shieldRadius() {
+        if (this.shieldImg) {
+            return (this.shieldImg.width || this.shieldImg.canvas.width) / 2;
+        }
+        return this.radius * 1.5;
     }
 
     // Collision radius computed from sprite's opaque pixels (for broad-phase)

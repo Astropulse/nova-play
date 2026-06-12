@@ -8,7 +8,7 @@ import { Asteroid, AsteroidSpawner, Rubble, Scrap, ItemPickup, ProceduralDebris,
 import { EnemySpawner, Enemy, HostileEncounter } from '../entities/enemy.js';
 import { Shop } from '../entities/shop.js';
 import { Inventory } from '../engine/inventory.js';
-import { UPGRADES, RARITY_COLORS, itemTier, MAX_COMBINE_TIER, makeItem } from '../data/upgrades.js';
+import { UPGRADES, RARITY_COLORS, itemTier, MAX_COMBINE_TIER, makeItem, tierColor, tierLabel } from '../data/upgrades.js';
 import { CthulhuEvent, CTHULHU_STATE } from '../entities/cthulhuEvent.js';
 import { CargoShipEvent, CARGO_SHIP_STATE } from '../entities/cargoShipEvent.js';
 import { FracturedStationEvent } from '../entities/fracturedStationEvent.js';
@@ -37,6 +37,10 @@ import { MSG, KIND } from '../net/protocol.js';
 import { ChatOverlay, playerColor } from '../ui/chat.js';
 import { TradeUI } from '../ui/tradeUI.js';
 import { drawShipOutline } from '../net/remotePlayer.js';
+import { CinematicDirector } from '../ui/cinematics.js';
+import { KillStreakFX } from '../ui/killStreak.js';
+import { DreadDirector } from '../ui/dread.js';
+import { Ambience } from '../world/ambience.js';
 
 export class PlayingState {
     constructor(game, shipData, { skipInit = false, handoff = null, netRun = null } = {}) {
@@ -240,6 +244,33 @@ export class PlayingState {
         this.difficultySteadyRate = 0.013; // Steady linear growth after ramp
 
         this.flashTimer = 0;
+
+        // Cinematic overlay layer (boss telegraphs, shockwaves, letterbox).
+        // Cosmetic only — it never pauses the sim and never touches seeded RNG.
+        this.cinematics = new CinematicDirector(game, this);
+
+        // Kill-streak fanfare (rarity vignette + confetti/gore bursts).
+        // Local-only: each player's own kills feed their own streak.
+        this.killStreak = new KillStreakFX(game, this);
+
+        // Story-dread ambience: rare uncanny moments keyed to how much of the
+        // horror chain the player has witnessed. Cosmetic only.
+        this.dread = new DreadDirector(game, this);
+
+        // Sector weather + sky events (nebula banks, dust, comet showers).
+        // Deterministic by world position — same sky on every machine.
+        this.ambience = new Ambience(game, this);
+
+        // Moment-to-moment juice (all cosmetic, all capped)
+        this.muzzleFlashes = [];   // { x, y, angle, t }
+        this.boostTrail = [];      // flat [x, y, ...] history while boosting
+        this._wasBoosting = false;
+        this.shieldRipples = [];   // { angle, t }
+        this.shieldGlint = 0;      // regen sweep timer
+        this.readyAbsorb = [];     // boost/blink-ready: motes drawn into the hull
+        this._dialogTear = 0;      // hostile-turn transmission tear
+        this.radarPingT = 0;       // radar sweep pulse (new intel revealed)
+        this._scrapRoll = null;    // { from, t } — HUD scrap counter roll-up
 
         // Music System Overhaul State
         this.musicCombatTriggered = false;
@@ -599,8 +630,15 @@ export class PlayingState {
         if (this.chatUI) { this.chatUI.destroy(); this.chatUI = null; }
         if (this.netSync) { this.netSync.destroy(); this.netSync = null; }
         // Hand music control back to single-player (host picks at random again).
-        this.game.sounds.onSelectMusicTrack = null;
-        this.game.sounds.remoteMusicControl = false;
+        // (sounds can already be gone during app-quit teardown.)
+        if (this.game.sounds) {
+            this.game.sounds.onSelectMusicTrack = null;
+            this.game.sounds.remoteMusicControl = false;
+            // Leaving the run mid-streak shouldn't carry corruption to the menu
+            if (this.game.sounds.setAudioCorruption) this.game.sounds.setAudioCorruption(0);
+            if (this.game.sounds.setDreadWarble) this.game.sounds.setDreadWarble(0);
+            if (this.game.sounds.setMusicDuck) this.game.sounds.setMusicDuck(0);
+        }
         if (this.net) {
             const session = this.net;
             this.net = null;
@@ -923,6 +961,32 @@ export class PlayingState {
         if (this.game.achievements) {
             this.game.achievements.notify('shop_opened', { shop });
         }
+
+        // Good-stock surprise: no advance warning — the moment the doors open
+        // and the player SEES a great spread, the panel glints. "Great" means
+        // a well-stocked shelf or anything epic-or-better on it. Once per
+        // shop visit cycle (re-arms when stock changes meaningfully).
+        if (!shop._stockCelebrated) {
+            let best = -1;
+            for (const e of shop.inventory.items) best = Math.max(best, itemTier(e.item));
+            const wellStocked = shop.inventory.items.length >= 6;
+            const hasEpic = best >= 6;
+            if (wellStocked || hasEpic) {
+                shop._stockCelebrated = true;
+                this._shopOpenFx = {
+                    start: performance.now(),
+                    epic: hasEpic,
+                    // Glint positions as fractions of the shop panel, staggered
+                    sparkles: Array.from({ length: hasEpic ? 14 : 9 }, () => ({
+                        rx: 0.08 + Math.random() * 0.84,
+                        ry: 0.08 + Math.random() * 0.84,
+                        delay: Math.random() * 0.7,
+                        dur: 0.3 + Math.random() * 0.25
+                    }))
+                };
+                this.game.sounds.playJackpot(hasEpic ? 1 : 0);
+            }
+        }
     }
 
     // ── The world simulation ────────────────────────────────────────────────
@@ -1014,7 +1078,7 @@ export class PlayingState {
                     if (!isNetHost) continue;
                     if (s instanceof Scrap) { if (this.scrapEntities.length < 200) { this.scrapEntities.push(s); gameplaySpawns.push(s); } }
                     else if (s instanceof Asteroid) { this.asteroids.push(s); gameplaySpawns.push(s); }
-                    else if (s instanceof ItemPickup) { this.itemPickups.push(s); gameplaySpawns.push(s); }
+                    else if (s instanceof ItemPickup) { this.itemPickups.push(s); gameplaySpawns.push(s); this._onItemDropped(s); }
                     else if (s instanceof ExpOrb) { if (this.expOrbs.length < 150) { this.expOrbs.push(s); gameplaySpawns.push(s); } }
                 }
                 if (mp && isNetHost && gameplaySpawns.length) {
@@ -1563,6 +1627,68 @@ export class PlayingState {
             this.flashTimer -= dt;
         }
 
+        // Cinematic effects tick with the world (multiplayer: never pauses;
+        // single player: freezes with the world under menus, like the flash).
+        this.cinematics.update(dt);
+        this.killStreak.update(dt);
+        this.dread.update(dt);
+        this.ambience.update(dt);
+
+        // --- Combat/movement juice timers ---
+        for (let i = this.muzzleFlashes.length - 1; i >= 0; i--) {
+            this.muzzleFlashes[i].t -= dt;
+            if (this.muzzleFlashes[i].t <= 0) this.muzzleFlashes.splice(i, 1);
+        }
+        for (let i = this.shieldRipples.length - 1; i >= 0; i--) {
+            this.shieldRipples[i].t += dt;
+            if (this.shieldRipples[i].t >= 0.35) this.shieldRipples.splice(i, 1);
+        }
+        if (this.shieldGlint > 0) this.shieldGlint -= dt;
+        if (this._dialogTear > 0) this._dialogTear -= dt;
+        if (this.radarPingT > 0) this.radarPingT -= dt;
+        if (this._scrapRoll) {
+            this._scrapRoll.t += dt;
+            if (this._scrapRoll.t >= 0.8) this._scrapRoll = null;
+        }
+        for (let i = this.readyAbsorb.length - 1; i >= 0; i--) {
+            const p = this.readyAbsorb[i];
+            p.delay -= dt;
+            if (p.delay > 0) continue;
+            p.speed += 380 * dt;      // accelerating pull
+            p.dist -= p.speed * dt;
+            if (p.dist <= 6) {
+                this.readyAbsorb[i] = this.readyAbsorb[this.readyAbsorb.length - 1];
+                this.readyAbsorb.pop();
+            }
+        }
+
+        // Boost ion ribbon: record the exhaust point while boosting, drain
+        // quickly once it ends (with an ignition ring / cutoff puff).
+        const boosting = this.player.isBoosting && !this.player.isWarping && !this.isDead;
+        if (boosting) {
+            const bx = this.player.worldX - Math.cos(this.player.angle) * 16;
+            const by = this.player.worldY - Math.sin(this.player.angle) * 16;
+            this.boostTrail.push(bx, by);
+            if (this.boostTrail.length > 36) this.boostTrail.splice(0, 2);
+            if (!this._wasBoosting) {
+                this.cinematics.spawnRing(this.player.worldX, this.player.worldY,
+                    { color: '#7fd4ff', maxR: 90, dur: 0.35, width: 3 });
+                this._spawnSparks(bx, by, 8, {
+                    dir: this.player.angle + Math.PI, spread: 0.9,
+                    color: '#9fdcff', speedMin: 180, speedMax: 420
+                });
+            }
+        } else {
+            if (this._wasBoosting) {
+                this._spawnSparks(
+                    this.player.worldX - Math.cos(this.player.angle) * 16,
+                    this.player.worldY - Math.sin(this.player.angle) * 16,
+                    5, { color: '#9fdcff', speedMin: 40, speedMax: 140 });
+            }
+            if (this.boostTrail.length) this.boostTrail.splice(0, 4);
+        }
+        this._wasBoosting = boosting;
+
         // Update enemies — split into boss vs regular for perf tracking
         // Pre-filter asteroids near the player for enemy AI avoidance (avoid 30×200 loop)
         const enemyAvoidAsteroids = this.asteroids.length > 60
@@ -1821,6 +1947,7 @@ export class PlayingState {
                                         this.game.achievements.notify('upgrade_collected', { item: it.item });
                                     }
                                     this._onInventoryChanged();
+                                    this.celebratePickup(it.item);
                                 } else {
                                     // Already claimed — undo the optimistic add.
                                     const entry = this.player.inventory.items.find(e => e.item === it.item);
@@ -1845,6 +1972,7 @@ export class PlayingState {
                             this.game.achievements.notify('upgrade_collected', { item: it.item });
                         }
                         this._onInventoryChanged();
+                        this.celebratePickup(it.item);
                     } else {
                         // Inventory full — engage the follow-leash so the item
                         // stops bouncing around the player and eventually despawns.
@@ -1896,7 +2024,7 @@ export class PlayingState {
                             orb.alive = false;
                             const finalExp = Math.ceil(orb.amount * (this.player.experienceCondenserMult || 1.0));
                             this.player.addExp(finalExp);
-                            this.game.sounds.play('exp', { volume: 0.15, pitch: 1.5, x: orb.worldX, y: orb.worldY });
+                            this.game.sounds.play('exp', { volume: 0.15, x: orb.worldX, y: orb.worldY });
                             this.spawnFloatingText(orb.worldX + (Math.random() - 0.5) * 20, orb.worldY + (Math.random() - 0.5) * 20, `+${finalExp} XP`, '#915dbf');
                         }
                     } else {
@@ -1906,7 +2034,7 @@ export class PlayingState {
                     orb.alive = false;
                     const finalExp = Math.ceil(orb.amount * (this.player.experienceCondenserMult || 1.0));
                     this.player.addExp(finalExp);
-                    this.game.sounds.play('exp', { volume: 0.15, pitch: 1.5, x: orb.worldX, y: orb.worldY });
+                    this.game.sounds.play('exp', { volume: 0.15, x: orb.worldX, y: orb.worldY });
 
                     // Floating text for every collection
                     const offsetX = (Math.random() - 0.5) * 20;
@@ -1953,6 +2081,22 @@ export class PlayingState {
                             // Break a few outer chips off where the laser landed
                             const chips = ast.chipHit(proj.worldX, proj.worldY);
                             for (const d of chips) { if (this.rubble.length < 250) this.rubble.push(d); }
+                            // Dust puff + a visual-only kick to the rock's spin.
+                            // Torque is physical: lever arm (center → impact)
+                            // crossed with the shot direction, divided by the
+                            // rock's moment of inertia (∝ r²) — edge hits spin
+                            // it, center hits barely do, small rocks spin more.
+                            this._spawnSparks(proj.worldX, proj.worldY, 3,
+                                { color: '#9a958c', speedMin: 30, speedMax: 110 });
+                            if (ast.rotSpeed !== undefined) {
+                                const rx = proj.worldX - ast.worldX;
+                                const ry = proj.worldY - ast.worldY;
+                                const vlen = Math.sqrt(proj.vx * proj.vx + proj.vy * proj.vy) || 1;
+                                const lever = (rx * proj.vy - ry * proj.vx) / vlen;
+                                const inertia = Math.max(ast.radius * ast.radius, 100);
+                                const kick = Math.max(-1.2, Math.min(1.2, (lever / inertia) * 35));
+                                ast.rotSpeed += kick;
+                            }
                         }
                     }
                     // Player-only Explosives Unit vs Shared Rockets
@@ -2007,6 +2151,7 @@ export class PlayingState {
                             spread: Math.PI * 0.9, color: '#fff2b0'
                         });
                         if (this._routeDamage(en, proj.damage, proj.worldX, proj.worldY)) {
+                            this.cinematics.deathPop(en);
                             this._onEntityDestroyed(en);
                         } else {
                             this._triggerShakeAt(proj.worldX, proj.worldY, 0.5);
@@ -2024,6 +2169,14 @@ export class PlayingState {
                 const dx = proj.worldX - this.player.worldX;
                 const dy = proj.worldY - this.player.worldY;
                 const cr = proj.radius + this.player.radius;
+
+                // Near-miss: a shot slipping just past the hull leaves a streak
+                if (!proj._nearMiss && dx * dx + dy * dy < cr * cr * 5.5) {
+                    proj._nearMiss = true;
+                    const va = Math.atan2(proj.vy || 0, proj.vx || 0);
+                    this._spawnSparks(proj.worldX, proj.worldY, 2,
+                        { dir: va, spread: 0.15, color: '#cfe8ff', speedMin: 320, speedMax: 520 });
+                }
 
                 // Broad-phase squared-distance check followed by pixel-perfect check
                 if (dx * dx + dy * dy < cr * cr) {
@@ -2323,6 +2476,7 @@ export class PlayingState {
         } else if (!(entity instanceof CthulhuEvent) && !(entity instanceof CargoShipEvent)) {
             if (killerIsLocal) {
                 this.stats.enemiesDefeated++;
+                this.killStreak.onKill(entity);
                 if (this.game.achievements) {
                     this.game.achievements.notify('enemy_killed', { entity });
                 }
@@ -2357,7 +2511,7 @@ export class PlayingState {
                 this.asteroids.push(s);
                 if (gameplaySpawns) gameplaySpawns.push(s);
             }
-            else if (s instanceof ItemPickup) { this.itemPickups.push(s); if (gameplaySpawns) gameplaySpawns.push(s); }
+            else if (s instanceof ItemPickup) { this.itemPickups.push(s); if (gameplaySpawns) gameplaySpawns.push(s); this._onItemDropped(s); }
             else if (s instanceof ExpOrb) { if (this.expOrbs.length < 150) { this.expOrbs.push(s); if (gameplaySpawns) gameplaySpawns.push(s); } }
         }
 
@@ -2546,9 +2700,21 @@ export class PlayingState {
     }
 
     // ── Encounter dialog outcome (multiplayer-aware) ────────────────────────
+    // The deal goes bad: the transmission tears away, the ship flashes red.
+    _hostileTurnFx(enc) {
+        this._dialogTear = 0.3;
+        enc.hostileFlash = 1.2;
+        this.cinematics.spawnRing(enc.worldX, enc.worldY,
+            { color: '#ff3333', maxR: 160, dur: 0.5, width: 4 });
+        this._spawnSparks(enc.worldX, enc.worldY, 8,
+            { color: '#ff5544', speedMin: 100, speedMax: 280 });
+        if (this.game.sounds.playStreakTier) this.game.sounds.playStreakTier(0, true);
+    }
+
     _finishEncounterDialog(enc) {
         if (!this.netSync) {
             if (enc.shouldConvertHostile) {
+                this._hostileTurnFx(enc);
                 this._convertEncounterToEnemy(enc);
             } else if (!enc.shouldStay) {
                 enc.depart();
@@ -2565,6 +2731,7 @@ export class PlayingState {
         if (outcome === 'hostile') {
             // Same grace window the SP path grants.
             this.player.invulnTimer = Math.max(this.player.invulnTimer, 1.5);
+            this._hostileTurnFx(enc);
         }
 
         if (this.netSync.isHost) {
@@ -2965,12 +3132,25 @@ export class PlayingState {
         if (this.player.shielding) {
             this.spawnFloatingText(this.player.worldX, this.player.worldY, `-${Math.ceil(finalAmount)}`, '#44ddff');
             this.player.shieldEnergy -= finalAmount * 5;
+            // Ripple flare on the bubble rim at the impact angle
+            if (hitX !== undefined && this.shieldRipples.length < 6) {
+                this.shieldRipples.push({
+                    angle: Math.atan2(hitY - this.player.worldY, hitX - this.player.worldX),
+                    t: 0
+                });
+            }
             if (this.player.shieldEnergy <= 0) {
                 this.player.shieldEnergy = 0;
                 this.player.shieldBroken = true;
                 this.player.shielding = false;
                 this.camera.shake(3.0, 8.0); // Big impact for shield break
                 this.game.sounds.play('shield_break', { volume: 0.7, x: this.player.worldX, y: this.player.worldY });
+                // The bubble shatters: shard burst + ring sized to the bubble
+                this.shieldRipples.length = 0;
+                this._spawnSparks(this.player.worldX, this.player.worldY, 14,
+                    { color: '#44ddff', speedMin: 160, speedMax: 420 });
+                this.cinematics.spawnRing(this.player.worldX, this.player.worldY,
+                    { color: '#44ddff', maxR: Math.round(this.player.shieldRadius * 1.25), dur: 0.4, width: 4 });
             } else {
                 this.camera.shake(0.4, 15.0); // Subtle hit feedback
                 this.game.sounds.play('asteroid_break', { volume: 0.3, x: this.player.worldX, y: this.player.worldY }); // Shield hit sound
@@ -3324,12 +3504,146 @@ export class PlayingState {
         this.floatingTexts.push(new FloatingText(this.game, x, y, text, color));
     }
 
+    // Boost/blink ready: energy motes materialize around the ship and get
+    // pulled into the hull. Positions are ship-relative (angle + shrinking
+    // distance), so the effect tracks the ship at any speed.
+    _spawnReadyAbsorb() {
+        if (this.readyAbsorb.length > 40) return;
+        for (let i = 0; i < 14; i++) {
+            this.readyAbsorb.push({
+                angle: Math.random() * Math.PI * 2,
+                dist: 55 + Math.random() * 35,
+                speed: 110 + Math.random() * 70,
+                delay: Math.random() * 0.18
+            });
+        }
+    }
+
+    _drawReadyAbsorb(ctx) {
+        if (this.readyAbsorb.length === 0) return;
+        const cam = this.camera;
+        const ws = this.game.worldScale;
+        const px = this.player.worldX * cam.wtsScale + cam.wtsOffX;
+        const py = this.player.worldY * cam.wtsScale + cam.wtsOffY;
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        for (const p of this.readyAbsorb) {
+            if (p.delay > 0) continue;
+            const cosA = Math.cos(p.angle), sinA = Math.sin(p.angle);
+            const sx = px + cosA * p.dist * ws;
+            const sy = py + sinA * p.dist * ws;
+            // Brighter and slightly streakier as it closes in
+            const closeness = 1 - p.dist / 90;
+            ctx.globalAlpha = 0.35 + closeness * 0.6;
+            ctx.fillStyle = '#7fd4ff';
+            const s = Math.max(1, Math.round(ws * (1 + closeness)));
+            ctx.fillRect(Math.round(sx - s / 2), Math.round(sy - s / 2), s, s);
+            // Inward motion streak
+            ctx.strokeStyle = '#5ab8e8';
+            ctx.lineWidth = Math.max(1, ws * 0.5);
+            ctx.beginPath();
+            ctx.moveTo(sx, sy);
+            ctx.lineTo(sx + cosA * 6 * ws * closeness, sy + sinA * 6 * ws * closeness);
+            ctx.stroke();
+        }
+        ctx.restore();
+    }
+
+    // Brief additive glint at a gun point when it fires.
+    _addMuzzleFlash(x, y, angle) {
+        if (this.muzzleFlashes.length > 24) this.muzzleFlashes.shift();
+        this.muzzleFlashes.push({ x, y, angle, t: 0.07 });
+    }
+
+    _drawMuzzleFlashes(ctx) {
+        if (this.muzzleFlashes.length === 0) return;
+        const cam = this.camera;
+        const ws = this.game.worldScale;
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        for (const m of this.muzzleFlashes) {
+            const sx = m.x * cam.wtsScale + cam.wtsOffX;
+            const sy = m.y * cam.wtsScale + cam.wtsOffY;
+            const f = m.t / 0.07;
+            ctx.globalAlpha = f * 0.9;
+            ctx.fillStyle = '#cfeaff';
+            const core = Math.max(2, Math.round(3 * ws * f));
+            ctx.fillRect(Math.round(sx - core / 2), Math.round(sy - core / 2), core, core);
+            // Short spike along the firing direction
+            ctx.strokeStyle = '#9fdcff';
+            ctx.lineWidth = Math.max(1, ws * f);
+            ctx.beginPath();
+            ctx.moveTo(sx, sy);
+            ctx.lineTo(sx + Math.cos(m.angle) * 9 * ws * f, sy + Math.sin(m.angle) * 9 * ws * f);
+            ctx.stroke();
+        }
+        ctx.restore();
+    }
+
+    // Cyan ion ribbon trailing the ship while boosting — same trail-history
+    // technique as the comets, drawn under the ship.
+    _drawBoostTrail(ctx) {
+        const n = this.boostTrail.length / 2;
+        if (n < 2) return;
+        const cam = this.camera;
+        const ws = this.game.worldScale;
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.lineCap = 'round';
+        ctx.strokeStyle = '#5ab8e8';
+        for (let k = 0; k < n - 1; k++) {
+            const f = k / (n - 1); // 0 = oldest
+            const x0 = this.boostTrail[k * 2] * cam.wtsScale + cam.wtsOffX;
+            const y0 = this.boostTrail[k * 2 + 1] * cam.wtsScale + cam.wtsOffY;
+            const x1 = this.boostTrail[k * 2 + 2] * cam.wtsScale + cam.wtsOffX;
+            const y1 = this.boostTrail[k * 2 + 3] * cam.wtsScale + cam.wtsOffY;
+            ctx.globalAlpha = f * 0.5;
+            ctx.lineWidth = Math.max(1, 4 * ws * f);
+            ctx.beginPath();
+            ctx.moveTo(x0, y0);
+            ctx.lineTo(x1, y1);
+            ctx.stroke();
+        }
+        ctx.restore();
+    }
+
+    // Regen sweep glint. (Shield impacts distort the bubble itself — drawn
+    // inside Player.draw — rather than overlaying arcs here.)
+    _drawShieldFx(ctx) {
+        if (this.shieldGlint <= 0) return;
+        const cam = this.camera;
+        const ws = this.game.worldScale;
+        const sx = this.player.worldX * cam.wtsScale + cam.wtsOffX;
+        const sy = this.player.worldY * cam.wtsScale + cam.wtsOffY;
+        const r = this.player.shieldRadius * ws;
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.strokeStyle = '#44ddff';
+        ctx.lineCap = 'round';
+        if (this.shieldGlint > 0) {
+            // One quick sweep around the bubble as the shield returns
+            const p = 1 - this.shieldGlint / 0.15;
+            const a = -Math.PI / 2 + p * Math.PI * 2;
+            ctx.globalAlpha = Math.sin(p * Math.PI) * 0.8;
+            ctx.lineWidth = Math.max(1, 2 * ws);
+            ctx.beginPath();
+            ctx.arc(sx, sy, r, a - 0.5, a + 0.5);
+            ctx.stroke();
+        }
+        ctx.restore();
+    }
+
     draw(ctx) {
         ctx.textBaseline = 'alphabetic';
 
         // --- World / starfield ---
         this.perf.begin('world');
         this.world.draw(ctx, this.camera, this.player, this.totalGameTime);
+        // Backdrop stack, deepest first: the Eye, then sector weather/sky
+        // events, then the nearer dread moments (void patches, ghost ships).
+        this.dread.drawEye(ctx);
+        this.ambience.draw(ctx, this.camera);
+        this.dread.drawBackground(ctx);
         this.perf.end('world');
 
         // --- Pre-compute draw culling bounds ---
@@ -3454,12 +3768,16 @@ export class PlayingState {
         }
 
         this.perf.begin('player');
+        this._drawBoostTrail(ctx);
+        this._drawReadyAbsorb(ctx);
         // Multiplayer: your own ship wears your pilot color too.
         if (this.netSync && !this.player.isWarping) {
             drawShipOutline(ctx, this.game, this.camera, this.player.stillImg, this.shipData.id,
                 playerColor(this.netSync.myPid), this.player.worldX, this.player.worldY, this.player.angle);
         }
         this.player.draw(ctx, this.camera);
+        this._drawShieldFx(ctx);
+        this._drawMuzzleFlashes(ctx);
         this.perf.end('player');
 
         if ((this.canInteractShop || this.canInteractEncounter || this.canInteractCache || this.canInteractPlayer) && !this.isShopOpen && !this.isEncounterOpen && !this.isCacheOpen && !this.isTradeOpen) {
@@ -3470,6 +3788,8 @@ export class PlayingState {
         this.perf.begin('particles');
         this._drawExplosions(ctx);
         this._drawSparks(ctx);
+        this.cinematics.drawWorld(ctx, this.camera);
+        this.killStreak.drawWorld(ctx, this.camera);
 
         // Draw floating texts
         for (const ft of this.floatingTexts) {
@@ -3479,6 +3799,9 @@ export class PlayingState {
 
         // Hide HUD and all indicators during Yellow One cutscene
         if (!this.yellowOneScriptActive) {
+            // Streak vignette + counter sit under the HUD elements
+            this.killStreak.drawOverlay(ctx);
+            this.dread.drawOverlay(ctx);
             this.hud.draw(ctx);
 
             // --- Total Game Timer ---
@@ -3528,6 +3851,27 @@ export class PlayingState {
             this._drawPauseOverlay(ctx);
         }
 
+        // Combine fanfare — above the inventory dialogs it happens inside
+        this._drawCombineFx(ctx);
+
+        // Transmission tear: the dialog rips away in static when a deal turns
+        // hostile (drawn where the panel was for a few frames)
+        if (this._dialogTear > 0) {
+            const f = this._dialogTear / 0.3;
+            const pw = Math.min(this.game.width * 0.6, 160 * this.game.uiScale);
+            const px = (this.game.width - pw) / 2;
+            const pt = this.game.height * 0.2;
+            const ph = this.game.height * 0.35;
+            ctx.save();
+            for (let i = 0; i < 8; i++) {
+                ctx.globalAlpha = f * (0.2 + Math.random() * 0.4);
+                ctx.fillStyle = Math.random() < 0.5 ? '#0a1420' : '#ff5544';
+                const by = pt + Math.random() * ph;
+                ctx.fillRect(px + (Math.random() - 0.5) * 40 * f, by, pw, 1 + Math.random() * 5);
+            }
+            ctx.restore();
+        }
+
         // Achievement toast sits on top of overlays/dialogs so an unlock
         // popping mid-shop or mid-pause is still visible. Suppressed during
         // the Yellow One cutscene to match how the rest of the HUD behaves.
@@ -3568,6 +3912,10 @@ export class PlayingState {
             ctx.fillRect(0, 0, this.game.width, this.game.height);
             ctx.restore();
         }
+
+        // Cinematic overlay (letterbox + warning banner) above HUD and flash,
+        // below the Yellow One scripted fades.
+        this.cinematics.drawOverlay(ctx);
 
         // --- Yellow One scripted fade overlays ---
         for (const ev of this.events) {
@@ -3650,6 +3998,130 @@ export class PlayingState {
         ctx.fillText(Math.ceil(p.health || 0).toString(), Math.floor(pScreen.x), Math.floor(pScreen.y - pOffset));
 
         ctx.restore();
+    }
+
+    // Combine fanfare — scaled to the tier the fuse produced. Drawn in screen
+    // space at the drop cursor, since combines happen inside menu overlays
+    // (where the world is frozen in single player). Uses a real-time clock so
+    // it animates even while the sim is paused.
+    _celebrateCombine(draggedItem) {
+        const resultTier = itemTier(draggedItem) + 1;
+        const mouse = this.game.getMousePos();
+        this._combineFx = {
+            x: mouse.x, y: mouse.y,
+            color: tierColor(resultTier),
+            label: tierLabel(resultTier),
+            max: resultTier >= MAX_COMBINE_TIER,
+            start: performance.now()
+        };
+        if (resultTier >= MAX_COMBINE_TIER) this.game.sounds.playJackpot(2);
+        else if (resultTier >= 6) this.game.sounds.playJackpot(1);
+        else if (resultTier >= 4) this.game.sounds.playJackpot(0);
+        else this.game.sounds.play('select', 0.8);
+    }
+
+    _drawCombineFx(ctx) {
+        const fx = this._combineFx;
+        if (!fx) return;
+        const dur = fx.max ? 1.4 : 0.9;
+        const t = (performance.now() - fx.start) / 1000;
+        if (t >= dur) { this._combineFx = null; return; }
+        const p = t / dur;
+        const hudScale = this.game.hudScale;
+        const ease = 1 - Math.pow(1 - p, 3);
+        ctx.save();
+        ctx.globalAlpha = (1 - p) * 0.9;
+        ctx.strokeStyle = fx.color;
+        ctx.lineWidth = Math.max(1, (1 - p) * hudScale);
+        ctx.beginPath();
+        ctx.arc(fx.x, fx.y, ease * 30 * hudScale, 0, Math.PI * 2);
+        ctx.stroke();
+        if (fx.max) {
+            // Max tier gets a second gold ring chasing the first
+            ctx.strokeStyle = '#ffd24a';
+            ctx.beginPath();
+            ctx.arc(fx.x, fx.y, ease * 18 * hudScale, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+        // Tier label rising off the fuse point
+        const ty = fx.y - 10 * hudScale - p * 8 * hudScale;
+        const size = Math.floor(6 * hudScale * (p < 0.12 ? 1.4 - (p / 0.12) * 0.4 : 1));
+        const o = Math.max(1, Math.round(hudScale / 2));
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.font = `${size}px Astro4x`;
+        ctx.globalAlpha = p > 0.7 ? (1 - p) / 0.3 : 1;
+        ctx.fillStyle = '#000000';
+        ctx.fillText(fx.label, Math.round(fx.x) - o, Math.round(ty));
+        ctx.fillText(fx.label, Math.round(fx.x) + o, Math.round(ty));
+        ctx.fillText(fx.label, Math.round(fx.x), Math.round(ty) - o);
+        ctx.fillText(fx.label, Math.round(fx.x), Math.round(ty) + o);
+        ctx.fillStyle = fx.color;
+        ctx.fillText(fx.label, Math.round(fx.x), Math.round(ty));
+        ctx.restore();
+    }
+
+    // Casino jackpot ceremony for rare+ upgrade pickups. Cosmetic only —
+    // fires locally for the collecting player (SP, MP host, and MP client
+    // confirmation paths all route here).
+    celebratePickup(item) {
+        if (!item || !item.rarity) return;
+        // 'unique' is the top of the actual item ladder (horror rewards like
+        // the Cosmos Engine) — it gets the full legendary treatment.
+        const tier = { rare: 0, epic: 1, legendary: 2, unique: 2 }[item.rarity];
+        if (tier === undefined) return;
+        const color = RARITY_COLORS[item.rarity] || '#ffd24a';
+        this.cinematics.jackpotReel(item.name || item.id, color, tier);
+        this.game.sounds.playJackpot(tier);
+        this._spawnSparks(this.player.worldX, this.player.worldY, 10 + tier * 6,
+            { color: '#ffd24a', speedMin: 120, speedMax: 380 });
+        this.cinematics.spawnRing(this.player.worldX, this.player.worldY,
+            { color, maxR: 160 + tier * 60, dur: 0.5, width: 3 });
+        if (tier === 2) this.triggerFlash('#ffd24a', 0.6, 0.18);
+    }
+
+    // A rare+ item landing in the world announces itself with a glint so the
+    // player spots the prize in the wreckage.
+    _onItemDropped(it) {
+        const item = it && it.item;
+        if (!item || !item.rarity) return;
+        if (item.rarity !== 'rare' && item.rarity !== 'epic' &&
+            item.rarity !== 'legendary' && item.rarity !== 'unique') return;
+        const color = RARITY_COLORS[item.rarity];
+        this.cinematics.spawnRing(it.worldX, it.worldY, { color, maxR: 120, dur: 0.6, width: 3 });
+        this._spawnSparks(it.worldX, it.worldY, 8, { color, speedMin: 60, speedMax: 200 });
+    }
+
+    // Drives the shader post-fx pass in Game.loop. crt = kill-streak CRT look,
+    // warp/invert = dread insanity moments. All zero = pass skipped entirely.
+    getScreenFx() {
+        if (this.yellowOneScriptActive || this.isDead) return { crt: 0, warp: 0 };
+        const d = this.dread ? this.dread.getFx() : null;
+
+        // Shield impact ripple: true displacement wave across the bubble,
+        // rendered by the post-pass shader from the freshest impact.
+        let ripple = null;
+        if (this.shieldRipples.length > 0 && this.camera.wtsScale !== undefined) {
+            const rip = this.shieldRipples[this.shieldRipples.length - 1];
+            const p = Math.min(1, rip.t / 0.35);
+            const ws = this.game.worldScale;
+            const cx = this.player.worldX * this.camera.wtsScale + this.camera.wtsOffX;
+            const cy = this.player.worldY * this.camera.wtsScale + this.camera.wtsOffY;
+            const r = this.player.shieldRadius * ws;
+            ripple = {
+                x: cx + Math.cos(rip.angle) * r,
+                y: cy + Math.sin(rip.angle) * r,
+                cx, cy, r,
+                strength: 1 - p,
+                t: rip.t
+            };
+        }
+
+        return {
+            crt: this.killStreak ? this.killStreak.fxIntensity : 0,
+            warp: d ? d.warp : 0,
+            ripple
+        };
     }
 
     triggerFlash(color = '#ff0000', duration = 0.8, alpha = 0.35) {
@@ -4031,6 +4503,33 @@ export class PlayingState {
 
         this._drawInventoryGrid(ctx, shopInv, shopLayout, this.shopScrollX, this.shopScrollY);
         this._drawInventoryGrid(ctx, playerInv, playerLayout, this.playerScrollX, this.playerScrollY);
+
+        // Good-stock glints twinkling over the shelf (set in _openShop)
+        if (this._shopOpenFx) {
+            const fx = this._shopOpenFx;
+            const t = (performance.now() - fx.start) / 1000;
+            if (t > 1.5) {
+                this._shopOpenFx = null;
+            } else {
+                const us = this.game.uiScale;
+                ctx.save();
+                ctx.fillStyle = fx.epic ? '#ffe9b0' : '#ffd24a';
+                for (const sp of fx.sparkles) {
+                    const st = (t - sp.delay) / sp.dur;
+                    if (st <= 0 || st >= 1) continue;
+                    const twinkle = Math.sin(st * Math.PI); // grow then shrink
+                    const cx = Math.round(shopLayout.panelX + sp.rx * shopLayout.totalW);
+                    const cy = Math.round(shopLayout.panelY + sp.ry * shopLayout.totalH);
+                    const arm = Math.max(2, Math.round(4 * us * twinkle));
+                    const thick = Math.max(1, Math.round(us / 2));
+                    ctx.globalAlpha = twinkle;
+                    // 4-point star glint
+                    ctx.fillRect(cx - arm, cy - thick, arm * 2, thick * 2);
+                    ctx.fillRect(cx - thick, cy - arm, thick * 2, arm * 2);
+                }
+                ctx.restore();
+            }
+        }
         this._draw9Slice(ctx, this.inventoryBorderImg, shopLayout.panelX, shopLayout.panelY, shopLayout.totalW, shopLayout.totalH);
         this._draw9Slice(ctx, this.inventoryBorderImg, playerLayout.panelX, playerLayout.panelY, playerLayout.totalW, playerLayout.totalH);
         this._drawScrollbars(ctx, shopLayout, this.shopScrollX, this.shopScrollY);
@@ -5289,7 +5788,7 @@ export class PlayingState {
                 } else if (this.draggedItem.originInventory === playerInv &&
                            playerInv.tryCombine(this.draggedItem.item, pCol, pRow)) {
                     this._onInventoryChanged();
-                    this.game.sounds.play('select', 0.8);
+                    this._celebrateCombine(this.draggedItem.item);
                     this._gpFocus = { kind: 'slot', panelKey: 'player', col: pCol, row: pRow };
                 } else if (this.draggedItem.originInventory === playerInv &&
                            playerInv.trySwap(this.draggedItem.item, pCol, pRow, this.draggedItem.x, this.draggedItem.y)) {
@@ -5479,7 +5978,7 @@ export class PlayingState {
             // 1b. Combine within player inventory
             else if (this.draggedItem.originInventory === playerInv &&
                      playerInv.tryCombine(this.draggedItem.item, pCol, pRow)) {
-                this.game.sounds.play('select', 0.8);
+                this._celebrateCombine(this.draggedItem.item);
                 this._onInventoryChanged();
                 this._gpFocus = { kind: 'slot', panelKey: 'player', col: pCol, row: pRow };
             }
@@ -5747,7 +6246,7 @@ export class PlayingState {
                 this._onInventoryChanged();
                 this._gpFocus = { kind: 'slot', panelKey: 'player', col: pCol, row: pRow };
             } else if (playerInv.tryCombine(this.draggedItem.item, pCol, pRow)) {
-                this.game.sounds.play('select', 0.8);
+                this._celebrateCombine(this.draggedItem.item);
                 this._onInventoryChanged();
                 this._gpFocus = { kind: 'slot', panelKey: 'player', col: pCol, row: pRow };
             } else if (playerInv.trySwap(this.draggedItem.item, pCol, pRow, this.draggedItem.x, this.draggedItem.y)) {
@@ -6218,6 +6717,11 @@ export class PlayingState {
     queueLevelUp(level) {
         this.levelUpQueue.push(level);
         this.game.sounds.play('level', 0.5);
+        // Level-up burst off the ship
+        this.cinematics.spawnRing(this.player.worldX, this.player.worldY,
+            { color: '#ffd24a', maxR: 140, dur: 0.5, width: 3 });
+        this._spawnSparks(this.player.worldX, this.player.worldY, 16,
+            { color: '#ffd24a', speedMin: 120, speedMax: 360 });
     }
 
     _openLevelUpDialog(level) {
@@ -7108,6 +7612,8 @@ export class PlayingState {
                 const fireAngle = p.getTargetAngle(origin.x, origin.y);
                 const dirX = Math.cos(fireAngle);
                 const dirY = Math.sin(fireAngle);
+                // The big gun has recoil — view kicks opposite the beam
+                this.camera.punch(-dirX, -dirY, 9);
                 this._fireSingleBeam(origin.x, origin.y, dirX, dirY, beamLength, currentBaseDamage * 2.5 * p.railgunDmgMult * damageMult);
                 // Extra beams from Multi-Shot level-up — increasing spread, reduced damage
                 for (let ei = 0; ei < p.lvlExtraProjectiles; ei++) {
