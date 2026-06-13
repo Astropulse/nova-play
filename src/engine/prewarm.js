@@ -10,7 +10,6 @@
 // and a cache hit costs only a Map lookup.
 import { FractureModel, getCachedShatter, ExpOrb } from '../entities/asteroid.js';
 import { Enemy } from '../entities/enemy.js';
-import { Projectile } from '../entities/projectile.js';
 import { ScreenFX } from './screenFx.js';
 
 // Piece counts must match what _generateProceduralDebris asks for — the
@@ -48,19 +47,7 @@ function buildTasks(game) {
         }
     });
 
-    // Projectile glow sprites for all variants.
-    tasks.push(() => {
-        const projGlowKeys = [
-            ['blue_laser_ball', '#1da2c0ff'],
-            ['blue_laser_ball_big', '#1da2c0ff'],
-            ['red_laser_ball', '#ff4444'],
-            ['red_laser_ball_big', '#ff4444'],
-        ];
-        for (const [key, color] of projGlowKeys) {
-            const asset = game.assets.get(key);
-            if (asset) Projectile._getGlowSprite(asset, color);
-        }
-    });
+    // (Lasers now render as simple stroked streaks — no glow sprite to pre-bake.)
 
     // Per-sprite damage models: chip-damage cell layout, death shatter layout,
     // and the upgraded-enemy glow. One sprite per task — the big asteroid

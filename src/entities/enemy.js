@@ -160,6 +160,11 @@ export class Enemy {
         this.dodgeDirectionAngle = 0;
         this.dodgeDecisionMap = new WeakMap(); // projectile -> { decided: boolean, canDodge: boolean, reactionTimer: number }
 
+        // Phase offset so temporal AI LOD staggers re-solves across enemies
+        // ("off-beat") instead of bunching them on the same frame. Random is
+        // fine — it only spreads CPU load, not replicated state.
+        this._aiOffset = (Math.floor(Math.random() * 997)) | 0;
+
         // Reused per-enemy buffers for the projectile-dodge scan — the active
         // threat list and a pool of threat records, so a frame of dodging
         // allocates nothing (the old code built a fresh array + an object per
@@ -274,9 +279,30 @@ export class Enemy {
         }
         const activeSpeed = currentMaxSpeed * this.speedMult;
 
-        const avoidance = this._avoidObstacles(targetAngle, asteroids, projectiles, enemies, activeSpeed, dt);
-        targetAngle = avoidance.targetAngle;
-        const speedOverride = avoidance.speedOverride;
+        // Temporal AI LOD: the obstacle/dodge solve is the per-enemy cost that
+        // makes dense waves expensive. In a crowd PlayingState clears
+        // _avoidRecompute on most frames (staggered across enemies, "off-beat"),
+        // so each enemy re-solves only every Nth frame and carries the result
+        // over between. We cache the steering ADJUSTMENT (final − base) and
+        // reapply it to the live base target, so player-tracking + aim stay
+        // current every frame; only the obstacle/dodge reaction is up to a couple
+        // frames stale. With few enemies the flag is never cleared → identical to
+        // before. Default (undefined) also recomputes, so nothing changes unless
+        // PlayingState opts an enemy out this frame.
+        let avoidance, speedOverride;
+        if (this._avoidRecompute !== false || this._avoidDelta === undefined) {
+            avoidance = this._avoidObstacles(targetAngle, asteroids, projectiles, enemies, activeSpeed, dt);
+            let d = avoidance.targetAngle - targetAngle;
+            while (d > Math.PI) d -= Math.PI * 2;
+            while (d < -Math.PI) d += Math.PI * 2;
+            this._avoidDelta = d;
+            this._avoidSpeedOverride = avoidance.speedOverride;
+            speedOverride = avoidance.speedOverride;
+            targetAngle = avoidance.targetAngle;
+        } else {
+            targetAngle += this._avoidDelta;
+            speedOverride = this._avoidSpeedOverride;
+        }
 
         // 4. Coupled Steering
         let angleDiff = targetAngle - this.angle;
@@ -596,6 +622,10 @@ export class Enemy {
     _avoidObstacles(baseTarget, asteroids, projectiles, enemies, activeSpeed, dt) {
         let finalTarget = baseTarget;
         let speedOverride = null;
+        // Optional AI sub-phase profiler (asteroid-avoid / separation / dodge),
+        // summed across enemies into Enemy._pAst/_pSep/_pDodge. Off unless the
+        // perf harness sets Enemy._PROF, so production pays only a dead boolean.
+        const _PF = Enemy._PROF; let _pt = _PF ? performance.now() : 0;
 
         // 1. DYNAMIC DETECTION RANGE
         // Using relative velocity would be ideal, but activeSpeed is a good proxy 
@@ -609,10 +639,21 @@ export class Enemy {
         // with no sqrt at all (the relative-speed term only matters when it would
         // actually extend the scan past the base reach).
         const baseLookAheadSq = baseLookAhead * baseLookAhead;
+        // Cheap broad reject: no asteroid past this distance can satisfy the
+        // exact scanDist test below — baseLookAhead already scales with speed,
+        // and the +margin bounds the largest possible safety radius plus the
+        // relative-speed term. Skipping the per-rock relative-velocity math for
+        // far asteroids is identical in result (avoidance only ever steers for
+        // the single highest-urgency rock, which is always a near one), but
+        // turns the dominant case — most rocks are out of range — into one
+        // squared-distance compare instead of five mults + a branch.
+        const maxScan = baseLookAhead + this.radius + 450;
+        const maxScanSq = maxScan * maxScan;
         for (const ast of asteroids) {
             const adx = ast.worldX - this.worldX;
             const ady = ast.worldY - this.worldY;
             const adistSq = adx * adx + ady * ady;
+            if (adistSq > maxScanSq) continue;
 
             const safetyRadius = this.radius + ast.radius + 35;
 
@@ -685,6 +726,7 @@ export class Enemy {
             }
         }
 
+        if (_PF) { const _n = performance.now(); Enemy._pAst += _n - _pt; _pt = _n; }
         // 3. AVOID OTHER ENEMIES (Simpler, closer range)
         // The separation force is a plain sum over every peer within 120px, so
         // it's order-independent. A frame-coherent broad-phase grid (built in
@@ -717,6 +759,7 @@ export class Enemy {
             }
         }
 
+        if (_PF) { const _n = performance.now(); Enemy._pSep += _n - _pt; _pt = _n; }
         // 4. Dodge Projectiles (Predictive Evasive Maneuvers)
         let primaryThreat = null;
         let highestThreatLevel = 0;
@@ -744,13 +787,19 @@ export class Enemy {
             if (pdx * pdx + pdy * pdy > 2250000) continue; // ~1500px max range
             const pvx = p.vx;
             const pvy = p.vy;
+
+            // A projectile whose relative motion points away from us (dot ≥ 0)
+            // can never have a future closest approach — reject it before the
+            // reciprocal+divide rather than after. This is the exact same set as
+            // the old `t_impact <= 0` cut (t_impact's sign is just -dot/speed²),
+            // and in a dense wave most shots are receding from any given enemy.
+            const dot = pdx * pvx + pdy * pvy;
+            if (dot >= 0) continue;
             const pSpeedSq = pvx * pvx + pvy * pvy || 1;
 
-            // Find time to closest point of approach (CPA)
-            const t_impact = (-pdx * pvx + -pdy * pvy) / pSpeedSq;
-
-            // Only look at projectiles approaching us in the near future (1.2s)
-            if (t_impact <= 0 || t_impact > 1.2) continue;
+            // Time to closest point of approach (CPA). Only near-future (1.2s).
+            const t_impact = -dot / pSpeedSq;
+            if (t_impact > 1.2) continue;
 
             const closestX = p.worldX + pvx * t_impact;
             const closestY = p.worldY + pvy * t_impact;
@@ -782,6 +831,13 @@ export class Enemy {
                     highestThreatLevel = threatLevel;
                     primaryThreat = threatData;
                 }
+
+                // Saturation short-circuit: >4 simultaneous threats means the
+                // check below nulls the dodge entirely, so once a 5th is found
+                // the remaining shots can't change the outcome — stop scanning.
+                // Identical result, but it skips the bulk of the per-enemy
+                // projectile scan in exactly the dense waves that cost the most.
+                if (activeThreats.length > 4) break;
             }
         }
 
@@ -872,6 +928,7 @@ export class Enemy {
             finalTarget += diff * dodgeStrength;
         }
 
+        if (_PF) { Enemy._pDodge += performance.now() - _pt; }
         return { targetAngle: finalTarget, speedOverride: speedOverride };
     }
 
@@ -1161,7 +1218,10 @@ export class Enemy {
         let glow = Enemy._glowCache.get(key);
         if (glow) return glow;
         const srcImg = imgAsset.canvas || imgAsset;
-        const blur = 60; // 15 * prescale(4) — matches shadowBlur=15*worldScale in screen space
+        // Neon glow baked once into the sprite's footprint (still cheaper than the
+        // old 60px halo, but spread wide and intense enough to read clearly).
+        // Multiple shadow passes stack the glow's opacity so it's vivid, not faint.
+        const blur = 40; // ~10 logical px (prescale 4)
         const pad = blur * 2;
         const c = document.createElement('canvas');
         c.width = srcImg.width + pad * 2;
@@ -1170,6 +1230,8 @@ export class Enemy {
         gctx.shadowBlur = blur;
         gctx.shadowColor = color;
         gctx.drawImage(srcImg, pad, pad);
+        gctx.drawImage(srcImg, pad, pad);
+        gctx.drawImage(srcImg, pad, pad); // stacked passes intensify the glow
         gctx.shadowBlur = 0;
         gctx.drawImage(srcImg, pad, pad);
         glow = { canvas: c, srcW: srcImg.width };

@@ -536,12 +536,13 @@ export class Rubble {
         const h = this.img.height * this.game.worldScale;
 
         const alpha = Math.max(0, this.lifetime / this.maxLifetime);
-        ctx.save();
+        // Direct matrix instead of save/translate/rotate/restore (pixel-identical).
+        const cos = Math.cos(this.rotation), sin = Math.sin(this.rotation);
         ctx.globalAlpha = alpha;
-        ctx.translate(sx, sy);
-        ctx.rotate(this.rotation);
+        ctx.setTransform(cos, sin, -sin, cos, sx, sy);
         ctx.drawImage(this.img.canvas || this.img, -w / 2, -h / 2, w, h);
-        ctx.restore();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.globalAlpha = 1;
     }
 }
 
@@ -637,6 +638,14 @@ export class Scrap {
     }
 
     update(dt, playerX, playerY, magnetMult = 1.0) {
+        // The two velocity-friction factors depend only on dt, which is shared
+        // by every scrap in a frame — memoize them per-dt so a 200-piece field
+        // pays two Math.pow per frame instead of one per piece. Same values.
+        if (dt !== Scrap._fdt) {
+            Scrap._fdt = dt;
+            Scrap._f99 = Math.pow(0.99, dt * 60);
+            Scrap._f995 = Math.pow(0.995, dt * 60);
+        }
         const dx = playerX - this.worldX;
         const dy = playerY - this.worldY;
         const distSq = dx * dx + dy * dy;
@@ -666,13 +675,13 @@ export class Scrap {
             this.vy = this.vy * (1 - steerWeight) + targetVy * steerWeight;
 
             // Damping logic (dt-compensated, target 0.95 at dt=1/6)
-            const damping = Math.pow(0.995, dt * 60);
+            const damping = Scrap._f995;
             this.vx *= damping;
             this.vy *= damping;
         } else {
             this.suckTimer = 0;
             // Normal drift with light friction (dt-compensated)
-            const currentFriction = Math.pow(0.99, dt * 60);
+            const currentFriction = Scrap._f99;
             this.vx *= currentFriction;
             this.vy *= currentFriction;
         }
@@ -714,10 +723,10 @@ export class Scrap {
             alpha = Math.max(0, this.lifetime / 5.0);
         }
 
-        ctx.save();
         ctx.globalAlpha = alpha;
 
-        // Gold tracer while being vacuumed in fast — payout streaking home
+        // Gold tracer while being vacuumed in fast — payout streaking home.
+        // Drawn in screen space (identity transform), before the sprite matrix.
         if (this.suckTimer > 0.05) {
             const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
             if (speed > 250) {
@@ -736,10 +745,14 @@ export class Scrap {
             }
         }
 
-        ctx.translate(sx, sy);
-        ctx.rotate(this.rotation);
+        // Direct matrix instead of save/translate/rotate/restore — pixel-
+        // identical, but skips the full state-stack push/pop per piece, which
+        // adds up across a 200-strong scrap field under load.
+        const cos = Math.cos(this.rotation), sin = Math.sin(this.rotation);
+        ctx.setTransform(cos, sin, -sin, cos, sx, sy);
         ctx.drawImage(this.img.canvas || this.img, -w / 2, -h / 2, w, h);
-        ctx.restore();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.globalAlpha = 1;
     }
 }
 
@@ -1416,7 +1429,7 @@ export class ExpOrb {
         ctx.save();
         ctx.globalCompositeOperation = 'screen';
 
-        // Draw Trail — inlined worldToScreen
+        // Draw Trail — direct matrix per step (no per-step save/restore stack).
         const hLen = this._histLen || 0;
         const hMax = this.maxHistory;
         const wtsS = camera.wtsScale, wtsOX = camera.wtsOffX, wtsOY = camera.wtsOffY;
@@ -1428,19 +1441,15 @@ export class ExpOrb {
             const tsy = pos.y * wtsS + wtsOY;
             const alpha = 0.4 * (1 - i / hLen);
             const scale = (1 - i / (hLen * 1.5));
-
-            ctx.save();
             ctx.globalAlpha = alpha;
-            ctx.translate(tsx, tsy);
-            ctx.scale(scale, scale);
+            ctx.setTransform(scale, 0, 0, scale, tsx, tsy);
             ctx.drawImage(frame, -w / 2, -h / 2, w, h);
-            ctx.restore();
         }
 
         // Main orb with pre-rendered glow (cached per GIF frame, shared across all orbs)
-        ctx.translate(sx, sy);
         const spawnScale = Math.min(1.0, this.suckTimer * 5.0);
-        ctx.scale(spawnScale, spawnScale);
+        ctx.globalAlpha = 1;
+        ctx.setTransform(spawnScale, 0, 0, spawnScale, sx, sy);
 
         const drawFrame = frame.canvas || frame;
         const glow = ExpOrb._getGlowForFrame(drawFrame);

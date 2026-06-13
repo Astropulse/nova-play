@@ -384,17 +384,8 @@ export class PlayingState {
             }
         }
 
-        // Also pre-create projectile glow sprites for all variants
-        const projGlowKeys = [
-            ['blue_laser_ball', '#1da2c0ff'],
-            ['blue_laser_ball_big', '#1da2c0ff'],
-            ['red_laser_ball', '#ff4444'],
-            ['red_laser_ball_big', '#ff4444'],
-        ];
-        for (const [key, color] of projGlowKeys) {
-            const asset = game.assets.get(key);
-            if (asset) Projectile._getGlowSprite(asset, color);
-        }
+        // (Projectile lasers now draw as simple stroked streaks — no glow
+        // sprite to pre-bake.)
 
         // Warm the fracture/shatter caches in the background (one sprite every
         // ~120ms) so the first shot/kill on each asteroid or enemy type never
@@ -1818,11 +1809,23 @@ export class PlayingState {
         this._enemyGrid.rebuild(this.enemies, _enemyAlive);
         this._projGrid.rebuild(this.projectiles, _projAlive);
 
+        // Temporal AI LOD stride: with few enemies everyone re-solves obstacle
+        // avoidance/dodge every frame (no change). In a crowd the expensive solve
+        // is spread over `stride` frames — each enemy re-solves on its scheduled,
+        // offset tick and carries the result over between (Enemy.update). Bosses
+        // always re-solve (few, and they matter). Halves/thirds the dominant AI
+        // cost in dense waves; the only effect is obstacle/dodge reaction landing
+        // a frame or two later, which is imperceptible amid that many ships.
+        this._aiFrame = (this._aiFrame | 0) + 1;
+        const _enN = this.enemies.length;
+        const _aiStride = _enN <= 8 ? 1 : (_enN <= 16 ? 2 : 3);
+
         this.perf.begin('enemies');
         if (isNetHost) {
             this.perf.begin('boss');
             for (const e of this.enemies) {
                 if (!e.isBoss) continue;
+                e._avoidRecompute = true;
                 e.update(dt, enemyTarget(e), enemyAvoidAsteroids, this.projectiles, this.enemies);
                 collectEnemyProjectiles(e);
             }
@@ -1830,6 +1833,7 @@ export class PlayingState {
             const despawnedEnemies = mp ? [] : null;
             for (const e of this.enemies) {
                 if (e.isBoss) continue;
+                e._avoidRecompute = (_aiStride === 1) || (((this._aiFrame + e._aiOffset) % _aiStride) === 0);
                 e.update(dt, enemyTarget(e), enemyAvoidAsteroids, this.projectiles, this.enemies);
                 collectEnemyProjectiles(e);
 
@@ -3580,7 +3584,14 @@ export class PlayingState {
     // Burst of short, bright spark streaks at an impact point. `opts.dir` aims
     // the spray (radians); `opts.spread` widens it; `opts.color` tints it.
     _spawnSparks(x, y, count = 6, opts = {}) {
-        if (this.sparks.length > 350) return; // hard cap so spam fire can't pile up
+        const _spk = this.sparks.length;
+        if (_spk > 350) return; // hard cap so spam fire can't pile up
+        // Particle LOD: thin auxiliary sparks once the field is already busy, so a
+        // chaotic wave doesn't keep spawning hundreds of streaks per frame. Below
+        // ~120 live sparks (normal play / light combat) this never triggers, so
+        // the effect is visually unchanged outside heavy pile-ups.
+        if (_spk > 220) count = Math.max(1, count >> 2);
+        else if (_spk > 120) count = Math.max(1, count >> 1);
         const dir = opts.dir != null ? opts.dir : Math.random() * Math.PI * 2;
         const spread = opts.spread != null ? opts.spread : Math.PI * 2;
         const color = opts.color || '#ffe08a';
@@ -7991,7 +8002,9 @@ export class PlayingState {
         const baseSize = 64;
 
         ctx.save();
-        // Use camera projection for explosions
+        // Use camera projection for explosions (inlined, allocation-free)
+        const cam = this.camera;
+        const wtsS = cam.wtsScale, wtsOX = cam.wtsOffX, wtsOY = cam.wtsOffY;
 
         for (const exp of this.explosions) {
             const progress = 1.0 - (exp.timer / exp.maxTimer);
@@ -8002,9 +8015,8 @@ export class PlayingState {
             const size = baseSize * this.game.worldScale;
 
             // screen coordinates via camera
-            const screen = this.camera.worldToScreen(exp.worldX, exp.worldY, this.game.width, this.game.height);
-            const sx = screen.x;
-            const sy = screen.y;
+            const sx = exp.worldX * wtsS + wtsOX;
+            const sy = exp.worldY * wtsS + wtsOY;
 
             ctx.drawImage(img, sx - size / 2, sy - size / 2, size, size);
         }
@@ -8022,9 +8034,12 @@ export class PlayingState {
         ctx.save();
         ctx.imageSmoothingEnabled = false;
 
+        const cam = this.camera;
+        const wtsS = cam.wtsScale, wtsOX = cam.wtsOffX, wtsOY = cam.wtsOffY;
         for (const s of this.sparks) {
-            const screen = this.camera.worldToScreen(s.worldX, s.worldY, W, H);
-            if (screen.x < -20 || screen.x > W + 20 || screen.y < -20 || screen.y > H + 20) continue;
+            const scrX = s.worldX * wtsS + wtsOX;
+            const scrY = s.worldY * wtsS + wtsOY;
+            if (scrX < -20 || scrX > W + 20 || scrY < -20 || scrY > H + 20) continue;
 
             const t = Math.max(0, s.life / s.maxLife);
             const blockSize = s.size * pix;
@@ -8042,8 +8057,8 @@ export class PlayingState {
             for (let i = trail; i >= 0; i--) {
                 ctx.globalAlpha = headAlpha * (1 - i / (trail + 1));
                 // Snap each block to the logical-pixel grid for crisp edges
-                const px = Math.round((screen.x + stepX * i) / pix) * pix;
-                const py = Math.round((screen.y + stepY * i) / pix) * pix;
+                const px = Math.round((scrX + stepX * i) / pix) * pix;
+                const py = Math.round((scrY + stepY * i) / pix) * pix;
                 ctx.fillRect(px, py, blockSize, blockSize);
             }
         }

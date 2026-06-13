@@ -30,48 +30,11 @@ export class Projectile {
         this.historyHead = 0;  // points to newest entry
         this.maxHistory = 2; // Keep it tight: only a few frames of history
 
-        // Map sprite keys to glow colors
+        // Laser color for the stroked streak (drawn in _drawBody — no sprite).
         this.glowColor = '#1da2c0ff'; // Default Blue
         if (spriteKey.includes('yellow')) this.glowColor = '#ffdd44';
         else if (spriteKey.includes('red')) this.glowColor = '#ff4444';
         else if (spriteKey.includes('green')) this.glowColor = '#44ff44';
-
-        // Pre-render glow sprite (eliminates per-frame shadowBlur — massive perf win)
-        this._glowSprite = Projectile._getGlowSprite(this.img, this.glowColor);
-    }
-
-    // Static cache: pre-renders sprite + shadow glow once per sprite/color combo
-    static _glowCache = new Map();
-    static _getGlowSprite(imgAsset, glowColor) {
-        if (!imgAsset) return null;
-        const img = imgAsset.canvas || imgAsset;
-        const key = img.src || img.dataset?.key || `${img.width}x${img.height}_${glowColor}`;
-        const cached = Projectile._glowCache.get(key);
-        if (cached) return cached;
-
-        // Blur in pre-scaled pixel space (prescale=4, display at worldScale/4)
-        // shadowBlur = 5*worldScale in screen px = 5*4 = 20 in pre-scale px
-        const blur = 20;
-        const pad = blur * 2;
-        const c = document.createElement('canvas');
-        c.width = img.width + pad * 2;
-        c.height = img.height + pad * 2;
-        const gctx = c.getContext('2d');
-
-        // Draw with shadow to create glow
-        gctx.shadowBlur = blur;
-        gctx.shadowColor = glowColor;
-        gctx.shadowOffsetX = 0;
-        gctx.shadowOffsetY = 0;
-        gctx.drawImage(img, pad, pad);
-
-        // Draw sharp image on top (no shadow)
-        gctx.shadowBlur = 0;
-        gctx.drawImage(img, pad, pad);
-
-        const result = { canvas: c, pad: pad, imgW: img.width, imgH: img.height };
-        Projectile._glowCache.set(key, result);
-        return result;
     }
 
     update(dt) {
@@ -119,71 +82,81 @@ export class Projectile {
     }
 
     // Render body WITHOUT the save/composite/restore wrapper. Only valid inside
-    // a 'screen' composite context (draw() above, or the batched loop). Runs in
-    // screen space via absolute setTransform, so it leaves no transform state
+    // a 'screen' composite context (draw() above, or the batched loop). Uses
+    // absolute screen coords with NO transform, so it leaves no transform state
     // that would leak between batched projectiles.
+    //
+    // The laser is drawn as a simple stroked streak — a wide faint colored line
+    // (glow) + a thin bright core + a round head — instead of a motion-blur
+    // stack of sprite quads and a big pre-baked glow blit. For fast-moving shots
+    // this reads the same, but it's ~3 cheap vector ops per projectile instead
+    // of up to 9 image draws + a large translucent glow fill, which is the
+    // dominant projectile draw cost when a wave fills the screen with fire.
     _drawBody(ctx, camera) {
-        if (!this.alive || !this.img) return;
-        const img = this.img.canvas || this.img;
-        const w = img.width * this.game.worldScale / 4;
-        const h = img.height * this.game.worldScale / 4;
-
-        // 1. Draw Interpolated Trail — inlined worldToScreen + direct matrix
-        // (setTransform) so each of the up-to-8 trail quads costs one transform
-        // set instead of a save/translate/rotate/scale/restore stack push. The
-        // whole projectile render runs in screen space (identity base), so the
-        // outer save/restore still cleanly brackets it.
-        const trailSteps = 4;
-        const hLen = this.historyLen;
-        const hMax = this.maxHistory;
-        const cw = this.game.width, ch = this.game.height;
+        if (!this.alive) return;
         const ws = this.game.worldScale;
         const camX = camera.x, camY = camera.y;
-        const halfCW = cw / 2 + camera.shakeX, halfCH = ch / 2 + camera.shakeY;
-        const hw = w / 2, hh = h / 2;
+        const halfCW = this.game.width / 2 + camera.shakeX;
+        const halfCH = this.game.height / 2 + camera.shakeY;
 
-        let prevX = this.worldX, prevY = this.worldY;
-        for (let i = 0; i < hLen; i++) {
-            const idx = (this.historyHead - i + hMax) % hMax;
-            const end = this.history[idx];
-            // All sub-steps of one history entry share its rotation.
-            const ea = end.a + Math.PI / 2;
-            const cosA = Math.cos(ea), sinA = Math.sin(ea);
+        if (!this.img) return;
+        const hx = (this.worldX - camX) * ws + halfCW;
+        const hy = (this.worldY - camY) * ws + halfCH;
+        const img = this.img.canvas || this.img;
+        // Display size matches the original sprite (prescale 4 → /4).
+        const w = img.width * ws / 4;
+        const h = img.height * ws / 4;
 
-            for (let j = 1; j <= trailSteps; j++) {
-                const stepT = j / trailSteps;
-                const ix = prevX + (end.x - prevX) * stepT;
-                const iy = prevY + (end.y - prevY) * stepT;
-
-                const sx = (ix - camX) * ws + halfCW;
-                const sy = (iy - camY) * ws + halfCH;
-                const totalI = i + stepT;
-                const alpha = 0.5 * (1 - totalI / (hLen + 1));
-                const s = (1 - totalI / (hLen * 3)); // trail scale
-
-                ctx.globalAlpha = alpha;
-                ctx.setTransform(s * cosA, s * sinA, -s * sinA, s * cosA, sx, sy);
-                ctx.drawImage(img, -hw, -hh, w, h);
+        // 1. Tapered trail — a filled triangle that's full width at the head and
+        // narrows to a POINT at the tail (the oldest retained history position),
+        // so it reads as a real comet streak, not a fixed-width bar. Two stacked
+        // tapers: a wide colored glow + a narrower white-hot core. Plain fills
+        // (no per-shot gradient), and the additive 'screen' blend makes them glow.
+        const hLen = this.historyLen, hMax = this.maxHistory;
+        if (hLen > 0) {
+            const idx = (this.historyHead - (hLen - 1) + hMax) % hMax;
+            const tail = this.history[idx];
+            if (tail) {
+                const tx = (tail.x - camX) * ws + halfCW;
+                const ty = (tail.y - camY) * ws + halfCH;
+                const dx = hx - tx, dy = hy - ty;
+                const len = Math.sqrt(dx * dx + dy * dy);
+                if (len > 1) {
+                    const nx = -dy / len, ny = dx / len; // unit perpendicular
+                    const glowHW = w * 0.5;  // half-width at head — colored glow
+                    const coreHW = w * 0.13; // half-width at head — faint center
+                    // Colored glow taper — soft/translucent so it reads as a
+                    // fading wisp behind the bolt, not a solid wedge.
+                    ctx.globalAlpha = 0.4;
+                    ctx.fillStyle = this.glowColor;
+                    ctx.beginPath();
+                    ctx.moveTo(hx + nx * glowHW, hy + ny * glowHW);
+                    ctx.lineTo(hx - nx * glowHW, hy - ny * glowHW);
+                    ctx.lineTo(tx, ty);
+                    ctx.closePath();
+                    ctx.fill();
+                    // Thin, subtle lighter center — just a hint, not a white bar.
+                    ctx.globalAlpha = 0.3;
+                    ctx.fillStyle = '#ffffff';
+                    ctx.beginPath();
+                    ctx.moveTo(hx + nx * coreHW, hy + ny * coreHW);
+                    ctx.lineTo(hx - nx * coreHW, hy - ny * coreHW);
+                    ctx.lineTo(tx, ty);
+                    ctx.closePath();
+                    ctx.fill();
+                    ctx.globalAlpha = 1;
+                }
             }
-            prevX = end.x; prevY = end.y;
         }
 
-        // 2. Draw Main Projectile with pre-rendered glow (no per-frame shadowBlur)
-        const screenX = (this.worldX - camX) * ws + halfCW;
-        const screenY = (this.worldY - camY) * ws + halfCH;
+        // 2. Core — the real laser sprite, drawn LAST (on top of the trail) and
+        // at full opacity so it stays the crisp bright bolt, with the faded
+        // tapered streak sitting behind it.
         const ma = this.angle + Math.PI / 2;
         const mc = Math.cos(ma), msn = Math.sin(ma);
-        ctx.globalAlpha = 1;
-        ctx.setTransform(mc, msn, -msn, mc, screenX, screenY);
-        if (this._glowSprite) {
-            // Scale so the sprite portion matches original w×h exactly
-            const pxScale = w / this._glowSprite.imgW;
-            const gw = this._glowSprite.canvas.width * pxScale;
-            const gh = this._glowSprite.canvas.height * pxScale;
-            ctx.drawImage(this._glowSprite.canvas, -gw / 2, -gh / 2, gw, gh);
-        } else {
-            ctx.drawImage(img, -hw, -hh, w, h);
-        }
+        ctx.setTransform(mc, msn, -msn, mc, hx, hy);
+        ctx.drawImage(img, -w / 2, -h / 2, w, h);
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
     }
 
     // Collision radius (game units)

@@ -69,8 +69,34 @@ Each line is `[perf] {json}`. Tags:
     update-side vs draw-side (by diffing `perf._current` around update/draw).
   - `methods` — wrapped **untracked** draw sub-methods: `hud`, `hudExpBar`,
     `hudRadar`, `EnemyIndicators`, `CacheOverlay`, `ShopOverlay`, `streakOv`,
-    `ambience`, … (the profiler does NOT cover these natively).
+    `ambience`, `sparks`, `explosions`, … (the profiler does NOT cover these
+    natively).
+  - `ai` — enemy-AI compute split summed across all live enemies, in ms/frame:
+    `avoid` (`_avoidObstacles`), `aiState` (`_updateAIState`), `target`. Pure
+    `performance.now()` brackets, so **accurate regardless of raster pipeline**.
+  - `avoidSplit` — `_avoidObstacles` broken into `ast` (asteroid avoidance),
+    `sep` (enemy separation), `dodge` (projectile dodge). Enabled by the harness
+    setting `Enemy._PROF = true`.
+  - `counts` — live particle populations: `spk` sparks, `rub` rubble, `ft`
+    floating texts, `orb` exp orbs, `scr` scrap, `exp` explosions. Use these to
+    see when a phase is dominated by the *number* of entities, not per-entity cost.
   - `en`/`ast`/`proj`/`canvases`/`lowPerf` — context counts + adaptive flag.
+
+> **Update vs draw, and the deferred-raster trap.** Canvas-2D draw calls are
+> *deferred*: `drawImage`/fills/composites only queue work that rasterizes at a
+> later flush (a canvas readback, certain composite ops, or frame end). So
+> `drawSect`/`methods` timings capture JS **submission**, and whichever section
+> first reads the canvas back (e.g. the exp bar's offscreen compositing) absorbs
+> the *entire frame's* pending raster — making an innocent section look like the
+> bottleneck. The fix is NOT to force a `getImageData` flush per section (a full
+> pipeline sync per call tanks the whole run to single-digit fps). Instead trust
+> the **update-side** numbers (`updSect`, `ai`, `avoidSplit` — pure JS, no
+> raster) as the honest compute signal, and read `draw` as a whole.
+> Also: a 10× **CPU** throttle does NOT disable the GPU. Confirm Canvas2D is
+> actually GPU-accelerated (`scripts/perf/gpucheck.mjs`) — after a renderer/GPU
+> crash Chrome can silently fall back to **software raster**, which inflates and
+> destabilizes every `draw` number (the same arc can swing 13→24ms run to run)
+> and is *not* the hardware a real player has. Relaunch Chrome fresh if so.
 - `BOT {msg}` — bot progress notes. `DONE` — arc finished. `SUITE_ERR {err}` — scenario threw.
 
 **Key idea:** the in-game `PerfProfiler` under-reports by ~2× because it only

@@ -26,14 +26,16 @@ document.createElement = function (t, ...r) { if (typeof t === 'string' && t.toL
     const g = window.__novaGame;
     if (!ok || !g) { post({ tag: 'FAIL', reason: 'no game/assets' }); return; }
 
-    const [ps, ships, enemyMod, astMod, prewarm, kn, upg, shopMod] = await Promise.all([
+    const [ps, ships, enemyMod, astMod, prewarm, kn, upg, shopMod, ftMod] = await Promise.all([
         import('/src/states/playingState.js'), import('/src/data/ships.js'),
         import('/src/entities/enemy.js'), import('/src/entities/asteroid.js'),
         import('/src/engine/prewarm.js'), import('/src/entities/knowledgeEvent.js'),
         import('/src/data/upgrades.js'), import('/src/entities/shop.js'),
+        import('/src/entities/floatingText.js'),
     ]);
-    const { PlayingState } = ps, { SHIPS } = ships, { Enemy } = enemyMod, { Asteroid } = astMod;
-    const { KnowledgeEvent } = kn, { UPGRADES } = upg, { Shop } = shopMod;
+    const { PlayingState } = ps, { SHIPS } = ships, { Enemy } = enemyMod;
+    const { Asteroid, Rubble, Scrap, ExpOrb } = astMod;
+    const { KnowledgeEvent } = kn, { UPGRADES } = upg, { Shop } = shopMod, { FloatingText } = ftMod;
     try { for (let i = 0; i < 80 && !prewarm.pumpRunPrewarm(g, 1); i++) {} } catch (e) {}
 
     g.setState(new PlayingState(g, SHIPS[0]));
@@ -53,7 +55,12 @@ document.createElement = function (t, ...r) { if (typeof t === 'string' && t.toL
     function newAcc() {
         const sect = {}; for (const c of S.perf.components) sect[c] = 0;
         return { frameSum: 0, frameN: 0, frameMax: 0, upd: 0, draw: 0, sfx: 0,
-            updSect: { ...sect }, drawSect: { ...sect }, methods: {} };
+            updSect: { ...sect }, drawSect: { ...sect }, methods: {},
+            // Pure-compute sub-breakdowns (performance.now() only — no canvas
+            // readback, so these are accurate regardless of raster pipeline).
+            ai: { avoid: 0, aiState: 0, target: 0, enemyN: 0 },
+            // Per-particle-type draw-submission time, summed across instances.
+            pdraw: { scrap: 0, rubble: 0, orb: 0, ft: 0 } };
     }
     function flushPhase() {
         const a = acc;
@@ -66,11 +73,19 @@ document.createElement = function (t, ...r) { if (typeof t === 'string' && t.toL
             potentialFps: a.frameSum > 0 ? Math.round(n / a.frameSum * 1000) : 0,
             upd: round(a.upd / n), draw: round(a.draw / n), sfx: round(a.sfx / n),
             updSect: sectOut(a.updSect), drawSect: sectOut(a.drawSect), methods: sectOut(a.methods),
+            // Enemy-AI compute split (ms/frame, summed across all enemies).
+            ai: { avoid: round(a.ai.avoid / n), aiState: round(a.ai.aiState / n), target: round(a.ai.target / n) },
+            // Per-particle-type draw-submission split (ms/frame).
+            pdraw: { scrap: round(a.pdraw.scrap / n), rubble: round(a.pdraw.rubble / n), orb: round(a.pdraw.orb / n), ft: round(a.pdraw.ft / n) },
+            avoidSplit: { ast: round((Enemy._pAst || 0) / n), sep: round((Enemy._pSep || 0) / n), dodge: round((Enemy._pDodge || 0) / n) },
             en: S.enemies.length, ast: S.asteroids.length, proj: S.projectiles.length, canvases: canvasCreated,
+            // Live particle-population counts — "sheer number of calculations".
+            counts: { spk: S.sparks.length, rub: S.rubble.length, ft: S.floatingTexts.length, orb: S.expOrbs.length, scr: S.scrapEntities.length, exp: (S.explosions || []).length },
             lowPerf: !!g.lowPerfMode, potFps: g.potentialFps,
         });
+        try { Enemy._pAst = 0; Enemy._pSep = 0; Enemy._pDodge = 0; } catch (e) {}
     }
-    function setPhase(name) { flushPhase(); Object.assign(acc, newAcc()); phase = name; post({ tag: 'PHASE_START', phase: name }); }
+    function setPhase(name) { flushPhase(); Object.assign(acc, newAcc()); try { Enemy._pAst = 0; Enemy._pSep = 0; Enemy._pDodge = 0; } catch (e) {} phase = name; post({ tag: 'PHASE_START', phase: name }); }
 
     // Wrap untracked draw sub-methods into acc.methods.
     const afterUpd = new Map();
@@ -88,6 +103,38 @@ document.createElement = function (t, ...r) { if (typeof t === 'string' && t.toL
     wrapDraw(S.killStreak, 'drawWorld', 'streakWorld');
     wrapDraw(S.dread, 'drawOverlay', 'dreadOv');
     wrapDraw(S.ambience, 'draw', 'ambience');
+    // Particle-draw sub-methods (these sit inside the 'particles' draw section;
+    // breaking them out shows which particle kind costs the JS submission).
+    wrapDraw(S, '_drawSparks', 'sparks');
+    wrapDraw(S, '_drawExplosions', 'explosions');
+
+    // Enemy-AI sub-phase timing — summed across every enemy each frame. Pure
+    // performance.now() brackets (no canvas touch), so these stay accurate
+    // whatever the raster pipeline is doing. Reveals whether the WAVE compute
+    // cost is obstacle avoidance, the AI state machine, or target selection.
+    function wrapAI(proto, name, key) {
+        if (!proto || typeof proto[name] !== 'function') return;
+        const orig = proto[name];
+        proto[name] = function (...a) { const t0 = performance.now(); const r = orig.apply(this, a); acc.ai[key] += performance.now() - t0; return r; };
+    }
+    wrapAI(Enemy.prototype, '_avoidObstacles', 'avoid');
+    wrapAI(Enemy.prototype, '_updateAIState', 'aiState');
+    wrapAI(Enemy.prototype, '_getTargetAngle', 'target');
+
+    // Per-particle-type draw cost (summed across all instances each frame), so
+    // we can see WHICH particle kind owns the draw-call budget in a wave.
+    function wrapPDraw(cls, key) {
+        if (!cls || !cls.prototype || typeof cls.prototype.draw !== 'function') return;
+        const orig = cls.prototype.draw;
+        cls.prototype.draw = function (...a) { const t0 = performance.now(); const r = orig.apply(this, a); acc.pdraw[key] += performance.now() - t0; return r; };
+    }
+    wrapPDraw(Scrap, 'scrap');
+    wrapPDraw(Rubble, 'rubble');
+    wrapPDraw(ExpOrb, 'orb');
+    wrapPDraw(FloatingText, 'ft');
+    // Enable the in-method split of _avoidObstacles (asteroid / separation /
+    // projectile-dodge) so we see which sub-part of avoidance costs the most.
+    Enemy._PROF = true; Enemy._pAst = 0; Enemy._pSep = 0; Enemy._pDodge = 0;
 
     const origUpdate = S.update.bind(S);
     S.update = function (dt) { const t0 = performance.now(); origUpdate(dt); acc.upd += performance.now() - t0; afterUpd.clear(); for (const [k, v] of S.perf._current) afterUpd.set(k, v); };
