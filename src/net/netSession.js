@@ -390,6 +390,7 @@ export class ClientSession extends NetSessionBase {
     }
 
     _onMessage(raw) {
+        this._lastHostMsg = netNow();
         const msg = decode(raw);
         if (!msg) return;
         switch (msg.type) {
@@ -498,6 +499,14 @@ export class ClientSession extends NetSessionBase {
         if (this._pingTimer <= 0) {
             this._pingTimer = 2.0;
             this.send(MSG.PING, { t: netNow() });
+        }
+        // The host answers every PING; in-run it also broadcasts constantly.
+        // Sustained silence = the host is gone (or our socket is half-open and
+        // will never fire onclose) — end the run cleanly instead of freezing.
+        // The cutoff sits above the host's ~8s reconnect window so a host that
+        // comes back in time is seamless.
+        if (this._lastHostMsg && netNow() - this._lastHostMsg > 11) {
+            this._end('Lost connection to the host.');
         }
     }
 

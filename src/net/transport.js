@@ -150,15 +150,23 @@ function relayKeyParam() {
 // Host side: one WSS connection carries every client, multiplexed with tiny
 // envelopes (relay/src/worker.js documents the framing). Exposes the exact
 // same surface as HostTransport so HostSession can run both at once.
+//
+// Resilient: if the relay socket drops unexpectedly (network blip, relay
+// redeploy) it re-claims the same room with backoff — the relay parks the
+// clients for a grace window, so a host hiccup no longer ends the world.
 export class RelayHostTransport {
     constructor() {
         this.onClientConnected = null;  // (clientId)
         this.onClientMessage = null;    // (clientId, rawString)
         this.onClientClosed = null;     // (clientId)
-        this.onClosed = null;           // relay connection itself dropped
+        this.onClosed = null;           // relay connection permanently lost
         this.ws = null;
         this.code = null;               // room code (the join code)
         this._clientIds = new Set();
+        this._stopped = false;
+        this._reconnecting = false;
+        this._pingTimer = null;
+        this._lastAlive = 0;            // last time the relay proved itself alive
     }
 
     async start() {
@@ -166,7 +174,6 @@ export class RelayHostTransport {
         if (!base) return { ok: false, error: 'No relay configured.' };
 
         // 1. Get a fresh room code.
-        let code;
         try {
             const key = getRelayKey();
             const resp = await fetch(`${base}/create${key ? `?k=${encodeURIComponent(key)}` : ''}`, {
@@ -174,68 +181,153 @@ export class RelayHostTransport {
                 signal: AbortSignal.timeout ? AbortSignal.timeout(6000) : undefined,
             });
             if (!resp.ok) return { ok: false, error: `Relay refused (${resp.status}).` };
-            code = (await resp.json()).code;
+            this.code = (await resp.json()).code;
         } catch {
             return { ok: false, error: 'Could not reach the relay.' };
         }
 
         // 2. Claim the room as host.
+        if (!(await this._connect(8000))) {
+            this.code = null;
+            return { ok: false, error: 'Relay connection timed out.' };
+        }
+        return { ok: true };
+    }
+
+    // Open (or re-open) the room socket. Resolves true once claimed.
+    _connect(timeoutMs) {
         return new Promise((resolve) => {
             let settled = false;
-            const finish = (ok, error) => {
-                if (settled) return;
-                settled = true;
-                resolve({ ok, error });
-            };
+            const finish = (ok) => { if (!settled) { settled = true; resolve(ok); } };
             let ws;
             try {
-                ws = new WebSocket(`${relayWsBase()}/room/${code}?role=host${relayKeyParam()}`);
+                ws = new WebSocket(`${relayWsBase()}/room/${this.code}?role=host${relayKeyParam()}`);
             } catch {
-                finish(false, 'Relay connection blocked.');
+                finish(false);
                 return;
             }
             this.ws = ws;
             const timer = setTimeout(() => {
                 try { ws.close(); } catch { /* noop */ }
-                finish(false, 'Relay connection timed out.');
-            }, 8000);
+                finish(false);
+            }, timeoutMs);
 
             ws.onopen = () => {
                 clearTimeout(timer);
-                this.code = code;
+                // From here on, a close means an established leg dropped.
+                ws.onclose = () => this._onSocketClosed(ws);
+                this._lastAlive = performance.now();
+                this._startHeartbeat();
                 finish(true);
             };
-            ws.onmessage = (e) => {
-                const raw = String(e.data);
-                const sep = raw.indexOf(':');
-                if (sep < 1) return;
-                const id = parseInt(raw.slice(1, sep), 10) || 0;
-                const body = raw.slice(sep + 1);
-                switch (raw[0]) {
-                    case 'C':
-                        this._clientIds.add(id);
-                        if (this.onClientConnected) this.onClientConnected(id);
-                        break;
-                    case 'M':
-                        if (this.onClientMessage) this.onClientMessage(id, body);
-                        break;
-                    case 'D':
-                        this._clientIds.delete(id);
-                        if (this.onClientClosed) this.onClientClosed(id);
-                        break;
-                }
-            };
+            ws.onmessage = (e) => this._onFrame(String(e.data));
             ws.onclose = () => {
                 clearTimeout(timer);
-                // Relay leg died — every relay client is gone with it.
-                for (const id of [...this._clientIds]) {
-                    this._clientIds.delete(id);
-                    if (this.onClientClosed) this.onClientClosed(id);
-                }
-                if (this.code && this.onClosed) this.onClosed();
-                finish(false, 'Could not reach the relay.');
+                finish(false);
             };
         });
+    }
+
+    // Ping the relay every 2s and treat 6s of silence as a dead leg. A
+    // half-open socket (network drop with no FIN) never fires onclose, and a
+    // close handshake can wedge in CLOSING forever — this is the only way to
+    // notice either within "a few seconds".
+    _startHeartbeat() {
+        if (this._pingTimer) clearInterval(this._pingTimer);
+        this._pingTimer = setInterval(() => {
+            if (this._stopped || this._reconnecting || !this.ws) return;
+            const rs = this.ws.readyState;
+            const force = (why) => {
+                console.warn(`[net] relay leg ${why} — forcing reconnect`);
+                const ws = this.ws;
+                ws.onclose = null;
+                try { ws.close(); } catch { /* noop */ }
+                this._onSocketClosed(ws);
+            };
+            if (rs === WebSocket.OPEN) {
+                this._sendRaw('P0:');
+                if (performance.now() - this._lastAlive > 6000) force('unresponsive');
+            } else if (rs === WebSocket.CLOSING || rs === WebSocket.CLOSED) {
+                force('stuck closing'); // onclose never delivered
+            }
+        }, 2000);
+    }
+
+    _onFrame(raw) {
+        this._lastAlive = performance.now();
+        const sep = raw.indexOf(':');
+        if (sep < 1) return;
+        if (raw[0] === 'P') return; // heartbeat pong
+        const id = parseInt(raw.slice(1, sep), 10) || 0;
+        const body = raw.slice(sep + 1);
+        switch (raw[0]) {
+            case 'C':
+                this._clientIds.add(id);
+                if (this.onClientConnected) this.onClientConnected(id);
+                break;
+            case 'M':
+                if (this.onClientMessage) this.onClientMessage(id, body);
+                break;
+            case 'D':
+                this._clientIds.delete(id);
+                if (this.onClientClosed) this.onClientClosed(id);
+                break;
+            case 'R': {
+                // Roster on (re)claim — drop clients that left while we were
+                // away (their D frames went nowhere).
+                const live = new Set(body
+                    ? body.split(',').map(n => parseInt(n, 10)).filter(n => n > 0)
+                    : []);
+                for (const known of [...this._clientIds]) {
+                    if (!live.has(known)) {
+                        this._clientIds.delete(known);
+                        if (this.onClientClosed) this.onClientClosed(known);
+                    }
+                }
+                break;
+            }
+        }
+    }
+
+    async _onSocketClosed(ws) {
+        if (this._stopped || this._reconnecting || this.ws !== ws) return;
+        this._reconnecting = true;
+        this.ws = null;
+        // Transient blip or relay redeploy — try to re-claim the room before
+        // declaring the world over. Kept SHORT: clients sit frozen while the
+        // host is gone, so a few seconds of retries is the most that's fair.
+        console.warn('[net] relay socket lost — reconnecting...');
+        const deadline = performance.now() + 8000;
+        let attempt = 0;
+        while (!this._stopped && performance.now() < deadline) {
+            attempt++;
+            await new Promise(r => setTimeout(r, 500));
+            if (this._stopped) return;
+            if (await this._connect(3000)) {
+                console.warn(`[net] relay reconnected (attempt ${attempt})`);
+                this._reconnecting = false;
+                return; // roster frame reconciles who came/went
+            }
+            console.warn(`[net] relay reconnect attempt ${attempt} failed`);
+        }
+        this._reconnecting = false;
+        if (this._stopped) return;
+        console.warn('[net] relay reconnect gave up — dropping relay leg');
+        if (this._pingTimer) {
+            clearInterval(this._pingTimer);
+            this._pingTimer = null;
+        }
+        if (this.ws) {
+            // Last failed attempt may have left a dead socket behind.
+            this.ws.onclose = null;
+            try { this.ws.close(); } catch { /* noop */ }
+            this.ws = null;
+        }
+        for (const id of [...this._clientIds]) {
+            this._clientIds.delete(id);
+            if (this.onClientClosed) this.onClientClosed(id);
+        }
+        if (this.onClosed) this.onClosed();
     }
 
     _sendRaw(text) {
@@ -249,6 +341,11 @@ export class RelayHostTransport {
     kick(clientId) { this._sendRaw(`K${clientId}:`); }
 
     stop() {
+        this._stopped = true;
+        if (this._pingTimer) {
+            clearInterval(this._pingTimer);
+            this._pingTimer = null;
+        }
         if (this.ws) {
             this.ws.onclose = null;
             try { this.ws.close(); } catch { /* noop */ }

@@ -158,19 +158,28 @@ class BaseWorldSync {
     // Spawn local visual projectiles for another player's shots.
     _spawnRemoteShots(rp, shots) {
         if (!shots || !shots.length) return;
+        // One sound per packet per weapon kind — a single volley (multishot /
+        // energy blaster) arrives as several entries but is one trigger pull.
+        let laserAt = null, beamAt = null;
         for (const s of shots) {
             const [kind, x, y, angle, speed, spriteId] = s;
             if (kind === 1) {
                 // Beam flash (railgun / energy blaster visual)
                 if (!this.state.activeBeams) this.state.activeBeams = [];
                 this.state.activeBeams.push({ x, y, angle, timer: 0.15 });
+                beamAt = { x, y };
             } else {
                 const proj = new Projectile(this.game, x, y, angle, speed, PROJ_SPRITES[spriteId] || 'blue_laser_ball', rp, 0);
                 proj.friendly = true;
                 proj.netVisual = true;
                 this.state.projectiles.push(proj);
+                laserAt = { x, y };
             }
         }
+        // Positional: the sound engine attenuates by distance to the listener,
+        // so a teammate firing across the map is quiet/silent, nearby is loud.
+        if (laserAt) this.game.sounds.play('laser', { volume: 0.3, x: laserAt.x, y: laserAt.y });
+        if (beamAt) this.game.sounds.play('railgun_shoot', { volume: 0.7, x: beamAt.x, y: beamAt.y });
     }
 
     // Record one of the LOCAL player's shots for the next state packet so
