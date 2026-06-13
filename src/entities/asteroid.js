@@ -34,7 +34,9 @@ function computeCollisionRadius(asset, key) {
     const canvas = document.createElement('canvas');
     canvas.width = aw;
     canvas.height = ah;
-    const ctx = canvas.getContext('2d');
+    // Pixel-readback canvas → willReadFrequently keeps it CPU-side so getImageData
+    // can't stall the GPU pipeline (which would drag the main canvas down too).
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(img, 0, 0, img.width, img.height, 0, 0, aw, ah);
 
@@ -99,7 +101,9 @@ export class VoronoiSlicer {
         const canvas = document.createElement('canvas');
         canvas.width = lw;
         canvas.height = lh;
-        const ctx = canvas.getContext('2d');
+        // Readback-only canvas: willReadFrequently avoids a GPU surface + a
+        // pipeline-stalling readback on the first slice of each sprite.
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
         ctx.imageSmoothingEnabled = false;
         ctx.drawImage(img, 0, 0, img.width, img.height, 0, 0, lw, lh);
         const imgData = ctx.getImageData(0, 0, lw, lh);
@@ -250,7 +254,8 @@ export class FractureModel {
         const canvas = document.createElement('canvas');
         canvas.width = lw;
         canvas.height = lh;
-        const ctx = canvas.getContext('2d');
+        // Readback-only canvas (see VoronoiSlicer) — keep it off the GPU.
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
         ctx.imageSmoothingEnabled = false;
         ctx.drawImage(img, 0, 0, img.width, img.height, 0, 0, lw, lh);
         const data = ctx.getImageData(0, 0, lw, lh).data;

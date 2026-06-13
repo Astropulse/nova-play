@@ -41,6 +41,13 @@ import { CinematicDirector } from '../ui/cinematics.js';
 import { KillStreakFX } from '../ui/killStreak.js';
 import { DreadDirector } from '../ui/dread.js';
 import { Ambience } from '../world/ambience.js';
+import { FRACTURE_PREWARM_KEYS } from '../engine/prewarm.js';
+import { SpatialHash } from '../engine/spatialHash.js';
+
+// Module-level filters (defined once so the per-frame grid rebuilds allocate no
+// closures). Skip dead entities so neighbour queries never return them.
+const _enemyAlive = (e) => e.alive;
+const _projAlive = (p) => p.alive;
 
 export class PlayingState {
     constructor(game, shipData, { skipInit = false, handoff = null, netRun = null } = {}) {
@@ -338,6 +345,18 @@ export class PlayingState {
 
         this.indicatorOpacities = new Map(); // entity -> { opacity }
 
+        // Broad-phase grid of live enemies, rebuilt each frame. Enemy AI uses it
+        // for O(1)-ish neighbour separation instead of an O(n^2) all-pairs scan;
+        // cell size matches the 120px separation radius. (engine/spatialHash.js)
+        this._enemyGrid = new SpatialHash(128);
+
+        // Broad-phase grid of live projectiles, rebuilt each frame. Enemy AI uses
+        // it for projectile-dodge so each enemy only tests shots in its ~1500px
+        // neighbourhood instead of scanning EVERY projectile — that all-pairs
+        // scan (enemies x projectiles) is what makes dense waves lag, since both
+        // counts climb together. Cell size ~ the dodge broad-phase radius.
+        this._projGrid = new SpatialHash(1024);
+
         // Performance profiler (dev mode only)
         this.perf = new PerfProfiler();
 
@@ -371,15 +390,11 @@ export class PlayingState {
     // Background pre-warm of the per-sprite damage models. Each step costs a
     // few ms; spreading them out keeps the frame budget intact while making
     // first-hit chip damage and death shatters effectively free later.
+    // Normally the title-screen prewarm (engine/prewarm.js) has already built
+    // all of these, making every step here a cache hit — this run-time pass
+    // only does real work when a run starts before that pump finished.
     _startFracturePrewarm() {
-        // Piece counts must match what _generateProceduralDebris asks for —
-        // the shatter cache keeps whichever layout is built first.
-        const keys = [];
-        for (const k of ['asteroid_big_0', 'asteroid_big_1', 'asteroid_big_2']) keys.push([k, 60]);
-        for (const k of ['asteroid_medium_0', 'asteroid_medium_1', 'asteroid_medium_2']) keys.push([k, 32]);
-        for (const k of ['asteroid_small_0', 'asteroid_small_1']) keys.push([k, 22]);
-        for (let i = 0; i <= 24; i++) keys.push([`asteroid_tiny_${String(i).padStart(2, '0')}`, 14]);
-        for (let i = 0; i <= 4; i++) keys.push([`enemy_ship_${i}`, 13]);
+        const keys = FRACTURE_PREWARM_KEYS;
 
         let idx = 0;
         const step = () => {
@@ -397,6 +412,17 @@ export class PlayingState {
             this._prewarmTimer = setTimeout(step, 150);
         };
         this._prewarmTimer = setTimeout(step, 1200);
+    }
+
+    // Host-side: batch-despawn anything in arr that died without its own
+    // KILL/TOOK broadcast. Only allocates when something actually died, so
+    // the steady-state per-frame cost is a plain scan with zero garbage.
+    _broadcastDeadDespawns(kind, arr) {
+        let dead = null;
+        for (const e of arr) {
+            if (!e.alive && e.netId !== undefined) (dead || (dead = [])).push(e);
+        }
+        if (dead) this.netSync.broadcastDespawn(kind, dead);
     }
 
     // In-place removal of dead entities — avoids allocating a new array every frame
@@ -1102,16 +1128,16 @@ export class PlayingState {
             this.player.rocketsTimer = (this.player.rocketsTimer || 0) - dt;
             if (this.player.rocketsTimer <= 0) {
                 let target = null;
-                let minDist = 1500;
+                let minDistSq = 1500 * 1500;
 
                 for (const en of this.enemies) {
                     if (!en.alive) continue;
                     const edx = en.worldX - this.player.worldX;
                     const edy = en.worldY - this.player.worldY;
-                    const edist = Math.sqrt(edx * edx + edy * edy);
-                    if (edist < minDist) {
+                    const edistSq = edx * edx + edy * edy;
+                    if (edistSq < minDistSq) {
                         target = en;
-                        minDist = edist;
+                        minDistSq = edistSq;
                     }
                 }
 
@@ -1120,10 +1146,10 @@ export class PlayingState {
                         if (!ast.alive) continue;
                         const adx = ast.worldX - this.player.worldX;
                         const ady = ast.worldY - this.player.worldY;
-                        const adist = Math.sqrt(adx * adx + ady * ady);
-                        if (adist < minDist) {
+                        const adistSq = adx * adx + ady * ady;
+                        if (adistSq < minDistSq) {
                             target = ast;
-                            minDist = adist;
+                            minDistSq = adistSq;
                         }
                     }
                 }
@@ -1132,10 +1158,10 @@ export class PlayingState {
                         if (!ev.isAttackable) continue;
                         const edx = ev.worldX - this.player.worldX;
                         const edy = ev.worldY - this.player.worldY;
-                        const edist = Math.sqrt(edx * edx + edy * edy);
-                        if (edist < minDist) {
+                        const edistSq = edx * edx + edy * edy;
+                        if (edistSq < minDistSq) {
                             target = ev;
-                            minDist = edist;
+                            minDistSq = edistSq;
                         }
                     }
                 }
@@ -1168,15 +1194,15 @@ export class PlayingState {
                 const turretCone = 50 * (Math.PI / 180);
 
                 let target = null;
-                let minDist = 800;
+                let minDistSq = 800 * 800;
 
                 // Check Enemies
                 for (const en of this.enemies) {
                     if (!en.alive) continue;
                     const edx = en.worldX - this.player.worldX;
                     const edy = en.worldY - this.player.worldY;
-                    const edist = Math.sqrt(edx * edx + edy * edy);
-                    if (edist < minDist) {
+                    const edistSq = edx * edx + edy * edy;
+                    if (edistSq < minDistSq) {
                         const angleToEn = Math.atan2(edy, edx);
                         let diff = angleToEn - turretAngle;
                         while (diff > Math.PI) diff -= Math.PI * 2;
@@ -1184,7 +1210,7 @@ export class PlayingState {
 
                         if (Math.abs(diff) < turretCone / 2) {
                             target = en;
-                            minDist = edist;
+                            minDistSq = edistSq;
                         }
                     }
                 }
@@ -1194,8 +1220,8 @@ export class PlayingState {
                     if (!ast.alive) continue;
                     const adx = ast.worldX - this.player.worldX;
                     const ady = ast.worldY - this.player.worldY;
-                    const adist = Math.sqrt(adx * adx + ady * ady);
-                    if (adist < minDist) {
+                    const adistSq = adx * adx + ady * ady;
+                    if (adistSq < minDistSq) {
                         const angleToAst = Math.atan2(ady, adx);
                         let diff = angleToAst - turretAngle;
                         while (diff > Math.PI) diff -= Math.PI * 2;
@@ -1203,7 +1229,7 @@ export class PlayingState {
 
                         if (Math.abs(diff) < turretCone / 2) {
                             target = ast;
-                            minDist = adist;
+                            minDistSq = adistSq;
                         }
                     }
                 }
@@ -1212,8 +1238,8 @@ export class PlayingState {
                     if (!ev.isAttackable) continue;
                     const edx = ev.worldX - this.player.worldX;
                     const edy = ev.worldY - this.player.worldY;
-                    const edist = Math.sqrt(edx * edx + edy * edy);
-                    if (edist < minDist) {
+                    const edistSq = edx * edx + edy * edy;
+                    if (edistSq < minDistSq) {
                         const angleToEv = Math.atan2(edy, edx);
                         let diff = angleToEv - turretAngle;
                         while (diff > Math.PI) diff -= Math.PI * 2;
@@ -1221,7 +1247,7 @@ export class PlayingState {
 
                         if (Math.abs(diff) < turretCone / 2) {
                             target = ev;
-                            minDist = edist;
+                            minDistSq = edistSq;
                         }
                     }
                 }
@@ -1257,8 +1283,8 @@ export class PlayingState {
                     if (!en.alive) continue;
                     const edx = en.worldX - this.player.worldX;
                     const edy = en.worldY - this.player.worldY;
-                    const edist = Math.sqrt(edx * edx + edy * edy);
-                    if (edist < 150) {
+                    const edistSq = edx * edx + edy * edy;
+                    if (edistSq < 150 * 150) {
                         en.freeze(3.0);
                         // Multiplayer client: the real enemy lives on the host —
                         // ask it to apply the stun there too.
@@ -1664,7 +1690,10 @@ export class PlayingState {
                 }
             }
         }
-        this.bossWrecks = this.bossWrecks.filter(w => !w.isFinished);
+        // In-place removal (the array is tiny; avoids a per-frame allocation)
+        for (let i = this.bossWrecks.length - 1; i >= 0; i--) {
+            if (this.bossWrecks[i].isFinished) this.bossWrecks.splice(i, 1);
+        }
 
         if (this.flashTimer > 0) {
             this.flashTimer -= dt;
@@ -1733,10 +1762,18 @@ export class PlayingState {
         this._wasBoosting = boosting;
 
         // Update enemies — split into boss vs regular for perf tracking
-        // Pre-filter asteroids near the player for enemy AI avoidance (avoid 30×200 loop)
-        const enemyAvoidAsteroids = this.asteroids.length > 60
-            ? this.asteroids.filter(a => a._nearPlayer)
-            : this.asteroids;
+        // Pre-filter asteroids near the player for enemy AI avoidance (avoid
+        // 30×200 loop). Refills a persistent scratch array instead of
+        // allocating a fresh one every frame.
+        let enemyAvoidAsteroids = this.asteroids;
+        if (this.asteroids.length > 60) {
+            const near = this._avoidScratch || (this._avoidScratch = []);
+            near.length = 0;
+            for (const a of this.asteroids) {
+                if (a._nearPlayer) near.push(a);
+            }
+            enemyAvoidAsteroids = near;
+        }
 
         // Multiplayer host: each enemy hunts whichever pilot is closest.
         // Clients don't run AI at all — replicas are driven by snapshots.
@@ -1759,6 +1796,12 @@ export class PlayingState {
                 e.pendingProjectiles.length = 0;
             }
         };
+
+        // Rebuild the enemy + projectile broad-phase grids from this frame's
+        // start positions so each enemy's separation and projectile-dodge steps
+        // only test nearby cells, not the whole enemy/projectile lists.
+        this._enemyGrid.rebuild(this.enemies, _enemyAlive);
+        this._projGrid.rebuild(this.projectiles, _projAlive);
 
         this.perf.begin('enemies');
         if (isNetHost) {
@@ -1875,8 +1918,14 @@ export class PlayingState {
         }
         this.perf.end('particles');
 
-        // Cleanup stale indicator opacities — build a Set for O(1) lookups
-        if (this.indicatorOpacities.size > 0) {
+        // Cleanup stale indicator opacities — build a Set for O(1) lookups.
+        // Entries for dead entities are never read (the render side iterates
+        // the live arrays and looks opacities up by entity), so this is pure
+        // garbage collection — running it twice a second instead of every
+        // frame skips ~300 Set inserts per frame with no observable change.
+        this._indicatorSweepTimer = (this._indicatorSweepTimer || 0) - dt;
+        if (this.indicatorOpacities.size > 0 && this._indicatorSweepTimer <= 0) {
+            this._indicatorSweepTimer = 0.5;
             const liveEntities = new Set();
             for (const e of this.enemies) liveEntities.add(e);
             for (const a of this.asteroids) liveEntities.add(a);
@@ -2363,11 +2412,11 @@ export class PlayingState {
         // broadcast (lifetimes, despawn rules) gets a batched DESPAWN so the
         // clients' nid maps never leak.
         if (mp && isNetHost) {
-            this.netSync.broadcastDespawn(KIND.PICKUP, this.scrapEntities.filter(e => !e.alive && e.netId !== undefined));
-            this.netSync.broadcastDespawn(KIND.PICKUP, this.expOrbs.filter(e => !e.alive && e.netId !== undefined));
-            this.netSync.broadcastDespawn(KIND.PICKUP, this.itemPickups.filter(e => !e.alive && e.netId !== undefined));
-            this.netSync.broadcastDespawn(KIND.ENEMY, this.encounters.filter(e => !e.alive && e.netId !== undefined));
-            this.netSync.broadcastDespawn(KIND.CACHE, this.caches.filter(e => !e.alive && e.netId !== undefined));
+            this._broadcastDeadDespawns(KIND.PICKUP, this.scrapEntities);
+            this._broadcastDeadDespawns(KIND.PICKUP, this.expOrbs);
+            this._broadcastDeadDespawns(KIND.PICKUP, this.itemPickups);
+            this._broadcastDeadDespawns(KIND.ENEMY, this.encounters);
+            this._broadcastDeadDespawns(KIND.CACHE, this.caches);
         }
 
         // Cleanup dead entities (in-place compaction to avoid allocating new arrays)
@@ -3755,7 +3804,13 @@ export class PlayingState {
         this.perf.begin('enemies');
         for (const e of this.enemies) {
             if (e.isBoss) continue;
-            e.draw(ctx, this.camera);
+            // Cull off-screen enemy sprites (they show as off-screen indicators,
+            // not sprites). Beams/targeting lines extend far past the hull, so a
+            // beaming enemy is never culled — keeps the visual identical.
+            const dx = e.worldX - camX, dy = e.worldY - camY;
+            if ((dx > -drawCullX && dx < drawCullX && dy > -drawCullY && dy < drawCullY)
+                || e.isTargeting || (e.activeBeams && e.activeBeams.length))
+                e.draw(ctx, this.camera);
         }
         for (const enc of this.encounters) {
             enc.draw(ctx, this.camera); // Encounters are few
@@ -3768,10 +3823,21 @@ export class PlayingState {
         }
 
         // --- Projectiles draw ---
+        // Cull off-screen projectiles: each renders a multi-quad trail + glow
+        // (the heaviest draw in a busy frame) yet most are mid-flight off-screen.
+        // The trail only reaches a frame or two behind the head, so the standard
+        // draw margin covers it — culled projectiles produce no visible pixels.
+        // Set the additive 'screen' blend ONCE for the whole batch (each shot's
+        // body assumes it) instead of one composite-op change per projectile.
         this.perf.begin('projectiles');
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
         for (const p of this.projectiles) {
-            p.draw(ctx, this.camera);
+            const dx = p.worldX - camX, dy = p.worldY - camY;
+            if (dx > -drawCullX && dx < drawCullX && dy > -drawCullY && dy < drawCullY)
+                p._drawBody(ctx, this.camera);
         }
+        ctx.restore();
         this.perf.end('projectiles');
 
         // --- Railgun Visuals ---
@@ -7187,6 +7253,19 @@ export class PlayingState {
         const dt = this.game.lastDt || 0.016;
         const maxIndicatorDist = Math.max(cw, ch) * 2;
         const maxIndicatorDistSq = maxIndicatorDist * maxIndicatorDist;
+        // Inlined world→screen (hoisted constants) so the per-enemy on-screen
+        // test allocates no {x,y} object — matters once a wave fills the list.
+        const ws = this.game.worldScale;
+        const offX = -this.camera.x * ws + cw / 2 + this.camera.shakeX + this.camera.punchX;
+        const offY = -this.camera.y * ws + ch / 2 + this.camera.shakeY + this.camera.punchY;
+
+        // Font/align/baseline + the save/restore are hoisted out of the loop:
+        // setting ctx.font re-parses it, which dominated this draw once a wave
+        // filled the indicator list. Per-enemy only the colour + alpha change.
+        ctx.save();
+        ctx.font = `${12 * this.game.uiScale}px Astro5x`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
 
         for (const en of this.enemies) {
             const dx = en.worldX - this.player.worldX;
@@ -7201,10 +7280,11 @@ export class PlayingState {
                 continue;
             }
 
-            const screen = this.camera.worldToScreen(en.worldX, en.worldY, cw, ch);
+            const screenX = en.worldX * ws + offX;
+            const screenY = en.worldY * ws + offY;
             const dist = Math.sqrt(distSq);
 
-            const isOnScreen = screen.x >= 0 && screen.x <= cw && screen.y >= 0 && screen.y <= ch;
+            const isOnScreen = screenX >= 0 && screenX <= cw && screenY >= 0 && screenY <= ch;
             const isWithinDist = dist <= maxIndicatorDist;
             const opacity = this._getIndicatorOpacity(en, !isOnScreen && isWithinDist, dt);
             if (opacity <= 0) continue;
@@ -7217,15 +7297,12 @@ export class PlayingState {
             const iy = cy + Math.sin(angle) * radius;
 
             // Draw "!" indicator (bosses are purple, regular enemies red)
-            ctx.save();
             ctx.globalAlpha = opacity;
             ctx.fillStyle = en.isBoss ? '#ff44ff' : '#ff2222';
-            ctx.font = `${12 * this.game.uiScale}px Astro5x`;
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
             ctx.fillText('!', ix, iy);
-            ctx.restore();
         }
+        ctx.globalAlpha = 1;
+        ctx.restore();
     }
 
     _drawAsteroidWarnings(ctx) {

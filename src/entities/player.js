@@ -1001,10 +1001,15 @@ export class Player {
 
         // Age trail life slightly even if not active (for smooth fade out if needed,
         // though here we just clear it for simplicity if curse is removed)
-        for (let i = 0; i < this.trailHistory.length; i++) {
-            this.trailHistory[i].life -= dt * 6; // Fast fade but enough to see the length
+        if (this.trailHistory.length > 0) {
+            let write = 0;
+            for (let i = 0; i < this.trailHistory.length; i++) {
+                const t = this.trailHistory[i];
+                t.life -= dt * 6; // Fast fade but enough to see the length
+                if (t.life > 0) this.trailHistory[write++] = t;
+            }
+            this.trailHistory.length = write;
         }
-        this.trailHistory = this.trailHistory.filter(t => t.life > 0);
 
         // --- Yellow Glow Trail (post-Yellow One reward) ---
         // Trail ghosts are all centered on the player but rotated toward the glow target.
@@ -1025,10 +1030,13 @@ export class Player {
                 }
             }
 
+            let write = 0;
             for (let i = 0; i < this._yellowTrailHistory.length; i++) {
-                this._yellowTrailHistory[i].life -= dt * 6;
+                const t = this._yellowTrailHistory[i];
+                t.life -= dt * 6;
+                if (t.life > 0) this._yellowTrailHistory[write++] = t;
             }
-            this._yellowTrailHistory = this._yellowTrailHistory.filter(t => t.life > 0);
+            this._yellowTrailHistory.length = write;
         }
 
         // --- Nanite Tank Regeneration ---
@@ -1253,7 +1261,9 @@ export class Player {
         const offCanvas = document.createElement('canvas');
         offCanvas.width = aw;
         offCanvas.height = ah;
-        const ctx = offCanvas.getContext('2d');
+        // Readback-only canvas → willReadFrequently keeps it CPU-side so this
+        // getImageData can't stall the GPU rasteriser / main canvas.
+        const ctx = offCanvas.getContext('2d', { willReadFrequently: true });
         ctx.imageSmoothingEnabled = false;
 
         // MUST scale the physical buffer (64x64) down to logical (16x16) to avoid clipping and miscounting
@@ -1329,7 +1339,8 @@ export class Player {
         const canvas = document.createElement('canvas');
         canvas.width = img.width;
         canvas.height = img.height;
-        const ctx = canvas.getContext('2d');
+        // Readback-only canvas → keep it CPU-side (willReadFrequently).
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
         ctx.drawImage(img, 0, 0);
 
         const data = ctx.getImageData(0, 0, img.width, img.height).data;

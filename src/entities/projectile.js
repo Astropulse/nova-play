@@ -98,18 +98,33 @@ export class Projectile {
         if (this.lifetime <= 0) this.alive = false;
     }
 
+    // Standalone draw: brackets the additive 'screen' blend the body needs.
+    // The hot projectile loop in PlayingState instead sets 'screen' ONCE for the
+    // whole batch and calls _drawBody per projectile, so a busy frame pays one
+    // composite-op state change (which flushes the 2D batch) instead of one per
+    // shot. Pixel-identical either way.
     draw(ctx, camera) {
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        this._drawBody(ctx, camera);
+        ctx.restore();
+    }
+
+    // Render body WITHOUT the save/composite/restore wrapper. Only valid inside
+    // a 'screen' composite context (draw() above, or the batched loop). Runs in
+    // screen space via absolute setTransform, so it leaves no transform state
+    // that would leak between batched projectiles.
+    _drawBody(ctx, camera) {
         if (!this.alive || !this.img) return;
         const img = this.img.canvas || this.img;
         const w = img.width * this.game.worldScale / 4;
         const h = img.height * this.game.worldScale / 4;
 
-        ctx.save();
-
-        // Additive blending for energy effects
-        ctx.globalCompositeOperation = 'screen';
-
-        // 1. Draw Interpolated Trail — inlined worldToScreen to avoid object allocation
+        // 1. Draw Interpolated Trail — inlined worldToScreen + direct matrix
+        // (setTransform) so each of the up-to-8 trail quads costs one transform
+        // set instead of a save/translate/rotate/scale/restore stack push. The
+        // whole projectile render runs in screen space (identity base), so the
+        // outer save/restore still cleanly brackets it.
         const trailSteps = 4;
         const hLen = this.historyLen;
         const hMax = this.maxHistory;
@@ -119,10 +134,13 @@ export class Projectile {
         const halfCW = cw / 2 + camera.shakeX, halfCH = ch / 2 + camera.shakeY;
         const hw = w / 2, hh = h / 2;
 
-        let prevX = this.worldX, prevY = this.worldY, prevA = this.angle;
+        let prevX = this.worldX, prevY = this.worldY;
         for (let i = 0; i < hLen; i++) {
             const idx = (this.historyHead - i + hMax) % hMax;
             const end = this.history[idx];
+            // All sub-steps of one history entry share its rotation.
+            const ea = end.a + Math.PI / 2;
+            const cosA = Math.cos(ea), sinA = Math.sin(ea);
 
             for (let j = 1; j <= trailSteps; j++) {
                 const stepT = j / trailSteps;
@@ -133,24 +151,22 @@ export class Projectile {
                 const sy = (iy - camY) * ws + halfCH;
                 const totalI = i + stepT;
                 const alpha = 0.5 * (1 - totalI / (hLen + 1));
-                const trailScale = (1 - totalI / (hLen * 3));
+                const s = (1 - totalI / (hLen * 3)); // trail scale
 
-                ctx.save();
                 ctx.globalAlpha = alpha;
-                ctx.translate(sx, sy);
-                ctx.rotate(end.a + Math.PI / 2);
-                ctx.scale(trailScale, trailScale);
+                ctx.setTransform(s * cosA, s * sinA, -s * sinA, s * cosA, sx, sy);
                 ctx.drawImage(img, -hw, -hh, w, h);
-                ctx.restore();
             }
-            prevX = end.x; prevY = end.y; prevA = end.a;
+            prevX = end.x; prevY = end.y;
         }
 
         // 2. Draw Main Projectile with pre-rendered glow (no per-frame shadowBlur)
         const screenX = (this.worldX - camX) * ws + halfCW;
         const screenY = (this.worldY - camY) * ws + halfCH;
-        ctx.translate(screenX, screenY);
-        ctx.rotate(this.angle + Math.PI / 2);
+        const ma = this.angle + Math.PI / 2;
+        const mc = Math.cos(ma), msn = Math.sin(ma);
+        ctx.globalAlpha = 1;
+        ctx.setTransform(mc, msn, -msn, mc, screenX, screenY);
         if (this._glowSprite) {
             // Scale so the sprite portion matches original w×h exactly
             const pxScale = w / this._glowSprite.imgW;
@@ -160,8 +176,6 @@ export class Projectile {
         } else {
             ctx.drawImage(img, -hw, -hh, w, h);
         }
-
-        ctx.restore();
     }
 
     // Collision radius (game units)

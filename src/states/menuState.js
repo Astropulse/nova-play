@@ -10,6 +10,7 @@ import { Camera } from '../world/camera.js';
 import { Player } from '../entities/player.js';
 import { HUD } from '../ui/hud.js';
 import { randomSeed } from '../engine/rng.js';
+import { pumpRunPrewarm } from '../engine/prewarm.js';
 
 // Scaling is now dynamic via game properties
 
@@ -141,6 +142,14 @@ export class MenuState {
         if (this.world && this._worldFade < 1) {
             this._worldFade = Math.min(1, this._worldFade + dt / 0.6);
         }
+
+        // Warm the run-critical caches (fracture/shatter layouts, glow
+        // sprites, post-fx shaders) one small task at a time while the player
+        // sits on the title screen — by the time a run starts they're all
+        // cache hits instead of mid-combat hitches. The World gate doubles as
+        // the full-atlas gate; paused during the start transition so the
+        // zoom-in stays smooth.
+        if (this.world && !this.transition) pumpRunPrewarm(this.game, dt);
 
         const mouse = this.game.getMousePos();
 

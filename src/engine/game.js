@@ -6,6 +6,11 @@ import { MenuState } from '../states/menuState.js';
 import { DevConsole } from '../ui/devConsole.js';
 import { ScreenFX } from './screenFx.js';
 
+// Reused "no effect" descriptor — passed to ScreenFX.render when the post-fx is
+// disabled so it takes the idle early-out (hides the overlay, skips the upload)
+// without allocating an object every frame.
+const ZERO_FX = { crt: 0, warp: 0 };
+
 export class Game {
     constructor(canvas) {
         this.canvas = canvas;
@@ -47,6 +52,16 @@ export class Game {
         this.potentialFps = 0;
         this._fpsTimer = 0;
         this._fpsCounter = 0;
+
+        // Adaptive post-FX: the kill-streak/dread ScreenFX pass captures the
+        // whole frame into a GPU texture each frame — cheap on capable hardware,
+        // but the dominant cost on weak machines. It samples its own per-frame
+        // cost and self-disables when unaffordable, remembered across runs so
+        // the (laggy) measuring window only ever happens once.
+        this.screenFxDisabled = false;
+        try { if (localStorage.getItem('nova_screenfx_off') === '1') this.screenFxDisabled = true; } catch (e) { /* no storage */ }
+        this._sfxCostSum = 0;
+        this._sfxCostN = 0;
         this._potentialFpsCounter = 0;
         this._potentialFpsAccumulator = 0;
         this._lastFrameTime = performance.now();
@@ -330,7 +345,31 @@ export class Game {
             if (!this.screenFx) this.screenFx = new ScreenFX(this);
             const fx = (this.currentState && this.currentState.getScreenFx)
                 ? this.currentState.getScreenFx() : { crt: 0, warp: 0 };
-            this.screenFx.render(fx, now / 1000);
+            if (this.screenFxDisabled) {
+                // Weak hardware: keep the pass off. Rendering with zeroed fx
+                // takes the early-out path (hides the overlay, no GPU upload).
+                this.screenFx.render(ZERO_FX, now / 1000);
+            } else {
+                const sfxT0 = performance.now();
+                this.screenFx.render(fx, now / 1000);
+                // Only sample frames where the pass actually did work (an effect
+                // was active); the full-frame upload cost is hardware-bound, not
+                // scene-bound, so a clean average identifies weak hardware
+                // without false-tripping on a momentarily heavy scene.
+                if (this.screenFx._active) {
+                    this._sfxCostSum += performance.now() - sfxT0;
+                    if (++this._sfxCostN >= 45) {
+                        const avg = this._sfxCostSum / this._sfxCostN;
+                        if (avg > 3.5) {
+                            this.screenFxDisabled = true;
+                            try { localStorage.setItem('nova_screenfx_off', '1'); } catch (e) { /* no storage */ }
+                            console.log(`[ScreenFX] post-fx averaged ${avg.toFixed(1)}ms/frame — disabling on this hardware`);
+                        }
+                        this._sfxCostSum = 0;
+                        this._sfxCostN = 0;
+                    }
+                }
+            }
         }
 
         // --- Recording Timer ---

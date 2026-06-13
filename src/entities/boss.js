@@ -250,7 +250,8 @@ export class Boss {
         const canvas = document.createElement('canvas');
         canvas.width = width;
         canvas.height = height;
-        const ctx = canvas.getContext('2d');
+        // Readback-only canvas → willReadFrequently keeps it CPU-side.
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
         ctx.imageSmoothingEnabled = false;
         ctx.drawImage(img, 0, 0, img.width, img.height, 0, 0, width, height);
         const data = ctx.getImageData(0, 0, width, height).data;

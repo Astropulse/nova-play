@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NOVA — perf stress</title>
+    <!-- The game fetch()es assets with paths relative to the document base
+         (e.g. "Assets/atlas/atlas.json"). This page lives in /scripts/perf/,
+         so without a base override those would resolve to /scripts/perf/Assets/…
+         and 404. Pin the base to the repo root so every relative asset loads. -->
+    <base href="/">
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    <!-- Boot the real game exactly as index.html does, then layer the harness
+         on top. Both are absolute paths so the game's relative imports resolve
+         against /src/ when served from the repo root. -->
+    <script type="module" src="/src/main.js"></script>
+    <script type="module" src="/scripts/perf/harness.js"></script>
+</body>
+</html>

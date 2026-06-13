@@ -106,10 +106,18 @@ void main() {
     // boost/teleport distortion fringes a touch near full strength
     float s = 0.011 * u_crt * r2 + 0.004 * u_warp
             + 0.002 * flowStr + 0.003 * u_collapse.w;
+    // The source canvas is uploaded WITHOUT UNPACK_FLIP_Y_WEBGL (that flag forces
+    // a slow per-frame CPU copy for canvas texture sources in Chrome). The
+    // texture is therefore stored vertically mirrored; we cancel that by flipping
+    // the sample V here. Two mirrors == identity, so the sampled pixels are
+    // byte-for-byte what they were before — only the upload got cheaper.
+    vec2 sr = duv * (1.0 + s) + 0.5;
+    vec2 sg = duv + 0.5;
+    vec2 sb = duv * (1.0 - s) + 0.5;
     vec3 col;
-    col.r = texture(u_tex, duv * (1.0 + s) + 0.5).r;
-    col.g = texture(u_tex, duv + 0.5).g;
-    col.b = texture(u_tex, duv * (1.0 - s) + 0.5).b;
+    col.r = texture(u_tex, vec2(sr.x, 1.0 - sr.y)).r;
+    col.g = texture(u_tex, vec2(sg.x, 1.0 - sg.y)).g;
+    col.b = texture(u_tex, vec2(sb.x, 1.0 - sb.y)).b;
 
     // CRT edge vignette — kept modest so the rarity-colored Canvas vignette
     // underneath isn't crushed to black
@@ -196,6 +204,14 @@ export class ScreenFX {
         }
     }
 
+    // Build the WebGL pipeline ahead of time (called from the title-screen
+    // prewarm) so the first real effect — often the first boost of a run —
+    // doesn't pay the context creation + shader compile cost mid-gameplay.
+    // The overlay canvas stays display:none until an effect actually renders.
+    warm() {
+        if (!this.gl && !this._failed) this._init();
+    }
+
     // fx: { crt, warp, ripple?: {x, y, cx, cy, r, strength, t},
     //       flow?: {x, y, dirX, dirY, strength},          — boost space-bend
     //       collapse?: {x, y, r, strength} }              — teleport implosion
@@ -234,10 +250,11 @@ export class ScreenFX {
             this.canvas.style.width = '100vw';
             this.canvas.style.height = '100vh';
             gl.viewport(0, 0, src.width, src.height);
-            gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+            // No UNPACK_FLIP_Y_WEBGL — it triggers a slow CPU copy for canvas
+            // sources. The fragment shader flips the sample V instead (identical
+            // result, far cheaper upload). texSubImage2D reuses the allocation.
             gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
         } else {
-            gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
             gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, src);
         }
 

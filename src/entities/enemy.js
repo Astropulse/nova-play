@@ -19,6 +19,17 @@ const AI_STATE = {
 
 const RADIUS_CACHE = {};
 
+// Reused scratch for the per-enemy separation neighbour query — filled and
+// fully consumed inside one _avoidObstacles call, so a single module-level
+// buffer is safe (enemies update sequentially) and keeps the hot path
+// allocation-free.
+const _sepScratch = [];
+
+// Reused scratch for the per-enemy projectile-dodge neighbour query — same
+// single-buffer-is-safe reasoning as _sepScratch (filled and fully consumed
+// within one _avoidObstacles call, enemies update sequentially).
+const _projScratch = [];
+
 class CollisionScanner {
     static getRadius(asset, key) {
         if (!asset) return 20;
@@ -31,7 +42,9 @@ class CollisionScanner {
         const canvas = document.createElement('canvas');
         canvas.width = aw;
         canvas.height = ah;
-        const ctx = canvas.getContext('2d');
+        // Pixel-readback only → willReadFrequently keeps it off the GPU so the
+        // getImageData below can't stall the main canvas's rasteriser.
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
         ctx.imageSmoothingEnabled = false;
         ctx.drawImage(img, 0, 0, img.width, img.height, 0, 0, aw, ah);
 
@@ -146,6 +159,13 @@ export class Enemy {
         this.dodgeTimer = 0;
         this.dodgeDirectionAngle = 0;
         this.dodgeDecisionMap = new WeakMap(); // projectile -> { decided: boolean, canDodge: boolean, reactionTimer: number }
+
+        // Reused per-enemy buffers for the projectile-dodge scan — the active
+        // threat list and a pool of threat records, so a frame of dodging
+        // allocates nothing (the old code built a fresh array + an object per
+        // threat every frame for every enemy).
+        this._activeThreats = [];
+        this._threatPool = [];
     }
 
     _getDistanceMult() {
@@ -585,6 +605,10 @@ export class Enemy {
         // 2. AVOID ASTEROIDS
         let maxUrgency = 0;
 
+        // Squared base look-ahead, so the common "slow/distant rock" case rejects
+        // with no sqrt at all (the relative-speed term only matters when it would
+        // actually extend the scan past the base reach).
+        const baseLookAheadSq = baseLookAhead * baseLookAhead;
         for (const ast of asteroids) {
             const adx = ast.worldX - this.worldX;
             const ady = ast.worldY - this.worldY;
@@ -592,15 +616,17 @@ export class Enemy {
 
             const safetyRadius = this.radius + ast.radius + 35;
 
-            // Quick broad-phase reject using squared distance with max possible scanDist
-            // Predict collision based on relative movement
+            // Predict collision based on relative movement. Scan distance scales
+            // with RELATIVE speed to catch fast-moving asteroids — but the sqrt
+            // for that is only needed when relSpeed*1.2 exceeds the base reach,
+            // which is rare, so skip it for the overwhelming majority of rocks.
             const relVx = this.vx - (ast.vx || 0);
             const relVy = this.vy - (ast.vy || 0);
             const relSpeedSq = relVx * relVx + relVy * relVy;
-            const relSpeed = Math.sqrt(relSpeedSq);
-
-            // Scan distance scales with RELATIVE speed to catch fast-moving asteroids
-            const scanDist = Math.max(baseLookAhead, relSpeed * 1.2) + safetyRadius;
+            let scanDist = baseLookAhead + safetyRadius;
+            if (relSpeedSq * 1.44 > baseLookAheadSq) {
+                scanDist = Math.sqrt(relSpeedSq) * 1.2 + safetyRadius;
+            }
 
             if (adistSq < scanDist * scanDist) {
                 const adist = Math.sqrt(adistSq);
@@ -660,9 +686,19 @@ export class Enemy {
         }
 
         // 3. AVOID OTHER ENEMIES (Simpler, closer range)
+        // The separation force is a plain sum over every peer within 120px, so
+        // it's order-independent. A frame-coherent broad-phase grid (built in
+        // PlayingState) returns exactly that neighbourhood without the old
+        // O(n^2) scan of the entire enemy list — same accepted set, same math.
         const enemyAvoidDist = 120;
         const enemyAvoidDistSq = 14400; // 120^2
-        for (const other of enemies) {
+        const cs = this.game.currentState;
+        const grid = cs && cs._enemyGrid;
+        const neighbors = grid
+            ? grid.queryInto(this.worldX, this.worldY, enemyAvoidDist, _sepScratch)
+            : enemies;
+        for (let n = 0; n < neighbors.length; n++) {
+            const other = neighbors[n];
             if (other === this || !other.alive) continue;
             const edx = other.worldX - this.worldX;
             const edy = other.worldY - this.worldY;
@@ -684,9 +720,22 @@ export class Enemy {
         // 4. Dodge Projectiles (Predictive Evasive Maneuvers)
         let primaryThreat = null;
         let highestThreatLevel = 0;
-        const activeThreats = [];
+        const activeThreats = this._activeThreats;
+        activeThreats.length = 0;
+        const threatPool = this._threatPool;
+        let poolIdx = 0;
 
-        for (const p of projectiles) {
+        // Only the projectiles in this enemy's ~1500px neighbourhood can be
+        // threats (the broad-phase below rejects anything farther). A frame-
+        // coherent grid returns exactly that set without scanning every shot on
+        // the field — same projectiles pass the broad-phase, so the chosen
+        // threat is identical, but dense waves no longer cost enemies x shots.
+        const projGrid = cs && cs._projGrid;
+        const projList = projGrid
+            ? projGrid.queryInto(this.worldX, this.worldY, 1500, _projScratch)
+            : projectiles;
+        for (let pi = 0; pi < projList.length; pi++) {
+            const p = projList[pi];
             if (p.owner === this || !p.alive) continue;
 
             const pdx = p.worldX - this.worldX;
@@ -716,7 +765,17 @@ export class Enemy {
             if (dist_cpa_sq < requiredClearance * requiredClearance) {
                 const dist_cpa = Math.sqrt(dist_cpa_sq);
                 const threatLevel = (1 - t_impact / 1.2) * (1 - dist_cpa / requiredClearance);
-                const threatData = { p, t_impact, adx, ady, dist_cpa, requiredClearance, threatLevel };
+                // Reuse a pooled record instead of allocating one per threat.
+                let threatData = threatPool[poolIdx];
+                if (threatData === undefined) { threatData = {}; threatPool[poolIdx] = threatData; }
+                poolIdx++;
+                threatData.p = p;
+                threatData.t_impact = t_impact;
+                threatData.adx = adx;
+                threatData.ady = ady;
+                threatData.dist_cpa = dist_cpa;
+                threatData.requiredClearance = requiredClearance;
+                threatData.threatLevel = threatLevel;
                 activeThreats.push(threatData);
 
                 if (threatLevel > highestThreatLevel) {
@@ -1749,7 +1808,7 @@ export class HostileEncounter extends Enemy {
         const canvas = document.createElement('canvas');
         canvas.width = logicalW;
         canvas.height = logicalH;
-        const ctx = canvas.getContext('2d');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
         ctx.imageSmoothingEnabled = false;
         // img is the asset object here, draw scaled to logical size
         ctx.drawImage(img.canvas || img, 0, 0, (img.canvas ? img.canvas.width : img.width), (img.canvas ? img.canvas.height : img.height), 0, 0, logicalW, logicalH);
