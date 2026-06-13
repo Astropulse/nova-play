@@ -43,6 +43,34 @@ const UI = {
     gridMax: 4,
 };
 
+// Pre-baked filtered silhouette layers for the rolling overlay. The four filter
+// strings are constant frame-to-frame (only the glow's pulse-opacity — moved to
+// globalAlpha — and the chromatic offset vary), so each layer is baked ONCE per
+// (frame,size) into a canvas and then just blitted. That turns four per-frame
+// ctx.filter passes (the cache-roll lag) into four plain drawImages with
+// identical output. Cached across rolls and cache opens (bounded by the icon set).
+const _silCache = new Map();
+function _bakeSilLayers(frame, iw, ih) {
+    const w = Math.max(1, Math.round(iw)), h = Math.max(1, Math.round(ih));
+    let entry = _silCache.get(frame);
+    if (entry && entry.w === w && entry.h === h) return entry;
+    const mk = (filter) => {
+        const c = document.createElement('canvas'); c.width = w; c.height = h;
+        const cx = c.getContext('2d'); cx.imageSmoothingEnabled = false;
+        cx.filter = filter; cx.drawImage(frame, 0, 0, w, h); cx.filter = 'none';
+        return c;
+    };
+    entry = {
+        w, h,
+        base:    mk('brightness(0) invert(0)'),
+        glow:    mk('brightness(10) saturate(0) hue-rotate(200deg) sepia(1) saturate(5)'),
+        chromaR: mk('brightness(8) saturate(0) sepia(1) hue-rotate(-30deg) saturate(3) opacity(0.5)'),
+        chromaB: mk('brightness(8) saturate(0) sepia(1) hue-rotate(180deg) saturate(4) opacity(0.55)'),
+    };
+    _silCache.set(frame, entry);
+    return entry;
+}
+
 // ─── CacheUI state enum ──────────────────────────────────────────────────────
 export const CUI_STATE = {
     OPENING:    'opening',
@@ -513,28 +541,31 @@ export class CacheUI {
             const gx2 = (Math.random() - 0.5) * glitchAmt;
             const gy2 = (Math.random() - 0.5) * glitchAmt;
 
+            // Pre-baked filtered layers → four plain blits instead of four
+            // per-frame ctx.filter passes. Identical output: the glow's
+            // pulse-opacity (previously baked into the filter) is applied here
+            // via globalAlpha, and the chromatic offset is still a per-frame
+            // draw position. The baked layers are sized to iw×ih so the filter
+            // ran at the same resolution the live path used.
+            const L = _bakeSilLayers(frame, iw, ih);
+
             // Dark silhouette base
             ctx.globalAlpha = 0.9;
-            ctx.filter = `brightness(0) invert(0)`;
-            ctx.drawImage(frame, ix, iy, iw, ih);
+            ctx.drawImage(L.base, ix, iy);
 
             // Blue/cyan glow screen layer
             ctx.globalCompositeOperation = 'screen';
-            ctx.globalAlpha = 0.7 + pulse * 0.25;
-            ctx.filter = `brightness(10) saturate(0) opacity(${0.6 + 0.3 * pulse}) hue-rotate(200deg) sepia(1) saturate(5)`;
-            ctx.drawImage(frame, ix, iy, iw, ih);
+            ctx.globalAlpha = (0.7 + pulse * 0.25) * (0.6 + 0.3 * pulse);
+            ctx.drawImage(L.glow, ix, iy);
 
             // Chromatic R channel (red, shifted)
             ctx.globalAlpha = 0.3;
-            ctx.filter = `brightness(8) saturate(0) sepia(1) hue-rotate(-30deg) saturate(3) opacity(0.5)`;
-            ctx.drawImage(frame, ix + gx2 * 1.5, iy + gy2, iw, ih);
+            ctx.drawImage(L.chromaR, ix + gx2 * 1.5, iy + gy2);
 
             // Chromatic B channel (cyan, opposite shift)
             ctx.globalAlpha = 0.35;
-            ctx.filter = `brightness(8) saturate(0) sepia(1) hue-rotate(180deg) saturate(4) opacity(0.55)`;
-            ctx.drawImage(frame, ix - gx2 * 1.5, iy - gy2, iw, ih);
+            ctx.drawImage(L.chromaB, ix - gx2 * 1.5, iy - gy2);
 
-            ctx.filter = 'none';
             ctx.globalCompositeOperation = 'source-over';
             ctx.globalAlpha = 1;
         }

@@ -62,6 +62,14 @@ export class Game {
         try { if (localStorage.getItem('nova_screenfx_off') === '1') this.screenFxDisabled = true; } catch (e) { /* no storage */ }
         this._sfxCostSum = 0;
         this._sfxCostN = 0;
+
+        // Adaptive low-performance mode: set when the machine can't sustain the
+        // frame budget for several seconds (weak hardware). Sheds expensive
+        // cosmetic-only effects (e.g. the exp-bar bloom) while leaving capable
+        // machines pixel-identical. Remembered across runs.
+        this.lowPerfMode = false;
+        try { if (localStorage.getItem('nova_lowperf') === '1') this.lowPerfMode = true; } catch (e) { /* no storage */ }
+        this._lowPerfSeconds = 0;
         this._potentialFpsCounter = 0;
         this._potentialFpsAccumulator = 0;
         this._lastFrameTime = performance.now();
@@ -345,7 +353,7 @@ export class Game {
             if (!this.screenFx) this.screenFx = new ScreenFX(this);
             const fx = (this.currentState && this.currentState.getScreenFx)
                 ? this.currentState.getScreenFx() : { crt: 0, warp: 0 };
-            if (this.screenFxDisabled) {
+            if (this.screenFxDisabled || this.lowPerfMode) {
                 // Weak hardware: keep the pass off. Rendering with zeroed fx
                 // takes the early-out path (hides the overlay, no GPU upload).
                 this.screenFx.render(ZERO_FX, now / 1000);
@@ -404,6 +412,19 @@ export class Game {
             // Average work time per frame in ms
             const avgWorkTime = this._potentialFpsAccumulator / this._potentialFpsCounter;
             this.potentialFps = avgWorkTime > 0 ? Math.round(1000 / avgWorkTime) : 0;
+
+            // Latch low-perf mode after a few sustained seconds under budget
+            // (potentialFps is uncapped frame-work, so this is a true hardware
+            // signal, not a vsync artifact). Sticky + persisted once tripped.
+            if (!this.lowPerfMode && this.potentialFps > 0) {
+                if (this.potentialFps < 80) {
+                    if (++this._lowPerfSeconds >= 4) {
+                        this.lowPerfMode = true;
+                        try { localStorage.setItem('nova_lowperf', '1'); } catch (e) { /* no storage */ }
+                        console.log(`[Perf] low-performance mode on (sustained ~${this.potentialFps}fps potential) — shedding cosmetic-only effects`);
+                    }
+                } else { this._lowPerfSeconds = 0; }
+            }
 
             this._fpsCounter = 0;
             this._fpsTimer = 0;

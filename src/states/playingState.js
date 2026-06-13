@@ -49,6 +49,21 @@ import { SpatialHash } from '../engine/spatialHash.js';
 const _enemyAlive = (e) => e.alive;
 const _projAlive = (p) => p.alive;
 
+// Swept projectile hit-test: true if this frame's travel segment
+// (proj._prevX,_prevY → proj.worldX,worldY) passes within `cr` of (cx,cy).
+// At normal fps prev≈current so it's a point test; at low fps (big dt) it
+// catches fast shots that would otherwise tunnel through small targets.
+function _projSweepHit(proj, cx, cy, cr) {
+    const p0x = proj._prevX !== undefined ? proj._prevX : proj.worldX;
+    const p0y = proj._prevY !== undefined ? proj._prevY : proj.worldY;
+    const dx = proj.worldX - p0x, dy = proj.worldY - p0y;
+    const len2 = dx * dx + dy * dy;
+    let t = len2 > 0 ? ((cx - p0x) * dx + (cy - p0y) * dy) / len2 : 0;
+    if (t < 0) t = 0; else if (t > 1) t = 1;
+    const ex = p0x + dx * t - cx, ey = p0y + dy * t - cy;
+    return ex * ex + ey * ey < cr * cr;
+}
+
 export class PlayingState {
     constructor(game, shipData, { skipInit = false, handoff = null, netRun = null } = {}) {
         this.game = game;
@@ -2152,10 +2167,8 @@ export class PlayingState {
             // vs Asteroids (All Projectiles)
             for (const ast of this.asteroids) {
                 if (!ast.alive || !ast._nearPlayer) continue;
-                const dx = proj.worldX - ast.worldX;
-                const dy = proj.worldY - ast.worldY;
                 const cr = proj.radius + ast.radius;
-                if (dx * dx + dy * dy < cr * cr) {
+                if (_projSweepHit(proj, ast.worldX, ast.worldY, cr)) {
                     proj.alive = false;
                     this.game.sounds.play('hit', { volume: 0.4, x: proj.worldX, y: proj.worldY });
                     this._spawnSparks(proj.worldX, proj.worldY, 5 + Math.floor(Math.random() * 4), {
@@ -2205,10 +2218,8 @@ export class PlayingState {
                 // vs Events
                 for (const ev of this.events) {
                     if (!ev.alive || ev.blocksProjectiles === false) continue;
-                    const dx = proj.worldX - ev.worldX;
-                    const dy = proj.worldY - ev.worldY;
                     const cr = proj.radius + ev.radius;
-                    if (dx * dx + dy * dy < cr * cr) {
+                    if (_projSweepHit(proj, ev.worldX, ev.worldY, cr)) {
                         proj.alive = false;
                         if (this._routeDamage(ev, proj.damage, proj.worldX, proj.worldY)) {
                             this._onEntityDestroyed(ev);
@@ -2232,10 +2243,8 @@ export class PlayingState {
                 // vs Enemies
                 for (const en of this.enemies) {
                     if (!en.alive || !en._nearPlayer) continue;
-                    const dx = proj.worldX - en.worldX;
-                    const dy = proj.worldY - en.worldY;
                     const cr = proj.radius + en.radius;
-                    if (dx * dx + dy * dy < cr * cr) {
+                    if (_projSweepHit(proj, en.worldX, en.worldY, cr)) {
                         proj.alive = false;
                         this.game.sounds.play('hit', { volume: 0.4, x: proj.worldX, y: proj.worldY });
                         this._spawnSparks(proj.worldX, proj.worldY, 5 + Math.floor(Math.random() * 4), {

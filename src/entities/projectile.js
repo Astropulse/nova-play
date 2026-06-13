@@ -6,6 +6,8 @@ export class Projectile {
         this.game = game;
         this.worldX = worldX;
         this.worldY = worldY;
+        this._prevX = worldX; // start of the current frame's travel (swept collision)
+        this._prevY = worldY;
         this.vx = Math.cos(angle) * speed;
         this.vy = Math.sin(angle) * speed;
         this.alive = true;
@@ -90,6 +92,12 @@ export class Projectile {
             this.vx = Math.cos(this.angle) * speed;
             this.vy = Math.sin(this.angle) * speed;
         }
+
+        // Remember where this frame's travel started so collision can sweep the
+        // whole segment (prev → current) — at low fps a fast shot covers a big
+        // gap per frame and a point-only test tunnels through small targets.
+        this._prevX = this.worldX;
+        this._prevY = this.worldY;
 
         this.worldX += this.vx * dt;
         this.worldY += this.vy * dt;

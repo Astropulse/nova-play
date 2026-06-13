@@ -431,6 +431,12 @@ export class HUD {
                 this.expGlowCtx.restore();
 
                 // 2. SHAPE-ACCURATE BLOOM (Concentrated where the wave is)
+                // The two per-frame ctx.filter blur passes are the single
+                // biggest constant HUD cost and brutal on weak/software-raster
+                // hardware. Skip the outer bloom there (the bar fill + internal
+                // pulse-wave still draw, so it stays readable and animated);
+                // capable hardware renders the full bloom unchanged.
+                if (!this.game.lowPerfMode) {
                 // Reuse a cached offscreen canvas for the aura
                 if (!this._auraTempCanvas) {
                     this._auraTempCanvas = document.createElement('canvas');
@@ -468,6 +474,7 @@ export class HUD {
                 ctx.globalAlpha = 0.5 * pulseIntensity;
                 ctx.drawImage(auraTempCanvas, x, y);
                 ctx.restore();
+                } // end bloom (skipped in lowPerfMode)
 
                 // 3. PRIMARY BAR TEXTURE (Drawn normally)
                 ctx.save();
