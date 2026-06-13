@@ -736,6 +736,12 @@ export class PlayingState {
                 }
             }
             if (!mp) return;
+            // The death screen's SHIP SELECTION button calls setState(MenuState),
+            // which runs exit() and destroys net/netSync mid-update. `mp` was
+            // captured before that, so bail before the world update below runs
+            // on the exited state and throws (killing the rAF loop → black
+            // screen). Mirrors the pause-menu guard in the overlay phase.
+            if (this.game.currentState !== this) return;
 
             // Multiplayer: being dead doesn't stop the world (the host must
             // keep simulating it, and clients keep mirroring it). Spectate a
