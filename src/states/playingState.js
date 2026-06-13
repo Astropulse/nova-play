@@ -115,6 +115,8 @@ export class PlayingState {
         this.activeBeams = []; // specific fx
         this.explosions = []; // area fx
         this.sparks = []; // short-lived impact spark streaks
+        this._boostFlowLevel = 0;  // eased 0..1 driver for the boost space-bend post-fx
+        this._trailAccum = 0;      // fractional engine-wash particles owed
         this.events = [];
         this.expOrbs = [];
         // Encounter system
@@ -602,6 +604,8 @@ export class PlayingState {
         this.activeBeams = [];
         this.explosions = [];
         this.sparks = [];
+        this._boostFlowLevel = 0;
+        this._trailAccum = 0;
         this.floatingTexts = [];
 
         // First encounters-stream draw — matches the constructor's ordering.
@@ -1355,6 +1359,45 @@ export class PlayingState {
                 s.vy *= drag;
                 s.life -= dt;
                 if (s.life <= 0) this.sparks.splice(i, 1);
+            }
+        }
+
+        // --- Movement fx: boost space-bend level + engine-wash trail ---
+        if (this.player && !this.isDead) {
+            const pl = this.player;
+            // The post-fx lens hits full strength the instant the boost fires
+            // (it's an impulse — easing the attack just blunted it), then
+            // relaxes gently so the bend doesn't snap off
+            const flowTarget = pl.isWarping ? 0 : pl.boostIntensity;
+            if (flowTarget > this._boostFlowLevel) {
+                this._boostFlowLevel = flowTarget;
+            } else {
+                this._boostFlowLevel += (flowTarget - this._boostFlowLevel) * Math.min(1, dt * 6);
+            }
+
+            // Pixel exhaust streaming off the hull, denser the faster it flies
+            const spd = Math.hypot(pl.vx, pl.vy);
+            const frac = Math.min(1.5, spd / (pl.baseSpeed || 1));
+            if (frac > 0.3 && !pl.isWarping) {
+                const rate = 6 + 26 * frac * frac + (pl.isBoosting ? 26 : 0);
+                this._trailAccum += rate * dt;
+                const back = Math.atan2(-pl.vy, -pl.vx);
+                while (this._trailAccum >= 1) {
+                    this._trailAccum -= 1;
+                    const off = (Math.random() - 0.5) * 36;
+                    const bx = pl.worldX + Math.cos(back) * pl.radius - Math.sin(back) * off;
+                    const by = pl.worldY + Math.sin(back) * pl.radius + Math.cos(back) * off;
+                    this._spawnSparks(bx, by, 1, {
+                        dir: back, spread: 1.7,
+                        color: Math.random() < 0.25 ? '#e8f7ff'
+                             : (pl.isBoosting ? '#ffd27f' : '#8fc8ff'),
+                        speedMin: 8 + 22 * frac,
+                        speedMax: 25 + 55 * frac,
+                        lifeMin: 0.05, lifeMax: 0.16
+                    });
+                }
+            } else {
+                this._trailAccum = 0;
             }
         }
 
@@ -3485,10 +3528,12 @@ export class PlayingState {
         const color = opts.color || '#ffe08a';
         const sMin = opts.speedMin != null ? opts.speedMin : 140;
         const sMax = opts.speedMax != null ? opts.speedMax : 420;
+        const lMin = opts.lifeMin != null ? opts.lifeMin : 0.12;
+        const lMax = opts.lifeMax != null ? opts.lifeMax : 0.30;
         for (let i = 0; i < count; i++) {
             const a = dir + (Math.random() - 0.5) * spread;
             const sp = sMin + Math.random() * (sMax - sMin);
-            const life = 0.12 + Math.random() * 0.18;
+            const life = lMin + Math.random() * (lMax - lMin);
             this.sparks.push({
                 worldX: x, worldY: y,
                 vx: Math.cos(a) * sp,
@@ -4100,27 +4145,57 @@ export class PlayingState {
 
         // Shield impact ripple: true displacement wave across the bubble,
         // rendered by the post-pass shader from the freshest impact.
-        let ripple = null;
-        if (this.shieldRipples.length > 0 && this.camera.wtsScale !== undefined) {
-            const rip = this.shieldRipples[this.shieldRipples.length - 1];
-            const p = Math.min(1, rip.t / 0.35);
+        let ripple = null, flow = null, collapse = null;
+        if (this.camera.wtsScale !== undefined) {
             const ws = this.game.worldScale;
             const cx = this.player.worldX * this.camera.wtsScale + this.camera.wtsOffX;
             const cy = this.player.worldY * this.camera.wtsScale + this.camera.wtsOffY;
-            const r = this.player.shieldRadius * ws;
-            ripple = {
-                x: cx + Math.cos(rip.angle) * r,
-                y: cy + Math.sin(rip.angle) * r,
-                cx, cy, r,
-                strength: 1 - p,
-                t: rip.t
-            };
+
+            if (this.shieldRipples.length > 0) {
+                const rip = this.shieldRipples[this.shieldRipples.length - 1];
+                const p = Math.min(1, rip.t / 0.35);
+                const r = this.player.shieldRadius * ws;
+                ripple = {
+                    x: cx + Math.cos(rip.angle) * r,
+                    y: cy + Math.sin(rip.angle) * r,
+                    cx, cy, r,
+                    strength: 1 - p,
+                    t: rip.t
+                };
+            }
+
+            // Boost: space bends around the hull in the direction of travel
+            // (level eased in update so the lens swells/relaxes, never pops)
+            if (this._boostFlowLevel > 0.01) {
+                const spd = Math.hypot(this.player.vx, this.player.vy);
+                if (spd > 1) {
+                    flow = {
+                        x: cx, y: cy,
+                        dirX: this.player.vx / spd, dirY: this.player.vy / spd,
+                        strength: Math.min(1, this._boostFlowLevel)
+                    };
+                }
+            }
+
+            // Teleport: space collapses in toward the ship — strongest
+            // mid-warp, with a smaller settling pulse as the hull phases
+            // back in at the destination
+            const p = this.player;
+            let cStr = 0;
+            if (p.isWarping) {
+                cStr = Math.sin(Math.PI * Math.min(1, p.warpTimer / p.warpDuration));
+            } else if (p.teleportOutlineFade > 0.01) {
+                cStr = p.teleportOutlineFade * 0.55;
+            }
+            if (cStr > 0.01) {
+                collapse = { x: cx, y: cy, r: 270 * ws, strength: cStr };
+            }
         }
 
         return {
             crt: this.killStreak ? this.killStreak.fxIntensity : 0,
             warp: d ? d.warp : 0,
-            ripple
+            ripple, flow, collapse
         };
     }
 

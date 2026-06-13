@@ -23,6 +23,8 @@ uniform float u_warp;   // dread insanity pulse (wobble/tear/desaturate)
 uniform vec4 u_ripple;  // shield impact: xy = impact point (px), z = bubble radius (px), w = strength
 uniform vec2 u_rippleCenter; // bubble center (px) for the area mask
 uniform float u_rippleT;     // seconds since impact
+uniform vec4 u_flow;     // boost: xy = ship (px), zw = travel dir * strength
+uniform vec4 u_collapse; // teleport: xy = ship (px), z = radius (px), w = strength
 uniform float u_time;
 out vec4 outColor;
 
@@ -69,8 +71,41 @@ void main() {
         duv += dir * (band * mask * u_ripple.w * 5.0) / u_res;
     }
 
-    // Chromatic aberration: CRT separates at edges; warp separates everywhere
-    float s = 0.011 * u_crt * r2 + 0.004 * u_warp;
+    // ── Boost flow: space bends around the hull along the line of travel ──
+    float flowStr = length(u_flow.zw);
+    if (flowStr > 0.001) {
+        vec2 d = gl_FragCoord.xy - u_flow.xy;
+        vec2 fdir = u_flow.zw / flowStr;
+        float R = 0.30 * min(u_res.x, u_res.y);
+        float fall = exp(-dot(d, d) / (R * R));
+        vec2 fperp = vec2(-fdir.y, fdir.x);
+        // Space contracts toward the ship along the travel axis — compressed
+        // ahead of the nose, stretched out behind it (a uniform shift reads
+        // as nothing at speed; the variation across the screen is the bend)
+        float along = dot(d, fdir);
+        duv += fdir * along * fall * flowStr * 0.22 / u_res;
+        // ...dragged back past the hull...
+        duv += fdir * (fall * flowStr * R * 0.13) / u_res;
+        // ...and pinched in toward the line of travel
+        duv += fperp * dot(d, fperp) * fall * flowStr * 0.22 / u_res;
+    }
+
+    // ── Teleport collapse: space falls inward toward the ship ──
+    if (u_collapse.w > 0.001) {
+        vec2 d = gl_FragCoord.xy - u_collapse.xy;
+        float dist = max(length(d), 0.5);
+        float fall = exp(-(dist * dist) / (u_collapse.z * u_collapse.z));
+        // Ramp to zero at the hull itself so there's no seam on the ship,
+        // peak displacement capped in absolute pixels
+        float ramp = smoothstep(0.0, 0.22, dist / u_collapse.z);
+        float amt = u_collapse.w * min(u_collapse.z * 0.08, 42.0);
+        duv += (d / dist) * (fall * ramp * amt) / u_res;
+    }
+
+    // Chromatic aberration: CRT separates at edges; warp separates everywhere;
+    // boost/teleport distortion fringes a touch near full strength
+    float s = 0.011 * u_crt * r2 + 0.004 * u_warp
+            + 0.002 * flowStr + 0.003 * u_collapse.w;
     vec3 col;
     col.r = texture(u_tex, duv * (1.0 + s) + 0.5).r;
     col.g = texture(u_tex, duv + 0.5).g;
@@ -149,6 +184,8 @@ export class ScreenFX {
             this._uRipple = gl.getUniformLocation(prog, 'u_ripple');
             this._uRippleCenter = gl.getUniformLocation(prog, 'u_rippleCenter');
             this._uRippleT = gl.getUniformLocation(prog, 'u_rippleT');
+            this._uFlow = gl.getUniformLocation(prog, 'u_flow');
+            this._uCollapse = gl.getUniformLocation(prog, 'u_collapse');
             this._uTime = gl.getUniformLocation(prog, 'u_time');
         } catch (e) {
             console.error('[ScreenFX] init failed, disabling post-fx:', e);
@@ -159,13 +196,17 @@ export class ScreenFX {
         }
     }
 
-    // fx: { crt, warp, ripple?: {x, y, cx, cy, r, strength, t} } — the pass is
-    // skipped entirely when everything is (effectively) zero.
+    // fx: { crt, warp, ripple?: {x, y, cx, cy, r, strength, t},
+    //       flow?: {x, y, dirX, dirY, strength},          — boost space-bend
+    //       collapse?: {x, y, r, strength} }              — teleport implosion
+    // — the pass is skipped entirely when everything is (effectively) zero.
     render(fx, time) {
         if (this._failed) return;
         const crt = fx.crt || 0, warp = fx.warp || 0;
         const ripple = fx.ripple && fx.ripple.strength > 0.004 ? fx.ripple : null;
-        if (crt <= 0.004 && warp <= 0.004 && !ripple) {
+        const flow = fx.flow && fx.flow.strength > 0.004 ? fx.flow : null;
+        const collapse = fx.collapse && fx.collapse.strength > 0.004 ? fx.collapse : null;
+        if (crt <= 0.004 && warp <= 0.004 && !ripple && !flow && !collapse) {
             if (this._active) {
                 this.canvas.style.display = 'none';
                 this._active = false;
@@ -210,6 +251,20 @@ export class ScreenFX {
             gl.uniform1f(this._uRippleT, ripple.t);
         } else {
             gl.uniform4f(this._uRipple, 0, 0, 1, 0);
+        }
+        if (flow) {
+            // gl_FragCoord is bottom-up; canvas coords are top-down (flip y of
+            // both the position and the travel direction)
+            gl.uniform4f(this._uFlow, flow.x, src.height - flow.y,
+                flow.dirX * flow.strength, -flow.dirY * flow.strength);
+        } else {
+            gl.uniform4f(this._uFlow, 0, 0, 0, 0);
+        }
+        if (collapse) {
+            gl.uniform4f(this._uCollapse, collapse.x, src.height - collapse.y,
+                collapse.r, collapse.strength);
+        } else {
+            gl.uniform4f(this._uCollapse, 0, 0, 1, 0);
         }
         gl.uniform1f(this._uTime, time);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
