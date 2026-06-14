@@ -8,7 +8,7 @@ import { Asteroid, AsteroidSpawner, Rubble, Scrap, ItemPickup, ProceduralDebris,
 import { EnemySpawner, Enemy, HostileEncounter } from '../entities/enemy.js';
 import { Shop } from '../entities/shop.js';
 import { Inventory } from '../engine/inventory.js';
-import { UPGRADES, RARITY_COLORS, itemTier, MAX_COMBINE_TIER, makeItem, tierColor, tierLabel } from '../data/upgrades.js';
+import { UPGRADES, RARITY_COLORS, itemTier, rarityToTier, MAX_COMBINE_TIER, makeItem, tierColor, tierLabel } from '../data/upgrades.js';
 import { CthulhuEvent, CTHULHU_STATE } from '../entities/cthulhuEvent.js';
 import { CargoShipEvent, CARGO_SHIP_STATE } from '../entities/cargoShipEvent.js';
 import { FracturedStationEvent } from '../entities/fracturedStationEvent.js';
@@ -921,14 +921,17 @@ export class PlayingState {
             // Incoming trade request prompt — Y accepts, N declines.
             if (this._tradeRequestFrom >= 0) {
                 this._tradeRequestTimer -= dt;
+                const input = this.game.input;
+                const acceptReq = input.isKeyJustPressed('KeyY') || input.isGamepadJustPressed(GP.A);
+                const declineReq = input.isKeyJustPressed('KeyN') || input.isGamepadJustPressed(GP.B);
                 if (this._tradeRequestTimer <= 0 || !this.net.players.has(this._tradeRequestFrom)) {
                     this._tradeRequestFrom = -1;
-                } else if (this.game.input.isKeyJustPressed('KeyY')) {
+                } else if (acceptReq) {
                     const fromPid = this._tradeRequestFrom;
                     this._tradeRequestFrom = -1;
                     this.netSync.sendTradeMsg(MSG.TRADE_ACCEPT, { toPid: fromPid });
                     this._openTrade(fromPid);
-                } else if (this.game.input.isKeyJustPressed('KeyN')) {
+                } else if (declineReq) {
                     this.netSync.sendTradeMsg(MSG.TRADE_CANCEL, { toPid: this._tradeRequestFrom });
                     this._tradeRequestFrom = -1;
                 }
@@ -2959,6 +2962,11 @@ export class PlayingState {
             { layout: playerLayout, scrollXKey: 'playerScrollX', scrollYKey: 'playerScrollY', inv: playerInv, panelKey: 'player' }
         ];
 
+        // Gamepad focus first so it can snap the virtual cursor onto a slot or
+        // button (and handle its own A-press activations) before mouse code.
+        this._gamepadTradeUpdate(dt, panels, t);
+
+        // Re-read in case gamepad snapped the virtual cursor.
         const mouse = this.game.getMousePos();
         if (this._applyScrollPanels(dt, mouse, panels)) return;
 
@@ -3012,6 +3020,104 @@ export class PlayingState {
         return { col, row };
     }
 
+    // Gamepad navigation for the trade overlay. Unlike the shop/cache grids
+    // (which pick up and drag items), trade slots TOGGLE an offer/want on A and
+    // the accept/decline/scrap controls are plain buttons — so this is a
+    // trimmed cousin of _gamepadInventoryUpdate: snap-navigate the focusables,
+    // A toggles or activates, no drag mode.
+    _gamepadTradeUpdate(dt, panels, t) {
+        const input = this.game.input;
+        if (!input.gamepadConnected) {
+            input.setGamepadCursorEnabled(false);
+            return;
+        }
+        // Snap mode only — the trade UI never drags, so the smooth cursor stays off.
+        input.setGamepadCursorEnabled(false);
+        if (!input.isGamepadActive()) {
+            this._gpFocusablesCache = null;
+            return;
+        }
+
+        // The trade controls drawn last frame become focusable buttons.
+        const extraButtons = [];
+        const btn = this._tradeButtons || {};
+        const addBtn = (id, onActivate) => {
+            const r = btn[id];
+            if (r) extraButtons.push({ id, rect: r, onActivate });
+        };
+        addBtn('accept', () => t.toggleAccept());
+        addBtn('decline', () => t.cancel());
+        for (const step of [1, 10, 100]) {
+            addBtn(`scrap${step}`, () => t.adjustScrap(step));
+            addBtn(`scrap-${step}`, () => t.adjustScrap(-step));
+        }
+
+        const focusables = this._buildFocusables(panels, extraButtons);
+        this._gpFocusablesCache = focusables;
+        if (focusables.length === 0) return;
+
+        const fallbackPanel = panels[0] && panels[0].layout;
+        const fbX = fallbackPanel ? fallbackPanel.gridVisX + fallbackPanel.visW / 2 : 0;
+        const fbY = fallbackPanel ? fallbackPanel.gridVisY + fallbackPanel.visH / 2 : 0;
+        let idx = this._resolveFocusIndex(focusables, fbX, fbY);
+
+        const stepFocus = (dx, dy) => {
+            const next = this._stepFocusSpatial(focusables, idx, dx, dy);
+            if (next !== idx) { idx = next; this.game.sounds.play('click', 0.4); }
+        };
+
+        // Same hold-to-repeat directional stepping the inventory grids use.
+        let dx = 0, dy = 0;
+        if (input.isGamepadDown(GP.DRIGHT)) dx += 1;
+        if (input.isGamepadDown(GP.DLEFT))  dx -= 1;
+        if (input.isGamepadDown(GP.DDOWN))  dy += 1;
+        if (input.isGamepadDown(GP.DUP))    dy -= 1;
+        if (dx === 0 && dy === 0) {
+            const lx = input.leftStickX;
+            const ly = input.leftStickY;
+            if (Math.abs(lx) > 0.5 || Math.abs(ly) > 0.5) {
+                if (Math.abs(lx) > Math.abs(ly)) dx = lx > 0 ? 1 : -1;
+                else                             dy = ly > 0 ? 1 : -1;
+            }
+        }
+        const dirChanged = dx !== this._gpHeldDx || dy !== this._gpHeldDy;
+        if (dirChanged) {
+            this._gpHeldDx = dx;
+            this._gpHeldDy = dy;
+            this._gpHeldTime = 0;
+            if (dx !== 0 || dy !== 0) { stepFocus(dx, dy); this._gpRepeatDelay = 0.35; }
+        } else if (dx !== 0 || dy !== 0) {
+            this._gpHeldTime = (this._gpHeldTime || 0) + dt;
+            this._gpRepeatDelay -= dt;
+            if (this._gpRepeatDelay <= 0) {
+                stepFocus(dx, dy);
+                this._gpRepeatDelay = Math.max(0.055, 0.11 - this._gpHeldTime * 0.04);
+            }
+        }
+
+        const focused = focusables[idx];
+        this._recordFocus(focused);
+
+        // Snap the virtual mouse onto the focus so hover/tooltip code lights up.
+        input.mouseScreenX = focused.rect.x + focused.rect.w / 2;
+        input.mouseScreenY = focused.rect.y + focused.rect.h / 2;
+
+        // A activates a button, or toggles offer (your grid) / want (theirs).
+        if (input.isGamepadJustPressed(GP.A)) {
+            if (focused.kind === 'button' && typeof focused.onActivate === 'function') {
+                focused.onActivate();
+            } else if (focused.kind === 'slot') {
+                if (focused.panelKey === 'player') {
+                    const entry = this.player.inventory.getItemAt(focused.col, focused.row);
+                    if (entry) t.toggleOfferEntry(entry);
+                } else {
+                    const entry = t.partnerInventory.getItemAt(focused.col, focused.row);
+                    if (entry) t.toggleWantAt(entry.x, entry.y);
+                }
+            }
+        }
+    }
+
     _drawTradeOverlay(ctx) {
         const t = this.tradeUI;
         if (!t) return;
@@ -3045,8 +3151,9 @@ export class PlayingState {
         this._draw9Slice(ctx, this.inventoryBorderImg, theirLayout.panelX, theirLayout.panelY, theirLayout.totalW, theirLayout.totalH);
         this._drawScrollbars(ctx, theirLayout, this.shopScrollX, this.shopScrollY);
 
-        // Partner's scrap offer + status — right of their panel
-        const theirSideX = theirLayout.panelX + theirLayout.totalW + uiScale * 10;
+        // Partner's scrap offer + status — right of their panel (clear of the
+        // scrollbar track, which sits at totalW + 8..16·uiScale).
+        const theirSideX = theirLayout.panelX + theirLayout.totalW + uiScale * 20;
         ctx.textAlign = 'left';
         ctx.font = `${6 * uiScale}px Astro4x`;
         ctx.fillStyle = '#ffff66';
@@ -3080,7 +3187,9 @@ export class PlayingState {
         this._drawScrollbars(ctx, playerLayout, this.playerScrollX, this.playerScrollY);
 
         // ── Scrap offer controls — right of your panel ───────────────────────
-        const scX = playerLayout.panelX + playerLayout.totalW + uiScale * 10;
+        // Offset clears the vertical scrollbar track (totalW + 8..16·uiScale)
+        // so it doesn't get bumped on scrollable inventories.
+        const scX = playerLayout.panelX + playerLayout.totalW + uiScale * 20;
         let scY = playerLayout.panelY + uiScale * 4;
         ctx.textAlign = 'left';
         ctx.font = `${6 * uiScale}px Astro4x`;
@@ -3112,11 +3221,20 @@ export class PlayingState {
         ctx.fillStyle = '#667788';
         ctx.font = `${6 * uiScale}px Astro4x`;
         ctx.textAlign = 'center';
-        ctx.fillText('Click your items to offer  •  click theirs to ask  •  E to cancel', cw / 2, ch - uiScale * 10);
+        const hint = this.game.input.isGamepadActive()
+            ? '(A) offer your items / ask for theirs  •  (B) to cancel'
+            : 'Click your items to offer  •  click theirs to ask  •  E to cancel';
+        ctx.fillText(hint, cw / 2, ch - uiScale * 10);
 
         this._drawInventoryTooltip(ctx, [
             { inv: theirInv, layout: theirLayout, scrollX: this.shopScrollX, scrollY: this.shopScrollY },
             { inv: playerInv, layout: playerLayout, scrollX: this.playerScrollX, scrollY: this.playerScrollY }
+        ]);
+
+        // Gamepad focus corners (slots + accept/decline/scrap buttons).
+        this._drawGamepadSelection(ctx, [
+            { layout: theirLayout, scrollXKey: 'shopScrollX', scrollYKey: 'shopScrollY', inv: theirInv, panelKey: 'shop' },
+            { layout: playerLayout, scrollXKey: 'playerScrollX', scrollYKey: 'playerScrollY', inv: playerInv, panelKey: 'player' }
         ]);
 
         ctx.restore();
@@ -3173,9 +3291,45 @@ export class PlayingState {
         ctx.textBaseline = 'alphabetic';
     }
 
+    // Picks which inventory entries are lost when a ship is destroyed on respawn.
+    // You keep everything else — only common/uncommon/rare items can ever be lost
+    // (epic and above always survive), and the number lost scales with how long
+    // this life lasted: nothing under 2 minutes, 0–1 items past 2 minutes, 1–3 past 5.
+    _rollLostItems(items, survivedSec) {
+        let count;
+        if (survivedSec >= 300) {
+            count = 1 + Math.floor(Math.random() * 3); // 1–3
+        } else if (survivedSec >= 120) {
+            count = Math.floor(Math.random() * 2);      // 0–1
+        } else {
+            return [];                                  // died quickly — lose no items
+        }
+        if (count <= 0) return [];
+
+        // Only items below epic on the tier ladder are at risk.
+        const eligible = items.filter(entry => entry.item && itemTier(entry.item) < rarityToTier('epic'));
+
+        // Fisher–Yates shuffle, then take up to `count`.
+        for (let i = eligible.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [eligible[i], eligible[j]] = [eligible[j], eligible[i]];
+        }
+        return eligible.slice(0, count);
+    }
+
     // ── Respawn (multiplayer): a fresh ship in the same shared world ────────
     _netRespawn() {
         const game = this.game;
+
+        // Death penalty: lose half your scrap and a few low-rarity items, but
+        // keep everything else (the whole rest of your inventory carries over).
+        const prevItems = (this.player && this.player.inventory) ? this.player.inventory.items.slice() : [];
+        const prevScrap = this.player ? this.player.scrap : 0;
+        const retainedScrap = Math.floor(prevScrap * 0.5);
+        const lostItems = this._rollLostItems(prevItems, this.trueTotalTime);
+        const lostSet = new Set(lostItems);
+        const keptEntries = prevItems.filter(entry => !lostSet.has(entry));
+
         this.player = new Player(game, this.shipData);
         this.player.inventory = new Inventory(this.shipData.storage.cols, this.shipData.storage.rows);
         this.player.inventory.isPlayerInventory = true;
@@ -3214,6 +3368,23 @@ export class PlayingState {
         this.shipDebris = [];
         this.hud = new HUD(game, this.player);
         this.camera.snapTo(this.player);
+
+        // Carry the surviving inventory over to the fresh ship, keeping each
+        // item in its original slot (same ship type → same grid, so it fits).
+        this.player.scrap = retainedScrap;
+        for (const entry of keptEntries) {
+            this.player.inventory.addItem(entry.item, entry.x, entry.y);
+        }
+
+        // Tell the player what the wreck cost them.
+        const scrapLost = prevScrap - retainedScrap;
+        const parts = [];
+        if (scrapLost > 0) parts.push(`${scrapLost} SCRAP`);
+        if (lostItems.length > 0) parts.push(`${lostItems.length} ITEM${lostItems.length > 1 ? 'S' : ''}`);
+        if (parts.length > 0) {
+            this.spawnFloatingText(this.player.worldX, this.player.worldY - 24, `LOST ${parts.join(' + ')}`, '#ff6644');
+        }
+
         this._onInventoryChanged();
         if (game.achievements) game.achievements.notify('run_started');
 
@@ -7090,7 +7261,10 @@ export class PlayingState {
         const game = this.game;
         const uiScale = game.uiScale;
         const name = this.net.playerName(this._tradeRequestFrom).toUpperCase();
-        const text = `${name} WANTS TO TRADE — [Y] ACCEPT  [N] DECLINE`;
+        const gp = this.game.input.isGamepadActive();
+        const text = gp
+            ? `${name} WANTS TO TRADE — (A) ACCEPT  (B) DECLINE`
+            : `${name} WANTS TO TRADE — [Y] ACCEPT  [N] DECLINE`;
         const y = Math.floor(game.height * 0.22);
 
         ctx.save();
