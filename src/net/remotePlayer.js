@@ -95,6 +95,7 @@ export class RemotePlayer {
         this.healthFrac = 1;
         this.shieldFrac = 1;
         this.level = 0;
+        this.scrap = 0;          // roster stat, synced from host
 
         this._buffer = [];           // snapshots sorted by t
         this._lastSnapT = -1;

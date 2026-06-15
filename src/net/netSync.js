@@ -209,6 +209,8 @@ class BaseWorldSync {
             q(p.asteroidSpawnMult || 1),
             q(p.asteroidDrillMult || 1),
             shots,
+            // Roster scrap for the multiplayer HUD list (not used for gameplay).
+            Math.max(0, Math.round(p.scrap || 0)),
         ];
     }
 
@@ -218,6 +220,7 @@ class BaseWorldSync {
         rp.asteroidSpawnMult = arr[9] || 1;
         rp.asteroidDrillMult = arr[10] || 1;
         this._spawnRemoteShots(rp, arr[11]);
+        rp.scrap = arr[12] || 0;
     }
 
     // Advance remote player interpolation. Called from the PlayingState world tick.

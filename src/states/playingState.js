@@ -49,6 +49,16 @@ import { SpatialHash } from '../engine/spatialHash.js';
 const _enemyAlive = (e) => e.alive;
 const _projAlive = (p) => p.alive;
 
+// Chunky pixel-art circle masks, keyed by diameter in logical pixels. Each row
+// is [startCol, widthCols]; d=4 matches the big-asteroid radar blip in hud.js so
+// the engine-wash dots read as the same rounded pixel shape as the distance dots.
+const PIXEL_CIRCLE_ROWS = {
+    1: [[0, 1]],
+    2: [[0, 2], [0, 2]],
+    3: [[1, 1], [0, 3], [1, 1]],
+    4: [[1, 2], [0, 4], [0, 4], [1, 2]],
+};
+
 // Swept projectile hit-test: true if this frame's travel segment
 // (proj._prevX,_prevY → proj.worldX,worldY) passes within `cr` of (cx,cy).
 // At normal fps prev≈current so it's a point test; at low fps (big dt) it
@@ -1416,25 +1426,30 @@ export class PlayingState {
                 this._boostFlowLevel += (flowTarget - this._boostFlowLevel) * Math.min(1, dt * 6);
             }
 
-            // Pixel exhaust streaming off the hull, denser the faster it flies
+            // Pixel exhaust streaming off the hull, denser the faster it flies.
+            // The plume fires out the stern along the ship's facing (nose) axis
+            // rather than opposite its velocity, so it reads as thruster wash no
+            // matter how the ship is drifting or strafing.
             const spd = Math.hypot(pl.vx, pl.vy);
             const frac = Math.min(1.5, spd / (pl.baseSpeed || 1));
             if (frac > 0.3 && !pl.isWarping) {
                 const rate = 6 + 26 * frac * frac + (pl.isBoosting ? 26 : 0);
                 this._trailAccum += rate * dt;
-                const back = Math.atan2(-pl.vy, -pl.vx);
+                const back = pl.angle + Math.PI;
+                const cosB = Math.cos(back), sinB = Math.sin(back);
                 while (this._trailAccum >= 1) {
                     this._trailAccum -= 1;
-                    const off = (Math.random() - 0.5) * 36;
-                    const bx = pl.worldX + Math.cos(back) * pl.radius - Math.sin(back) * off;
-                    const by = pl.worldY + Math.sin(back) * pl.radius + Math.cos(back) * off;
+                    const off = (Math.random() - 0.5) * 40;
+                    const bx = pl.worldX + cosB * pl.radius * 0.7 - sinB * off;
+                    const by = pl.worldY + sinB * pl.radius * 0.7 + cosB * off;
                     this._spawnSparks(bx, by, 1, {
                         dir: back, spread: 1.7,
                         color: Math.random() < 0.25 ? '#e8f7ff'
                              : (pl.isBoosting ? '#ffd27f' : '#8fc8ff'),
                         speedMin: 8 + 22 * frac,
                         speedMax: 25 + 55 * frac,
-                        lifeMin: 0.05, lifeMax: 0.16
+                        lifeMin: 0.05, lifeMax: 0.16,
+                        size: Math.random() < 0.5 ? 3 : 4, shrink: true, round: true
                     });
                 }
             } else {
@@ -3838,16 +3853,22 @@ export class PlayingState {
         const sMax = opts.speedMax != null ? opts.speedMax : 420;
         const lMin = opts.lifeMin != null ? opts.lifeMin : 0.12;
         const lMax = opts.lifeMax != null ? opts.lifeMax : 0.30;
+        // shrink: block size scales down with remaining life (set per-spark below)
+        const shrink = !!opts.shrink;
+        // round: draw as a chunky pixel-art circle instead of a square block
+        const round = !!opts.round;
         for (let i = 0; i < count; i++) {
             const a = dir + (Math.random() - 0.5) * spread;
             const sp = sMin + Math.random() * (sMax - sMin);
             const life = lMin + Math.random() * (lMax - lMin);
+            // chunk size in logical pixels — caller can pin it via opts.size
+            const size = opts.size != null ? opts.size : (Math.random() < 0.7 ? 1 : 2);
             this.sparks.push({
                 worldX: x, worldY: y,
                 vx: Math.cos(a) * sp,
                 vy: Math.sin(a) * sp,
                 life, maxLife: life,
-                size: Math.random() < 0.7 ? 1 : 2, // chunk size in logical pixels
+                size, shrink, round,
                 color
             });
         }
@@ -5778,6 +5799,9 @@ export class PlayingState {
     }
 
     // Renders the "CLAIM N LEVELS" button (shared across shop, cache, and pause).
+    // Dark panel + a yellow border and text that flash white — the same
+    // #ffff44->white identity as the LEVEL text and the HUD claim prompt, so
+    // the whole call-to-action reads as one thing.
     _drawClaimLevelsButton(ctx) {
         const cl = this.pauseButtons.claimLevels;
         if (cl.w <= 0) return;
@@ -5785,19 +5809,35 @@ export class PlayingState {
         const us = this.game.uiScale;
         const mult = this.pendingLevelUpMult || 1;
         const hasMult = mult > 1.00001;
-        ctx.fillStyle   = cl.hovered ? '#333300' : '#1a1a00';
-        ctx.strokeStyle = cl.hovered ? '#ffff55' : '#aaaa00';
-        ctx.lineWidth = 1;
-        ctx.fillRect(cl.x, cl.y, cl.w, cl.h);
-        ctx.strokeRect(cl.x, cl.y, cl.w, cl.h);
-        ctx.fillStyle = cl.hovered ? '#ffff55' : '#cccc00';
-        ctx.font = `${6 * us}px Astro4x`;
+        const { x, y, w, h } = cl;
+        const hov = cl.hovered;
+
+        // Flash yellow (b=0) -> white (b=255), matching the level text.
+        const b = Math.round((Math.sin(performance.now() * 0.005) * 0.5 + 0.5) * 255);
+        const accent = `rgb(255,255,${b})`;
+
+        ctx.save();
+
+        // Dark-yellow fill — clearly yellow but a shade below the border/text.
+        ctx.fillStyle = hov ? '#5a4d00' : '#3a3200';
+        ctx.fillRect(x, y, w, h);
+
+        // Flashing yellow border — a framed reward, not an inert panel.
+        ctx.strokeStyle = accent;
+        ctx.lineWidth = Math.max(1, Math.round(us));
+        ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+
+        // Label, same flashing yellow.
+        ctx.fillStyle = accent;
+        ctx.font = `${7 * us}px Astro5x`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         const label = hasMult
-            ? `CLAIM ${count} LEVEL${count !== 1 ? 'S' : ''}  (x${mult.toFixed(2)})`
+            ? `CLAIM ${count} LEVEL${count !== 1 ? 'S' : ''}  x${mult.toFixed(2)}`
             : `CLAIM ${count} LEVEL${count !== 1 ? 'S' : ''}`;
-        ctx.fillText(label, cl.x + cl.w / 2, cl.y + cl.h / 2);
+        ctx.fillText(label, x + w / 2, y + h / 2);
+
+        ctx.restore();
     }
 
     // Draws a tooltip for the first item found under the mouse across all given panels.
@@ -8284,7 +8324,10 @@ export class PlayingState {
             if (scrX < -20 || scrX > W + 20 || scrY < -20 || scrY > H + 20) continue;
 
             const t = Math.max(0, s.life / s.maxLife);
-            const blockSize = s.size * pix;
+            // Shrinking sparks start at their full size and taper to one logical
+            // pixel as they die; others hold a constant block size.
+            const drawSize = s.shrink ? Math.max(1, Math.round(s.size * t)) : s.size;
+            const blockSize = drawSize * pix;
 
             // Trail is a row of discrete pixel blocks stepping back along the
             // velocity (one logical pixel per step) — longer when fast, shorter
@@ -8295,13 +8338,24 @@ export class PlayingState {
             const trail = Math.max(0, Math.min(4, Math.round((vmag / 220) * (0.3 + t))));
             const headAlpha = Math.min(1, t * 2.2); // hold bright, fade only at the end
 
+            // Round sparks (engine wash) draw as the chunky pixel-circle mask;
+            // square sparks (impacts, etc.) stay as solid blocks.
+            const circleRows = s.round ? PIXEL_CIRCLE_ROWS[drawSize] : null;
+
             ctx.fillStyle = s.color;
             for (let i = trail; i >= 0; i--) {
                 ctx.globalAlpha = headAlpha * (1 - i / (trail + 1));
                 // Snap each block to the logical-pixel grid for crisp edges
                 const px = Math.round((scrX + stepX * i) / pix) * pix;
                 const py = Math.round((scrY + stepY * i) / pix) * pix;
-                ctx.fillRect(px, py, blockSize, blockSize);
+                if (circleRows) {
+                    for (let r = 0; r < circleRows.length; r++) {
+                        const row = circleRows[r];
+                        ctx.fillRect(px + row[0] * pix, py + r * pix, row[1] * pix, pix);
+                    }
+                } else {
+                    ctx.fillRect(px, py, blockSize, blockSize);
+                }
             }
         }
         ctx.globalAlpha = 1;

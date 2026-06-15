@@ -1,5 +1,7 @@
 // HUD uses its own scaling factor (4x)
 
+import { playerColor } from './chat.js';
+
 export class HUD {
     constructor(game, player) {
         this.game = game;
@@ -166,6 +168,9 @@ export class HUD {
             }
         }
 
+        // Multiplayer crew roster — beneath the wave countdown.
+        this._drawPlayerRoster(ctx, margin);
+
         this._drawExpBar(ctx, cw, ch);
 
         ctx.restore();
@@ -180,6 +185,118 @@ export class HUD {
     // the overlay/dialog pass so unlocks aren't hidden by the dark backdrop.
     drawToast(ctx) {
         this._drawAchievementToast(ctx);
+    }
+
+    // Multiplayer crew roster — a stack of translucent cards top-left, below the
+    // wave countdown. One card per OTHER pilot (the local player has their own
+    // bars/counters elsewhere), outlined in their player color. Each card is a
+    // header line — "NAME:  LEVEL n   SCRAP n" with fixed-width columns so the
+    // numbers never shuffle the layout — above a real health bar. Drawn inside
+    // the HUD displacement transform (caller's save/translate) so it lags and
+    // garbles with the rest of the HUD. Single-player draws nothing.
+    _drawPlayerRoster(ctx, margin) {
+        const state = this.game.currentState;
+        const sync = state.netSync;
+        if (!sync || !state.net || state.net.playerCount <= 1) return;
+
+        // Crewmates only — remotes come from the host-synced replica fields.
+        const rows = [];
+        for (const rp of sync.remotePlayers.values()) {
+            if (!rp._hasState) continue;
+            rows.push({
+                pid: rp.pid,
+                name: (rp.name || `P${rp.pid}`).toUpperCase(),
+                healthPct: rp.maxHealth > 0 ? Math.max(0, Math.min(1, rp.health / rp.maxHealth)) : 0,
+                level: rp.level || 0,
+                scrap: rp.scrap || 0,
+                dead: rp.isDead,
+            });
+        }
+        if (rows.length === 0) return;
+        // Stable order: ascending pid.
+        rows.sort((a, b) => a.pid - b.pid);
+
+        const s = this.game.hudScale;
+        const font = `${6 * s}px Astro4x`;
+        const padX = s * 3;
+        const padY = s * 2;
+        const lineH = s * 6;     // header text height
+        const gapV = s * 2;      // header -> health bar
+        const barH = s * 3;
+        const colGap = s * 6;    // between name / level / scrap columns
+        const cardGap = s * 3;   // between cards
+
+        ctx.textAlign = 'left';
+        ctx.font = font;
+
+        // Fixed columns so changing numbers never reflow the row: the name column
+        // fits the widest pilot, LEVEL reserves 3 digits, SCRAP reserves 6.
+        let nameColW = 0;
+        for (const r of rows) nameColW = Math.max(nameColW, ctx.measureText(`${r.name}:`).width);
+        const levelLabelW = ctx.measureText('LEVEL ').width;
+        const scrapLabelW = ctx.measureText('SCRAP ').width;
+        const levelColW = levelLabelW + ctx.measureText('000').width;
+        const scrapColW = scrapLabelW + ctx.measureText('000000').width;
+        const innerW = nameColW + colGap + levelColW + colGap + scrapColW;
+        const boxW = innerW + padX * 2;
+        const cardH = padY + lineH + gapV + barH + padY;
+
+        // Start just below where the wave countdown line sits.
+        let y = s * 16;
+        for (const r of rows) {
+            const color = playerColor(r.pid);
+            ctx.save();
+            if (r.dead) ctx.globalAlpha = 0.4;
+
+            // Translucent card so it never obscures the play area.
+            ctx.fillStyle = 'rgba(8, 12, 20, 0.45)';
+            ctx.fillRect(margin, y, boxW, cardH);
+
+            // Thin, semi-transparent outline in the pilot's color.
+            const lw = Math.max(1, s * 0.5);
+            ctx.globalAlpha *= 0.7;
+            ctx.strokeStyle = color;
+            ctx.lineWidth = lw;
+            ctx.strokeRect(margin + lw / 2, y + lw / 2, boxW - lw, cardH - lw);
+            ctx.globalAlpha = r.dead ? 0.4 : 1;
+
+            // Header: name in the pilot's color, level/scrap in muted labels.
+            ctx.textBaseline = 'top';
+            ctx.font = font;
+            const tx = margin + padX;
+            const ty = y + padY;
+            const levelX = tx + nameColW + colGap;
+            const scrapX = levelX + levelColW + colGap;
+
+            ctx.fillStyle = color;
+            ctx.fillText(`${r.name}:`, tx, ty);
+            ctx.fillStyle = '#8fa0b4';
+            ctx.fillText('LEVEL', levelX, ty);
+            ctx.fillText('SCRAP', scrapX, ty);
+            ctx.fillStyle = '#cdd9e6';
+            ctx.fillText(String(r.level), levelX + levelLabelW, ty);
+            ctx.fillText(String(r.scrap), scrapX + scrapLabelW, ty);
+
+            // Health bar — full inner width, fill tinted from red (low) to green.
+            const barY = ty + lineH + gapV;
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+            ctx.fillRect(tx, barY, innerW, barH);
+            ctx.fillStyle = this._healthColor(r.healthPct);
+            ctx.fillRect(tx, barY, Math.round(innerW * r.healthPct), barH);
+
+            ctx.restore();
+            y += cardH + cardGap;
+        }
+        ctx.textBaseline = 'alphabetic';
+    }
+
+    // Health-bar fill tint: red at empty, green at full (orange in between).
+    _healthColor(t) {
+        t = Math.max(0, Math.min(1, t));
+        const r = Math.round(255 + (90 - 255) * t);
+        const g = Math.round(70 + (220 - 70) * t);
+        const b = Math.round(70 + (110 - 70) * t);
+        return `rgb(${r}, ${g}, ${b})`;
     }
 
     _drawOverheal(ctx, p, hbX, hbY, hbH) {
@@ -531,13 +648,71 @@ export class HUD {
         ctx.strokeText(`LEVEL ${p.level}`, cw / 2, textY);
         ctx.fillText(`LEVEL ${p.level}`, cw / 2, textY);
 
-        // "CLAIM IN INVENTORY" hint when level-ups are queued
+        // "CLAIM LEVELS IN INVENTORY" prompt when level-ups are queued.
+        // Yellow flashing white — the exact same treatment as the LEVEL text
+        // above, so the two read as one call-to-action. Plus a few light
+        // sparks drifting off the text (no size/motion — that reads nauseating).
         if (hasUnclaimed) {
-            const hintAlpha = Math.sin(performance.now() * 0.004) * 0.3 + 0.7;
-            ctx.font = `${4 * hudScale}px Astro4x`;
-            ctx.fillStyle = `rgba(255, 255, 0, ${hintAlpha.toFixed(2)})`;
-            ctx.strokeText('CLAIM IN INVENTORY', cw / 2, textY - hudScale * 7);
-            ctx.fillText('CLAIM IN INVENTORY', cw / 2, textY - hudScale * 7);
+            const now = performance.now();
+            const dt = this._lastBannerTime
+                ? Math.min(0.05, (now - this._lastBannerTime) / 1000) : 0;
+            this._lastBannerTime = now;
+
+            const hintY = textY - hudScale * 9;
+            const label = 'CLAIM LEVELS IN INVENTORY';
+            // Same flash as the level text: yellow (b=0) <-> white (b=255).
+            const b = Math.round((Math.sin(now * 0.005) * 0.5 + 0.5) * 255);
+            ctx.font = `${6 * hudScale}px Astro5x`;
+            ctx.lineWidth = hudScale * 1; // match the level text's 1px outline
+            ctx.fillStyle = `rgb(255,255,${b})`;
+            ctx.strokeText(label, cw / 2, hintY);
+            ctx.fillText(label, cw / 2, hintY);
+
+            // Light sparks rising off the prompt (sparse).
+            const tw = ctx.measureText(label).width;
+            this._updateBannerSparks(ctx, cw / 2, hintY, tw, hudScale, dt);
+        } else {
+            this._lastBannerTime = 0;
+        }
+        ctx.restore();
+    }
+
+    // A handful of cosmetic sparks drifting up off the claim-levels prompt.
+    // Purely visual (screen space) — uses Math.random so it never touches the
+    // seeded gameplay RNG stream. Capped low so it stays "a few embers".
+    _updateBannerSparks(ctx, centerX, baseY, textW, hudScale, dt) {
+        if (!this._bannerSparks) this._bannerSparks = [];
+        const sparks = this._bannerSparks;
+
+        // Spawn sparsely (~6/sec), capped at a small handful.
+        this._sparkAccum = (this._sparkAccum || 0) + dt;
+        const interval = 0.16;
+        while (this._sparkAccum >= interval) {
+            this._sparkAccum -= interval;
+            if (sparks.length >= 8) continue;
+            const spread = Math.min(textW, hudScale * 80);
+            sparks.push({
+                x: centerX + (Math.random() - 0.5) * spread,
+                y: baseY - hudScale * 1.5,
+                vx: (Math.random() - 0.5) * hudScale * 5,
+                vy: -hudScale * (8 + Math.random() * 8),
+                life: 0,
+                ttl: 0.5 + Math.random() * 0.5,
+            });
+        }
+
+        ctx.save();
+        const sz = Math.max(1, Math.round(hudScale));
+        for (let i = sparks.length - 1; i >= 0; i--) {
+            const s = sparks[i];
+            s.life += dt;
+            if (s.life >= s.ttl) { sparks.splice(i, 1); continue; }
+            s.x += s.vx * dt;
+            s.y += s.vy * dt;
+            s.vy += hudScale * 10 * dt;   // ease the rise so they hang then settle
+            ctx.globalAlpha = 1 - s.life / s.ttl;
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(Math.round(s.x), Math.round(s.y), sz, sz);
         }
         ctx.restore();
     }
