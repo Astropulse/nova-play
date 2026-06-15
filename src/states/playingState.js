@@ -29,7 +29,7 @@ import { rollEncounterType, generateEncounterDialog } from '../data/encounters.j
 import { EncounterDialog } from '../ui/encounterDialog.js';
 import { SpaceCache, CacheSpawner, CACHE_STATE, CACHE_CONFIG } from '../entities/spaceCache.js';
 import { CacheUI } from '../ui/cacheUI.js';
-import { LevelUpDialog } from '../ui/levelUpDialog.js';
+import { LevelUpDialog, applyLevelUpChoice } from '../ui/levelUpDialog.js';
 import { GP } from '../engine/inputManager.js';
 import { RandomStreams, randomSeed, RNG } from '../engine/rng.js';
 import { HostWorldSync, ClientWorldSync, mpQuantityMult, mpHealthMult, mpScrapMult } from '../net/netSync.js';
@@ -3317,25 +3317,88 @@ export class PlayingState {
         return eligible.slice(0, count);
     }
 
+    // Resets every accumulated level-up bonus field on a player to its neutral
+    // default (mirrors the initialisation in the Player constructor). Used before
+    // replaying a kept subset of level-up picks so the bonuses rebuild cleanly.
+    _resetLevelBonuses(player) {
+        const MULT_FIELDS = [
+            'lvlDamageMult', 'lvlMaxHpMult', 'lvlMaxShieldMult', 'lvlShieldDrainMult',
+            'lvlSpeedMult', 'lvlProjectileSpeedMult', 'lvlBoostCooldownMult', 'lvlFireRateMult',
+            'lvlShieldRechargeMult', 'lvlExpGainMult', 'lvlBoostSpeedMult', 'lvlBoostDurationMult',
+            'lvlAsteroidResistanceMult', 'lvlAsteroidSpawnMult', 'lvlVacuumRangeMult', 'lvlTurnSpeedMult',
+            'lvlShieldDamageMult', 'lvlFovMult', 'lvlScrapChanceMult', 'lvlCacheFreqMult',
+            'lvlEncounterFreqMult', 'lvlEnemySpawnMult', 'lvlDifficultyMult', 'lvlWaveCountdownMult',
+            'lvlLuckMult',
+        ];
+        for (const f of MULT_FIELDS) player[f] = 1.0;
+        player.lvlExtraProjectiles = 0;
+        player.lvlHpRegen = 0.0;
+        player._lvlHpRegenAccum = 0.0;
+    }
+
+    // Applies the on-death level penalty to a player IN PLACE: drops the most
+    // recent (1 - keepFrac) of their ordered level-up picks, rebuilds the lvl*
+    // bonus fields from the survivors (reset to defaults, then replay), and
+    // scales the level counter + XP curve to match. Mutates `player` so a
+    // following serialize() captures the penalised progress.
+    _applyLevelPenalty(player, keepFrac) {
+        const prev = Array.isArray(player.lvlChoices) ? player.lvlChoices.slice() : [];
+        const kept = prev.slice(0, Math.round(prev.length * keepFrac));
+
+        this._resetLevelBonuses(player);
+        player.lvlChoices = [];
+        for (const rec of kept) {
+            // Minimal choice shape applyLevelUpChoice consumes; null state skips
+            // the per-pick stat resync (stats are recomputed once after restore).
+            applyLevelUpChoice(
+                { stat: { id: rec.statId }, isCursed: rec.isCursed, pct: rec.pct, flatValue: rec.flatValue },
+                player, null
+            );
+            player.lvlChoices.push({ ...rec });
+        }
+
+        player.level = Math.round(player.level * keepFrac);
+        player.exp = 0;
+        let needed = 10;
+        for (let i = 0; i < player.level; i++) needed = Math.floor(needed * 1.16);
+        player.expNeeded = needed;
+    }
+
     // ── Respawn (multiplayer): a fresh ship in the same shared world ────────
-    _netRespawn() {
+    // The dead pilot is penalised in place (lose half their scrap, a few
+    // low-rarity items, and the most recent ~25% of level-up picks), then a
+    // fresh ship is rebuilt by RESTORING FROM THAT SNAPSHOT — the same
+    // serialize/deserialize path save/load uses, so every stat (inventory size +
+    // cargo expander, ship upgrades, perma-bonuses, level bonuses) comes back
+    // consistently instead of being partially reconstructed by hand.
+    async _netRespawn() {
         const game = this.game;
+        const oldPlayer = this.player;
 
-        // Death penalty: lose half your scrap and a few low-rarity items, but
-        // keep everything else (the whole rest of your inventory carries over).
-        const prevItems = (this.player && this.player.inventory) ? this.player.inventory.items.slice() : [];
-        const prevScrap = this.player ? this.player.scrap : 0;
-        const retainedScrap = Math.floor(prevScrap * 0.5);
-        const lostItems = this._rollLostItems(prevItems, this.trueTotalTime);
-        const lostSet = new Set(lostItems);
-        const keptEntries = prevItems.filter(entry => !lostSet.has(entry));
+        // ── Death penalty, applied to the dead pilot before snapshotting ──
+        const prevScrap = oldPlayer ? oldPlayer.scrap : 0;
+        const lostItems = (oldPlayer && oldPlayer.inventory)
+            ? this._rollLostItems(oldPlayer.inventory.items, this.trueTotalTime)
+            : [];
+        if (oldPlayer) {
+            oldPlayer.scrap = Math.floor(prevScrap * 0.5);                       // keep half the scrap
+            for (const entry of lostItems) oldPlayer.inventory.removeItemAt(entry.x, entry.y);
+            this._applyLevelPenalty(oldPlayer, 0.75);                            // keep 75% of levels
+        }
+        const snapshot = oldPlayer ? oldPlayer.serialize() : null;
 
+        // ── Fresh ship, restored from the penalised snapshot ──
         this.player = new Player(game, this.shipData);
         this.player.inventory = new Inventory(this.shipData.storage.cols, this.shipData.storage.rows);
         this.player.inventory.isPlayerInventory = true;
         this.player.inventory.playingState = this;
         this.inventoryCols = this.shipData.storage.cols;
         this.inventoryRows = this.shipData.storage.rows;
+        // Restores inventory (full grid size + items), inventoryUpgradeTier,
+        // perma-bonuses and all lvl* bonuses, and runs _onInventoryChanged().
+        if (snapshot) await this.player.deserialize(snapshot);
+
+        // Per-run UI / state that does NOT carry across a death.
         this.encounterBonuses = { speedMult: 1.0, fireRateMult: 1.0, turnMult: 1.0 };
         this.levelUpQueue = [];
         this.isLevelUpOpen = false;
@@ -3344,15 +3407,13 @@ export class PlayingState {
         this.levelUpSkipsRemaining = this.LEVELUP_MAX_SKIPS;
         this.pendingLevelUpMult = 1;
         this.fovUpgradeMult = 1.0;
-
-        // Fresh personal run stats (the shared world keeps going).
         this.stats = {
             asteroidsDestroyed: 0, enemiesDefeated: 0, wavesCleared: 0,
             scrapCollected: 0, shopsUnlocked: 1, eventsDiscovered: 0,
         };
         this.trueTotalTime = 0;
 
-        // Spawn near a living teammate (or back at the origin).
+        // Spawn near a living teammate (or back at the origin), at rest.
         let anchor = null;
         for (const rp of this.netSync.remotePlayers.values()) {
             if (rp._hasState && !rp.isDead) { anchor = rp; break; }
@@ -3360,6 +3421,8 @@ export class PlayingState {
         const angle = Math.random() * Math.PI * 2;
         this.player.worldX = (anchor ? anchor.worldX : 0) + Math.cos(angle) * 300;
         this.player.worldY = (anchor ? anchor.worldY : 0) + Math.sin(angle) * 300;
+        this.player.vx = 0;
+        this.player.vy = 0;
         this.player.invulnTimer = 2.5;
 
         this.isDead = false;
@@ -3369,15 +3432,15 @@ export class PlayingState {
         this.hud = new HUD(game, this.player);
         this.camera.snapTo(this.player);
 
-        // Carry the surviving inventory over to the fresh ship, keeping each
-        // item in its original slot (same ship type → same grid, so it fits).
-        this.player.scrap = retainedScrap;
-        for (const entry of keptEntries) {
-            this.player.inventory.addItem(entry.item, entry.x, entry.y);
-        }
+        // Recompute derived stats from the restored loadout, then top up to full
+        // (deserialize restored the at-death health/shield, which were ~empty).
+        this._onInventoryChanged();
+        this.player.health = this.player.maxHealth;
+        this.player.shieldEnergy = this.player.maxShieldEnergy;
+        this.player.shieldBroken = false;
 
         // Tell the player what the wreck cost them.
-        const scrapLost = prevScrap - retainedScrap;
+        const scrapLost = prevScrap - this.player.scrap;
         const parts = [];
         if (scrapLost > 0) parts.push(`${scrapLost} SCRAP`);
         if (lostItems.length > 0) parts.push(`${lostItems.length} ITEM${lostItems.length > 1 ? 'S' : ''}`);
@@ -3385,7 +3448,6 @@ export class PlayingState {
             this.spawnFloatingText(this.player.worldX, this.player.worldY - 24, `LOST ${parts.join(' + ')}`, '#ff6644');
         }
 
-        this._onInventoryChanged();
         if (game.achievements) game.achievements.notify('run_started');
 
         if (this.netSync.isHost) {
@@ -8384,7 +8446,7 @@ export class PlayingState {
                     return;
                 }
                 this.game.sounds.play('select', 1.0);
-                this._netRespawn();
+                this._netRespawn().catch(err => console.error('Respawn failed:', err));
                 return;
             }
             this.game.sounds.play('select', 1.0);

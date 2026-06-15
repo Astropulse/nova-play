@@ -517,6 +517,19 @@ export class LevelUpDialog {
         const choice = this.choices[index];
         applyLevelUpChoice(choice, this.player, this.playingState);
 
+        // Record the pick (oldest first) so a fraction of level progress can be
+        // reconstructed on respawn by replaying these in order. `pct`/`flatValue`
+        // already bake in any skip-stack multiplier, so the record replays
+        // identically. Kept minimal and JSON-safe for save/load.
+        if (Array.isArray(this.player.lvlChoices)) {
+            this.player.lvlChoices.push({
+                statId: choice.stat.id,
+                isCursed: !!choice.isCursed,
+                pct: choice.pct,
+                flatValue: choice.flatValue,
+            });
+        }
+
         // Track per-type pick history (positive picks only — cursed picks were
         // chosen too, so they still count as the player "investing" in that type).
         const t = STAT_TYPE[choice.stat.id];

@@ -289,6 +289,13 @@ export class Player {
         this._lvlHpRegenAccum        = 0.0;  // for floating text
         this.lvlLuckMult             = 1.0;  // multiplies player.luck (epic stat)
 
+        // Ordered history of the level-up picks applied this run, oldest first.
+        // Each entry is a minimal, replayable record: { statId, isCursed, pct,
+        // flatValue }. Used to reconstruct a fraction of progress on respawn
+        // (drop the most recent picks, replay the rest). Recorded in
+        // LevelUpDialog._selectChoice; the live bonuses live in the lvl* fields.
+        this.lvlChoices              = [];
+
         // Per-type pick history used by the level-up roller to softly bias
         // future rolls away from over-picked types (offense/defense/mobility/
         // utility/difficulty). Accumulates over the run.
@@ -1683,6 +1690,7 @@ export class Player {
             lvlExtraProjectiles: this.lvlExtraProjectiles,
             lvlHpRegen: this.lvlHpRegen,
             lvlLuckMult: this.lvlLuckMult,
+            lvlChoices: this.lvlChoices.map(c => ({ ...c })),
             upgradeTypeCounts: { ...this.upgradeTypeCounts },
             hasYellowGlow: this.hasYellowGlow,
             inventory: this.inventory ? this.inventory.serialize() : null
@@ -1738,6 +1746,7 @@ export class Player {
             this.lvlExtraProjectiles     = data.lvlExtraProjectiles || 0;
             this.lvlHpRegen              = data.lvlHpRegen || 0;
             this.lvlLuckMult             = data.lvlLuckMult || 1.0;
+            this.lvlChoices              = Array.isArray(data.lvlChoices) ? data.lvlChoices.map(c => ({ ...c })) : [];
             this.upgradeTypeCounts       = data.upgradeTypeCounts ? { ...data.upgradeTypeCounts } : {};
             this.hasYellowGlow           = data.hasYellowGlow || false;
         }
