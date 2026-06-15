@@ -87,6 +87,7 @@ export class PlayingState {
         // truth and this.netSync replicates everything else.
         this.net = game.net || null;
         this.netSync = null;
+        this._reconnecting = false; // client: socket dropped, auto-reconnecting
         this.chatUI = null;
         this.tradeUI = null;
         this.isTradeOpen = false;
@@ -238,6 +239,11 @@ export class PlayingState {
                 };
             } else {
                 this.game.sounds.remoteMusicControl = true;
+                // Seamless reconnect: re-apply the host's world snapshot to THIS
+                // live state (keep our own ship/stats) instead of rebuilding.
+                this.net.onResume = (snap) => { this.applyNetJoinSnapshot(snap); };
+                this.net.onReconnecting = () => { this._reconnecting = true; };
+                this.net.onReconnected = () => { this._reconnecting = false; };
             }
             this.chatUI = new ChatOverlay(game, this.net);
             this._mpAsteroidSpawners = new Map(); // pid -> AsteroidSpawner (host)
@@ -702,6 +708,11 @@ export class PlayingState {
             // The session may have just ended (host left) — _netPreFrame swaps
             // to the menu; don't run a frame on the dead state.
             if (!this.net) return;
+            // Client lost the host and is auto-reconnecting: the world has no
+            // authority to advance, so freeze the local sim (chat already ticked
+            // in _netPreFrame) and let the reconnect loop run in the background.
+            if (this.net.state === 'reconnecting') { this._reconnecting = true; return; }
+            this._reconnecting = false;
         }
 
         // Increment true total time only if not paused, not in shop, and not dead
@@ -4329,12 +4340,33 @@ export class PlayingState {
             }
         }
 
+        // Auto-reconnect overlay — dim the frozen world and show status while we
+        // try to get back to the host (client only).
+        if (this._reconnecting) this._drawReconnectingOverlay(ctx);
+
         if (this.game.devMode) {
             this._drawDevOverlay(ctx);
             // Commit after the overlay so the graph always shows the *previous* complete frame.
             // world timing (begin/end inside draw) is already accumulated before we commitFrame.
             this.perf.commitFrame();
         }
+    }
+
+    _drawReconnectingOverlay(ctx) {
+        const game = this.game;
+        const uiScale = game.uiScale;
+        ctx.save();
+        ctx.fillStyle = 'rgba(2, 6, 14, 0.6)';
+        ctx.fillRect(0, 0, game.width, game.height);
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#9fe8ff';
+        ctx.font = `${Math.floor(11 * uiScale)}px Astro5x`;
+        const dots = '.'.repeat(1 + Math.floor(performance.now() / 500) % 3);
+        ctx.fillText(`RECONNECTING${dots}`, game.width / 2, game.height / 2);
+        ctx.fillStyle = '#667788';
+        ctx.font = `${Math.floor(5 * uiScale)}px Astro4x`;
+        ctx.fillText('LOST CONNECTION TO THE HOST — HOLDING YOUR SHIP', game.width / 2, game.height / 2 + Math.floor(uiScale * 12));
+        ctx.restore();
     }
 
     _getIndicatorOpacity(entity, shouldShow, dt) {
@@ -7020,6 +7052,12 @@ export class PlayingState {
             // the level-up FOV bonus; pass it so the FOV achievement counts both.
             this.game.achievements.notify('player_stats', { player: p, fovMult: this.fovUpgradeMult });
         }
+
+        // Client: push the updated ship/stats to the host now so a reconnect
+        // restores this exact build (the host owns the player record).
+        if (this.netSync && !this.netSync.isHost && this.netSync.uploadPersist) {
+            this.netSync.uploadPersist();
+        }
     }
 
     _removeSacrificeItem() {
@@ -7404,11 +7442,17 @@ export class PlayingState {
         this.enemySpawner.waveNumber = snap.waveNumber || 0;
         sync.waveTargetPid = snap.waveTargetPid || 0;
 
-        // Player spawn near the host.
-        this.player.worldX = snap.spawnX || 0;
-        this.player.worldY = snap.spawnY || 0;
-        this.player.invulnTimer = 2.5;
-        this.camera.snapTo(this.player);
+        if (snap.resume) {
+            // Seamless in-grace resume: keep our live ship exactly where it was —
+            // only the shared world (rebuilt below) needed resyncing.
+            this.camera.snapTo(this.player);
+        } else {
+            // Fresh (or restored) spawn near the host.
+            this.player.worldX = snap.spawnX || 0;
+            this.player.worldY = snap.spawnY || 0;
+            this.player.invulnTimer = 2.5;
+            this.camera.snapTo(this.player);
+        }
 
         // Events (same classes/ordering as the save-file path).
         const EVENT_CLASSES = {
@@ -7467,6 +7511,24 @@ export class PlayingState {
         for (const d of (snap.encounters || [])) sync._spawnEncounter(d);
         for (const d of (snap.caches || [])) sync._spawnCache(d);
         for (const d of (snap.pickups || [])) sync._spawnPickup(d);
+
+        // Returning pilot (grace expired): restore the exact ship/stats/inventory
+        // the host kept for us. Done LAST and guarded so a restore hiccup can
+        // never abort the world rebuild above (enemies/asteroids/caches) — a
+        // missing ship is far better than an empty world.
+        if (snap.player) {
+            try {
+                await this.player.deserialize(snap.player);
+            } catch (err) {
+                console.error('[net] player restore failed:', err);
+            }
+            // deserialize() also restored the OLD position — drop them at the
+            // safe fresh spawn near the host instead.
+            this.player.worldX = snap.spawnX || 0;
+            this.player.worldY = snap.spawnY || 0;
+            this.player.invulnTimer = 2.5;
+            this.camera.snapTo(this.player);
+        }
 
         // Drop into the same song (and playhead) the rest of the lobby is hearing.
         if (snap.music) {

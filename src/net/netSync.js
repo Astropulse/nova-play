@@ -109,7 +109,7 @@ class BaseWorldSync {
         const out = [];
         if (this.state.player && !this.state.isDead) out.push(this.state.player);
         for (const rp of this.remotePlayers.values()) {
-            if (rp._hasState && !rp.isDead) out.push(rp);
+            if (rp._hasState && !rp.isDead && !rp.disconnected) out.push(rp);
         }
         return out;
     }
@@ -152,6 +152,32 @@ class BaseWorldSync {
         }
         if (this.state.tradeUI && this.state.tradeUI.partnerPid === pid) {
             this.state.tradeUI.forceClose('Partner disconnected.');
+        }
+    }
+
+    // Dropped but held in the reconnect grace window — freeze their ghost (kept
+    // in the world, excluded from targeting via playerBodies()).
+    onPlayerDisconnected(pid) {
+        const rp = this.remotePlayers.get(pid);
+        if (rp) rp.disconnected = true;
+        if (this.state.tradeUI && this.state.tradeUI.partnerPid === pid) {
+            this.state.tradeUI.forceClose('Partner disconnected.');
+        }
+    }
+
+    onPlayerReconnected(pid) {
+        const rp = this.remotePlayers.get(pid);
+        if (rp) rp.disconnected = false;
+    }
+
+    // After our own socket dropped and recovered, the interpolation buffers and
+    // clock estimate are stale — clear them so fresh snapshots re-seed cleanly
+    // instead of teleporting remote ships.
+    resetRemoteInterp() {
+        for (const rp of this.remotePlayers.values()) {
+            rp._buffer = [];
+            rp._lastSnapT = -1;
+            rp._hasState = false;
         }
     }
 
@@ -746,15 +772,21 @@ export class HostWorldSync extends BaseWorldSync {
     }
 
     // ── Join-in-progress snapshot ───────────────────────────────────────────
-    sendJoinSnapshot(pid) {
+    // opts.resume    → seamless in-grace reconnect: the client kept its live
+    //                  ship, so don't move it (just resync the shared world).
+    // opts.resumeBlob → grace-expired rejoin: fold the pilot's retained
+    //                  ship/stats into the snapshot so they're restored exactly.
+    sendJoinSnapshot(pid, opts = {}) {
         const st = this.state;
         const body = this.state.player;
-        // Free spot near the host player.
+        // Free spot near the host player (only used for a fresh spawn).
         const angle = Math.random() * Math.PI * 2;
         const spawnX = body.worldX + Math.cos(angle) * 260;
         const spawnY = body.worldY + Math.sin(angle) * 260;
 
         const snapshot = {
+            resume: !!opts.resume,
+            player: opts.resumeBlob || null,
             runSeed: st.runSeed,
             rng: st.rng.serialize(),
             totalGameTime: st.totalGameTime,
@@ -793,8 +825,12 @@ export class HostWorldSync extends BaseWorldSync {
             pickups: this._pickupSnapshot(),
         };
         this.session.sendTo(pid, MSG.JOIN_SNAPSHOT, snapshot);
-        const rp = this.ensureRemotePlayer(pid);
-        if (rp) { rp.worldX = spawnX; rp.worldY = spawnY; }
+        // A seamless resume keeps the existing ghost where it froze; only a
+        // fresh/late spawn repositions it near the host.
+        if (!opts.resume) {
+            const rp = this.ensureRemotePlayer(pid);
+            if (rp) { rp.worldX = spawnX; rp.worldY = spawnY; }
+        }
     }
 
     _pickupSnapshot() {
@@ -936,7 +972,19 @@ export class ClientWorldSync extends BaseWorldSync {
         this.isHost = false;
         this._snapBuffers = new Map();  // nid -> [{t,x,y,angle}] interpolation buffers
         this.waveTargetPid = 0;
+        this._persistTimer = 5;         // first upload shortly after the run starts
         this._registerHandlers();
+    }
+
+    // Send our current ship/stats to the host so it can hand them back on a
+    // rejoin (host owns the player record). Fired on a low-frequency keepalive
+    // and on discrete changes (purchases, item moves) via PlayingState.
+    uploadPersist() {
+        if (!this.state.player) return;
+        this.session.send(MSG.PLAYER_PERSIST, {
+            shipId: this.state.shipData ? this.state.shipData.id : undefined,
+            blob: this.state.player.serialize(),
+        });
     }
 
     bind() {
@@ -1583,6 +1631,13 @@ export class ClientWorldSync extends BaseWorldSync {
         if (this._sendTimer <= 0) {
             this._sendTimer = 1 / RATE_PLAYER_STATE;
             this.session.send(MSG.PLAYER_STATE, this._packLocalState());
+        }
+        // Low-frequency ship/stats keepalive (discrete changes also push via
+        // PlayingState._onInventoryChanged).
+        this._persistTimer -= dt;
+        if (this._persistTimer <= 0) {
+            this._persistTimer = 10;
+            this.uploadPersist();
         }
     }
 }

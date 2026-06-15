@@ -9,7 +9,7 @@
 // No images/assets ever cross the wire: spawns carry assetKey strings + content
 // seeds, and every machine resolves them against its own local asset files.
 
-export const NET_PROTOCOL_VERSION = 1;
+export const NET_PROTOCOL_VERSION = 2;
 export const NET_MAX_PLAYERS = 8;
 export const NET_DEFAULT_PORT = 27777;
 
@@ -23,18 +23,21 @@ export const INTERP_DELAY = 0.1;       // seconds of interpolation buffer on rep
 
 export const MSG = {
     // ── Lobby / control ────────────────────────────────────────────────────
-    HELLO: 1,           // c→h {name, shipId, ver}
+    HELLO: 1,           // c→h {name, shipId, ver, token, resuming}
     WELCOME: 2,         // h→c {pid, players, worldSeed, inRun}
     REJECT: 3,          // h→c {reason}
     LOBBY: 4,           // h→c {players:[{pid,name,shipId,alive}]}
     START: 5,           // h→c {runSeed, worldSeed, players}
-    JOIN_SNAPSHOT: 6,   // h→c {snapshot} (join-in-progress full world)
+    JOIN_SNAPSHOT: 6,   // h→c {snapshot} (join-in-progress full world; resume:true keeps the live ship; player:blob restores ship/stats)
     CHAT: 7,            // both {pid, text}
     PLAYER_LEFT: 8,     // h→c {pid}
     SHIP_CHANGE: 9,     // c→h {shipId} (lobby only)
     END: 10,            // h→c {reason} session over
     PING: 11,           // c→h {t}
     PONG: 12,           // h→c {t, ht} (echo + host clock)
+    PLAYER_DISCONNECTED: 13, // h→c {pid} dropped, held in grace — show "reconnecting", freeze ghost
+    PLAYER_RECONNECTED: 14,  // h→c {pid} resumed within grace — unfreeze
+    PLAYER_PERSIST: 15,      // c→h {blob} client uploads player.serialize() so the host can restore ship/stats on rejoin
 
     // ── Player replication ─────────────────────────────────────────────────
     PLAYER_STATE: 20,   // c→h [t, x, y, vx, vy, angle, flags, hpFrac, shieldFrac, level, shots[]]

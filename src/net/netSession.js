@@ -19,6 +19,33 @@ function netNow() {
     return performance.now() / 1000;
 }
 
+// How long the host holds a dropped client's slot/pid/ghost open for a seamless
+// auto-reconnect, and how long the client keeps retrying before giving up. The
+// player's serialized ship/stats are retained for the WHOLE run regardless, so a
+// later rejoin (past this window) still restores them into a fresh slot.
+const RECONNECT_GRACE_MS = 10000;
+const RECONNECT_GRACE_S = RECONNECT_GRACE_MS / 1000;
+
+const TOKEN_KEY = 'nova_mp_token';
+
+// A stable per-install identity so the host can recognise a returning player
+// across a fresh socket (and even a full game relaunch) and give them their
+// ship + stats back.
+function loadOrCreateToken() {
+    try {
+        let t = localStorage.getItem(TOKEN_KEY);
+        if (!t) {
+            t = 'T' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+            localStorage.setItem(TOKEN_KEY, t);
+        }
+        return t;
+    } catch {
+        // Private mode / storage blocked — a per-session token still enables the
+        // in-grace seamless reconnect (just not restore after a relaunch).
+        return 'T' + Math.random().toString(36).slice(2);
+    }
+}
+
 class NetSessionBase {
     constructor(game) {
         this.game = game;
@@ -68,7 +95,8 @@ class NetSessionBase {
 
     lobbySnapshot() {
         return [...this.players.values()].map(p => ({
-            pid: p.pid, name: p.name, shipId: p.shipId, alive: p.alive !== false, inRun: !!p.inRun
+            pid: p.pid, name: p.name, shipId: p.shipId, alive: p.alive !== false,
+            inRun: !!p.inRun, disconnected: !!p.disconnected
         }));
     }
 }
@@ -88,6 +116,10 @@ export class HostSession extends NetSessionBase {
         this.players.set(0, { pid: 0, name, shipId, alive: true, inRun: false, clientId: 0, transport: null });
         this._clientToPid = new Map(); // `${key}${clientId}` -> pid
         this._nextPid = 1;
+        // token -> {shipId, blob} — each client's last uploaded ship/stats, kept
+        // for the whole run so a returning pilot (even after a relaunch) is
+        // restored exactly. The host owns this record.
+        this._tokenBlobs = new Map();
         this.runSeed = null;
         this.joinCodeInfo = null; // {port, lanIPs, publicIP, relayCode, relayError}
     }
@@ -203,6 +235,17 @@ export class HostSession extends NetSessionBase {
             case MSG.PING:
                 this.sendTo(pid, MSG.PONG, { t: msg.payload.t, ht: netNow() });
                 return;
+            case MSG.PLAYER_PERSIST: {
+                // Client uploaded its current ship/stats — cache by token so we
+                // can hand it straight back if they reconnect (host owns state).
+                const p = this.players.get(pid);
+                if (p && p.token && msg.payload && msg.payload.blob) {
+                    // Keep the pid too so a late rejoin reuses the same identity
+                    // (pilot colour is derived from pid — it must stay stable).
+                    this._tokenBlobs.set(p.token, { pid: p.pid, shipId: msg.payload.shipId || p.shipId, blob: msg.payload.blob });
+                }
+                return;
+            }
             default:
                 this._dispatch(msg.type, msg.payload, pid);
         }
@@ -214,14 +257,32 @@ export class HostSession extends NetSessionBase {
             entry.impl.kick(clientId);
             return;
         }
+
+        // Returning pilot? A matching token means a held grace slot (seamless
+        // resume) or a retained ship/stats record (restore into a fresh slot).
+        if (hello.token && this.state === 'inRun') {
+            const held = this._findDisconnectedByToken(hello.token);
+            if (held) { this._reattachPlayer(held, entry, clientId); return; }
+        }
+
         if (this.players.size >= NET_MAX_PLAYERS) {
             entry.impl.sendTo(clientId, encode(MSG.REJECT, { reason: 'World is full (8 players max).' }));
             entry.impl.kick(clientId);
             return;
         }
-        const pid = this._nextPid++;
+        // Grace expired but we still hold their ship/stats — bring them back on
+        // their saved hull, original pid (stable colour) and the snapshot below.
+        const retained = (hello.token && this.state === 'inRun') ? this._tokenBlobs.get(hello.token) : null;
+        let pid;
+        if (retained && retained.pid != null && !this.players.has(retained.pid)) {
+            pid = retained.pid; // freed pids are never reissued by _nextPid, so this can't collide
+            if (pid >= this._nextPid) this._nextPid = pid + 1;
+        } else {
+            pid = this._nextPid++;
+        }
         const name = String(hello.name || `P${pid}`).slice(0, 16) || `P${pid}`;
-        const player = { pid, name, shipId: hello.shipId || 'fighter', alive: true, inRun: false, clientId, transport: entry };
+        const shipId = (retained && retained.shipId) || hello.shipId || 'fighter';
+        const player = { pid, name, shipId, alive: true, inRun: false, clientId, transport: entry, token: hello.token || null };
         this.players.set(pid, player);
         this._clientToPid.set(entry.key + clientId, pid);
 
@@ -233,28 +294,104 @@ export class HostSession extends NetSessionBase {
         });
         this._broadcastLobby(pid);
         this._notifyLobby();
-        this.pushChat(0, `${name} joined.`);
-        this.broadcast(MSG.CHAT, { pid: 0, text: `${name} joined.` }, pid);
+        const joinVerb = retained ? 'reconnected.' : 'joined.';
+        this.pushChat(0, `${name} ${joinVerb}`);
+        this.broadcast(MSG.CHAT, { pid: 0, text: `${name} ${joinVerb}` }, pid);
 
-        // Mid-run joiner: ship them the full world immediately.
+        // Mid-run joiner: ship them the full world immediately. A returning pilot
+        // also gets their retained ship/stats folded into the snapshot.
         if (this.state === 'inRun' && this.sync) {
-            this.sync.sendJoinSnapshot(pid);
+            this.sync.sendJoinSnapshot(pid, retained ? { resumeBlob: retained.blob } : undefined);
             player.inRun = true;
         }
+    }
+
+    // Find a player currently held in the reconnect grace window by token.
+    _findDisconnectedByToken(token) {
+        for (const p of this.players.values()) {
+            if (p.disconnected && p.token === token) return p;
+        }
+        return null;
+    }
+
+    // Seamless resume: a dropped client came back within the grace window. Reuse
+    // the SAME pid and re-point it at the new socket, then resync the world.
+    _reattachPlayer(player, entry, clientId) {
+        if (player._graceTimer) { clearTimeout(player._graceTimer); player._graceTimer = null; }
+        // Drop the stale clientId→pid mapping (the relay assigns a fresh id on
+        // reconnect) and install the new one.
+        if (player.transport) this._clientToPid.delete(player.transport.key + player.clientId);
+        player.transport = entry;
+        player.clientId = clientId;
+        this._clientToPid.set(entry.key + clientId, player.pid);
+        player.disconnected = false;
+        player.inRun = true;
+        player.alive = true;
+
+        if (this.sync) this.sync.onPlayerReconnected(player.pid);
+
+        this.sendTo(player.pid, MSG.WELCOME, {
+            pid: player.pid,
+            players: this.lobbySnapshot(),
+            worldSeed: this.game.worldSeed,
+            inRun: true,
+        });
+        // resume:true → the client keeps its own live ship; we only resync the
+        // shared world it missed during the gap.
+        if (this.sync) this.sync.sendJoinSnapshot(player.pid, { resume: true });
+        this.broadcast(MSG.PLAYER_RECONNECTED, { pid: player.pid });
+        this._broadcastLobby();
+        this._notifyLobby();
+        this.pushChat(0, `${player.name} reconnected.`);
+        this.broadcast(MSG.CHAT, { pid: 0, text: `${player.name} reconnected.` });
     }
 
     _onClientClosed(entry, clientId) {
         const pid = this._clientToPid.get(entry.key + clientId);
         if (pid === undefined) return;
-        this._clientToPid.delete(entry.key + clientId);
         const p = this.players.get(pid);
+        // Stale close: this socket was already superseded by a reconnect (the
+        // relay reassigns clientIds, so a late 'D' for the old id can arrive
+        // after the new one took over). Ignore it.
+        if (!p || p.clientId !== clientId || p.transport !== entry) return;
+
+        // In a run: hold the slot open for a seamless reconnect rather than
+        // tearing the pilot out immediately.
+        if (this.state === 'inRun' && !p.disconnected) {
+            p.disconnected = true;
+            p.inRun = false; // exclude from wave targeting while frozen
+            if (this.sync) this.sync.onPlayerDisconnected(pid);
+            this.broadcast(MSG.PLAYER_DISCONNECTED, { pid });
+            this.pushChat(0, `${p.name} dropped — reconnecting…`);
+            this.broadcast(MSG.CHAT, { pid: 0, text: `${p.name} dropped — reconnecting…` });
+            this._notifyLobby();
+            p._graceTimer = setTimeout(() => { p._graceTimer = null; this._finalizeDrop(pid); }, RECONNECT_GRACE_MS);
+            return;
+        }
+
+        // Lobby (or already finalising): remove immediately.
+        this._clientToPid.delete(entry.key + clientId);
         this.players.delete(pid);
         if (this.sync) this.sync.onPlayerLeft(pid);
         this.broadcast(MSG.PLAYER_LEFT, { pid });
-        if (p) {
-            this.pushChat(0, `${p.name} left.`);
-            this.broadcast(MSG.CHAT, { pid: 0, text: `${p.name} left.` });
-        }
+        this.pushChat(0, `${p.name} left.`);
+        this.broadcast(MSG.CHAT, { pid: 0, text: `${p.name} left.` });
+        this._broadcastLobby();
+        this._notifyLobby();
+    }
+
+    // Grace window elapsed without a reconnect — release the slot for good. The
+    // pilot's ship/stats stay in _tokenBlobs for the rest of the run, so a later
+    // rejoin still restores them into a fresh slot.
+    _finalizeDrop(pid) {
+        const p = this.players.get(pid);
+        if (!p || !p.disconnected) return;
+        if (p.transport) this._clientToPid.delete(p.transport.key + p.clientId);
+        this.players.delete(pid);
+        if (this.sync) this.sync.onPlayerLeft(pid);
+        this.broadcast(MSG.PLAYER_LEFT, { pid });
+        this.pushChat(0, `${p.name} left.`);
+        this.broadcast(MSG.CHAT, { pid: 0, text: `${p.name} left.` });
         this._broadcastLobby();
         this._notifyLobby();
     }
@@ -325,6 +462,10 @@ export class HostSession extends NetSessionBase {
 
     destroy(reason = 'Host closed the world.') {
         this.state = 'ended';
+        // Cancel any pending grace timers so they don't fire on a dead session.
+        for (const p of this.players.values()) {
+            if (p._graceTimer) { clearTimeout(p._graceTimer); p._graceTimer = null; }
+        }
         try { this.broadcast(MSG.END, { reason }); } catch { /* noop */ }
         for (const entry of this.transports) {
             try { entry.impl.stop(); } catch { /* noop */ }
@@ -344,6 +485,14 @@ export class ClientSession extends NetSessionBase {
         this.transport = new ClientTransport();
         this.runSeed = null;
         this.worldSeed = null;
+        this.token = loadOrCreateToken();
+
+        // Reconnect: how to re-reach the host, and whether a retry loop is live.
+        this._reconnectFn = null;   // () => Promise<{ok}>  (re-runs connect/connectRelay)
+        this._reconnecting = false;
+        this.onReconnecting = null; // () — entered the grace retry loop
+        this.onReconnected = null;  // () — resumed successfully
+        this.onResume = null;       // (snapshot) — re-apply world to the LIVE PlayingState
 
         // Host-clock estimation (for snapshot interpolation timing)
         this._clockOffset = 0;     // hostTime - localTime
@@ -355,6 +504,9 @@ export class ClientSession extends NetSessionBase {
     }
 
     async connect(ip, port) {
+        // Remember how to re-reach this host for a later auto-reconnect.
+        this._reconnectFn = () => this.connect(ip, port);
+        this.transport = new ClientTransport();
         this.transport.onMessage = (raw) => this._onMessage(raw);
         this.transport.onClose = () => this._onClosed();
         const res = await this.transport.connect(ip, port);
@@ -365,6 +517,7 @@ export class ClientSession extends NetSessionBase {
     // Join through the relay by room code. Above the transport everything is
     // identical to a direct connection — the relay just forwards raw protocol.
     async connectRelay(code) {
+        this._reconnectFn = () => this.connectRelay(code);
         this.transport = new RelayClientTransport();
         this.transport.onMessage = (raw) => this._onMessage(raw);
         this.transport.onClose = () => this._onClosed();
@@ -374,7 +527,10 @@ export class ClientSession extends NetSessionBase {
     }
 
     _sendHelloAndAwaitWelcome() {
-        this.send(MSG.HELLO, { name: this.myName, shipId: this.myShipId, ver: NET_PROTOCOL_VERSION });
+        this.send(MSG.HELLO, {
+            name: this.myName, shipId: this.myShipId, ver: NET_PROTOCOL_VERSION,
+            token: this.token, resuming: this._reconnecting,
+        });
 
         // Wait for WELCOME / REJECT
         return new Promise((resolve) => {
@@ -390,6 +546,9 @@ export class ClientSession extends NetSessionBase {
     }
 
     _onMessage(raw) {
+        // Relay keepalive echo — keeps the edge connection warm but is NOT proof
+        // the host is alive, so it must not reset the host-silence watchdog.
+        if (raw === 'P0:') return;
         this._lastHostMsg = netNow();
         const msg = decode(raw);
         if (!msg) return;
@@ -452,13 +611,31 @@ export class ClientSession extends NetSessionBase {
             case MSG.JOIN_SNAPSHOT: {
                 this.state = 'inRun';
                 this.runSeed = msg.payload.runSeed;
-                if (this.onStartRun) {
+                // Seamless resume: we kept our live PlayingState through a blip,
+                // so re-apply the world snapshot in place rather than rebuilding.
+                if (msg.payload.resume && this.onResume) {
+                    this.onResume(msg.payload);
+                } else if (this.onStartRun) {
                     this.onStartRun({
                         runSeed: msg.payload.runSeed,
                         worldSeed: this.worldSeed,
                         joinSnapshot: msg.payload,
                     });
                 }
+                return;
+            }
+            case MSG.PLAYER_DISCONNECTED: {
+                const info = this.players.get(msg.payload.pid);
+                if (info) info.disconnected = true;
+                if (this.sync) this.sync.onPlayerDisconnected(msg.payload.pid);
+                this._notifyLobby();
+                return;
+            }
+            case MSG.PLAYER_RECONNECTED: {
+                const info = this.players.get(msg.payload.pid);
+                if (info) info.disconnected = false;
+                if (this.sync) this.sync.onPlayerReconnected(msg.payload.pid);
+                this._notifyLobby();
                 return;
             }
             case MSG.PONG: {
@@ -482,7 +659,51 @@ export class ClientSession extends NetSessionBase {
     }
 
     _onClosed() {
+        // A blip during a live run: don't drop to the menu — keep the run alive
+        // and try to get back in within the grace window.
+        if (this.state === 'inRun' && this._reconnectFn) {
+            this.state = 'reconnecting';
+            if (this.onReconnecting) this.onReconnecting();
+            this._runReconnectLoop();
+            return;
+        }
+        if (this.state === 'reconnecting') return; // a retry loop already owns it
         this._end('Lost connection to the host.');
+    }
+
+    // Re-reach the host on a fresh socket, re-HELLO with our token (so we resume
+    // the same pid + ship), and resync. Gives up to the menu after the grace
+    // window — past which the host has released our slot, but still holds our
+    // ship/stats for a manual rejoin.
+    async _runReconnectLoop() {
+        if (this._reconnecting) return;
+        this._reconnecting = true;
+        const deadline = netNow() + RECONNECT_GRACE_S;
+        while (this.state === 'reconnecting' && netNow() < deadline) {
+            try { this.transport.close(); } catch { /* noop */ }
+            let res = null;
+            try { res = await this._reconnectFn(); } catch { res = { ok: false }; }
+            if (this.state !== 'reconnecting') { this._reconnecting = false; return; }
+            if (res && res.ok) {
+                // Reseed clock + interpolation so remote ships don't snap from
+                // stale timing after the gap, then resume the live run.
+                this._clockSamples = [];
+                this._clockOffset = 0;
+                this._lastHostMsg = netNow();
+                this._pingTimer = 0;
+                this._reconnecting = false;
+                this.state = 'inRun';
+                if (this.sync && this.sync.resetRemoteInterp) this.sync.resetRemoteInterp();
+                if (this.onReconnected) this.onReconnected();
+                return;
+            }
+            await new Promise(r => setTimeout(r, 600));
+        }
+        this._reconnecting = false;
+        if (this.state === 'reconnecting') {
+            this.state = 'inRun'; // let _end run its normal teardown
+            this._end('Lost connection to the host.');
+        }
     }
 
     _end(reason) {
@@ -495,18 +716,20 @@ export class ClientSession extends NetSessionBase {
 
     // Periodic upkeep — called every frame by whoever owns the session.
     update(dt) {
+        // While reconnecting, the retry loop owns all timing — don't ping a dead
+        // socket or trip the silence cutoff mid-recovery.
+        if (this.state !== 'inRun') return;
         this._pingTimer -= dt;
         if (this._pingTimer <= 0) {
             this._pingTimer = 2.0;
             this.send(MSG.PING, { t: netNow() });
         }
         // The host answers every PING; in-run it also broadcasts constantly.
-        // Sustained silence = the host is gone (or our socket is half-open and
-        // will never fire onclose) — end the run cleanly instead of freezing.
-        // The cutoff sits above the host's ~8s reconnect window so a host that
-        // comes back in time is seamless.
+        // Sustained silence = the host is gone, OR our socket is half-open and
+        // will never fire onclose. Route through the reconnect path (not a hard
+        // end) so a half-open drop still gets the grace window.
         if (this._lastHostMsg && netNow() - this._lastHostMsg > 11) {
-            this._end('Lost connection to the host.');
+            this._onClosed();
         }
     }
 

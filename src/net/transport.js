@@ -367,6 +367,28 @@ export class RelayClientTransport extends ClientTransport {
             `${relayWsBase()}/room/${code}?role=client`,
             timeoutMs,
             'Relay connection blocked.'
-        );
+        ).then((res) => {
+            if (res.ok) this._startKeepalive();
+            return res;
+        });
+    }
+
+    // Cloudflare's edge (and intermediary NATs) close WebSockets idle for ~100s.
+    // The game's 30Hz state stream keeps the leg warm DURING a run, but the
+    // lobby — and any quiet/backgrounded moment — sends nothing, so an idle
+    // client would be silently dropped. Mirror the host's heartbeat: a tiny
+    // "P0:" ping the relay auto-answers without waking its Durable Object.
+    _startKeepalive() {
+        if (this._kaTimer) clearInterval(this._kaTimer);
+        this._kaTimer = setInterval(() => {
+            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                try { this.ws.send('P0:'); } catch { /* close event follows */ }
+            }
+        }, 4000);
+    }
+
+    close() {
+        if (this._kaTimer) { clearInterval(this._kaTimer); this._kaTimer = null; }
+        super.close();
     }
 }
