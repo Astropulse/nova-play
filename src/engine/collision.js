@@ -1,5 +1,11 @@
 // ============================================================================
-// hitbox.js — rotated-ellipse hit tests for combat entities.
+// collision.js — rotated-ellipse hit tests for combat entities.
+// ----------------------------------------------------------------------------
+// NOTE: deliberately NOT named "hitbox.js" — that filename is on common ad/
+// privacy blocker lists, so Firefox+uBlock (etc.) silently block the request and
+// the web build dies with a bare "Loading failed for the module" + black screen
+// (Electron/file:// is unaffected). Keep runtime module filenames neutral; see
+// docs/architecture/build-assets-persistence.md → "Blocker-safe filenames".
 // ----------------------------------------------------------------------------
 // Enemies/bosses/hostile-events carry an ellipse hitbox fitted to their sprite
 // silhouette at pack time (see scripts/lib/fit_hitbox.mjs → atlas.json

@@ -40,7 +40,7 @@ export class CthulhuEvent {
         this.displayName = "Frozen God";
         this.radius = (this.stillImg ? Math.max(this.stillImg.width, this.stillImg.height) / 2 : 128) * this.scale;
 
-        // Ellipse hitbox (see engine/hitbox.js): fitted to the 'cthulhu' sprite,
+        // Ellipse hitbox (see engine/collision.js): fitted to the 'cthulhu' sprite,
         // drawn with ctx.rotate(this.angle) (no +PI/2 like ships) and scaled by
         // this.scale — so the ellipse uses the raw angle and tracks scale.
         this.spriteKey = 'cthulhu';

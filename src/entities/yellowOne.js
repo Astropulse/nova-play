@@ -25,7 +25,7 @@ export class YellowOne {
         this.state = YO_STATE.IDLE;
         this.radius = 80;
 
-        // Ellipse hitbox (see engine/hitbox.js): the Yellow One is drawn upright
+        // Ellipse hitbox (see engine/collision.js): the Yellow One is drawn upright
         // and never rotates, so the fitted ellipse stays axis-aligned (rot = 0).
         // Fitted on the idle animation's silhouette. Setting radius = 0 elsewhere
         // still disables the hitbox (honored by the ellipse test).

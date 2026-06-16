@@ -31,7 +31,7 @@ import { SpaceCache, CacheSpawner, CACHE_STATE, CACHE_CONFIG } from '../entities
 import { CacheUI } from '../ui/cacheUI.js';
 import { LevelUpDialog, applyLevelUpChoice } from '../ui/levelUpDialog.js';
 import { GP } from '../engine/inputManager.js';
-import { ellipseContains, ellipseSweep } from '../engine/hitbox.js';
+import { ellipseContains, ellipseSweep } from '../engine/collision.js';
 import { RandomStreams, randomSeed, RNG } from '../engine/rng.js';
 import { HostWorldSync, ClientWorldSync, mpQuantityMult, mpHealthMult, mpScrapMult } from '../net/netSync.js';
 import { MSG, KIND } from '../net/protocol.js';

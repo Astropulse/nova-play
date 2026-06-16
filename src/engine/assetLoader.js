@@ -61,7 +61,7 @@ export class AssetLoader {
                 frames: a.frames.map(f => ({ x: f.x, y: f.y, w: f.w, h: f.h, delay: f.delay, img: pages[f.page] })),
             };
         }
-        // Ellipse hitboxes for combat sprites (packer-computed; see hitbox.js).
+        // Ellipse hitboxes for combat sprites (packer-computed; see collision.js).
         if (atlas.hitboxes) {
             if (!this.atlasHitboxes) this.atlasHitboxes = {};
             Object.assign(this.atlasHitboxes, atlas.hitboxes);

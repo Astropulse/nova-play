@@ -48,7 +48,7 @@ const PRESCALE = 4;                              // recorded for the loader
 // non-hostile events (cache, cargo, etc.) are intentionally excluded so the
 // atlas isn't bloated with hitboxes nothing reads. The runtime fits the ellipse
 // to the silhouette (centered on the image) and rotates it with the entity; see
-// src/engine/hitbox.js. Future entities (seraph/wheels/bone/swarm) already have
+// src/engine/collision.js. Future entities (seraph/wheels/bone/swarm) already have
 // their art folders here, so they get hitboxes the moment the art is packed.
 const HITBOX_PREFIXES = [
     'Assets/Ships/Enemy/',
