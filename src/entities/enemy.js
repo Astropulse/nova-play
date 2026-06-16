@@ -1341,36 +1341,51 @@ export class EnemySpawner {
         this.spawnRateTimer = duration;
     }
 
-    // Time-gated special-enemy roster. Each entry's spawn chance ramps from 0 at
-    // `start` (seconds into the run) up to `maxChance` at `full`, so specials are
-    // rare early and become the baseline threat in the late game — pressuring the
-    // player's attention/decisions rather than inflating HP. Adding a new special
-    // ship = adding one row here. Rolls are independent; first hit wins (so list
-    // rarer/heavier ships first if priorities ever overlap).
-    _rollSpecialClass(rand) {
+    // Special-enemy roster. The OVERALL fraction of spawns that are special ramps
+    // with run time; waves pass a higher `chanceMult` so waves are special-heavy.
+    // When a slot rolls special, a weighted pick among the UNLOCKED ships chooses
+    // which. `start` = unlock time (s); `weight` = relative frequency. Adding a
+    // special = one row. (Replaced the old per-entry first-hit-wins roll, which
+    // capped the total rate far too low — only ~2 specials by 11 min.)
+    _rollSpecialClass(rand, chanceMult = 1) {
         const t = (this.game.currentState && this.game.currentState.totalGameTime) || 0;
         const roster = [
-            { ctor: NaniteEnemy, start: 300, full: 1500, maxChance: 0.30 },
-            { ctor: ShieldEnemy, start: 600, full: 1800, maxChance: 0.22 },
-            { ctor: MissileEnemy, start: 480, full: 1800, maxChance: 0.22 },
-            { ctor: BlinkEnemy, start: 540, full: 1800, maxChance: 0.20 },
-            { ctor: BerserkEnemy, start: 660, full: 1900, maxChance: 0.20 },
-            { ctor: ScavengerEnemy, start: 420, full: 1500, maxChance: 0.18 },
+            { ctor: NaniteEnemy,    start: 240, weight: 1.2 },
+            { ctor: ScavengerEnemy, start: 300, weight: 1.0 },
+            { ctor: MissileEnemy,   start: 360, weight: 1.0 },
+            { ctor: BlinkEnemy,     start: 420, weight: 0.9 },
+            { ctor: ShieldEnemy,    start: 480, weight: 0.9 },
+            { ctor: BerserkEnemy,   start: 540, weight: 0.8 },
         ];
+        // Special fraction over run time (t seconds): ~0 early, ~15% @ 12min,
+        // ~40% @ 40min, ~50% @ 60min, then flat. Piecewise-linear through those
+        // reference points. Waves multiply it up modestly (capped).
+        let base;
+        if (t < 720) base = 0.15 * (t / 720);
+        else if (t < 2400) base = 0.15 + 0.25 * ((t - 720) / 1680);
+        else if (t < 3600) base = 0.40 + 0.10 * ((t - 2400) / 1200);
+        else base = 0.50;
+        const frac = Math.min(0.75, base * chanceMult);
+        if (rand() >= frac) return null;
+
+        // Weighted pick among the unlocked specials.
+        let totalW = 0;
+        for (const e of roster) if (t >= e.start) totalW += e.weight;
+        if (totalW <= 0) return null;
+        let r = rand() * totalW;
         for (const e of roster) {
             if (t < e.start) continue;
-            const ramp = Math.min(1, (t - e.start) / (e.full - e.start));
-            if (rand() < ramp * e.maxChance) return e.ctor;
+            r -= e.weight;
+            if (r <= 0) return e.ctor;
         }
         return null;
     }
 
     // Build one enemy for a spawn slot: a special (per the time-gated roll) or a
-    // plain Enemy. Position/overlap resolution and wave tagging stay with the
-    // caller; only upgrade rolls are gated to plain enemies (specials are already
-    // distinct and shouldn't be re-rolled into kamikazes etc.).
-    _makeEnemy(x, y, scale, rand, player) {
-        const SpecialCls = this._rollSpecialClass(rand);
+    // plain Enemy. `chanceMult` boosts the special rate for wave spawns. Upgrade
+    // rolls are gated to plain enemies (specials are already distinct).
+    _makeEnemy(x, y, scale, rand, player, chanceMult = 1) {
+        const SpecialCls = this._rollSpecialClass(rand, chanceMult);
         if (SpecialCls) {
             const en = new SpecialCls(this.game, x, y, scale);
             // Specials can also be upgraded — at a slightly lower rate, and never
@@ -1441,7 +1456,7 @@ export class EnemySpawner {
                 for (let i = 0; i < burstSize; i++) {
                     const angle = rand() * Math.PI * 2;
                     const dist = (1800 + rand() * 640) * fov;
-                    const en = this._makeEnemy(playerX + Math.cos(angle) * dist, playerY + Math.sin(angle) * dist, this.waveSpawnScale, rand, player);
+                    const en = this._makeEnemy(playerX + Math.cos(angle) * dist, playerY + Math.sin(angle) * dist, this.waveSpawnScale, rand, player, 1.3);
                     const resolved = resolveSpawnOverlap(this.game, en.worldX, en.worldY, en.radius);
                     en.worldX = resolved.x;
                     en.worldY = resolved.y;
