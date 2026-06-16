@@ -31,6 +31,7 @@ import { SpaceCache, CacheSpawner, CACHE_STATE, CACHE_CONFIG } from '../entities
 import { CacheUI } from '../ui/cacheUI.js';
 import { LevelUpDialog, applyLevelUpChoice } from '../ui/levelUpDialog.js';
 import { GP } from '../engine/inputManager.js';
+import { ellipseContains, ellipseSweep } from '../engine/hitbox.js';
 import { RandomStreams, randomSeed, RNG } from '../engine/rng.js';
 import { HostWorldSync, ClientWorldSync, mpQuantityMult, mpHealthMult, mpScrapMult } from '../net/netSync.js';
 import { MSG, KIND } from '../net/protocol.js';
@@ -1757,6 +1758,7 @@ export class PlayingState {
             if (this.shieldRipples[i].t >= 0.35) this.shieldRipples.splice(i, 1);
         }
         if (this.shieldGlint > 0) this.shieldGlint -= dt;
+        if (this._blinkWarp) { this._blinkWarp.t -= dt; if (this._blinkWarp.t <= 0) this._blinkWarp = null; }
         if (this._dialogTear > 0) this._dialogTear -= dt;
         if (this.radarPingT > 0) this.radarPingT -= dt;
         if (this._scrapRoll) {
@@ -2019,8 +2021,32 @@ export class PlayingState {
         };
         const canCollect = !this.player.isWarping && !this.isDead;
 
+        // Scavenger enemies vacuum loot toward themselves (visual suck-in + capture).
+        const scavengers = this.enemies.filter(e => e.isScavenger && e.alive);
+        const nearestScavenger = scavengers.length ? (ent) => {
+            let best = null, bestD = Infinity;
+            for (const sc of scavengers) {
+                const dx = sc.worldX - ent.worldX, dy = sc.worldY - ent.worldY;
+                const d = dx * dx + dy * dy;
+                const vr = sc.vacuumRange || 190;
+                if (d < vr * vr && d < bestD) { bestD = d; best = sc; }
+            }
+            return best;
+        } : () => null;
+        // Pull a loot entity toward a scavenger; capture it (host/SP) once it lands.
+        const scavengerVacuum = (ent, scav) => {
+            ent.update(dt, scav.worldX, scav.worldY, 1.6); // stronger vacuum pull
+            if (ent.alive && (!this.netSync || this.netSync.isHost)) {
+                const cdx = ent.worldX - scav.worldX, cdy = ent.worldY - scav.worldY;
+                const capR = (scav.radius || 30) * 0.8 + 16;
+                if (cdx * cdx + cdy * cdy < capR * capR) scav.captureLoot(ent);
+            }
+        };
+
         // Update scrap entities (magnetized to nearest pilot)
         for (const s of this.scrapEntities) {
+            const scav = nearestScavenger(s);
+            if (scav) { scavengerVacuum(s, scav); continue; }
             const target = magnetTargetFor(s);
             if (target) {
                 const magnetMult = target === this.player ? this.player.scrapRangeMult : (target.scrapRangeMult || 1.0);
@@ -2068,6 +2094,8 @@ export class PlayingState {
 
         // Update item pickups (magnetized to nearest pilot)
         for (const it of this.itemPickups) {
+            const scav = (it.pickupDelay || 0) <= 0 ? nearestScavenger(it) : null;
+            if (scav) { scavengerVacuum(it, scav); continue; }
             const target = magnetTargetFor(it);
             if (target) {
                 const magnetMult = target === this.player ? this.player.scrapRangeMult : (target.scrapRangeMult || 1.0);
@@ -2257,8 +2285,9 @@ export class PlayingState {
                 // vs Events
                 for (const ev of this.events) {
                     if (!ev.alive || ev.blocksProjectiles === false) continue;
-                    const cr = proj.radius + ev.radius;
-                    if (_projSweepHit(proj, ev.worldX, ev.worldY, cr)) {
+                    // Rotated-ellipse hull test (falls back to a circle for
+                    // events without a fitted hitbox); grown by the shot radius.
+                    if (ellipseSweep(ev, proj, proj.radius)) {
                         proj.alive = false;
                         if (this._routeDamage(ev, proj.damage, proj.worldX, proj.worldY)) {
                             this._onEntityDestroyed(ev);
@@ -2282,9 +2311,32 @@ export class PlayingState {
                 // vs Enemies
                 for (const en of this.enemies) {
                     if (!en.alive || !en._nearPlayer) continue;
-                    const cr = proj.radius + en.radius;
-                    if (_projSweepHit(proj, en.worldX, en.worldY, cr)) {
+                    // Rotated-ellipse hull test, grown by the projectile radius.
+                    if (ellipseSweep(en, proj, proj.radius)) {
                         proj.alive = false;
+                        // Directional shield (shield enemy): absorb front-arc hits.
+                        // Authoritative sim only, so clients don't mispredict the pool.
+                        if ((!this.netSync || this.netSync.isHost) && en.tryBlock && en.tryBlock(proj)) {
+                            // Player-style shield impact: blue sparks + a small ripple-ring flare.
+                            this.game.sounds.play('shield', { volume: 0.35, x: proj.worldX, y: proj.worldY });
+                            this._spawnSparks(proj.worldX, proj.worldY, 5 + Math.floor(Math.random() * 4), {
+                                dir: Math.atan2(proj.worldY - en.worldY, proj.worldX - en.worldX),
+                                spread: Math.PI * 0.6, color: '#44ddff'
+                            });
+                            this.cinematics.spawnRing(proj.worldX, proj.worldY, { color: '#44ddff', maxR: 26, dur: 0.25, width: 2 });
+                            if (en.shieldJustBroke) {
+                                en.shieldJustBroke = false;
+                                // Bubble shatters — mirror the player's shield-break beat.
+                                this._triggerShakeAt(en.worldX, en.worldY, 1.2);
+                                this.game.sounds.play('shield_break', { volume: 0.5, x: en.worldX, y: en.worldY });
+                                this._spawnSparks(en.worldX, en.worldY, 14, { color: '#44ddff', speedMin: 160, speedMax: 420 });
+                                this.cinematics.spawnRing(en.worldX, en.worldY, { color: '#44ddff', maxR: Math.round(en.radius * 2.2), dur: 0.4, width: 4 });
+                            }
+                            if (this.player.hasExplosivesUnit || proj.isRocket) {
+                                this._spawnExplosion(proj.worldX, proj.worldY, proj.damage * 0.5);
+                            }
+                            break;
+                        }
                         this.game.sounds.play('hit', { volume: 0.4, x: proj.worldX, y: proj.worldY });
                         this._spawnSparks(proj.worldX, proj.worldY, 5 + Math.floor(Math.random() * 4), {
                             dir: Math.atan2(proj.worldY - en.worldY, proj.worldX - en.worldX),
@@ -2379,11 +2431,11 @@ export class PlayingState {
 
             // Player vs Enemies (Ramming)
             for (const en of this.enemies) {
-                if (!en.alive || en.invulnTimer > 0) continue;
+                if (!en.alive || en.invulnTimer > 0 || en.dormant) continue;
                 const dx = this.player.worldX - en.worldX;
                 const dy = this.player.worldY - en.worldY;
-                const cr = this.player.radius + en.radius;
-                if (dx * dx + dy * dy < cr * cr) {
+                // Player hull (circle of player.radius) vs enemy hull ellipse.
+                if (ellipseContains(en, this.player.worldX, this.player.worldY, this.player.radius)) {
                     const dist = Math.sqrt(dx * dx + dy * dy);
                     this._damagePlayer(20, en.worldX, en.worldY); // Ramming hurts!
                     if (this.netSync && !this.netSync.isHost) {
@@ -2410,8 +2462,9 @@ export class PlayingState {
                 if (!ev.alive || ev.state !== CTHULHU_STATE.DORMANT) continue;
                 const dx = this.player.worldX - ev.worldX;
                 const dy = this.player.worldY - ev.worldY;
-                const cr = this.player.radius + ev.radius * 0.5;
-                if (dx * dx + dy * dy < cr * cr) { // Smaller inner radius for waking
+                // Tighter trigger (half the player hull pad) so you have to nose
+                // well into it to wake it — matches the old inner-radius feel.
+                if (ellipseContains(ev, this.player.worldX, this.player.worldY, this.player.radius * 0.5)) {
                     const dist = Math.sqrt(dx * dx + dy * dy);
                     this._damagePlayer(20, ev.worldX, ev.worldY);
                     this._routeDamage(ev, 1); // Triggers wake (host-arbitrated in MP)
@@ -2641,6 +2694,7 @@ export class PlayingState {
                 if (s instanceof ExpOrb) s.ownerPid = killerPid;
             }
         }
+        let enemySpawns = null;
         for (const s of spawns) {
             if (s instanceof Scrap) { if (this.scrapEntities.length < 200) { this.scrapEntities.push(s); if (gameplaySpawns) gameplaySpawns.push(s); } }
             else if (s instanceof Rubble || s instanceof ProceduralDebris) { if (this.rubble.length < 250) this.rubble.push(s); }
@@ -2653,7 +2707,11 @@ export class PlayingState {
             }
             else if (s instanceof ItemPickup) { this.itemPickups.push(s); if (gameplaySpawns) gameplaySpawns.push(s); this._onItemDropped(s); }
             else if (s instanceof ExpOrb) { if (this.expOrbs.length < 150) { this.expOrbs.push(s); if (gameplaySpawns) gameplaySpawns.push(s); } }
+            // Live enemies spawned on death (e.g. nanite drones bursting from a
+            // carrier). _addEnemies handles MP registration + lobby scaling.
+            else if (s instanceof Enemy) { s._nearPlayer = true; (enemySpawns ||= []).push(s); }
         }
+        if (enemySpawns) this._addEnemies(enemySpawns);
 
         // Replicate the kill + its loot (multiplayer host).
         if (mp && this.netSync.isHost) {
@@ -4086,6 +4144,24 @@ export class PlayingState {
         }
         this.perf.end('asteroids');
 
+        // --- Projectiles draw (under ships, so enemy/player sprites sit on top) ---
+        // Cull off-screen projectiles: each renders a multi-quad trail + glow
+        // (the heaviest draw in a busy frame) yet most are mid-flight off-screen.
+        // The trail only reaches a frame or two behind the head, so the standard
+        // draw margin covers it — culled projectiles produce no visible pixels.
+        // Set the additive 'screen' blend ONCE for the whole batch (each shot's
+        // body assumes it) instead of one composite-op change per projectile.
+        this.perf.begin('projectiles');
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        for (const p of this.projectiles) {
+            const dx = p.worldX - camX, dy = p.worldY - camY;
+            if (dx > -drawCullX && dx < drawCullX && dy > -drawCullY && dy < drawCullY)
+                p._drawBody(ctx, this.camera);
+        }
+        ctx.restore();
+        this.perf.end('projectiles');
+
         // --- Enemies & encounters draw ---
         this.perf.begin('boss');
         for (const e of this.enemies) {
@@ -4112,24 +4188,6 @@ export class PlayingState {
         if (this.netSync) {
             this.netSync.drawRemotePlayers(ctx, this.camera);
         }
-
-        // --- Projectiles draw ---
-        // Cull off-screen projectiles: each renders a multi-quad trail + glow
-        // (the heaviest draw in a busy frame) yet most are mid-flight off-screen.
-        // The trail only reaches a frame or two behind the head, so the standard
-        // draw margin covers it — culled projectiles produce no visible pixels.
-        // Set the additive 'screen' blend ONCE for the whole batch (each shot's
-        // body assumes it) instead of one composite-op change per projectile.
-        this.perf.begin('projectiles');
-        ctx.save();
-        ctx.globalCompositeOperation = 'screen';
-        for (const p of this.projectiles) {
-            const dx = p.worldX - camX, dy = p.worldY - camY;
-            if (dx > -drawCullX && dx < drawCullX && dy > -drawCullY && dy < drawCullY)
-                p._drawBody(ctx, this.camera);
-        }
-        ctx.restore();
-        this.perf.end('projectiles');
 
         // --- Railgun Visuals ---
         // (Also drawn without a local railgun so teammates' replicated beam
@@ -4567,6 +4625,17 @@ export class PlayingState {
             }
             if (cStr > 0.01) {
                 collapse = { x: cx, y: cy, r: 270 * ws, strength: cStr };
+            } else if (this._blinkWarp) {
+                // Blink enemy teleport reuses the same space-collapse displacement
+                // (the looper teleport morph), pulsing at the arrival point.
+                const bw = this._blinkWarp;
+                const bx = bw.x * this.camera.wtsScale + this.camera.wtsOffX;
+                const by = bw.y * this.camera.wtsScale + this.camera.wtsOffY;
+                const frac = Math.min(1, Math.max(0, bw.t / bw.dur)); // 1 at spawn → 0 at end
+                // Departure collapse builds to a peak as it teleports AWAY (end of
+                // the tell); arrival collapse peaks the instant it appears, then settles.
+                const bStr = bw.depart ? (1 - frac) : frac;
+                if (bStr > 0.01) collapse = { x: bx, y: by, r: 210 * ws, strength: bStr * 0.9, ab: 0 };
             }
         }
 
@@ -7660,9 +7729,10 @@ export class PlayingState {
             const ix = cx + Math.cos(angle) * radius;
             const iy = cy + Math.sin(angle) * radius;
 
-            // Draw "!" indicator (bosses are purple, regular enemies red)
+            // Draw "!" indicator (bosses purple, regular enemies red; some specials
+            // override — e.g. the scavenger is yellow via en.indicatorColor)
             ctx.globalAlpha = opacity;
-            ctx.fillStyle = en.isBoss ? '#ff44ff' : '#ff2222';
+            ctx.fillStyle = en.indicatorColor || (en.isBoss ? '#ff44ff' : '#ff2222');
             ctx.fillText('!', ix, iy);
         }
         ctx.globalAlpha = 1;

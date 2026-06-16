@@ -14,6 +14,7 @@ export class DevConsole {
         this.commands = {
             'time': (args) => this._cmdTime(args),
             'spawn': (args) => this._cmdSpawn(args),
+            'enemy': (args) => this._cmdEnemy(args),
             'stat': (args) => this._cmdStat(args),
             'wave': (args) => this._cmdWave(args),
             'scrap': (args) => this._cmdScrap(args),
@@ -168,6 +169,71 @@ export class DevConsole {
                 }
             });
         }
+    }
+
+    // enemy <type> [count] [upgrade...] — spawn enemies near the player for testing.
+    //   types:    basic, upgraded, kamikaze, cthulhu, nanite, drone
+    //   upgrades: health, speed, firerate, bigBall, beam, multishot, kamikaze
+    //   examples: "enemy nanite 3"        spawn 3 nanite carriers
+    //             "enemy basic 1 beam"    one basic enemy with the beam upgrade
+    //             "enemy basic 2 health speed"  two enemies with both upgrades
+    //             "enemy upgraded 5"      five enemies with a random upgrade each
+    _cmdEnemy(args) {
+        const state = this.game.currentState;
+        if (!state || !state.player || !state._addEnemies) { console.log('No active game.'); return; }
+
+        import('../entities/enemy.js').then((mod) => {
+            const classMap = {
+                basic: mod.Enemy, regular: mod.Enemy, enemy: mod.Enemy, upgraded: mod.Enemy,
+                kamikaze: mod.KamikazeEnemy, cthulhu: mod.CthulhuEnemy,
+                nanite: mod.NaniteEnemy, drone: mod.NaniteDrone, shield: mod.ShieldEnemy,
+                missile: mod.MissileEnemy, blink: mod.BlinkEnemy, berserk: mod.BerserkEnemy,
+                scavenger: mod.ScavengerEnemy, scav: mod.ScavengerEnemy,
+            };
+            const upgradeNames = mod.Enemy.UPGRADE_TYPES;
+
+            if (!args.length || ['help', 'list'].includes(args[0].toLowerCase())) {
+                console.log('usage: enemy <type> [count] [upgrade...]');
+                console.log('  types:    ' + Object.keys(classMap).join(', '));
+                console.log('  upgrades: ' + upgradeNames.join(', '));
+                console.log('  e.g. "enemy nanite 3", "enemy basic 1 beam", "enemy upgraded 5"');
+                return;
+            }
+
+            const type = args[0].toLowerCase();
+            const Cls = classMap[type];
+            if (!Cls) { console.log(`Unknown enemy type: ${type} (try "enemy list")`); return; }
+
+            // Optional count (first trailing integer), then upgrade names.
+            let rest = args.slice(1);
+            let count = 1;
+            if (rest.length && /^\d+$/.test(rest[0])) { count = Math.max(1, Math.min(100, parseInt(rest[0]))); rest = rest.slice(1); }
+            const upgrades = rest.filter(u => upgradeNames.includes(u));
+            const bad = rest.filter(u => !upgradeNames.includes(u));
+            if (bad.length) console.log(`Ignoring unknown upgrades: ${bad.join(', ')}`);
+
+            const ds = state.difficultyScale || 1.0;
+            const spawned = [];
+            for (let i = 0; i < count; i++) {
+                const ang = Math.random() * Math.PI * 2;
+                const dist = 450 + Math.random() * 250;
+                const en = new Cls(
+                    this.game,
+                    state.player.worldX + Math.cos(ang) * dist,
+                    state.player.worldY + Math.sin(ang) * dist,
+                    ds
+                );
+                if (upgrades.length) {
+                    for (const u of upgrades) en.applyUpgrade(u);
+                } else if (type === 'upgraded' && en._applyUpgrades) {
+                    en._applyUpgrades(); // seeded random upgrade
+                }
+                spawned.push(en);
+            }
+            state._addEnemies(spawned);
+            const note = upgrades.length ? ` [${upgrades.join('+')}]` : (type === 'upgraded' ? ' [random upgrade]' : '');
+            console.log(`Spawned ${count} ${type}${note}`);
+        });
     }
 
     _cmdStat(args) {

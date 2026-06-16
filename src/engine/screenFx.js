@@ -25,6 +25,7 @@ uniform vec2 u_rippleCenter; // bubble center (px) for the area mask
 uniform float u_rippleT;     // seconds since impact
 uniform vec4 u_flow;     // boost: xy = ship (px), zw = travel dir * strength
 uniform vec4 u_collapse; // teleport: xy = ship (px), z = radius (px), w = strength
+uniform float u_collapseAb; // collapse chromatic-aberration multiplier (0 = warp only, no fringing)
 uniform float u_time;
 out vec4 outColor;
 
@@ -105,7 +106,7 @@ void main() {
     // Chromatic aberration: CRT separates at edges; warp separates everywhere;
     // boost/teleport distortion fringes a touch near full strength
     float s = 0.011 * u_crt * r2 + 0.004 * u_warp
-            + 0.002 * flowStr + 0.003 * u_collapse.w;
+            + 0.002 * flowStr + 0.003 * u_collapse.w * u_collapseAb;
     // The source canvas is uploaded WITHOUT UNPACK_FLIP_Y_WEBGL (that flag forces
     // a slow per-frame CPU copy for canvas texture sources in Chrome). The
     // texture is therefore stored vertically mirrored; we cancel that by flipping
@@ -194,6 +195,7 @@ export class ScreenFX {
             this._uRippleT = gl.getUniformLocation(prog, 'u_rippleT');
             this._uFlow = gl.getUniformLocation(prog, 'u_flow');
             this._uCollapse = gl.getUniformLocation(prog, 'u_collapse');
+            this._uCollapseAb = gl.getUniformLocation(prog, 'u_collapseAb');
             this._uTime = gl.getUniformLocation(prog, 'u_time');
         } catch (e) {
             console.error('[ScreenFX] init failed, disabling post-fx:', e);
@@ -280,8 +282,10 @@ export class ScreenFX {
         if (collapse) {
             gl.uniform4f(this._uCollapse, collapse.x, src.height - collapse.y,
                 collapse.r, collapse.strength);
+            gl.uniform1f(this._uCollapseAb, collapse.ab !== undefined ? collapse.ab : 1);
         } else {
             gl.uniform4f(this._uCollapse, 0, 0, 1, 0);
+            gl.uniform1f(this._uCollapseAb, 1);
         }
         gl.uniform1f(this._uTime, time);
         gl.drawArrays(gl.TRIANGLES, 0, 3);

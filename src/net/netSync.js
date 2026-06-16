@@ -27,7 +27,7 @@ import { RemotePlayer } from './remotePlayer.js';
 import { RNG } from '../engine/rng.js';
 import { Projectile } from '../entities/projectile.js';
 import { Asteroid, Scrap, ItemPickup, ExpOrb, Rubble } from '../entities/asteroid.js';
-import { Enemy, KamikazeEnemy, CthulhuEnemy, HostileEncounter } from '../entities/enemy.js';
+import { Enemy, KamikazeEnemy, CthulhuEnemy, HostileEncounter, NaniteEnemy, NaniteDrone, ShieldEnemy, MissileEnemy, BlinkEnemy, BerserkEnemy, ScavengerEnemy } from '../entities/enemy.js';
 import { Starcore } from '../entities/starcore.js';
 import { AsteroidCrusher } from '../entities/asteroidCrusher.js';
 import { EventHorizon } from '../entities/eventHorizon.js';
@@ -83,6 +83,13 @@ function classifyEnemy(en) {
     if (en instanceof HostileEncounter) return ENEMY_CLS.HOSTILE_ENCOUNTER;
     if (en instanceof CthulhuEnemy) return ENEMY_CLS.CTHULHU;
     if (en instanceof KamikazeEnemy) return ENEMY_CLS.KAMIKAZE;
+    if (en instanceof NaniteDrone) return ENEMY_CLS.NANITE_DRONE;
+    if (en instanceof NaniteEnemy) return ENEMY_CLS.NANITE;
+    if (en instanceof ShieldEnemy) return ENEMY_CLS.SHIELD;
+    if (en instanceof MissileEnemy) return ENEMY_CLS.MISSILE;
+    if (en instanceof BlinkEnemy) return ENEMY_CLS.BLINK;
+    if (en instanceof BerserkEnemy) return ENEMY_CLS.BERSERK;
+    if (en instanceof ScavengerEnemy) return ENEMY_CLS.SCAVENGER;
     return ENEMY_CLS.BASIC;
 }
 
@@ -1225,6 +1232,13 @@ export class ClientWorldSync extends BaseWorldSync {
             }
             case ENEMY_CLS.CTHULHU: en = new CthulhuEnemy(this.game, d.x, d.y, d.ds); break;
             case ENEMY_CLS.KAMIKAZE: en = new KamikazeEnemy(this.game, d.x, d.y, d.ds); break;
+            case ENEMY_CLS.NANITE: en = new NaniteEnemy(this.game, d.x, d.y, d.ds); break;
+            case ENEMY_CLS.NANITE_DRONE: en = new NaniteDrone(this.game, d.x, d.y, d.ds); break;
+            case ENEMY_CLS.SHIELD: en = new ShieldEnemy(this.game, d.x, d.y, d.ds); break;
+            case ENEMY_CLS.MISSILE: en = new MissileEnemy(this.game, d.x, d.y, d.ds); break;
+            case ENEMY_CLS.BLINK: en = new BlinkEnemy(this.game, d.x, d.y, d.ds); break;
+            case ENEMY_CLS.BERSERK: en = new BerserkEnemy(this.game, d.x, d.y, d.ds); break;
+            case ENEMY_CLS.SCAVENGER: en = new ScavengerEnemy(this.game, d.x, d.y, d.ds); break;
             default: en = new Enemy(this.game, d.x, d.y, d.ds);
         }
         if (d.spriteKey && d.cls !== ENEMY_CLS.HOSTILE_ENCOUNTER && !(en instanceof Boss)) {

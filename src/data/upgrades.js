@@ -466,7 +466,7 @@ export const UPGRADES = [
         width: 1,
         height: 1,
         cost: 45,
-        rarity: 'uncommon'
+        rarity: 'rare'
     },
     {
         id: 'sensor_accelerator',

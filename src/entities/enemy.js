@@ -189,15 +189,24 @@ export class Enemy {
         return fovFactor * speedFactor;
     }
 
-    _applyUpgrades() {
+    // opts.allowKamikaze (default true): when false, the kamikaze path is removed
+    // and its probability is redistributed evenly to the stats/weapon paths. Used
+    // by special enemies, which can be upgraded but shouldn't turn into rammers.
+    _applyUpgrades(opts = {}) {
         if (this.isUpgraded) return;
         this.isUpgraded = true;
+        const allowKamikaze = opts.allowKamikaze !== false;
         // Seeded so enemy strength is reproducible at the same spawn point.
         const rand = () => this.contentRng ? this.contentRng.next() : Math.random();
         const roll = rand();
 
-        if (roll < 0.4) {
-            // Stats Path (40%)
+        // With kamikaze: stats 40% / weapon 40% / kamikaze 20%.
+        // Without: stats 50% / weapon 50% (kamikaze band split between them).
+        const statsCut = allowKamikaze ? 0.4 : 0.5;
+        const weaponCut = allowKamikaze ? 0.8 : 1.0;
+
+        if (roll < statsCut) {
+            // Stats Path
             const options = ['health', 'speed', 'firerate'];
             const count = rand() < 0.5 ? 1 : 2;
             for (let i = 0; i < count; i++) {
@@ -208,18 +217,37 @@ export class Enemy {
                 if (choice === 'firerate') this.fireRateMult = 1.4;
             }
             this.upgradeType = 'stats';
-        } else if (roll < 0.8) {
-            // Weapon Path (40%)
+        } else if (roll < weaponCut) {
+            // Weapon Path
             const weaponOptions = ['bigBall', 'beam', 'multishot'];
             this.upgradeType = weaponOptions[Math.floor(rand() * weaponOptions.length)];
             this.selectedUpgrades.push(this.upgradeType);
         } else {
-            // Kamikaze Path (20%)
+            // Kamikaze Path
             this.upgradeType = 'kamikaze';
             this.selectedUpgrades.push('kamikaze');
             this.speedMult = 2.0;
             this.attackRange = -1;
         }
+    }
+
+    // Apply a single named upgrade. Production rolls a seeded loadout via
+    // _applyUpgrades(); this is the deterministic entry point (dev console).
+    // Returns true if the upgrade name was recognized.
+    static UPGRADE_TYPES = ['health', 'speed', 'firerate', 'bigBall', 'beam', 'multishot', 'kamikaze'];
+    applyUpgrade(type) {
+        if (!Enemy.UPGRADE_TYPES.includes(type)) return false;
+        this.isUpgraded = true;
+        if (!this.selectedUpgrades) this.selectedUpgrades = [];
+        this.selectedUpgrades.push(type);
+        switch (type) {
+            case 'health': this.health = Math.ceil(this.health * 1.5); this.maxHealth = this.health; this.upgradeType = 'stats'; break;
+            case 'speed': this.speedMult = 1.4; this.upgradeType = 'stats'; break;
+            case 'firerate': this.fireRateMult = 1.4; this.upgradeType = 'stats'; break;
+            case 'kamikaze': this.upgradeType = 'kamikaze'; this.speedMult = 2.0; this.attackRange = -1; break;
+            default: this.upgradeType = type; break; // bigBall | beam | multishot
+        }
+        return true;
     }
 
     update(dt, player, asteroids, projectiles, enemies) {
@@ -277,6 +305,7 @@ export class Enemy {
             const boostFactor = Math.min(3.0, 1.0 + (dist - 1500) / (2000));
             currentMaxSpeed *= boostFactor;
         }
+
         const activeSpeed = currentMaxSpeed * this.speedMult;
 
         // Temporal AI LOD: the obstacle/dodge solve is the per-enemy cost that
@@ -380,6 +409,7 @@ export class Enemy {
         }
 
         this.stateTimer -= dt;
+        if (this.reversalCooldown > 0) this.reversalCooldown -= dt;
 
         // Detection: Is the player tailing/chasing me?
         // (Player is close AND player is behind me AND player is looking at me)
@@ -391,15 +421,28 @@ export class Enemy {
         const activeBreakRange = this.breakRange * distMult;
         const activeReversalDist = this.reversalTriggerDist * distMult;
 
-        if (playerIsBehind && dist < activeReversalDist && this.state !== AI_STATE.REVERSAL && this.state !== AI_STATE.RECOVERY) {
+        if (playerIsBehind && dist < activeReversalDist && (this.reversalCooldown || 0) <= 0
+            && this.state !== AI_STATE.REVERSAL && this.state !== AI_STATE.RECOVERY) {
             // Check if player is actually pointing at us
             const playerToEnemyAngle = Math.atan2(this.worldY - player.worldY, this.worldX - player.worldX);
             const playerFacingDiff = playerToEnemyAngle - player.angle;
             const playerLookingAtMe = Math.abs(Math.atan2(Math.sin(playerFacingDiff), Math.cos(playerFacingDiff))) < 0.5;
 
-            if (playerLookingAtMe) {
+            // ...and ACTUALLY PURSUING — the player's velocity must point toward us
+            // (within ~60°), not just happen to be behind. Without this, the enemy
+            // turning its own back during a reposition/break flips `playerIsBehind`
+            // true and triggers a bogus reversal → the reposition↔reversal loop.
+            const pvx = player.vx || 0, pvy = player.vy || 0;
+            const pSpeed = Math.sqrt(pvx * pvx + pvy * pvy);
+            const closingDot = pvx * (this.worldX - player.worldX) + pvy * (this.worldY - player.worldY);
+            const playerClosing = pSpeed > 60 && closingDot > pSpeed * dist * 0.5;
+
+            if (playerLookingAtMe && playerClosing) {
                 this.state = AI_STATE.REVERSAL;
                 this.stateTimer = 0.8 + Math.random() * 0.4;
+                // Cooldown so a sustained chase can't re-trigger every reposition —
+                // one reversal, then normal passes for a beat before another.
+                this.reversalCooldown = 2.5 + Math.random() * 1.0;
                 return;
             }
         }
@@ -1131,6 +1174,23 @@ export class Enemy {
             }
         }
 
+        // Special enemies are a tougher fight → better loot:
+        // 40% small battery, 7% common upgrade, 3% uncommon upgrade, 50% nothing.
+        if (this.isSpecialEnemy) {
+            const r = rand();
+            let item = null;
+            if (r < 0.40) {
+                item = UPGRADES.find(u => u.id === 'small_battery');
+            } else if (r < 0.47) {
+                const pool = UPGRADES.filter(u => u.rarity === 'common' && !u.consumable);
+                if (pool.length) item = pool[Math.floor(rand() * pool.length)];
+            } else if (r < 0.50) {
+                const pool = UPGRADES.filter(u => u.rarity === 'uncommon' && !u.consumable);
+                if (pool.length) item = pool[Math.floor(rand() * pool.length)];
+            }
+            if (item) spawns.push(new ItemPickup(this.game, this.worldX, this.worldY, item));
+        }
+
         return spawns;
     }
 
@@ -1239,13 +1299,16 @@ export class Enemy {
         return glow;
     }
 
-    static rollUpgrade(enemy, player) {
+    // opts.chanceMult scales the upgrade probability (specials use < 1 for a
+    // slightly lower rate); opts.allowKamikaze is forwarded to _applyUpgrades.
+    static rollUpgrade(enemy, player, opts = {}) {
         if (!player || !player.inventory) return;
-        const chance = player.inventory.items.length * 0.03;
+        const chanceMult = opts.chanceMult != null ? opts.chanceMult : 1;
+        const chance = player.inventory.items.length * 0.03 * chanceMult;
         // Seeded at spawn so the set of upgraded enemies is reproducible.
         const r = enemy.contentRng ? enemy.contentRng.next() : Math.random();
         if (r < chance) {
-            enemy._applyUpgrades();
+            enemy._applyUpgrades({ allowKamikaze: opts.allowKamikaze !== false });
         }
     }
 }
@@ -1276,6 +1339,48 @@ export class EnemySpawner {
     applySpawnMultiplier(mult, duration) {
         this.spawnRateMult = mult;
         this.spawnRateTimer = duration;
+    }
+
+    // Time-gated special-enemy roster. Each entry's spawn chance ramps from 0 at
+    // `start` (seconds into the run) up to `maxChance` at `full`, so specials are
+    // rare early and become the baseline threat in the late game — pressuring the
+    // player's attention/decisions rather than inflating HP. Adding a new special
+    // ship = adding one row here. Rolls are independent; first hit wins (so list
+    // rarer/heavier ships first if priorities ever overlap).
+    _rollSpecialClass(rand) {
+        const t = (this.game.currentState && this.game.currentState.totalGameTime) || 0;
+        const roster = [
+            { ctor: NaniteEnemy, start: 300, full: 1500, maxChance: 0.30 },
+            { ctor: ShieldEnemy, start: 600, full: 1800, maxChance: 0.22 },
+            { ctor: MissileEnemy, start: 480, full: 1800, maxChance: 0.22 },
+            { ctor: BlinkEnemy, start: 540, full: 1800, maxChance: 0.20 },
+            { ctor: BerserkEnemy, start: 660, full: 1900, maxChance: 0.20 },
+            { ctor: ScavengerEnemy, start: 420, full: 1500, maxChance: 0.18 },
+        ];
+        for (const e of roster) {
+            if (t < e.start) continue;
+            const ramp = Math.min(1, (t - e.start) / (e.full - e.start));
+            if (rand() < ramp * e.maxChance) return e.ctor;
+        }
+        return null;
+    }
+
+    // Build one enemy for a spawn slot: a special (per the time-gated roll) or a
+    // plain Enemy. Position/overlap resolution and wave tagging stay with the
+    // caller; only upgrade rolls are gated to plain enemies (specials are already
+    // distinct and shouldn't be re-rolled into kamikazes etc.).
+    _makeEnemy(x, y, scale, rand, player) {
+        const SpecialCls = this._rollSpecialClass(rand);
+        if (SpecialCls) {
+            const en = new SpecialCls(this.game, x, y, scale);
+            // Specials can also be upgraded — at a slightly lower rate, and never
+            // into kamikazes (they have their own identity/death behavior).
+            Enemy.rollUpgrade(en, player, { chanceMult: 0.7, allowKamikaze: false });
+            return en;
+        }
+        const en = new Enemy(this.game, x, y, scale);
+        Enemy.rollUpgrade(en, player);
+        return en;
     }
 
     forceBoss(playerX, playerY, difficultyScale) {
@@ -1336,11 +1441,10 @@ export class EnemySpawner {
                 for (let i = 0; i < burstSize; i++) {
                     const angle = rand() * Math.PI * 2;
                     const dist = (1800 + rand() * 640) * fov;
-                    const en = new Enemy(this.game, playerX + Math.cos(angle) * dist, playerY + Math.sin(angle) * dist, this.waveSpawnScale);
+                    const en = this._makeEnemy(playerX + Math.cos(angle) * dist, playerY + Math.sin(angle) * dist, this.waveSpawnScale, rand, player);
                     const resolved = resolveSpawnOverlap(this.game, en.worldX, en.worldY, en.radius);
                     en.worldX = resolved.x;
                     en.worldY = resolved.y;
-                    Enemy.rollUpgrade(en, player);
                     en.waveTag = this.waveNumber;
                     spawned.push(en);
                 }
@@ -1379,11 +1483,10 @@ export class EnemySpawner {
                 const angle = rand() * Math.PI * 2;
                 const fov = (this.game.currentState && this.game.currentState.currentFovMult) || 1.0;
                 const dist = (1400 + rand() * 600) * fov;
-                const en = new Enemy(this.game, playerX + Math.cos(angle) * dist, playerY + Math.sin(angle) * dist, difficultyScale);
+                const en = this._makeEnemy(playerX + Math.cos(angle) * dist, playerY + Math.sin(angle) * dist, difficultyScale, rand, player);
                 const resolved = resolveSpawnOverlap(this.game, en.worldX, en.worldY, en.radius);
                 en.worldX = resolved.x;
                 en.worldY = resolved.y;
-                Enemy.rollUpgrade(en, player);
                 spawned.push(en);
             }
         }
@@ -1627,6 +1730,735 @@ export class CthulhuEnemy extends Enemy {
 
         // Ram wind-up charge-up flash
         this._drawWindupFlash(ctx, screen);
+    }
+}
+
+// ── Nanite: a carrier that bursts into a swarm of fast ram-drones on death ──
+// The "splitter" of the special roster. Fights like a normal enemy while alive;
+// its threat is what it leaves behind. Shares its swarm identity with the
+// planned end-game swarm event.
+export class NaniteEnemy extends Enemy {
+    constructor(game, worldX, worldY, difficultyScale = 1.0) {
+        super(game, worldX, worldY, difficultyScale);
+
+        const variant = Math.floor(Math.random() * 3);
+        this.spriteKey = `nanite_${variant}`;
+        this.img = game.assets.get(this.spriteKey);
+        this._nativeRadius = CollisionScanner.getRadius(this.img, this.spriteKey);
+        this.radius = this._nativeRadius * 0.95;
+
+        // Tougher than a standard enemy — it's a payload that should survive long
+        // enough to get into the fight before splitting.
+        this.health = Math.ceil(24 + 14 * difficultyScale);
+        this.maxHealth = this.health;
+
+        // Tougher fight than chaff → better loot drops (see getSpawnOnDeath).
+        this.isSpecialEnemy = true;
+
+        // How many drones it bursts into on death.
+        this.droneCount = 3 + Math.floor(Math.random() * 2); // 3-4
+    }
+
+    getSpawnOnDeath() {
+        // Standard carrier loot (it's a special, so a normal payout) ...
+        const spawns = super.getSpawnOnDeath();
+        // ... plus the swarm. Drones are live enemies — playingState routes any
+        // Enemy in this list through _addEnemies (see _handleEntityDeath).
+        const ds = (this.game.currentState && this.game.currentState.difficultyScale) || 1.0;
+        for (let i = 0; i < this.droneCount; i++) {
+            const ang = Math.random() * Math.PI * 2;
+            const r = 25 + Math.random() * 30; // scatter off the corpse
+            const drone = new NaniteDrone(
+                this.game,
+                this.worldX + Math.cos(ang) * r,
+                this.worldY + Math.sin(ang) * r,
+                ds
+            );
+            // Coast outward from the corpse during the dormant phase, then wake.
+            const driftSpeed = 170 + Math.random() * 130;
+            drone.vx = Math.cos(ang) * driftSpeed;
+            drone.vy = Math.sin(ang) * driftSpeed;
+            drone.angle = ang;
+            spawns.push(drone);
+        }
+        return spawns;
+    }
+}
+
+// Individual nanite drone — small, fast, fragile, ram-only. Spawned in bursts by
+export class NaniteDrone extends Enemy {
+    constructor(game, worldX, worldY, difficultyScale = 1.0) {
+        super(game, worldX, worldY, difficultyScale);
+
+        const variant = Math.floor(Math.random() * 5);
+        this.spriteKey = `nanite_drone_${variant}`;
+        this.img = game.assets.get(this.spriteKey);
+        this._nativeRadius = CollisionScanner.getRadius(this.img, this.spriteKey);
+        this.radius = this._nativeRadius * 0.95;
+
+        // Fast and fragile — a cloud of these is a dodge problem, not an HP wall.
+        const speedScale = 1 + (difficultyScale - 1) * 0.1;
+        this.baseSpeed = Math.min(1100, (450 + Math.random() * 80) * speedScale);
+        this.turnSpeed = 8.0 + Math.random() * 1.5;
+        this.health = Math.ceil(4 + 2 * difficultyScale);
+        this.maxHealth = this.health;
+
+        // Ram-only, like the kamikaze line.
+        this.attackRange = -1;
+
+        // Dormant on spawn: coast outward from the corpse (velocity is set by the
+        // carrier in getSpawnOnDeath), then wake and hunt after a staggered delay.
+        // While dormant they deal no contact damage (see PlayingState ram loop).
+        this.dormant = true;
+        this.activationTimer = 0.2 + Math.random() * 1.8;
+    }
+
+    shoot() { /* drones don't shoot */ }
+
+    update(dt, player, asteroids, projectiles, enemies) {
+        if (this.dormant) {
+            this.activationTimer -= dt;
+            // Drift outward, decelerating, so the swarm spreads before it activates.
+            this.worldX += this.vx * dt;
+            this.worldY += this.vy * dt;
+            const decay = Math.pow(0.1, dt); // ~slows to a crawl over a second
+            this.vx *= decay;
+            this.vy *= decay;
+            this.freezeTimer = Math.max(0, this.freezeTimer - dt);
+            this.invulnTimer = Math.max(0, this.invulnTimer - dt);
+            if (this.activationTimer <= 0) this.dormant = false;
+            return;
+        }
+        super.update(dt, player, asteroids, projectiles, enemies);
+    }
+
+    _updateAIState(dt, dist, angleToPlayer, player, enemies, distMult) {
+        this._updateRamCycle(dt, dist, angleToPlayer, distMult);
+    }
+
+    getSpawnOnDeath() {
+        // Minimal payout — the carrier already paid out; these are just chaff.
+        const spawns = this._generateProceduralDebris();
+        spawns.push(new ExpOrb(this.game, this.worldX, this.worldY, 1));
+        return spawns;
+    }
+}
+
+// ── Shield enemy: a directional FRONT shield that mirrors the player's. Shots
+// striking the front arc are absorbed by a small regenerating pool; flank/rear
+// shots hit the hull directly. Regen only starts after a delay since the last
+// shield hit, so under sustained fire the pool drains faster than it recovers —
+// the intended rhythm is "break the shield → window → kill". Flanking beats it. ──
+export class ShieldEnemy extends Enemy {
+    // Tuning knobs (ARC_HALF is tuned against enemy_shield.png — the sprite's arc).
+    static ARC_HALF = Math.PI * 0.42;   // half-angle of the shielded front cone (~76°, ~152° total)
+    static REGEN_DELAY = 1.5;           // seconds since last shield hit before regen begins
+    static BREAK_DURATION = 3.0;        // seconds the shield stays fully down after breaking
+    static REGEN_SECONDS = 3.0;         // pool regrows from empty→full over ~this long
+
+    constructor(game, worldX, worldY, difficultyScale = 1.0) {
+        super(game, worldX, worldY, difficultyScale);
+
+        const variant = Math.floor(Math.random() * 3);
+        this.spriteKey = `shield_${variant}`;
+        this.img = game.assets.get(this.spriteKey);
+        this._nativeRadius = CollisionScanner.getRadius(this.img, this.spriteKey);
+        this.radius = this._nativeRadius * 0.95;
+
+        // Tanky hull — well over 2x a regular enemy (10+10*d) on top of the front
+        // shield, so it's a genuine bullet-sponge from the front and still tough
+        // when flanked.
+        this.health = Math.ceil(22 + 22 * difficultyScale);
+        this.maxHealth = this.health;
+
+        // Just slightly below a regular enemy ship's cruise speed (92% of it).
+        const speedScale = 1 + (difficultyScale - 1) * 0.08;
+        this.baseSpeed = Math.min(900, (320 + Math.random() * 80) * speedScale) * 0.92;
+
+        // Tougher fight than chaff → better loot drops (see getSpawnOnDeath).
+        this.isSpecialEnemy = true;
+
+        // Directional shield pool (acts as front-facing effective HP).
+        this.shieldMax = Math.ceil(30 + 16 * difficultyScale);
+        this.shieldHP = this.shieldMax;
+        this.shieldBroken = false;
+        this.shieldRegenCooldown = 0;
+        this.shieldBreakTimer = 0;
+        this.shieldJustBroke = false; // one-frame flag for break VFX (read+cleared by PlayingState)
+        this._shieldHitFlash = 0;
+        this._shieldImg = null;
+    }
+
+    get shieldActive() { return !this.shieldBroken && this.shieldHP > 0; }
+
+    // True if the projectile is absorbed by the front shield (no hull damage).
+    // Caller passes only player-owned projectiles; runs on the authoritative sim.
+    tryBlock(proj) {
+        if (!this.shieldActive) return false;
+        // Is the shot coming from within the shielded front cone? Forward = this.angle.
+        const toProj = Math.atan2(proj.worldY - this.worldY, proj.worldX - this.worldX);
+        let d = toProj - this.angle;
+        while (d > Math.PI) d -= Math.PI * 2;
+        while (d < -Math.PI) d += Math.PI * 2;
+        if (Math.abs(d) > ShieldEnemy.ARC_HALF) return false;
+
+        this.shieldHP -= proj.damage;
+        this.shieldRegenCooldown = ShieldEnemy.REGEN_DELAY;
+        this._shieldHitFlash = 0.15;
+        if (this.shieldHP <= 0) {
+            this.shieldHP = 0;
+            this.shieldBroken = true;
+            this.shieldBreakTimer = ShieldEnemy.BREAK_DURATION;
+            this.shieldJustBroke = true;
+        }
+        return true;
+    }
+
+    update(dt, player, asteroids, projectiles, enemies) {
+        if (this._shieldHitFlash > 0) this._shieldHitFlash -= dt;
+        if (this.shieldBroken) {
+            this.shieldBreakTimer -= dt;
+            if (this.shieldBreakTimer <= 0) { this.shieldBroken = false; this.shieldRegenCooldown = 0; }
+        } else if (this.shieldHP < this.shieldMax) {
+            if (this.shieldRegenCooldown > 0) this.shieldRegenCooldown -= dt;
+            else this.shieldHP = Math.min(this.shieldMax, this.shieldHP + (this.shieldMax / ShieldEnemy.REGEN_SECONDS) * dt);
+        }
+        super.update(dt, player, asteroids, projectiles, enemies);
+    }
+
+    draw(ctx, camera) {
+        super.draw(ctx, camera); // hull (+ any upgrade glow / windup flash)
+        if (!this.shieldActive) return;
+        if (this.invulnTimer > 0 && Math.floor(Date.now() / 50) % 2 === 0) return;
+        if (!this._shieldImg) this._shieldImg = this.game.assets.get('enemy_shield');
+        const img = this._shieldImg;
+        if (!img) return;
+
+        const screen = camera.worldToScreen(this.worldX, this.worldY, this.game.width, this.game.height);
+        const sw = (img.width || img.canvas.width) * this.game.worldScale;
+        const sh = (img.height || img.canvas.height) * this.game.worldScale;
+        // Brighten briefly on a recent block (mirrors the player's impact surge).
+        const flash = Math.max(0, this._shieldHitFlash) / 0.15;
+        ctx.save();
+        ctx.globalAlpha = 0.55 + 0.35 * flash;
+        ctx.translate(screen.x, screen.y);
+        ctx.rotate(this.angle + Math.PI / 2); // sprite up = forward, arc sits over the nose
+        ctx.drawImage(img.canvas || img, -sw / 2, -sh / 2, sw, sh);
+        ctx.restore();
+    }
+}
+
+// ── Missile enemy: fights with normal front lasers (the base `shoot`) and, every
+// few seconds, lobs a salvo of missiles out its SIDES (Event-Horizon style). The
+// missiles fan out, home in hard for a moment, then lock heading and DASH straight
+// at speed — so they swerve toward you, then commit to a fast line you must dodge. ──
+export class MissileEnemy extends Enemy {
+    constructor(game, worldX, worldY, difficultyScale = 1.0) {
+        super(game, worldX, worldY, difficultyScale);
+
+        const variant = Math.floor(Math.random() * 3);
+        this.spriteKey = `missile_${variant}`;
+        this.img = game.assets.get(this.spriteKey);
+        this._nativeRadius = CollisionScanner.getRadius(this.img, this.spriteKey);
+        this.radius = this._nativeRadius * 0.95;
+
+        // 2x a regular enemy's health (10+10*d). Front weapon is the stock laser
+        // (base shoot); side missiles are a separate timed salvo.
+        this.health = Math.ceil(20 + 20 * difficultyScale);
+        this.maxHealth = this.health;
+        this.missileTimer = 1.5 + Math.random() * 1.5; // first salvo soon after engaging
+
+        // Tougher fight than chaff → better loot drops (see getSpawnOnDeath).
+        this.isSpecialEnemy = true;
+    }
+
+    update(dt, player, asteroids, projectiles, enemies) {
+        super.update(dt, player, asteroids, projectiles, enemies); // movement + front lasers
+        // Periodic side-missile salvo when a player is within range.
+        this.missileTimer -= dt;
+        if (this.missileTimer <= 0) {
+            this.missileTimer = 2.0 + Math.random() * 1.5; // every ~2-3.5s
+            const target = this.game.currentState && this.game.currentState.player;
+            if (target) {
+                const dx = target.worldX - this.worldX, dy = target.worldY - this.worldY;
+                if (dx * dx + dy * dy < 1500 * 1500) this._fireSideMissiles(target);
+            }
+        }
+    }
+
+    _fireSideMissiles(target) {
+        const damage = (7 + 2.0 * this.difficultyScale) * this.damageMult;
+        for (const side of [1, -1]) {
+            // Launch from the side mounts, pointing straight out the side.
+            const offsetY = 50 * side;
+            const px = this.worldX - 8 * Math.cos(this.angle) - offsetY * Math.sin(this.angle);
+            const py = this.worldY - 8 * Math.sin(this.angle) + offsetY * Math.cos(this.angle);
+            const launchAngle = this.angle + (Math.PI / 2) * side;
+
+            const proj = new Projectile(this.game, px, py, launchAngle, 300, 'red_laser_ball_big', this, damage, 6.0);
+            proj.isRocket = true;
+            proj.target = target;
+            proj.turnRate = 3.2;   // homes hard during the seek window...
+            proj.homeTimer = 0.9;  // ...for ~0.9s, then:
+            proj.dashSpeed = 950;  // locks heading and dashes straight, fast.
+            this.pendingProjectiles.push(proj);
+        }
+        this.game.sounds.play('railgun_shoot', { volume: 0.4, x: this.worldX, y: this.worldY });
+    }
+}
+
+// ── Blink enemy: a fragile teleport-strafer. It fights with normal lasers, then
+// every couple seconds BLINKS to a new firing angle around the player. Every jump
+// has a fair tell — it freezes, flares violet, and a ghost of itself fades in at
+// the destination — so a sharp player can pre-aim the landing spot. Tests aim/
+// prediction and counters lock-on/tracking. The jump uses the looper's teleport
+// space-collapse screen morph (PlayingState._blinkWarp → getScreenFx collapse). ──
+export class BlinkEnemy extends Enemy {
+    static TELEGRAPH_TIME = 0.45;  // pre-blink tell (frozen + ghost shown)
+    static BLINK_MIN = 1.6;        // seconds between blinks
+    static BLINK_RAND = 1.2;
+
+    constructor(game, worldX, worldY, difficultyScale = 1.0) {
+        super(game, worldX, worldY, difficultyScale);
+
+        const variant = Math.floor(Math.random() * 3);
+        this.spriteKey = `blink_${variant}`;
+        this.img = game.assets.get(this.spriteKey);
+        this._nativeRadius = CollisionScanner.getRadius(this.img, this.spriteKey);
+        this.radius = this._nativeRadius * 0.95;
+
+        // 1.9x a regular enemy's health (10+10*d).
+        this.health = Math.ceil(19 + 19 * difficultyScale);
+        this.maxHealth = this.health;
+
+        this.blinkTimer = BlinkEnemy.BLINK_MIN + Math.random() * BlinkEnemy.BLINK_RAND;
+        this.telegraphing = false;
+        this.telegraphTimer = 0;
+        this.blinkDestX = 0;
+        this.blinkDestY = 0;
+
+        this.isSpecialEnemy = true;
+    }
+
+    update(dt, player, asteroids, projectiles, enemies) {
+        // Charging a blink: freeze in place (the tell), no movement/shooting.
+        if (this.telegraphing) {
+            this.vx = 0; this.vy = 0;
+            this.invulnTimer = Math.max(0, this.invulnTimer - dt);
+            this.telegraphTimer -= dt;
+            if (this.telegraphTimer <= 0) this._commitBlink();
+            return;
+        }
+
+        super.update(dt, player, asteroids, projectiles, enemies);
+
+        this.blinkTimer -= dt;
+        if (this.blinkTimer <= 0) {
+            const target = this.game.currentState && this.game.currentState.player;
+            if (target) {
+                const dx = target.worldX - this.worldX, dy = target.worldY - this.worldY;
+                if (dx * dx + dy * dy < 1500 * 1500) { this._startTelegraph(target); return; }
+            }
+            this.blinkTimer = 1.0; // not engaged — retry soon
+        }
+    }
+
+    _startTelegraph(target) {
+        // Destination: a new firing angle AROUND the player at a fixed combat range,
+        // swung off its current bearing so it visibly relocates (and the player has
+        // to re-acquire it).
+        const bearing = Math.atan2(this.worldY - target.worldY, this.worldX - target.worldX);
+        const side = Math.random() > 0.5 ? 1 : -1;
+        const swing = (Math.PI * 0.5 + Math.random() * Math.PI * 0.5) * side; // 90-180° around
+        const destAng = bearing + swing;
+        const combatDist = 420 + Math.random() * 160;
+        const resolved = resolveSpawnOverlap(
+            this.game,
+            target.worldX + Math.cos(destAng) * combatDist,
+            target.worldY + Math.sin(destAng) * combatDist,
+            this.radius
+        );
+        this.blinkDestX = resolved.x;
+        this.blinkDestY = resolved.y;
+
+        this.telegraphing = true;
+        this.telegraphTimer = BlinkEnemy.TELEGRAPH_TIME;
+        this.vx = 0; this.vy = 0;
+        // Warp the screen inward at the spot it's leaving FROM — peaks as it
+        // teleports away (end of the tell).
+        const st = this.game.currentState;
+        if (st) st._blinkWarp = { x: this.worldX, y: this.worldY, t: BlinkEnemy.TELEGRAPH_TIME, dur: BlinkEnemy.TELEGRAPH_TIME, depart: true };
+        this.game.sounds.play('teleport', { volume: 0.3, x: this.worldX, y: this.worldY });
+    }
+
+    _commitBlink() {
+        const state = this.game.currentState;
+        const ox = this.worldX, oy = this.worldY;
+
+        // Collapse ring where it leaves...
+        if (state && state.cinematics) {
+            state.cinematics.spawnRing(ox, oy, { color: '#b066ff', maxR: this.radius * 1.7, dur: 0.25, width: 3 });
+        }
+
+        // ...jump...
+        this.worldX = this.blinkDestX;
+        this.worldY = this.blinkDestY;
+        this.vx = 0; this.vy = 0;
+        this.telegraphing = false;
+        this._nearPlayer = true; // hittable at the new spot this frame
+        this.blinkTimer = BlinkEnemy.BLINK_MIN + Math.random() * BlinkEnemy.BLINK_RAND;
+
+        // ...arrival ring + sparks + the looper-style space-collapse screen morph.
+        if (state && state.cinematics) {
+            state.cinematics.spawnRing(this.worldX, this.worldY, { color: '#b066ff', maxR: this.radius * 1.9, dur: 0.3, width: 3 });
+        }
+        if (state && state._spawnSparks) {
+            state._spawnSparks(this.worldX, this.worldY, 9, { color: '#cc99ff', speedMin: 90, speedMax: 250 });
+        }
+        if (state) state._blinkWarp = { x: this.worldX, y: this.worldY, t: 0.4, dur: 0.4, depart: false };
+        this.game.sounds.play('teleport', { volume: 0.45, x: this.worldX, y: this.worldY });
+    }
+
+    draw(ctx, camera) {
+        // Ghost of itself fading in at the destination during the tell.
+        if (this.telegraphing && this.img) {
+            const ghost = camera.worldToScreen(this.blinkDestX, this.blinkDestY, this.game.width, this.game.height);
+            const w = (this.img.width || this.img.canvas.width) * this.game.worldScale;
+            const h = (this.img.height || this.img.canvas.height) * this.game.worldScale;
+            const prog = 1 - Math.max(0, this.telegraphTimer) / BlinkEnemy.TELEGRAPH_TIME; // 0→1
+            ctx.save();
+            ctx.globalAlpha = 0.15 + 0.4 * prog;
+            ctx.translate(ghost.x, ghost.y);
+            ctx.rotate(this.angle + Math.PI / 2);
+            ctx.drawImage(this.img.canvas || this.img, -w / 2, -h / 2, w, h);
+            ctx.restore();
+        }
+
+        super.draw(ctx, camera); // the real hull at its current spot
+
+        // Violet charge flare on the real ship while telegraphing.
+        if (this.telegraphing && this.img) {
+            const screen = camera.worldToScreen(this.worldX, this.worldY, this.game.width, this.game.height);
+            const glow = Enemy.getGlowSprite(this.img, this.spriteKey, '#b066ff');
+            const w = (this.img.width || this.img.canvas.width) * this.game.worldScale;
+            const pxScale = w / glow.srcW;
+            const gw = glow.canvas.width * pxScale;
+            const gh = glow.canvas.height * pxScale;
+            const pulse = 0.45 + 0.55 * Math.abs(Math.sin(Date.now() / 60));
+            ctx.save();
+            ctx.globalAlpha = pulse;
+            ctx.translate(screen.x, screen.y);
+            ctx.rotate(this.angle + Math.PI / 2);
+            ctx.drawImage(glow.canvas, -gw / 2, -gh / 2, gw, gh);
+            ctx.restore();
+        }
+    }
+}
+
+// ── Berserk enemy: fights normally until it drops below HALF health, then ENRAGES
+// — every stat but health ramps up (speed/turn/fire-rate/damage), it glows molten
+// hot, and it periodically unleashes a DEATH BLOSSOM: spins in place spraying
+// lasers out in a spiral. Exposed while it spins, so it's a risk/reward target. ──
+export class BerserkEnemy extends Enemy {
+    static BLOSSOM_DURATION = 1.5;
+    static BLOSSOM_SPIN = 9.0;            // rad/s while blossoming
+    static BLOSSOM_FIRE_INTERVAL = 0.05;  // rapid radial fire
+
+    constructor(game, worldX, worldY, difficultyScale = 1.0) {
+        super(game, worldX, worldY, difficultyScale);
+
+        const variant = Math.floor(Math.random() * 3);
+        this.spriteKey = `berserk_${variant}`;
+        this.img = game.assets.get(this.spriteKey);
+        this._nativeRadius = CollisionScanner.getRadius(this.img, this.spriteKey);
+        this.radius = this._nativeRadius * 0.95;
+
+        // 2x a regular enemy's health (10+10*d). Below half it ENRAGES.
+        this.health = Math.ceil(20 + 20 * difficultyScale);
+        this.maxHealth = this.health;
+
+        this.enraged = false;
+        this.blossoming = false;
+        this.blossomTimer = 0;       // counts down to the next blossom (only when enraged)
+        this.blossomTime = 0;        // remaining duration of the active blossom
+        this.blossomShootTimer = 0;
+        this.blossomSpinDir = 1;
+
+        this.isSpecialEnemy = true;
+    }
+
+    update(dt, player, asteroids, projectiles, enemies) {
+        if (this.blossoming) { this._updateBlossom(dt); return; }
+
+        super.update(dt, player, asteroids, projectiles, enemies);
+
+        if (!this.enraged && this.health <= this.maxHealth * 0.5) this._enrage();
+
+        if (this.enraged && this.blossomTimer > 0) {
+            this.blossomTimer -= dt;
+            if (this.blossomTimer <= 0) {
+                const target = this.game.currentState && this.game.currentState.player;
+                if (target) {
+                    const dx = target.worldX - this.worldX, dy = target.worldY - this.worldY;
+                    if (dx * dx + dy * dy < 1200 * 1200) { this._startBlossom(); return; }
+                }
+                this.blossomTimer = 1.5; // out of range — check again soon
+            }
+        }
+    }
+
+    _enrage() {
+        this.enraged = true;
+        // Everything but health ramps up.
+        this.speedMult *= 1.5;
+        this.turnSpeed = Math.min(16, this.turnSpeed * 1.4);
+        this.fireRateMult *= 2.0;
+        this.damageMult *= 1.4;
+        this.burstShotsMax += 2;
+        this.blossomTimer = 2.5 + Math.random() * 2.5; // first blossom shortly after
+
+        const state = this.game.currentState;
+        if (state) {
+            if (state.cinematics) state.cinematics.spawnRing(this.worldX, this.worldY, { color: '#ff7733', maxR: this.radius * 2.4, dur: 0.4, width: 4 });
+            if (state._spawnSparks) state._spawnSparks(this.worldX, this.worldY, 14, { color: '#ffaa55', speedMin: 120, speedMax: 360 });
+            if (state._triggerShakeAt) state._triggerShakeAt(this.worldX, this.worldY, 1.2);
+        }
+        this.game.sounds.play('ship_explode', { volume: 0.3, x: this.worldX, y: this.worldY });
+    }
+
+    _startBlossom() {
+        this.blossoming = true;
+        this.blossomTime = BerserkEnemy.BLOSSOM_DURATION;
+        this.blossomShootTimer = 0;
+        this.blossomSpinDir = Math.random() > 0.5 ? 1 : -1;
+        this.game.sounds.play('railgun_target', { volume: 0.4, x: this.worldX, y: this.worldY });
+    }
+
+    _updateBlossom(dt) {
+        this.blossomTime -= dt;
+        // Spin in place, bleeding off any momentum.
+        this.angle += BerserkEnemy.BLOSSOM_SPIN * this.blossomSpinDir * dt;
+        const fr = Math.pow(0.86, dt * 60);
+        this.vx *= fr; this.vy *= fr;
+        this.worldX += this.vx * dt;
+        this.worldY += this.vy * dt;
+        this.invulnTimer = Math.max(0, this.invulnTimer - dt);
+        this.freezeTimer = Math.max(0, this.freezeTimer - dt);
+
+        this.blossomShootTimer -= dt;
+        if (this.blossomShootTimer <= 0) {
+            this.blossomShootTimer = BerserkEnemy.BLOSSOM_FIRE_INTERVAL;
+            this._fireBlossomShot();
+        }
+        if (this.blossomTime <= 0) {
+            this.blossoming = false;
+            this.blossomTimer = 3.5 + Math.random() * 3.0; // next blossom later
+        }
+    }
+
+    _fireBlossomShot() {
+        const speed = 680;
+        const damage = (8 + 2.0 * this.difficultyScale) * this.damageMult;
+        const arms = 2; // double spiral
+        for (let i = 0; i < arms; i++) {
+            const a = this.angle + (Math.PI * 2 / arms) * i;
+            const px = this.worldX + Math.cos(a) * 22;
+            const py = this.worldY + Math.sin(a) * 22;
+            this.pendingProjectiles.push(new Projectile(this.game, px, py, a, speed, 'red_laser_ball', this, damage, 2.5));
+        }
+        this.game.sounds.play('laser', { volume: 0.18, x: this.worldX, y: this.worldY });
+    }
+
+    draw(ctx, camera) {
+        super.draw(ctx, camera);
+        if (!this.enraged || !this.img) return;
+        // Molten heat glow when enraged — hotter (white-ish) during a death blossom.
+        const screen = camera.worldToScreen(this.worldX, this.worldY, this.game.width, this.game.height);
+        const color = this.blossoming ? '#ffcc66' : '#ff7733';
+        const glow = Enemy.getGlowSprite(this.img, this.spriteKey, color);
+        const w = (this.img.width || this.img.canvas.width) * this.game.worldScale;
+        const pxScale = w / glow.srcW;
+        const gw = glow.canvas.width * pxScale;
+        const gh = glow.canvas.height * pxScale;
+        const pulse = (this.blossoming ? 0.6 : 0.4) + 0.35 * Math.abs(Math.sin(Date.now() / 80));
+        ctx.save();
+        ctx.globalAlpha = pulse;
+        ctx.translate(screen.x, screen.y);
+        ctx.rotate(this.angle + Math.PI / 2);
+        ctx.drawImage(glow.canvas, -gw / 2, -gh / 2, gw, gh);
+        ctx.restore();
+    }
+}
+
+// ── Scavenger enemy: a loot thief with the most distinct AI. It darts in, fires a
+// few shots to provoke, grabs floating items/scrap with a stronger vacuum, then
+// runs just outside engagement range to loiter and dodge — every so often diving
+// back in. Stolen loot it HOLDS still ages and can despawn; kill it before then
+// and it drops everything it's still carrying + 20% more scrap than it grabbed.
+// Marked with a yellow "!" indicator instead of the red one. ──
+export class ScavengerEnemy extends Enemy {
+    static VACUUM_RANGE = 190;    // "stronger vacuum" — captures loot it flies near
+    static HOLD_LIFE = 30;        // seconds a stolen item/scrap survives in its hold
+    static SEARCH_RANGE = 1100;   // how far it'll chase loot
+
+    constructor(game, worldX, worldY, difficultyScale = 1.0) {
+        super(game, worldX, worldY, difficultyScale);
+
+        const variant = Math.floor(Math.random() * 3);
+        this.spriteKey = `scavenger_${variant}`;
+        this.img = game.assets.get(this.spriteKey);
+        this._nativeRadius = CollisionScanner.getRadius(this.img, this.spriteKey);
+        this.radius = this._nativeRadius * 0.95;
+
+        // Evasive, not tanky — you have to chase it down to reclaim its haul.
+        this.health = Math.ceil(14 + 13 * difficultyScale);
+        this.maxHealth = this.health;
+        const speedScale = 1 + (difficultyScale - 1) * 0.08;
+        this.baseSpeed = Math.min(950, (400 + Math.random() * 80) * speedScale); // nimble
+        this.turnSpeed = Math.min(15, this.turnSpeed * 1.2);
+
+        // Yellow "!" off-screen indicator instead of the red enemy one.
+        this.indicatorColor = '#ffdd44';
+
+        // Vacuum identity: PlayingState pulls nearby loot toward us (visual suck-in)
+        // and calls captureLoot() once a piece reaches us.
+        this.isScavenger = true;
+        this.vacuumRange = ScavengerEnemy.VACUUM_RANGE;
+
+        // Stolen loot — each entry ages and despawns; released on death.
+        // { item: <upgrade data|null>, scrap: <value>, life }
+        this.heldLoot = [];
+        this.targetItem = null;
+        this._fleeJitter = 0;
+        this._fleeSide = 1;
+
+        this.isSpecialEnemy = true;
+        this._enterAttack();
+    }
+
+    // High-level behaviour — drives the base movement/avoidance/dodge/shooting by
+    // setting this.state + targetAngleOverride (we don't touch base movement).
+    _updateAIState(dt, dist, angleToPlayer, player, enemies, distMult) {
+        this.stateTimer -= dt;
+        this._tickHeldLoot(dt);
+
+        const engage = this.attackRange * distMult;
+        const fleeBand = engage * 1.35;
+
+        switch (this.scavState) {
+            case 'attack':
+                this.state = AI_STATE.ATTACK; // base heads to player + fires
+                if (this.burstShotsLeft <= 0 || dist < engage * 0.4 || this.stateTimer <= 0) {
+                    if (this._findTargetItem()) this._enterCollect();
+                    else this._enterFlee(angleToPlayer);
+                }
+                break;
+
+            case 'collect': {
+                this.state = AI_STATE.BREAK; // fast, no fire
+                let it = this.targetItem;
+                if (!it || !it.alive) {
+                    // Grabbed it (or it vanished) — chain to the next nearby item
+                    // until the collect window runs out, then run off.
+                    if (this.stateTimer > 0 && this._findTargetItem()) it = this.targetItem;
+                    else { this._enterFlee(angleToPlayer); break; }
+                }
+                if (this.stateTimer <= 0) { this._enterFlee(angleToPlayer); break; }
+                this.targetAngleOverride = Math.atan2(it.worldY - this.worldY, it.worldX - this.worldX);
+                break;
+            }
+
+            case 'flee':
+            default:
+                this.state = AI_STATE.REPOSITION; // fast, no fire
+                if (dist < fleeBand) {
+                    this.targetAngleOverride = angleToPlayer + Math.PI + this._fleeJitter; // run off
+                } else {
+                    this.targetAngleOverride = angleToPlayer + (Math.PI / 2) * this._fleeSide; // loiter at range
+                }
+                if (this.stateTimer <= 0) this._enterAttack(); // dive back in to provoke
+                break;
+        }
+    }
+
+    _enterAttack() {
+        this.scavState = 'attack';
+        this.state = AI_STATE.ATTACK;
+        this.attackPassCount = 1;  // skip the first-pass speed throttle — dart in
+        this.burstShotsLeft = 2 + Math.floor(Math.random() * 2);
+        this.shootTimer = 0.15;
+        this.stateTimer = 3.0;
+    }
+    _enterCollect() { this.scavState = 'collect'; this.stateTimer = 3.5; }
+    _enterFlee(angleToPlayer) {
+        this.scavState = 'flee';
+        this.stateTimer = 1.6 + Math.random() * 1.6;
+        this._fleeJitter = (Math.random() - 0.5) * 0.6;
+        this._fleeSide = Math.random() > 0.5 ? 1 : -1;
+    }
+
+    _findTargetItem() {
+        const st = this.game.currentState;
+        if (!st) return false;
+        const maxSq = ScavengerEnemy.SEARCH_RANGE * ScavengerEnemy.SEARCH_RANGE;
+        let best = null, bestD = maxSq;
+        const scan = (arr) => {
+            if (!arr) return;
+            for (const e of arr) {
+                if (!e.alive) continue;
+                const dx = e.worldX - this.worldX, dy = e.worldY - this.worldY;
+                const d = dx * dx + dy * dy;
+                if (d < bestD) { bestD = d; best = e; }
+            }
+        };
+        scan(st.itemPickups);              // prefer upgrade pickups...
+        if (!best) scan(st.scrapEntities);  // ...then scrap
+        this.targetItem = best;
+        return !!best;
+    }
+
+    // Called by PlayingState once a vacuumed item/scrap has been pulled in close.
+    // Stores it in the haul (each piece ages) and plays a small "tic" as it lands.
+    captureLoot(entity) {
+        if (this.heldLoot.length < 200) {
+            if (entity.item) {
+                this.heldLoot.push({ item: entity.item, scrap: 0, life: ScavengerEnemy.HOLD_LIFE });
+                const st = this.game.currentState;
+                if (st && st.spawnFloatingText) st.spawnFloatingText(this.worldX, this.worldY, 'STOLEN', '#ffdd44');
+            } else {
+                this.heldLoot.push({ item: null, scrap: entity.value || 1, life: ScavengerEnemy.HOLD_LIFE });
+            }
+        }
+        entity.alive = false;
+        this.game.sounds.play('type', { volume: 0.35, x: this.worldX, y: this.worldY });
+    }
+
+    _tickHeldLoot(dt) {
+        for (let i = this.heldLoot.length - 1; i >= 0; i--) {
+            this.heldLoot[i].life -= dt;
+            if (this.heldLoot[i].life <= 0) this.heldLoot.splice(i, 1); // despawned in the hold
+        }
+    }
+
+    getSpawnOnDeath() {
+        const spawns = super.getSpawnOnDeath();
+        // Release everything still held + a 20% scrap jackpot.
+        let scrapValue = 0;
+        for (const e of this.heldLoot) {
+            if (e.item) spawns.push(new ItemPickup(this.game, this.worldX, this.worldY, e.item));
+            else scrapValue += e.scrap;
+        }
+        const total = scrapValue * 1.2;
+        if (total > 0) {
+            const n = Math.min(30, Math.max(1, Math.round(total / 4)));
+            const per = Math.max(1, Math.round(total / n));
+            for (let i = 0; i < n; i++) {
+                const s = new Scrap(this.game, this.worldX, this.worldY);
+                s.value = per;
+                spawns.push(s);
+            }
+        }
+        return spawns;
     }
 }
 

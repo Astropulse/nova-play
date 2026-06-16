@@ -121,9 +121,16 @@ export const ENEMY_CLS = {
     KAMIKAZE: 1,
     CTHULHU: 2,
     HOSTILE_ENCOUNTER: 3,
+    NANITE: 4,
+    NANITE_DRONE: 5,
+    SHIELD: 6,
+    MISSILE: 7,
+    BLINK: 8,
+    BERSERK: 9,
     STARCORE: 10,
     CRUSHER: 11,
     HORIZON: 12,
+    SCAVENGER: 13,
 };
 
 // Projectile sprite ids — keep a stable indexed table so projectile spawn

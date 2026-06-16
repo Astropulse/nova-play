@@ -23,6 +23,10 @@ export class Projectile {
         this.isRocket = false;
         this.target = null;
         this.turnRate = 4.0;
+        // "Home then dash" (optional): seek the target for `homeTimer` seconds,
+        // then drop the lock and accelerate to `dashSpeed` straight ahead. Null = off.
+        this.homeTimer = null;
+        this.dashSpeed = null;
 
         // Trail & Glow (ring buffer)
         this.history = new Array(2);
@@ -44,6 +48,20 @@ export class Projectile {
         if (slot) { slot.x = this.worldX; slot.y = this.worldY; slot.a = this.angle; }
         else { this.history[this.historyHead] = { x: this.worldX, y: this.worldY, a: this.angle }; }
         if (this.historyLen < this.maxHistory) this.historyLen++;
+
+        // "Home then dash": once the seek window elapses, lock the current heading
+        // and accelerate to the faster straight cruise.
+        if (this.homeTimer !== null) {
+            this.homeTimer -= dt;
+            if (this.homeTimer <= 0) {
+                this.homeTimer = null;
+                this.target = null;
+                if (this.dashSpeed) {
+                    this.vx = Math.cos(this.angle) * this.dashSpeed;
+                    this.vy = Math.sin(this.angle) * this.dashSpeed;
+                }
+            }
+        }
 
         if (this.target && this.target.alive && (!this.owner || (this.owner.alive && this.owner.state !== 'dying'))) {
             const desiredAngle = Math.atan2(this.target.worldY - this.worldY, this.target.worldX - this.worldX);

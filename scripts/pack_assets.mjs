@@ -28,6 +28,7 @@ import { readFileSync, writeFileSync, readdirSync, mkdirSync, existsSync } from 
 import { join, relative, sep, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deflateSync, inflateSync } from 'node:zlib';
+import { fitHitbox } from './lib/fit_hitbox.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
@@ -41,6 +42,29 @@ const MAX_DIM = 8192;                            // max page width/height (px)
 const MEMORY_BUDGET_BYTES = 512 * 1024 * 1024;   // max decoded RGBA per page
 const PADDING = 1;                               // px gutter between sprites
 const PRESCALE = 4;                              // recorded for the loader
+
+// Ellipse hitboxes are computed only for COMBAT sprites whose source path lives
+// under one of these folders — every hostile ship/boss/event. Player ships and
+// non-hostile events (cache, cargo, etc.) are intentionally excluded so the
+// atlas isn't bloated with hitboxes nothing reads. The runtime fits the ellipse
+// to the silhouette (centered on the image) and rotates it with the entity; see
+// src/engine/hitbox.js. Future entities (seraph/wheels/bone/swarm) already have
+// their art folders here, so they get hitboxes the moment the art is packed.
+const HITBOX_PREFIXES = [
+    'Assets/Ships/Enemy/',
+    'Assets/Ships/Bosses/',
+    'Assets/Ships/Cthulhu/',
+    'Assets/Ships/Encounter/',
+    'Assets/Ships/Yellow Armada/',
+    'Assets/Ships/Swarm/',
+    'Assets/Ships/Bone/',
+    'Assets/Events/yellow_one/',
+    'Assets/Events/seraph/',
+    'Assets/Events/wheels/',
+    'Assets/Events/cthulhu',  // the Frozen God event (cthulhu.png + cthulhu_wake.gif)
+];
+const HITBOX_BLEND = 0.5;   // 0 = inner ellipse, 1 = outer; 0.5 = the chosen fit
+const wantsHitbox = (assetPath) => HITBOX_PREFIXES.some(p => assetPath.startsWith(p));
 
 // A page must satisfy both the dimension cap and the memory budget.
 const MAX_AREA = Math.min(MAX_DIM * MAX_DIM, Math.floor(MEMORY_BUDGET_BYTES / 4));
@@ -492,6 +516,7 @@ function main() {
     const images = {};      // key -> { width, height, rgba }
     const animations = {};  // key -> [ { width, height, rgba, delay } ]
     const usedKeys = new Set();
+    const hitboxKeys = new Set(); // keys whose source path is a combat sprite
     const derived = [];
 
     for (const file of files) {
@@ -501,6 +526,7 @@ function main() {
         if (!key) { key = slugKey(rel); derived.push(`${assetPath}  ->  ${key}`); }
         if (usedKeys.has(key)) { console.warn(`  ! duplicate key '${key}' (${assetPath}) — skipped`); continue; }
         usedKeys.add(key);
+        if (wantsHitbox(assetPath)) hitboxKeys.add(key);
 
         const buf = readFileSync(file);
         try {
@@ -519,8 +545,22 @@ function main() {
 
     if (!existsSync(OUT_DIR)) mkdirSync(OUT_DIR, { recursive: true });
 
+    // Ellipse hitboxes for combat sprites (centered on the image; blended fit).
+    // Animations are fitted on their first frame — a stable representative shape
+    // for collision (the silhouette barely changes frame-to-frame).
+    const hitboxes = {};
+    for (const key of hitboxKeys) {
+        const img = images[key] || (animations[key] && animations[key][0]);
+        if (!img) continue;
+        const fit = fitHitbox(img.rgba, img.width, img.height, HITBOX_BLEND);
+        if (fit.hit.rx > 0 && fit.hit.ry > 0) {
+            hitboxes[key] = { rx: +fit.hit.rx.toFixed(2), ry: +fit.hit.ry.toFixed(2) };
+        }
+    }
+    console.log(`\nComputed ${Object.keys(hitboxes).length} ellipse hitboxes (combat sprites).`);
+
     // Full atlas: every sprite + animation (self-contained).
-    writeAtlas('atlas.json', 'atlas', images, animations);
+    writeAtlas('atlas.json', 'atlas', images, animations, hitboxes);
 
     // Boot atlas: just the title-screen sprites, so the menu loads fast. These
     // keys are also in the full atlas; the small duplication is the cost of a
@@ -539,7 +579,7 @@ function main() {
 
 // Pack the given images + animations into pages and write them plus a json
 // manifest. Returns nothing; logs a short summary.
-function writeAtlas(jsonName, pagePrefix, images, animations) {
+function writeAtlas(jsonName, pagePrefix, images, animations, hitboxes = null) {
     // Flat rect list (one rect per image, one per animation frame).
     const rects = [];
     for (const [key, img] of Object.entries(images))
@@ -573,6 +613,7 @@ function writeAtlas(jsonName, pagePrefix, images, animations) {
 
     // Build manifest.
     const atlas = { version: 1, prescale: PRESCALE, pages: pageFiles, images: {}, animations: {} };
+    if (hitboxes && Object.keys(hitboxes).length) atlas.hitboxes = hitboxes;
     for (const r of rects) {
         if (r.kind === 'image') {
             atlas.images[r.key] = { page: r.page, x: r.x, y: r.y, w: r.w, h: r.h };

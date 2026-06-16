@@ -12,6 +12,7 @@ export class AssetLoader {
         this.atlasPages = [];      // HTMLImageElement per page
         this.atlasImages = null;   // key -> { page, x, y, w, h }
         this.atlasAnims = null;    // key -> { frames: [{ page, x, y, w, h, delay }] }
+        this.atlasHitboxes = null; // key -> { rx, ry } ellipse half-extents (native px)
         this.atlasPrescale = 4;
     }
 
@@ -60,6 +61,18 @@ export class AssetLoader {
                 frames: a.frames.map(f => ({ x: f.x, y: f.y, w: f.w, h: f.h, delay: f.delay, img: pages[f.page] })),
             };
         }
+        // Ellipse hitboxes for combat sprites (packer-computed; see hitbox.js).
+        if (atlas.hitboxes) {
+            if (!this.atlasHitboxes) this.atlasHitboxes = {};
+            Object.assign(this.atlasHitboxes, atlas.hitboxes);
+        }
+    }
+
+    // Ellipse hitbox (half-extents rx/ry in native sprite px, centered on the
+    // image) for a combat sprite key, or null if the key has none (non-combat
+    // sprite, or the atlas predates hitboxes — callers fall back to a circle).
+    getHitbox(key) {
+        return (this.atlasHitboxes && this.atlasHitboxes[key]) || null;
     }
 
     // Slice a rect out of its atlas page into a prescaled canvas, matching the

@@ -452,9 +452,23 @@ export class AchievementManager {
     // without notify spam. Skip when game is paused/dead — caller decides.
     tickRun(dt) {
         this.run.timeAlive += dt;
-        // No achievement currently keys off raw timeAlive ticks, so don't
-        // re-run all checks every frame. Time-based achievements should
-        // notify('run_ended') or be re-evaluated on other event boundaries.
+        // Keep the longest-run stat current while the run is live so time-based
+        // achievements (Personal Best) can unlock the moment the player crosses
+        // the threshold and their `progress` bar fills in real time — not only
+        // when the run finally ends. run_ended still does its own max() so a run
+        // spanning a save/resume (where run.timeAlive resets to 0 on load) is
+        // backstopped by the serialized trueTotalTime in its payload.
+        if (this.run.timeAlive > this.lifetime.peakRunTime) {
+            this.lifetime.peakRunTime = this.run.timeAlive;
+        }
+        // Re-evaluate at most once per second: enough to catch a time milestone
+        // promptly, cheap enough to avoid per-frame check + save churn.
+        this._timeCheckAccum = (this._timeCheckAccum || 0) + dt;
+        if (this._timeCheckAccum >= 1.0) {
+            this._timeCheckAccum = 0;
+            this._checkAchievements();
+            this._scheduleSave();
+        }
     }
 
     _recordBoss(bossId) {
