@@ -11,6 +11,9 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 export class Bot {
     constructor(game) {
         this.game = game;
+        // Last aim world-point (recorded by _aimWorld). The co-op perf driver
+        // reads this to steer every follower pilot at the same target.
+        this._aimX = 0; this._aimY = 0;
         this.log = (msg) => { try { fetch('/perflog', { method: 'POST', body: JSON.stringify({ tag: 'BOT', msg }), keepalive: true }); } catch (e) {} };
     }
     get s() { return this.game.currentState; }
@@ -19,15 +22,17 @@ export class Bot {
 
     // ── Low-level input (held until changed) ──────────────────────────────────
     _aimWorld(wx, wy) {
+        this._aimX = wx; this._aimY = wy;
+        if (!this.s || !this.s.camera) return;
         const cam = this.s.camera;
         const sx = (wx - cam.x) * this.game.worldScale + this.game.width / 2 + (cam.shakeX || 0) + (cam.punchX || 0);
         const sy = (wy - cam.y) * this.game.worldScale + this.game.height / 2 + (cam.shakeY || 0) + (cam.punchY || 0);
         this.game.input.mouseScreenX = sx;
         this.game.input.mouseScreenY = sy;
     }
-    _thrust(on) { const k = this.game.input.keysDown; on ? k.add('KeyW') : k.delete('KeyW'); }
-    _fire(on) { const b = this.game.input.mouseButtons; on ? b.add(0) : b.delete(0); }
-    _boostTap() { this.game.input.keysDown.add('Space'); setTimeout(() => this.game.input.keysDown.delete('Space'), 60); }
+    _thrust(on) { const im = this.game.input; if (!im) return; const k = im.keysDown; on ? k.add('KeyW') : k.delete('KeyW'); }
+    _fire(on) { const im = this.game.input; if (!im) return; const b = im.mouseButtons; on ? b.add(0) : b.delete(0); }
+    _boostTap() { const im = this.game.input; if (!im) return; im.keysDown.add('Space'); setTimeout(() => im.keysDown.delete('Space'), 60); }
     _idle() { this._thrust(false); this._fire(false); }
 
     // Poll loop: run `each` (sets input) every frame until `cond` true or timeout.

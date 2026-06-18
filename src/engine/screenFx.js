@@ -17,7 +17,9 @@ void main() {
 const FRAG = `#version 300 es
 precision highp float;
 uniform sampler2D u_tex;
-uniform vec2 u_res;
+uniform vec2 u_res;          // full canvas size (px) — texture is the whole canvas
+uniform vec2 u_paneOrigin;   // this pane's origin (px, gl bottom-up); (0,0) = fullscreen
+uniform vec2 u_paneSize;     // this pane's size (px); == u_res when fullscreen
 uniform float u_crt;    // kill-streak CRT look (barrel/chroma/vignette)
 uniform float u_warp;   // dread insanity pulse (wobble/tear/desaturate)
 uniform vec4 u_ripple;  // shield impact: xy = impact point (px), z = bubble radius (px), w = strength
@@ -30,9 +32,13 @@ uniform float u_time;
 out vec4 outColor;
 
 void main() {
-    vec2 uv = gl_FragCoord.xy / u_res;
+    // Work in PANE-local normalized space so the barrel/vignette center on each
+    // pane (split-screen) and every pane behaves like its own screen. Sampling
+    // maps the displaced pane-local uv back to the full-canvas texture below.
+    vec2 local = gl_FragCoord.xy - u_paneOrigin;
+    vec2 uv = local / u_paneSize;
     vec2 c = uv - 0.5;
-    float aspect = u_res.x / u_res.y;
+    float aspect = u_paneSize.x / u_paneSize.y;
     vec2 ca = c * vec2(aspect, 1.0);
     float r2 = dot(ca, ca) / (0.25 * aspect * aspect + 0.25); // ~0..1 at corners
 
@@ -69,7 +75,7 @@ void main() {
         float dCenter = distance(frag, u_rippleCenter);
         float mask = 1.0 - smoothstep(u_ripple.z * 0.95, u_ripple.z * 1.2, dCenter);
         vec2 dir = dImpact > 0.5 ? (frag - u_ripple.xy) / dImpact : vec2(0.0);
-        duv += dir * (band * mask * u_ripple.w * 5.0) / u_res;
+        duv += dir * (band * mask * u_ripple.w * 5.0) / u_paneSize;
     }
 
     // ── Boost flow: space bends around the hull along the line of travel ──
@@ -77,18 +83,18 @@ void main() {
     if (flowStr > 0.001) {
         vec2 d = gl_FragCoord.xy - u_flow.xy;
         vec2 fdir = u_flow.zw / flowStr;
-        float R = 0.30 * min(u_res.x, u_res.y);
+        float R = 0.30 * min(u_paneSize.x, u_paneSize.y);
         float fall = exp(-dot(d, d) / (R * R));
         vec2 fperp = vec2(-fdir.y, fdir.x);
         // Space contracts toward the ship along the travel axis — compressed
         // ahead of the nose, stretched out behind it (a uniform shift reads
         // as nothing at speed; the variation across the screen is the bend)
         float along = dot(d, fdir);
-        duv += fdir * along * fall * flowStr * 0.22 / u_res;
+        duv += fdir * along * fall * flowStr * 0.22 / u_paneSize;
         // ...dragged back past the hull...
-        duv += fdir * (fall * flowStr * R * 0.13) / u_res;
+        duv += fdir * (fall * flowStr * R * 0.13) / u_paneSize;
         // ...and pinched in toward the line of travel
-        duv += fperp * dot(d, fperp) * fall * flowStr * 0.22 / u_res;
+        duv += fperp * dot(d, fperp) * fall * flowStr * 0.22 / u_paneSize;
     }
 
     // ── Teleport collapse: space falls inward toward the ship ──
@@ -100,7 +106,7 @@ void main() {
         // peak displacement capped in absolute pixels
         float ramp = smoothstep(0.0, 0.22, dist / u_collapse.z);
         float amt = u_collapse.w * min(u_collapse.z * 0.08, 42.0);
-        duv += (d / dist) * (fall * ramp * amt) / u_res;
+        duv += (d / dist) * (fall * ramp * amt) / u_paneSize;
     }
 
     // Chromatic aberration: CRT separates at edges; warp separates everywhere;
@@ -112,9 +118,14 @@ void main() {
     // texture is therefore stored vertically mirrored; we cancel that by flipping
     // the sample V here. Two mirrors == identity, so the sampled pixels are
     // byte-for-byte what they were before — only the upload got cheaper.
-    vec2 sr = duv * (1.0 + s) + 0.5;
-    vec2 sg = duv + 0.5;
-    vec2 sb = duv * (1.0 - s) + 0.5;
+    // duv is centered PANE-local; +0.5 → pane-local uv, then map into the pane's
+    // sub-rect of the full-canvas texture: (origin + paneLocal*size) / res.
+    vec2 srL = duv * (1.0 + s) + 0.5;
+    vec2 sgL = duv + 0.5;
+    vec2 sbL = duv * (1.0 - s) + 0.5;
+    vec2 sr = (u_paneOrigin + srL * u_paneSize) / u_res;
+    vec2 sg = (u_paneOrigin + sgL * u_paneSize) / u_res;
+    vec2 sb = (u_paneOrigin + sbL * u_paneSize) / u_res;
     vec3 col;
     col.r = texture(u_tex, vec2(sr.x, 1.0 - sr.y)).r;
     col.g = texture(u_tex, vec2(sg.x, 1.0 - sg.y)).g;
@@ -188,6 +199,8 @@ export class ScreenFX {
             this.canvas = canvas;
             this.gl = gl;
             this._uRes = gl.getUniformLocation(prog, 'u_res');
+            this._uPaneOrigin = gl.getUniformLocation(prog, 'u_paneOrigin');
+            this._uPaneSize = gl.getUniformLocation(prog, 'u_paneSize');
             this._uCrt = gl.getUniformLocation(prog, 'u_crt');
             this._uWarp = gl.getUniformLocation(prog, 'u_warp');
             this._uRipple = gl.getUniformLocation(prog, 'u_ripple');
@@ -261,33 +274,97 @@ export class ScreenFX {
         }
 
         gl.uniform2f(this._uRes, src.width, src.height);
-        gl.uniform1f(this._uCrt, Math.min(1, crt));
-        gl.uniform1f(this._uWarp, Math.min(1, warp));
+        gl.uniform1f(this._uTime, time);
+        // Whole canvas = one "pane".
+        gl.uniform2f(this._uPaneOrigin, 0, 0);
+        gl.uniform2f(this._uPaneSize, src.width, src.height);
+        this._setEffectUniforms({ crt, warp, ripple, flow, collapse }, src.height);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
+
+    // Split-screen: run the post-pass once per pane, each scissored to its rect
+    // with its own effect descriptor. crt/warp are global (shared streak/dread)
+    // but their geometry (barrel/vignette/wobble) centers on each pane; boost/
+    // ripple/teleport are positioned by that pilot's own camera. All panes are
+    // drawn whenever ANY effect is active so the overlay covers the whole screen.
+    // panes: [{ rect:{x,y,w,h}(canvas px, top-down), crt, warp, ripple?, flow?, collapse? }]
+    renderPanes(panes, time) {
+        if (this._failed) return;
+        const isOn = (p) => (p.crt || 0) > 0.004 || (p.warp || 0) > 0.004
+            || (p.ripple && p.ripple.strength > 0.004)
+            || (p.flow && p.flow.strength > 0.004)
+            || (p.collapse && p.collapse.strength > 0.004);
+        const any = panes.some(isOn);
+        if (!any) {
+            if (this._active) { this.canvas.style.display = 'none'; this._active = false; }
+            return;
+        }
+        if (!this.gl) { this._init(); if (this._failed) return; }
+
+        const src = this.game.canvas;
+        const gl = this.gl;
+        if (!this._active) { this.canvas.style.display = 'block'; this._active = true; }
+
+        if (this._texW !== src.width || this._texH !== src.height) {
+            this._texW = src.width;
+            this._texH = src.height;
+            this.canvas.width = src.width;
+            this.canvas.height = src.height;
+            this.canvas.style.width = '100vw';
+            this.canvas.style.height = '100vh';
+            gl.viewport(0, 0, src.width, src.height);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
+        } else {
+            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, src);
+        }
+
+        gl.uniform2f(this._uRes, src.width, src.height);
+        gl.uniform1f(this._uTime, time);
+
+        // gl_FragCoord is global to the framebuffer; the scissor box limits which
+        // pixels each pass writes, so the viewport stays full-canvas.
+        gl.enable(gl.SCISSOR_TEST);
+        for (const p of panes) {
+            const r = p.rect;
+            const glY = src.height - (r.y + r.h); // top-down rect → gl bottom-up
+            gl.uniform2f(this._uPaneOrigin, r.x, glY);
+            gl.uniform2f(this._uPaneSize, r.w, r.h);
+            this._setEffectUniforms(p, src.height);
+            gl.scissor(Math.round(r.x), Math.round(glY), Math.round(r.w), Math.round(r.h));
+            gl.drawArrays(gl.TRIANGLES, 0, 3);
+        }
+        gl.disable(gl.SCISSOR_TEST);
+    }
+
+    // Uploads the per-effect uniforms (crt/warp/ripple/flow/collapse). Positions
+    // are flipped from top-down canvas coords to gl bottom-up using canvasH.
+    _setEffectUniforms(fx, canvasH) {
+        const gl = this.gl;
+        const ripple = fx.ripple && fx.ripple.strength > 0.004 ? fx.ripple : null;
+        const flow = fx.flow && fx.flow.strength > 0.004 ? fx.flow : null;
+        const collapse = fx.collapse && fx.collapse.strength > 0.004 ? fx.collapse : null;
+        gl.uniform1f(this._uCrt, Math.min(1, fx.crt || 0));
+        gl.uniform1f(this._uWarp, Math.min(1, fx.warp || 0));
         if (ripple) {
-            // gl_FragCoord is bottom-up; canvas coords are top-down
-            gl.uniform4f(this._uRipple, ripple.x, src.height - ripple.y, ripple.r, ripple.strength);
-            gl.uniform2f(this._uRippleCenter, ripple.cx, src.height - ripple.cy);
+            gl.uniform4f(this._uRipple, ripple.x, canvasH - ripple.y, ripple.r, ripple.strength);
+            gl.uniform2f(this._uRippleCenter, ripple.cx, canvasH - ripple.cy);
             gl.uniform1f(this._uRippleT, ripple.t);
         } else {
             gl.uniform4f(this._uRipple, 0, 0, 1, 0);
         }
         if (flow) {
-            // gl_FragCoord is bottom-up; canvas coords are top-down (flip y of
-            // both the position and the travel direction)
-            gl.uniform4f(this._uFlow, flow.x, src.height - flow.y,
+            gl.uniform4f(this._uFlow, flow.x, canvasH - flow.y,
                 flow.dirX * flow.strength, -flow.dirY * flow.strength);
         } else {
             gl.uniform4f(this._uFlow, 0, 0, 0, 0);
         }
         if (collapse) {
-            gl.uniform4f(this._uCollapse, collapse.x, src.height - collapse.y,
+            gl.uniform4f(this._uCollapse, collapse.x, canvasH - collapse.y,
                 collapse.r, collapse.strength);
             gl.uniform1f(this._uCollapseAb, collapse.ab !== undefined ? collapse.ab : 1);
         } else {
             gl.uniform4f(this._uCollapse, 0, 0, 1, 0);
             gl.uniform1f(this._uCollapseAb, 1);
         }
-        gl.uniform1f(this._uTime, time);
-        gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
 }

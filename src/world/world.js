@@ -161,6 +161,7 @@ export class World {
         in float a_rotation;
 
         uniform vec2 u_resolution;
+        uniform vec2 u_center;
         uniform vec2 u_cameraXY;
         uniform float u_parallax;
         uniform float u_worldScale;
@@ -191,12 +192,11 @@ export class World {
             float sx = relX + u_wrapOffset.x * u_virtualSize;
             float sy = relY + u_wrapOffset.y * u_virtualSize;
 
-            float cw = u_resolution.x;
-            float ch = u_resolution.y;
-            
-            // Allow sub-pixel floats to let GPU antialiasing glide the art smoothly
-            float dx = sx * u_worldScale + (cw / 2.0);
-            float dy = sy * u_worldScale + (ch / 2.0);
+            // Allow sub-pixel floats to let GPU antialiasing glide the art smoothly.
+            // u_center is the viewport center in glCanvas pixels (= resolution/2
+            // for a full-screen view, or the split-screen pane's center).
+            float dx = sx * u_worldScale + u_center.x;
+            float dy = sy * u_worldScale + u_center.y;
 
             float finalX = dx + u_streakOffset.x;
             float finalY = dy + u_streakOffset.y;
@@ -286,6 +286,7 @@ export class World {
             a_rotation: gl.getAttribLocation(this.program, "a_rotation"),
             
             u_resolution: gl.getUniformLocation(this.program, "u_resolution"),
+            u_center: gl.getUniformLocation(this.program, "u_center"),
             u_cameraXY: gl.getUniformLocation(this.program, "u_cameraXY"),
             u_parallax: gl.getUniformLocation(this.program, "u_parallax"),
             u_worldScale: gl.getUniformLocation(this.program, "u_worldScale"),
@@ -490,21 +491,34 @@ export class World {
             this.gl.viewport(0, 0, cw, ch);
         }
 
+        // Split-screen: render only this pane's rect. A camera with no viewport
+        // (single-view default) covers the whole canvas — byte-identical path.
+        const vp = camera.viewport || { x: 0, y: 0, w: cw, h: ch };
+        const centerX = vp.x + vp.w / 2;
+        const centerY = vp.y + vp.h / 2;
+
         const gl = this.gl;
+        // Scissor to the pane so the clear + draws only touch its region of the
+        // scratch canvas (leaving other panes' freshly-blitted pixels intact).
+        // GL scissor origin is bottom-left, so flip Y. Full-canvas scissor is a
+        // no-op vs the original full clear.
+        gl.enable(gl.SCISSOR_TEST);
+        gl.scissor(vp.x, ch - (vp.y + vp.h), vp.w, vp.h);
         gl.clearColor(0, 0, 0, 0); // fully transparent backing
         gl.clear(gl.COLOR_BUFFER_BIT);
-        
+
         gl.useProgram(this.program);
         gl.bindVertexArray(this.quadVao);
 
         gl.uniform2f(this.locs.u_resolution, cw, ch);
+        gl.uniform2f(this.locs.u_center, centerX, centerY);
         gl.uniform2f(this.locs.u_cameraXY, camera.x, camera.y);
         gl.uniform1f(this.locs.u_worldScale, worldScale);
         gl.uniform1f(this.locs.u_virtualSize, this.virtualSize);
         gl.uniform2f(this.locs.u_atlasSize, this.atlasWidth, this.atlasHeight);
 
-        const viewW = cw / worldScale;
-        const viewH = ch / worldScale;
+        const viewW = vp.w / worldScale;
+        const viewH = vp.h / worldScale;
         const rangeX = Math.ceil(viewW / this.virtualSize / 2) + 1;
         const rangeY = Math.ceil(viewH / this.virtualSize / 2) + 1;
 
@@ -566,6 +580,7 @@ export class World {
 
         // Unbind VAO purely for safety
         gl.bindVertexArray(null);
+        gl.disable(gl.SCISSOR_TEST);
 
         // Output to main context
         ctx.save();
@@ -573,7 +588,13 @@ export class World {
         // The glCanvas has no background so just draw it directly
         ctx.globalCompositeOperation = 'source-over';
         ctx.globalAlpha = 1.0;
-        ctx.drawImage(this.glCanvas, 0, 0);
+        // Blit only this pane's sub-rect (the rest of the scratch canvas holds
+        // other panes). Full-view cameras blit the whole canvas as before.
+        if (camera.viewport) {
+            ctx.drawImage(this.glCanvas, vp.x, vp.y, vp.w, vp.h, vp.x, vp.y, vp.w, vp.h);
+        } else {
+            ctx.drawImage(this.glCanvas, 0, 0);
+        }
         ctx.restore();
 
         // Draw Shops (Delegated to shop system as originally coded via loop)

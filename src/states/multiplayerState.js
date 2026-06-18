@@ -22,8 +22,10 @@ import { relayAvailable, looksLikeRelayCode, normalizeRelayCode, formatRelayCode
 import { encodeJoinCode, decodeJoinCode } from '../net/joinCode.js';
 import { NET_DEFAULT_PORT, NET_MAX_PLAYERS } from '../net/protocol.js';
 import { playerColor } from '../ui/chat.js';
+import { GP } from '../engine/inputManager.js';
 
 const NAME_KEY = 'nova_mp_name';
+const MAX_LOCAL = 4; // local couch co-op caps at 4 pilots
 
 // Deterministic spawn ring for synchronized starts — every machine computes
 // every pilot's spawn the same way, so the initial world lines up exactly.
@@ -36,8 +38,11 @@ export function spawnForPid(pid) {
 export class MultiplayerState {
     constructor(game) {
         this.game = game;
-        this.mode = 'menu';   // 'menu' | 'hostStarting' | 'lobby' | 'joinEntry' | 'connecting'
+        this.mode = 'menu';   // 'menu' | 'hostStarting' | 'lobby' | 'joinEntry' | 'connecting' | 'localLobby'
         this.session = null;
+        // Local co-op lobby roster: [{ device:'kb'|'gamepad', padIndex, shipIndex }].
+        // Slot 0 (keyboard host) is created on entering the local lobby.
+        this.localRoster = null;
         this.error = '';
         this.statusText = '';
         this.shipIndex = 0;
@@ -55,6 +60,12 @@ export class MultiplayerState {
         this._buttons = {};        // id -> rect (rebuilt every draw)
         this._hovered = null;      // id under the mouse this frame
         this._starting = false;
+        // Gamepad spatial-focus navigation (mirrors the title screen): a single
+        // navigator focuses any on-screen button by id and A activates it.
+        this._focusId = null;
+        this._navMode = null;            // last mode seen (resets focus on change)
+        this._navStickLatched = false;   // flick-latch for left-stick nav
+        this._lastMouseHovered = null;   // prev mouse hover (for the hover blip)
 
         // "COPIED!" feedback for the join-code copy buttons
         this._copiedId = null;
@@ -272,6 +283,174 @@ export class MultiplayerState {
         }
     }
 
+    // ── Local split-screen co-op lobby ────────────────────────────────────────
+    _enterLocalLobby() {
+        this.mode = 'localLobby';
+        this.error = '';
+        // Empty roster — every pilot opts in: a controller presses A to join, or
+        // a keyboard/mouse player clicks an empty slot. Nobody is forced in, so a
+        // controller-only group never has an orphan keyboard pilot.
+        this.localRoster = [];
+    }
+
+    _cycleSlotShip(i, dir) {
+        const r = this.localRoster && this.localRoster[i];
+        if (!r) return;
+        r.shipIndex = (r.shipIndex + dir + SHIPS.length) % SHIPS.length;
+        this.game.sounds.play('select', 0.7);
+    }
+
+    // All selectable input devices: keyboard + every connected gamepad.
+    _availableDevices() {
+        const devs = [{ device: 'kb', padIndex: null }];
+        const im = this.game.input;
+        if (im.getConnectedPadIndices) {
+            for (const idx of im.getConnectedPadIndices()) devs.push({ device: 'gamepad', padIndex: idx });
+        }
+        return devs;
+    }
+
+    _sameDevice(a, b) {
+        return a.device === b.device && (a.device !== 'gamepad' || a.padIndex === b.padIndex);
+    }
+
+    // Cycle slot i to the next/prev device NOT already used by another slot.
+    _cycleSlotDevice(i, dir) {
+        const roster = this.localRoster;
+        const slot = roster && roster[i];
+        if (!slot) return;
+        const devs = this._availableDevices();
+        if (devs.length <= 1) return;
+        const claimedByOther = (d) => roster.some((s, j) => j !== i && this._sameDevice(s, d));
+        let cur = devs.findIndex(d => this._sameDevice(d, slot));
+        if (cur < 0) cur = 0;
+        for (let k = 1; k <= devs.length; k++) {
+            const d = devs[((cur + dir * k) % devs.length + devs.length) % devs.length];
+            if (!claimedByOther(d)) {
+                slot.device = d.device;
+                slot.padIndex = d.padIndex;
+                this.game.sounds.play('select', 0.7);
+                return;
+            }
+        }
+    }
+
+    // Add a pilot slot using the first unclaimed device (mouse "+ ADD").
+    _addLobbySlot() {
+        const roster = this.localRoster;
+        if (!roster || roster.length >= MAX_LOCAL) return;
+        const free = this._availableDevices().find(d => !roster.some(s => this._sameDevice(s, d)));
+        if (!free) return;
+        roster.push({ device: free.device, padIndex: free.padIndex, shipIndex: roster.length % SHIPS.length });
+        this.game.sounds.play('select', 0.9);
+    }
+
+    // Keyboard conveniences in the local lobby (gamepad uses the spatial nav).
+    _updateLocalLobby(dt) {
+        const im = this.game.input;
+        const roster = this.localRoster;
+        if (!roster) return;
+        const kbSlot = roster.findIndex(r => r.device === 'kb');
+        if (kbSlot >= 0) {
+            if (im.isKeyJustPressed('ArrowLeft')) this._cycleSlotShip(kbSlot, -1);
+            if (im.isKeyJustPressed('ArrowRight')) this._cycleSlotShip(kbSlot, 1);
+        }
+        if (im.isKeyJustPressed('Enter') && roster.length >= 1) this._launchLocalCoop();
+    }
+
+    // ── Gamepad spatial-focus navigation (shared by all MP screens) ───────────
+    // The buttons that can hold gamepad focus this frame (every clickable rect
+    // except the text-entry fields, which need a keyboard).
+    _focusList() {
+        const skip = { name: 1, code: 1, chat: 1 };
+        const out = [];
+        for (const id in this._buttons) {
+            const r = this._buttons[id];
+            if (r && !skip[id]) out.push({ id, rect: r });
+        }
+        return out;
+    }
+
+    _focusSlotIndex() {
+        const m = (this._focusId || '').match(/^(?:slotLeft|slotRight|devLeft|devRight|addSlot)(\d+)$/);
+        return m ? parseInt(m[1], 10) : -1;
+    }
+
+    // Pick the nearest focusable in the pressed direction (title-screen algorithm).
+    _moveFocusSpatial(dirX, dirY, focusables) {
+        const cur = focusables.find(f => f.id === this._focusId) || focusables[0];
+        const cx = cur.rect.x + cur.rect.w / 2, cy = cur.rect.y + cur.rect.h / 2;
+        let bestId = null, bestScore = Infinity;
+        const CROSS_PENALTY = 2.0;
+        for (const f of focusables) {
+            if (f.id === cur.id) continue;
+            const rx = f.rect.x + f.rect.w / 2, ry = f.rect.y + f.rect.h / 2;
+            const dx = rx - cx, dy = ry - cy;
+            if (dirX !== 0) { if (Math.sign(dx) !== dirX) continue; if (Math.abs(dy) > Math.abs(dx) * 2.5) continue; }
+            if (dirY !== 0) { if (Math.sign(dy) !== dirY) continue; if (Math.abs(dx) > Math.abs(dy) * 2.5) continue; }
+            const primary = dirX !== 0 ? Math.abs(dx) : Math.abs(dy);
+            const secondary = dirX !== 0 ? Math.abs(dy) : Math.abs(dx);
+            const score = primary + secondary * CROSS_PENALTY;
+            if (score < bestScore) { bestScore = score; bestId = f.id; }
+        }
+        if (bestId) { this._focusId = bestId; this.game.sounds.play('click', 0.5); }
+    }
+
+    _updateGamepadNav(input) {
+        if (this._navMode !== this.mode) { this._navMode = this.mode; this._focusId = null; }
+        if (this.activeField) return; // typing into a text field — don't navigate
+        const focusables = this._focusList();
+        if (!focusables.length) { this._focusId = null; return; }
+        if (!this._focusId || !focusables.some(f => f.id === this._focusId)) this._focusId = focusables[0].id;
+
+        // D-pad: one spatial step per press.
+        if (input.isGamepadJustPressed(GP.DLEFT))  this._moveFocusSpatial(-1, 0, focusables);
+        if (input.isGamepadJustPressed(GP.DRIGHT)) this._moveFocusSpatial(1, 0, focusables);
+        if (input.isGamepadJustPressed(GP.DUP))    this._moveFocusSpatial(0, -1, focusables);
+        if (input.isGamepadJustPressed(GP.DDOWN))  this._moveFocusSpatial(0, 1, focusables);
+        // Left stick: flick-latched (held tilt doesn't autoscroll), dominant axis.
+        const lx = input.leftStickX, ly = input.leftStickY;
+        const mag = Math.max(Math.abs(lx), Math.abs(ly));
+        if (mag > 0.55) {
+            if (!this._navStickLatched) {
+                this._navStickLatched = true;
+                if (Math.abs(lx) > Math.abs(ly)) this._moveFocusSpatial(lx < 0 ? -1 : 1, 0, focusables);
+                else                             this._moveFocusSpatial(0, ly < 0 ? -1 : 1, focusables);
+            }
+        } else if (mag < 0.25) {
+            this._navStickLatched = false;
+        }
+
+        // Highlight the focused control while a gamepad is the active device.
+        if (input.lastInputDevice === 'gamepad') this._hovered = this._focusId;
+
+        // A activates the focused button (same path as a mouse click).
+        if (input.isGamepadJustPressed(GP.A)) this._activateButton(this._focusId);
+
+        // X removes the focused pilot in the local lobby (quick kick).
+        if (this.mode === 'localLobby' && input.isGamepadJustPressed(GP.X)) {
+            const si = this._focusSlotIndex();
+            if (si >= 0 && this.localRoster && si < this.localRoster.length) {
+                this.localRoster.splice(si, 1);
+                this.game.sounds.play('click', 0.6);
+                this._focusId = null;
+            }
+        }
+    }
+
+    _launchLocalCoop() {
+        if (this._starting || !this.localRoster || this.localRoster.length < 1) return;
+        this._starting = true;
+        const game = this.game;
+        game.net = null; // local co-op runs no network session
+        const roster = this.localRoster.map(r => ({
+            shipId: SHIPS[r.shipIndex].id, device: r.device, padIndex: r.padIndex,
+        }));
+        const shipData = SHIPS.find(s => s.id === roster[0].shipId) || SHIPS[0];
+        this.game.sounds.play('select', 1.0);
+        game.setState(new PlayingState(game, shipData, { localCoop: roster }));
+    }
+
     _leaveToMenu() {
         this.game.sounds.play('click', 0.6);
         this.game.setState(new MenuState(this.game));
@@ -301,7 +480,10 @@ export class MultiplayerState {
         const input = this.game.input;
         const mouse = this.game.getMousePos();
 
-        // Hover tracking (buttons laid out by the last draw)
+        // Hover tracking (buttons laid out by the last draw). The hover "blip"
+        // is tracked against the previous MOUSE hover only — `_hovered` is also
+        // driven by gamepad focus, so comparing against it would replay the sound
+        // every frame (a feedback loop). Only the mouse plays the hover blip.
         let hovered = null;
         for (const [id, r] of Object.entries(this._buttons)) {
             if (r && mouse.x >= r.x && mouse.x <= r.x + r.w && mouse.y >= r.y && mouse.y <= r.y + r.h) {
@@ -309,7 +491,10 @@ export class MultiplayerState {
                 break;
             }
         }
-        if (hovered !== this._hovered && hovered) this.game.sounds.play('click', 0.35);
+        if (hovered !== this._lastMouseHovered && hovered && input.lastInputDevice === 'mouse') {
+            this.game.sounds.play('click', 0.35);
+        }
+        this._lastMouseHovered = hovered;
         this._hovered = hovered;
 
         // Mouse wheel over the lobby chat scrolls back through history.
@@ -324,10 +509,20 @@ export class MultiplayerState {
             }
         }
 
-        if (input.isKeyJustPressed('Escape') && !this.activeField) {
+        if (this.mode === 'localLobby') this._updateLocalLobby(dt);
+
+        // Gamepad spatial-focus navigation (mirrors the title screen) for every
+        // multiplayer screen — focus a button, A activates it (same actions as a
+        // mouse click).
+        this._updateGamepadNav(input);
+
+        // Back: Escape (kb) or the gamepad B / Back button. (Removal in the local
+        // lobby is X, so B is free to mean "back" everywhere.)
+        const gpBack = input.isGamepadJustPressed(GP.BACK) || input.isGamepadJustPressed(GP.B);
+        if ((input.isKeyJustPressed('Escape') || gpBack) && !this.activeField) {
             if (this.mode === 'lobby' || this.mode === 'connecting') {
                 this._leaveLobby();
-            } else if (this.mode === 'joinEntry') {
+            } else if (this.mode === 'joinEntry' || this.mode === 'localLobby') {
                 this.mode = 'menu';
             } else {
                 this._leaveToMenu();
@@ -336,40 +531,44 @@ export class MultiplayerState {
         }
 
         if (!input.isMouseJustPressed(0)) return;
-
-        const hit = (id) => hovered === id;
-
+        // Mouse click activates whatever the cursor is over (shared with A).
         this.activeField = null;
-        if (hit('name')) { this.activeField = 'name'; return; }
+        this._activateButton(hovered);
+    }
 
+    // Run the action bound to a button id — shared by mouse click and gamepad A.
+    _activateButton(id) {
+        if (!id) return;
+        if (id === 'name') { this.activeField = 'name'; return; }
         if (this.mode === 'menu') {
-            if (hit('host')) { this.game.sounds.play('select', 1.0); this._startHosting(); }
-            else if (hit('join')) { this.game.sounds.play('select', 1.0); this.mode = 'joinEntry'; this.error = ''; }
-            else if (hit('home')) { this._leaveToMenu(); }
+            if (id === 'host') { this.game.sounds.play('select', 1.0); this._startHosting(); }
+            else if (id === 'join') { this.game.sounds.play('select', 1.0); this.mode = 'joinEntry'; this.error = ''; }
+            else if (id === 'local') { this.game.sounds.play('select', 1.0); this._enterLocalLobby(); }
+            else if (id === 'home') { this._leaveToMenu(); }
+        } else if (this.mode === 'localLobby') {
+            if (id === 'startLocal') { this.game.sounds.play('select', 1.0); this._launchLocalCoop(); }
+            else if (id === 'home') { this.game.sounds.play('click', 0.6); this.mode = 'menu'; }
+            else if (id.startsWith('slotLeft')) this._cycleSlotShip(parseInt(id.slice(8), 10), -1);
+            else if (id.startsWith('slotRight')) this._cycleSlotShip(parseInt(id.slice(9), 10), 1);
+            else if (id.startsWith('devLeft')) this._cycleSlotDevice(parseInt(id.slice(7), 10), -1);
+            else if (id.startsWith('devRight')) this._cycleSlotDevice(parseInt(id.slice(8), 10), 1);
+            else if (id.startsWith('addSlot')) this._addLobbySlot();
         } else if (this.mode === 'joinEntry') {
-            if (hit('code')) { this.activeField = 'code'; }
-            else if (hit('paste')) { this._pasteFromClipboard('code'); this.activeField = 'code'; }
-            else if (hit('connect')) { this.game.sounds.play('select', 1.0); this._tryJoin(); }
-            else if (hit('home')) { this.game.sounds.play('click', 0.6); this.mode = 'menu'; }
+            if (id === 'code') { this.activeField = 'code'; }
+            else if (id === 'paste') { this._pasteFromClipboard('code'); this.activeField = 'code'; }
+            else if (id === 'connect') { this.game.sounds.play('select', 1.0); this._tryJoin(); }
+            else if (id === 'home') { this.game.sounds.play('click', 0.6); this.mode = 'menu'; }
         } else if (this.mode === 'lobby' && this.session) {
-            if (hit('shipLeft') || hit('shipRight')) {
-                this.shipIndex = (this.shipIndex + (hit('shipLeft') ? -1 : 1) + SHIPS.length) % SHIPS.length;
+            if (id === 'shipLeft' || id === 'shipRight') {
+                this.shipIndex = (this.shipIndex + (id === 'shipLeft' ? -1 : 1) + SHIPS.length) % SHIPS.length;
                 this.session.setMyShip(SHIPS[this.shipIndex].id);
                 this.game.sounds.play('select', 0.8);
-            } else if (hit('chat')) {
-                this.activeField = 'chat';
-            } else if (hit('copyLan') && this._lanCode) {
-                this._copyToClipboard(this._lanCode, 'copyLan');
-            } else if (hit('copyNet') && this._netCode) {
-                this._copyToClipboard(this._netCode, 'copyNet');
-            } else if (hit('copyRelay') && this._relayCode) {
-                this._copyToClipboard(this._relayCode, 'copyRelay');
-            } else if (hit('start') && this.session.isHost) {
-                this.game.sounds.play('select', 1.0);
-                this.session.startRun();
-            } else if (hit('home') || hit('leave')) {
-                this._leaveLobby();
-            }
+            } else if (id === 'chat') { this.activeField = 'chat'; }
+            else if (id === 'copyLan' && this._lanCode) this._copyToClipboard(this._lanCode, 'copyLan');
+            else if (id === 'copyNet' && this._netCode) this._copyToClipboard(this._netCode, 'copyNet');
+            else if (id === 'copyRelay' && this._relayCode) this._copyToClipboard(this._relayCode, 'copyRelay');
+            else if (id === 'start' && this.session.isHost) { this.game.sounds.play('select', 1.0); this.session.startRun(); }
+            else if (id === 'home' || id === 'leave') this._leaveLobby();
         }
     }
 
@@ -414,6 +613,8 @@ export class MultiplayerState {
             }
         } else if (this.mode === 'joinEntry') {
             subline = 'ENTER THE JOIN CODE YOUR FRIEND SHARED (RAW IP:PORT ALSO WORKS)';
+        } else if (this.mode === 'localLobby') {
+            subline = 'SPLIT-SCREEN CO-OP ON THIS SCREEN · UP TO 4 PILOTS';
         }
         ctx.fillText(subline.toUpperCase(), cw / 2, headerH + Math.floor(uiScale * 8));
 
@@ -422,6 +623,7 @@ export class MultiplayerState {
         else if (this.mode === 'hostStarting' || this.mode === 'connecting') this._drawBusy(ctx);
         else if (this.mode === 'joinEntry') this._drawJoinEntry(ctx, headerH);
         else if (this.mode === 'lobby' && this.session) this._drawLobby(ctx, headerH);
+        else if (this.mode === 'localLobby') this._drawLocalLobby(ctx, headerH);
 
         // Footer: home button (back / leave) bottom-left, like achievements
         const homeSize = game.spriteSize('home_button_off', uiScale);
@@ -464,8 +666,12 @@ export class MultiplayerState {
         else if (relayAvailable()) hostDesc = 'Host through the NOVA relay — friends join with your code, no setup.';
         y = this._drawCardButton(ctx, 'host', 'HOST WORLD', hostDesc, colX, y, colW, canHost);
         y += Math.floor(uiScale * 8);
-        this._drawCardButton(ctx, 'join', 'JOIN WORLD',
+        y = this._drawCardButton(ctx, 'join', 'JOIN WORLD',
             'Enter a friend\'s join code and fly in their world — even mid-flight.',
+            colX, y, colW, true);
+        y += Math.floor(uiScale * 8);
+        this._drawCardButton(ctx, 'local', 'LOCAL CO-OP',
+            'Split-screen on this screen — up to 4 pilots, one controller each.',
             colX, y, colW, true);
     }
 
@@ -511,6 +717,212 @@ export class MultiplayerState {
 
         y += Math.floor(uiScale * 14);
         this._drawCardButton(ctx, 'connect', 'CONNECT', 'Fly to your friend\'s world.', colX, y, colW, true);
+    }
+
+    // Local co-op lobby: a row of up to 4 pilot slots, each with a ship preview
+    // and its input device, plus a START FLIGHT button. Pilot 1 is the
+    // keyboard/mouse host; others join by pressing Start on a controller.
+    _drawLocalLobby(ctx, headerH) {
+        const game = this.game;
+        const uiScale = game.uiScale;
+        const cw = game.width, ch = game.height;
+        const margin = Math.floor(uiScale * 12);
+        const roster = this.localRoster || [];
+
+        const pageW = Math.floor(cw * 0.88);
+        const pageX = Math.floor(cw / 2 - pageW / 2);
+        const gap = Math.floor(uiScale * 8);
+        const topY = headerH + Math.floor(uiScale * 18);
+        const footerReserve = Math.floor(uiScale * 50);
+        const panelH = Math.max(Math.floor(uiScale * 110), ch - topY - footerReserve - margin);
+        const slotW = Math.floor((pageW - gap * (MAX_LOCAL - 1)) / MAX_LOCAL);
+
+        for (let i = 0; i < MAX_LOCAL; i++) {
+            const x = pageX + i * (slotW + gap);
+            this._drawLocalSlot(ctx, i, x, topY, slotW, panelH, roster[i]);
+        }
+
+        // START FLIGHT (center) + control hint just above it.
+        const startSize = game.spriteSize('start_flight_off', uiScale);
+        const sx = Math.floor(cw / 2 - startSize.w / 2);
+        const sy = ch - margin - startSize.h;
+        this._buttons.startLocal = { x: sx, y: sy, w: startSize.w, h: startSize.h };
+        game.drawSprite(ctx, this._hovered === 'startLocal' ? 'start_flight_on' : 'start_flight_off', sx, sy, uiScale);
+
+        ctx.fillStyle = '#667788';
+        ctx.font = `${Math.floor(5 * uiScale)}px Astro4x`;
+        ctx.textAlign = 'center';
+        ctx.fillText('STICK / D-PAD: MOVE   ·   (A): SELECT   ·   (X): REMOVE PILOT   ·   (B): BACK',
+            cw / 2, sy - Math.floor(uiScale * 4));
+    }
+
+    // Smooth filled chevron arrow (device selector). dir: -1 points left, +1 right.
+    _drawChevron(ctx, cxp, cyp, dir, w, h, color) {
+        const hw = w / 2, hh = h / 2;
+        ctx.save();
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        if (dir < 0) {
+            ctx.moveTo(cxp + hw, cyp - hh);
+            ctx.lineTo(cxp - hw, cyp);
+            ctx.lineTo(cxp + hw, cyp + hh);
+        } else {
+            ctx.moveTo(cxp - hw, cyp - hh);
+            ctx.lineTo(cxp + hw, cyp);
+            ctx.lineTo(cxp - hw, cyp + hh);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+    }
+
+    _drawLocalSlot(ctx, i, x, y, w, h, slot) {
+        const game = this.game;
+        const uiScale = game.uiScale;
+        this._panel(ctx, x, y, w, h, `P${i + 1}`);
+
+        const cx = x + Math.floor(w / 2);
+        const headerSpace = Math.floor(uiScale * 16);
+        const padX = Math.floor(uiScale * 6);
+
+        if (!slot) {
+            // Empty slot — clickable to add, or press Start on a controller.
+            this._buttons['addSlot' + i] = { x, y, w, h };
+            const hov = this._hovered === 'addSlot' + i;
+            ctx.textAlign = 'center';
+            const baseY = y + Math.floor(h * 0.38);
+            ctx.fillStyle = hov ? '#9fe8ff' : '#33414f';
+            ctx.font = `${Math.floor(18 * uiScale)}px Astro5x`;
+            ctx.fillText('+', cx, baseY);
+            ctx.fillStyle = hov ? '#9fb4c4' : '#556677';
+            ctx.font = `${Math.floor(7 * uiScale)}px Astro5x`;
+            ctx.fillText('ADD PILOT', cx, baseY + Math.floor(uiScale * 24));
+            ctx.fillStyle = hov ? '#667788' : '#445566';
+            ctx.font = `${Math.floor(5 * uiScale)}px Astro4x`;
+            ctx.fillText('(A) OR CLICK', cx, baseY + Math.floor(uiScale * 36));
+            return;
+        }
+
+        const ship = SHIPS[slot.shipIndex] || SHIPS[0];
+        const arrowSize = game.spriteSize('left_arrow_off', uiScale);
+
+        // ── Sizes (uiScale-derived; generous gaps). The ship-select arrows sit at
+        //    the LEFT/RIGHT panel edges so the ship owns the wide middle (like the
+        //    title screen). The sprite is fit to a uiScale box and scaled
+        //    fractionally + smoothed (the lobby pilot-icon technique) so it scales
+        //    DOWN cleanly instead of overrunning at native size.
+        const dRowH = Math.floor(uiScale * 14);    // device selector row
+        const gap = Math.floor(uiScale * 16);      // space between sections
+        const nameBlockH = Math.floor(uiScale * 22);
+        const statLineH = Math.floor(uiScale * 9);
+        const statsBlockH = 5 * statLineH;
+        const availTop = y + headerSpace;
+        const availH = h - headerSpace - Math.floor(uiScale * 8);
+
+        // Ship at the title-screen scale (game.uiScale). The select arrows are
+        // anchored to the SHIP (they flank it with a small gap), so the ship +
+        // arrows together must fit the column — shrink the ship only if they
+        // wouldn't (or the leftover vertical space is too small).
+        const shipArrowGap = Math.floor(uiScale * 10);
+        const otherH = dRowH + gap * 3 + nameBlockH + statsBlockH;
+        const fitW = w - (arrowSize.w + shipArrowGap) * 2 - Math.floor(uiScale * 10);
+        const fitH = availH - otherH;
+        const asset = game.assets.get(ship.assets.still);
+        let dw = 0, dh = 0, img = null;
+        if (asset) {
+            img = asset.canvas || asset;
+            const aw = asset.width || img.width, ah = asset.height || img.height;
+            const shipScale = Math.min(uiScale, fitW / aw, fitH / ah);
+            dw = aw * shipScale; dh = ah * shipScale;
+        }
+        const boxH = dh; // preview occupies the ship's actual drawn height
+
+        // Center the whole block vertically in the panel (like the online lobby).
+        const contentH = dRowH + gap + boxH + gap + nameBlockH + gap + statsBlockH;
+        const blockTop = availTop + Math.max(0, Math.floor((availH - contentH) / 2));
+
+        // ── Device selector: ◄ LABEL ► — bold label flanked by smooth, rendered
+        //    chevron arrows sized to the text (not icon-button sprites). ──
+        const devLabel = slot.device === 'kb' ? 'KEYBOARD' : `GAMEPAD ${slot.padIndex + 1}`;
+        const devColor = slot.device === 'kb' ? '#9fe8ff' : playerColor(i);
+        const dRowY = blockTop;
+        const dMidY = dRowY + Math.floor(dRowH / 2);
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.font = `${Math.floor(7 * uiScale)}px Astro5x`;
+        const devLabelW = ctx.measureText(devLabel).width;
+        ctx.fillStyle = devColor;
+        ctx.fillText(devLabel, cx, dMidY);
+        const chGap = Math.floor(uiScale * 10);
+        const chW = Math.floor(uiScale * 6);
+        const chH = Math.floor(uiScale * 10);
+        const lcx = cx - devLabelW / 2 - chGap - chW / 2;
+        const rcx = cx + devLabelW / 2 + chGap + chW / 2;
+        const hitPad = Math.floor(uiScale * 6);
+        this._buttons['devLeft' + i] = { x: Math.floor(lcx - chW / 2 - hitPad), y: dRowY, w: chW + hitPad * 2, h: dRowH };
+        this._buttons['devRight' + i] = { x: Math.floor(rcx - chW / 2 - hitPad), y: dRowY, w: chW + hitPad * 2, h: dRowH };
+        this._drawChevron(ctx, lcx, dMidY, -1, chW, chH, this._hovered === 'devLeft' + i ? '#ffffff' : '#7088a0');
+        this._drawChevron(ctx, rcx, dMidY, 1, chW, chH, this._hovered === 'devRight' + i ? '#ffffff' : '#7088a0');
+        ctx.textBaseline = 'alphabetic';
+
+        // ── Ship preview (centered), select arrows anchored to the ship width ──
+        const previewCY = dRowY + dRowH + gap + Math.floor(boxH / 2);
+        if (img) {
+            ctx.imageSmoothingEnabled = true;
+            ctx.drawImage(img, Math.floor(cx - dw / 2), Math.floor(previewCY - dh / 2), dw, dh);
+            ctx.imageSmoothingEnabled = false;
+        }
+        const ax0 = Math.floor(cx - dw / 2 - shipArrowGap - arrowSize.w);
+        const ax1 = Math.floor(cx + dw / 2 + shipArrowGap);
+        const ay = previewCY - arrowSize.h / 2;
+        this._buttons['slotLeft' + i] = { x: ax0, y: ay, w: arrowSize.w, h: arrowSize.h };
+        this._buttons['slotRight' + i] = { x: ax1, y: ay, w: arrowSize.w, h: arrowSize.h };
+        game.drawSprite(ctx, this._hovered === 'slotLeft' + i ? 'left_arrow_on' : 'left_arrow_off', ax0, ay, uiScale);
+        game.drawSprite(ctx, this._hovered === 'slotRight' + i ? 'right_arrow_on' : 'right_arrow_off', ax1, ay, uiScale);
+
+        // ── Ship name + special — exact fonts/spacing from the online lobby's
+        //    YOUR SHIP panel (_drawShipPanel): name 8·Astro5x, special 5·Astro4x. ──
+        let textY = previewCY + Math.floor(boxH / 2) + Math.floor(uiScale * 12);
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#ffffff';
+        ctx.font = `${Math.floor(8 * uiScale)}px Astro5x`;
+        ctx.fillText(ship.name.toUpperCase(), cx, textY);
+        textY += Math.floor(uiScale * 9);
+        if (ship.special) {
+            ctx.fillStyle = '#44ddff';
+            ctx.font = `${Math.floor(5 * uiScale)}px Astro4x`;
+            ctx.fillText(`[${ship.special.toUpperCase()}]`, cx, textY);
+        }
+
+        // ── Stat bars — exact layout from _drawShipPanel ──
+        const stats = [
+            { label: 'HEALTH', value: ship.health, max: 200, color: '#44ff66' },
+            { label: 'SHIELD', value: ship.shield, max: 60, color: '#44aaff' },
+            { label: 'SPEED', value: ship.speed, max: 10, color: '#aa66ff' },
+            { label: 'DAMAGE', value: ship.baseDamage, max: 15, color: '#ff4444' },
+            { label: 'CARGO', value: ship.storage.rows, max: 5, color: '#ffaa44' },
+        ];
+        const barH = Math.floor(uiScale * 3);
+        const labelW = Math.floor(uiScale * 30);
+        const labelGap = Math.floor(uiScale * 4);
+        const barW = Math.min(Math.floor(w * 0.45), Math.floor(uiScale * 110));
+        const blockX = Math.floor(cx - (labelW + labelGap + barW) / 2);
+        const labelRight = blockX + labelW;
+        const barX = labelRight + labelGap;
+        let sy = textY + Math.floor(uiScale * 12);
+        ctx.font = `${Math.floor(6 * uiScale)}px Astro4x`;
+        for (const stat of stats) {
+            if (sy + barH > y + h - Math.floor(uiScale * 6)) break;
+            ctx.fillStyle = '#667788';
+            ctx.textAlign = 'right';
+            ctx.fillText(stat.label, labelRight, sy + barH);
+            ctx.fillStyle = '#1a2233';
+            ctx.fillRect(barX, sy, barW, barH);
+            ctx.fillStyle = stat.color;
+            ctx.fillRect(barX, sy, Math.floor((stat.value / stat.max) * barW), barH);
+            sy += statLineH;
+        }
+        ctx.textAlign = 'center';
     }
 
     _drawLobby(ctx, headerH) {

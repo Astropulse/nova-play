@@ -16,7 +16,7 @@ lag, the exp-bar bloom, projectile draw cost, and enemy-AI O(n²) scaling).
 |------|-----------|
 | `server.mjs` | Static HTTP server (serves the repo root) + `POST /perflog` which prints each body to stdout. Node built-ins only. |
 | `stress.html` | Test page. Has `<base href="/">` so the game's relative asset `fetch`es resolve from the repo root. Loads `/src/main.js` then `/scripts/perf/harness.js`. |
-| `harness.js` | Boots a solo `PlayingState`, installs full-frame instrumentation, runs the bot scenario, POSTs per-phase results. URL param: `?nolowperf=1` forces `lowPerfMode` off (measure full bloom as an A/B baseline). |
+| `harness.js` | Boots a solo `PlayingState`, installs full-frame instrumentation, runs the bot scenario, POSTs per-phase results. URL params: `?nolowperf=1` forces `lowPerfMode` off (measure full bloom as an A/B baseline); `?coop=N` (2–8) runs the **same arc in N-player local split-screen co-op** (see below). |
 | `bot.js` | `Bot` class — drives the ship with real `game.input` (keys + mouse). |
 | `throttle.mjs` | Connects to Chrome's DevTools Protocol and applies CPU throttling to simulate weak hardware. |
 
@@ -111,6 +111,29 @@ natural asteroid spawns) → `ASTEROID_FIELD` (dense field) → `CLEAR_ASTEROIDS
 slot-machine roll) → `CACHE_IDLE` → `FLY_AWAY` → `ENCOUNTER` (fly to, dialog,
 turn hostile, kill) → `WAVE` (high-difficulty, fight to the end) → `BOSS` (drive
 to phase 2, then kill) → `KNOWLEDGE` (fly to the event, fight it) → `DONE`.
+
+## N-player co-op mode (`?coop=N`, 2–8)
+
+Runs the **entire scenario with N local split-screen pilots** so you can measure
+the true multi-pane render + multi-body sim cost of local co-op. Each pilot flies
+a **different hull** (the 4 ship types cycle: `fighter`, `cruiser`, `bruiser`,
+`looper`, then repeat). The bot drives the primary as usual; the follower pilots
+are **all controlled at once** — each frame they mirror the bot's live intent
+(same aim point via right stick, forward throttle while the bot thrusts via left
+stick, same fire/boost trigger), so they move with real physics (no teleporting →
+smooth cameras) and fight alongside the primary through the same arc. Followers
+are given the same combat loadout + invuln + 3× damage. Each `PHASE` line carries
+a `pilots` field. Example:
+
+```
+…stress.html?coop=4
+```
+
+A reference 4-player run on a fast desktop (Chrome, GPU raster): `frameMean`
+~1.2–2.6 ms in travel/asteroid/shop/cache phases, peaking ~3.7–5.1 ms in `WAVE`
+and ~4 ms in `KNOWLEDGE` (≈200–800 fps potential) — i.e. four panes still draw-
+bound, not update-bound (`upd` stays well under 1 ms). Compare against a `?coop=1`
+(or no-param) baseline on the **same** machine to read the per-pilot scaling cost.
 
 ## The bot API (`bot.js`)
 

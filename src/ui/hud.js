@@ -24,11 +24,19 @@ export class HUD {
         this.expGlowCtx = this.expGlowCanvas.getContext('2d');
     }
 
-    draw(ctx) {
+    // vp (optional {x,y,w,h}) = a split-screen pane. The HUD then lays itself out
+    // for the pane's ACTUAL size — corners anchored to the pane, scale derived
+    // from the pane's height — i.e. as if the pane were the whole screen (NOT a
+    // uniform-scaled copy of the fullscreen layout).
+    draw(ctx, vp = null) {
         const p = this.player;
-        const cw = this.game.width;
-        const ch = this.game.height;
-        const margin = this.game.hudScale * 4;
+        const g = this.game;
+        this._cw = vp ? vp.w : g.width;
+        this._ch = vp ? vp.h : g.height;
+        this._hudScale = vp ? Math.max(1, Math.round(g.hudScale * vp.h / g.height)) : g.hudScale;
+        const cw = this._cw;
+        const ch = this._ch;
+        const margin = this._hudScale * 4;
 
         // HUD Displacement — lag behind camera
         // Displacement is in world units, convert to pixels and scale for HUD
@@ -37,13 +45,13 @@ export class HUD {
 
         ctx.save();
         ctx.textBaseline = 'alphabetic';
-        ctx.translate(Math.floor(lagX), Math.floor(lagY));
+        ctx.translate(Math.floor((vp ? vp.x : 0) + lagX), Math.floor((vp ? vp.y : 0) + lagY));
 
         // Health bar — lower left
         // ... (existing code remains but translated)
         const hImg = this.healthBarEmpty.canvas || this.healthBarEmpty;
-        const hbW = (this.healthBarEmpty.width || hImg.width) * this.game.hudScale;
-        const hbH = (this.healthBarEmpty.height || hImg.height) * this.game.hudScale;
+        const hbW = (this.healthBarEmpty.width || hImg.width) * this._hudScale;
+        const hbH = (this.healthBarEmpty.height || hImg.height) * this._hudScale;
         const hbX = margin;
         const hbY = ch - hbH - margin;
         ctx.drawImage(hImg, hbX, hbY, hbW, hbH);
@@ -63,7 +71,7 @@ export class HUD {
             ctx.drawImage(
                 hfImg,
                 0, 0, srcClipW * hPrescale, hfH * hPrescale,
-                hbX, hbY, srcClipW * this.game.hudScale, hbH
+                hbX, hbY, srcClipW * this._hudScale, hbH
             );
         }
 
@@ -76,10 +84,10 @@ export class HUD {
         // Shield bar — above health bar (dimmed when broken)
         // Bar fill region: source pixels 4–75 (71px wide fill area)
         const sImg = this.shieldBarEmpty.canvas || this.shieldBarEmpty;
-        const sbW = (this.shieldBarEmpty.width || sImg.width) * this.game.hudScale;
-        const sbH = (this.shieldBarEmpty.height || sImg.height) * this.game.hudScale;
+        const sbW = (this.shieldBarEmpty.width || sImg.width) * this._hudScale;
+        const sbH = (this.shieldBarEmpty.height || sImg.height) * this._hudScale;
         const sbX = margin;
-        const sbY = hbY - sbH - this.game.hudScale * 2;
+        const sbY = hbY - sbH - this._hudScale * 2;
         // Exposed so overlays (multiplayer chat) can anchor just above the bars.
         this.shieldBarTopY = sbY;
 
@@ -101,7 +109,7 @@ export class HUD {
             ctx.drawImage(
                 sfImg,
                 0, 0, srcClipW * sPrescale, sfH * sPrescale,
-                sbX, sbY, srcClipW * this.game.hudScale, sbH
+                sbX, sbY, srcClipW * this._hudScale, sbH
             );
         }
 
@@ -110,7 +118,7 @@ export class HUD {
         // Scrap counter — upper right. Briefly garbles during dread glitches.
         const dread = this.game.currentState && this.game.currentState.dread;
         ctx.fillStyle = '#ccddee';
-        ctx.font = `${8 * this.game.hudScale}px Astro4x`;
+        ctx.font = `${8 * this._hudScale}px Astro4x`;
         ctx.textAlign = 'right';
         // Payout roll-up: after encounter rewards, the counter visibly climbs
         const state = this.game.currentState;
@@ -124,7 +132,7 @@ export class HUD {
         const scrapText = (dread && dread.glitchScrap > 0)
             ? `SCRAP: ${dread.garble(String(p.scrap).length + 1)}`
             : `SCRAP: ${shownScrap}`;
-        ctx.fillText(scrapText, cw - margin, this.game.hudScale * 10);
+        ctx.fillText(scrapText, cw - margin, this._hudScale * 10);
         ctx.textAlign = 'left';
 
         // Tracked achievements — vertical stack below the scrap counter.
@@ -132,7 +140,7 @@ export class HUD {
 
         // Coordinates — dread glitches read as a lost fix
         ctx.fillStyle = '#445566';
-        ctx.font = `${8 * this.game.hudScale}px Astro4x`;
+        ctx.font = `${8 * this._hudScale}px Astro4x`;
         ctx.textAlign = 'right';
         const coordText = (dread && dread.glitchCoords > 0)
             ? '??, ??'
@@ -150,10 +158,10 @@ export class HUD {
             const mins = Math.floor(waveTimer / 60);
             const secs = Math.floor(waveTimer % 60).toString().padStart(2, '0');
             ctx.fillStyle = '#ff4444';
-            ctx.font = `${8 * this.game.hudScale}px Astro4x`;
+            ctx.font = `${8 * this._hudScale}px Astro4x`;
             ctx.textAlign = 'left';
             const timerText = `NEXT WAVE: ${mins}:${secs}`;
-            ctx.fillText(timerText, margin, this.game.hudScale * 10);
+            ctx.fillText(timerText, margin, this._hudScale * 10);
 
             const state = this.game.currentState;
             const sync = state.netSync;
@@ -163,8 +171,8 @@ export class HUD {
                 const name = isMe ? 'YOU' : state.net.playerName(targetPid).toUpperCase();
                 const tw = ctx.measureText(timerText).width;
                 ctx.fillStyle = isMe ? '#ff8866' : '#ffd27a';
-                ctx.font = `${6 * this.game.hudScale}px Astro4x`;
-                ctx.fillText(`> TARGET: ${name}`, margin + tw + this.game.hudScale * 6, this.game.hudScale * 10);
+                ctx.font = `${6 * this._hudScale}px Astro4x`;
+                ctx.fillText(`> TARGET: ${name}`, margin + tw + this._hudScale * 6, this._hudScale * 10);
             }
         }
 
@@ -184,6 +192,11 @@ export class HUD {
     // Public draw for the achievement toast. Called from PlayingState after
     // the overlay/dialog pass so unlocks aren't hidden by the dark backdrop.
     drawToast(ctx) {
+        // The toast is always fullscreen (drawn once, after the panes).
+        const g = this.game;
+        this._cw = g.width;
+        this._ch = g.height;
+        this._hudScale = g.hudScale;
         this._drawAchievementToast(ctx);
     }
 
@@ -216,7 +229,7 @@ export class HUD {
         // Stable order: ascending pid.
         rows.sort((a, b) => a.pid - b.pid);
 
-        const s = this.game.hudScale;
+        const s = this._hudScale;
         const font = `${6 * s}px Astro4x`;
         const padX = s * 3;
         const padY = s * 2;
@@ -328,7 +341,7 @@ export class HUD {
             ctx.drawImage(
                 tinted,
                 0, 0, srcClipW * prescale, ofH * prescale,
-                hbX, hbY, srcClipW * this.game.hudScale, hbH
+                hbX, hbY, srcClipW * this._hudScale, hbH
             );
         };
 
@@ -387,7 +400,7 @@ export class HUD {
         const backImg = this.game.assets.get('radar_frame_back');
         if (!img) return;
 
-        const uiScale = this.game.hudScale;
+        const uiScale = this._hudScale;
         const rw = (img.width || img.canvas.width) * uiScale;
         const rh = (img.height || img.canvas.height) * uiScale;
 
@@ -505,8 +518,13 @@ export class HUD {
 
     _drawExpBar(ctx, cw, ch) {
         const p = this.player;
-        const hudScale = this.game.hudScale;
-        const barW = Math.floor(cw * 0.4); // 2/5 of screen width
+        const hudScale = this._hudScale;
+        // 2/5 of width on a normal widescreen pane; narrower on tall/narrow panes
+        // (e.g. side-by-side co-op) so the bar doesn't dominate and its segment
+        // texture isn't stretched across the whole pane.
+        const aspect = cw / ch;
+        const widthFrac = aspect >= 1.7 ? 0.4 : Math.max(0.18, 0.4 * (aspect / 1.7));
+        const barW = Math.floor(cw * widthFrac);
         const emptyAsset = this.expBarEmpty;
         const fullAsset = this.expBarFull;
         if (!emptyAsset || !fullAsset) return;
@@ -626,7 +644,10 @@ export class HUD {
         // Draw Level Text
         ctx.save();
         const state = this.game.currentState;
-        const hasUnclaimed = state && state.levelUpQueue && state.levelUpQueue.length > 0;
+        // Level-up queues are per-pilot (Player._levelUpQueue) — each HUD shows
+        // the claim call-to-action / flashing level only for ITS OWN pilot.
+        const q = this.player._levelUpQueue;
+        const hasUnclaimed = !!(q && q.length > 0);
         ctx.strokeStyle = '#000000';
         ctx.lineWidth = hudScale * 1; // 1 HUD-pixel outline
         ctx.lineJoin = 'round';
@@ -729,7 +750,7 @@ export class HUD {
         const tracked = mgr.getTrackedAchievements();
         if (tracked.length === 0) return;
 
-        const hudScale = this.game.hudScale;
+        const hudScale = this._hudScale;
         const rowW = Math.floor(hudScale * 130);
         const rowH = Math.floor(hudScale * 32);
         const rowGap = Math.floor(hudScale * 2);
@@ -962,9 +983,9 @@ export class HUD {
         if (!state) return;
 
         const { ach, t } = state;
-        const cw = this.game.width;
-        const ch = this.game.height;
-        const hudScale = this.game.hudScale;
+        const cw = this._cw;
+        const ch = this._ch;
+        const hudScale = this._hudScale;
 
         // Slide in over the first 12%, hold, slide out over the last 18%.
         let slide = 1;

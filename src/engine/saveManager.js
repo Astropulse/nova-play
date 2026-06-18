@@ -8,6 +8,13 @@ export class SaveManager {
     static save(playingState) {
         if (!playingState) return;
 
+        // Save/serialize only captures the primary pilot. Refuse in local co-op
+        // so a save can't silently drop the other pilots' progress.
+        if (playingState.localPlayers && playingState.localPlayers.length > 1) {
+            console.warn('Save skipped: local co-op runs are not saveable (only the host pilot would persist).');
+            return;
+        }
+
         try {
             const saveData = playingState.serialize();
             localStorage.setItem(this.SAVE_KEY, JSON.stringify(saveData));

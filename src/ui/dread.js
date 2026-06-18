@@ -498,25 +498,31 @@ export class DreadDirector {
     }
 
     // Drawn just under the HUD: the horror-approach hush and the gold creep.
-    drawOverlay(ctx) {
+    // vp (optional): a pane rect — co-op centers the approach-hush vignette on
+    // each pane. Null = full screen. (Dread is shared global state.)
+    drawOverlay(ctx, vp = null) {
         // Approach hush: a steady darkening at the edges, no pulse, no color —
         // the opposite of fanfare.
         if (this.horrorProx > 0.01) {
-            const W = this.game.width, H = this.game.height;
-            if (!this._hushGrad || this._hushW !== W || this._hushH !== H) {
-                this._hushW = W;
-                this._hushH = H;
+            const W = vp ? vp.w : this.game.width;
+            const H = vp ? vp.h : this.game.height;
+            const ox = vp ? vp.x : 0, oy = vp ? vp.y : 0;
+            let g;
+            if (!vp && this._hushGrad && this._hushW === W && this._hushH === H) {
+                g = this._hushGrad;
+            } else {
                 const cornerDist = Math.sqrt(W * W + H * H) / 2;
-                const g = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.3, W / 2, H / 2, cornerDist);
+                const cx = ox + W / 2, cy = oy + H / 2;
+                g = ctx.createRadialGradient(cx, cy, Math.min(W, H) * 0.3, cx, cy, cornerDist);
                 g.addColorStop(0, 'rgba(0,0,0,0)');
                 g.addColorStop(0.6, 'rgba(0,0,0,0.45)');
                 g.addColorStop(1, 'rgba(0,0,0,1)');
-                this._hushGrad = g;
+                if (!vp) { this._hushGrad = g; this._hushW = W; this._hushH = H; }
             }
             ctx.save();
             ctx.globalAlpha = this.horrorProx * 0.4;
-            ctx.fillStyle = this._hushGrad;
-            ctx.fillRect(0, 0, W, H);
+            ctx.fillStyle = g;
+            ctx.fillRect(ox, oy, W, H);
             ctx.restore();
         }
 

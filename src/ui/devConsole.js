@@ -31,6 +31,8 @@ export class DevConsole {
             'dev': () => this._cmdDev(),
             'fps_uncap': () => this._cmdFPSUncap(),
             'perf': () => this._cmdPerf(),
+            'split': (args) => this._cmdSplit(args),
+            'coop': (args) => this._cmdSplit(args),
             'help': () => this._cmdHelp()
         };
 
@@ -538,8 +540,23 @@ export class DevConsole {
         console.log(`Run seed set to ${formatSeed(val)} (world rebuilt)`);
     }
 
+    // Local split-screen co-op: `coop <n>` (alias `split <n>`) sets the local
+    // pilot count 1–8. Spawns real Player bodies on a ring and fans the render
+    // into one pane per pilot. 1 = normal single view.
+    _cmdSplit(args) {
+        const state = this.game.currentState;
+        if (!state || !state.setCoopCount) {
+            console.log('coop: only available during a run');
+            return;
+        }
+        const n = args.length ? parseInt(args[0], 10) : 1;
+        if (isNaN(n)) { console.log('usage: coop <1-8>'); return; }
+        const applied = state.setCoopCount(n);
+        console.log(`coop: ${applied} pilot(s)`);
+    }
+
     _cmdHelp() {
-        console.log("Available commands: time, spawn, stat, wave, scrap, exp, locate, save, load, record, boss, hp, encounter, cache, seed, dev, perf, help");
+        console.log("Available commands: time, spawn, stat, wave, scrap, exp, locate, save, load, record, boss, hp, encounter, cache, seed, dev, perf, split, help");
     }
 
     draw(ctx) {

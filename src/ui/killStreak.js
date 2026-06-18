@@ -34,6 +34,10 @@ export class KillStreakFX {
     constructor(game, state) {
         this.game = game;
         this.state = state;
+        // Local co-op: the pilot this streak belongs to. When set, the streak
+        // expires on THAT pilot's death (pilot.dead) rather than the global
+        // game-over flag. null = single-player primary (uses state.isDead).
+        this.pilot = null;
 
         this.streak = 0;
         this.timer = 0;          // time left before the streak expires
@@ -154,12 +158,15 @@ export class KillStreakFX {
 
     // ── Update ───────────────────────────────────────────────────────────────
 
-    update(dt) {
+    // applyAudio: when false the caller drives setAudioCorruption itself (co-op
+    // sets it once from the loudest pilot's streak, not once per pilot).
+    update(dt, applyAudio = true) {
         this.time += dt;
         if (this.pop > 0) this.pop = Math.max(0, this.pop - dt * 6);
 
+        const dead = this.pilot ? this.pilot.dead : this.state.isDead;
         if (this.streak > 0) {
-            if (this.state.isDead) {
+            if (dead) {
                 this.streak = 0; // death ends the party
             } else {
                 this.timer -= dt;
@@ -182,7 +189,7 @@ export class KillStreakFX {
         if (this.fxIntensity < 0.005 && fxTarget === 0) this.fxIntensity = 0;
 
         // All audio corrupts along with the screen
-        if (this.game.sounds && this.game.sounds.setAudioCorruption) {
+        if (applyAudio && this.game.sounds && this.game.sounds.setAudioCorruption) {
             this.game.sounds.setAudioCorruption(this.fxIntensity);
         }
 
@@ -341,9 +348,13 @@ export class KillStreakFX {
 
     // Screen-space layer: vignette, HUD particles, streak score. Drawn just
     // before the HUD so gameplay-critical readouts stay on top.
-    drawOverlay(ctx) {
-        const W = this.game.width, H = this.game.height;
-        const hudScale = this.game.hudScale;
+    // vp (optional): a pane rect {x,y,w,h} — co-op draws the streak vignette +
+    // counter centered on EACH pane (the streak itself is shared). Null = full screen.
+    drawOverlay(ctx, vp = null) {
+        const W = vp ? vp.w : this.game.width;
+        const H = vp ? vp.h : this.game.height;
+        const ox = vp ? vp.x : 0, oy = vp ? vp.y : 0;
+        const hudScale = vp ? Math.max(1, Math.round(this.game.hudScale * vp.h / this.game.height)) : this.game.hudScale;
         const tier = this.tier();
 
         // Rarity vignette, breathing faster as the tier climbs
@@ -355,30 +366,29 @@ export class KillStreakFX {
                 pulse = 0.7 + 0.18 * Math.sin(this.time * pulseRate) + 0.12 * Math.sin(this.time * 7.3);
             }
 
-            if (this._gradW !== W || this._gradH !== H) {
-                this._gradCache.clear();
-                this._gradW = W;
-                this._gradH = H;
-            }
-            let grad = this._gradCache.get(this._vignetteColor);
-            if (!grad) {
-                // Full color lands exactly at the screen corners, with a biased
-                // mid-stop so the edges carry visible color too.
-                const cornerDist = Math.sqrt(W * W + H * H) / 2;
-                const inner = Math.min(W, H) * 0.30;
+            // Full color lands at the corners, biased mid-stop so edges carry color.
+            // Centered on the (pane) rect. Cached by color when fullscreen; built
+            // inline for panes (only active during a streak, so cost is fine).
+            const ccx = ox + W / 2, ccy = oy + H / 2;
+            const cornerDist = Math.sqrt(W * W + H * H) / 2;
+            const inner = Math.min(W, H) * 0.30;
+            let grad;
+            if (!vp && this._gradW === W && this._gradH === H && (grad = this._gradCache.get(this._vignetteColor))) {
+                // cached
+            } else {
                 const cr = parseInt(this._vignetteColor.slice(1, 3), 16);
                 const cg = parseInt(this._vignetteColor.slice(3, 5), 16);
                 const cb = parseInt(this._vignetteColor.slice(5, 7), 16);
-                grad = ctx.createRadialGradient(W / 2, H / 2, inner, W / 2, H / 2, cornerDist);
+                grad = ctx.createRadialGradient(ccx, ccy, inner, ccx, ccy, cornerDist);
                 grad.addColorStop(0, `rgba(${cr},${cg},${cb},0)`);
                 grad.addColorStop(0.55, `rgba(${cr},${cg},${cb},0.35)`);
                 grad.addColorStop(1, `rgba(${cr},${cg},${cb},1)`);
-                this._gradCache.set(this._vignetteColor, grad);
+                if (!vp) { this._gradCache.clear(); this._gradW = W; this._gradH = H; this._gradCache.set(this._vignetteColor, grad); }
             }
             ctx.save();
             ctx.globalAlpha = this._vignetteAlpha * pulse;
             ctx.fillStyle = grad;
-            ctx.fillRect(0, 0, W, H);
+            ctx.fillRect(ox, oy, W, H);
             ctx.restore();
         }
 
@@ -421,8 +431,8 @@ export class KillStreakFX {
             const tierIdx = this._tierIndex();
             const scale = (1 + tierIdx * 0.12) * (1 + 0.45 * this.pop);
             const size = Math.floor(8 * hudScale * scale);
-            let cx = Math.round(W / 2);
-            let cy = Math.round(19 * hudScale);
+            let cx = Math.round(ox + W / 2);
+            let cy = Math.round(oy + 19 * hudScale);
             if (horror) {
                 cx += Math.round((Math.random() - 0.5) * hudScale);
                 cy += Math.round((Math.random() - 0.5) * hudScale);

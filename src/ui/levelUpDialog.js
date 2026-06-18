@@ -455,6 +455,20 @@ export class LevelUpDialog {
 
         const input = this.game.input;
 
+        // Co-op: driven by the pilot's synthesized cursor + click only (the
+        // shared keyboard/gamepad would drive every pilot's dialog at once).
+        // Dismiss is handled by the co-op driver (pad B) calling _dismiss().
+        if (this._coop) {
+            if (input.isMouseJustPressed(0) && this.hoveredChoice >= 0) {
+                if (this.hoveredChoice === this.choices.length) {
+                    if (this.canSkip) this._skipChoice();
+                } else {
+                    this._selectChoice(this.hoveredChoice);
+                }
+            }
+            return;
+        }
+
         // Esc / gamepad-B exits the screen without spending this level-up. The
         // current level (and any still queued) stay claimable later from the
         // pause menu / stats panel.
@@ -587,18 +601,27 @@ export class LevelUpDialog {
     draw(ctx) {
         if (this.closed) return;
 
-        const cw      = this.game.width;
-        const ch      = this.game.height;
-        const us      = this.game.uiScale;
+        // Co-op: the owning PlayingState sets a pane viewport (_uiVp) so the
+        // dialog lays out for that pilot's pane and translates into it. Null =
+        // fullscreen (single player), unchanged.
+        const ps = this.playingState;
+        const vp = ps && ps._uiVp;
+        const cw      = vp ? ps._uiW : this.game.width;
+        const ch      = vp ? ps._uiH : this.game.height;
+        const us      = vp ? ps._uiS : this.game.uiScale;
+        const ox      = vp ? ps._uiX : 0;
+        const oy      = vp ? ps._uiY : 0;
         const t       = this.appearTimer / this.appearDuration;
         const eased   = 1 - Math.pow(1 - Math.min(1, t), 3);
+
+        ctx.save();
+        ctx.translate(ox, oy);
 
         // Dim backdrop
         ctx.fillStyle = `rgba(0,0,0,${0.85 * eased})`;
         ctx.fillRect(0, 0, cw, ch);
-        if (eased < 0.01) return;
+        if (eased < 0.01) { ctx.restore(); return; }
 
-        ctx.save();
         ctx.globalAlpha = eased;
 
         const pad       = Math.floor(7  * us);
@@ -661,7 +684,9 @@ export class LevelUpDialog {
         this.hoveredChoice = -1;
         this._cardRects    = [];
 
-        const gamepadActive = this.game.input.isGamepadActive();
+        // Co-op drives a per-pilot cursor → use mouse-hover highlight, not the
+        // shared gamepad keyboard-selection.
+        const gamepadActive = !this._coop && this.game.input.isGamepadActive();
 
         for (let i = 0; i < this.choices.length; i++) {
             const ch2    = this.choices[i];

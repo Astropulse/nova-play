@@ -23,6 +23,17 @@ export class Player {
         this.game = game;
         this.shipData = shipData;
 
+        // Local co-op: per-pilot input source (null = the shared game.input, i.e.
+        // single-player keyboard+mouse+primary pad). useMouseAim=false makes a
+        // gamepad pilot hold its facing when the right stick centers (the ship
+        // doesn't snap to the shared mouse cursor).
+        this.input = null;
+        this.useMouseAim = true;
+        // Local co-op per-pilot death (distinct from the global game-over
+        // this.isDead in PlayingState, which only fires when ALL pilots are down).
+        this.dead = false;
+        this.respawnTimer = 0;
+
         // World position (screen pixels)
         this.worldX = 0;
         this.worldY = 0;
@@ -346,10 +357,13 @@ export class Player {
         // controlsEnabled === false → run physics/timers but ignore all input
         // (multiplayer: a menu/shop/trade overlay is open while the world runs).
         const controls = this.controlsEnabled !== false;
-        const input = controls ? this.game.input : NULL_INPUT;
+        const input = controls ? (this.input || this.game.input) : NULL_INPUT;
         const mouse = this.game.getMousePos();
-        const centerX = this.game.width / 2;
-        const centerY = this.game.height / 2;
+        // Aim is measured from the ship's on-screen position. The ship renders at
+        // the center of its viewport pane — the whole screen when not split, or a
+        // sub-rect under split-screen co-op (set by PlayingState as aimCenterX/Y).
+        const centerX = this.aimCenterX != null ? this.aimCenterX : this.game.width / 2;
+        const centerY = this.aimCenterY != null ? this.aimCenterY : this.game.height / 2;
 
         // --- Gamepad sample ---
         // Right stick: aim. Left stick: rotate-and-thrust (or direct move
@@ -435,7 +449,7 @@ export class Player {
                     }
                 }
 
-                if (controls && !this.useKeyboardAim && Math.abs(this.rotationVelocity) < 0.1) {
+                if (controls && this.useMouseAim !== false && !this.useKeyboardAim && Math.abs(this.rotationVelocity) < 0.1) {
                     const dx = mouse.x - centerX;
                     const dy = mouse.y - centerY;
                     if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
@@ -682,7 +696,7 @@ export class Player {
             this._boostWasOnCooldown = false;
             // Energy motes drawn into the hull — the drive is charged
             const st = this.game.currentState;
-            if (st && st._spawnReadyAbsorb) st._spawnReadyAbsorb();
+            if (st && st._spawnReadyAbsorb) st._spawnReadyAbsorb(this);
         }
         this.boostFlash = Math.max(0, this.boostFlash - dt * 2);
 
@@ -690,7 +704,7 @@ export class Player {
             this.teleportFlash = 1;
             this._teleportWasOnCooldown = false;
             const st = this.game.currentState;
-            if (st && st._spawnReadyAbsorb) st._spawnReadyAbsorb();
+            if (st && st._spawnReadyAbsorb) st._spawnReadyAbsorb(this);
         }
         this.teleportFlash = Math.max(0, this.teleportFlash - dt * 4);
 
@@ -1634,9 +1648,10 @@ export class Player {
                 this.game.achievements.notify('level_up', { level: this.level });
             }
 
-            // Queue upgrade dialog (sound plays when dialog opens)
+            // Queue upgrade dialog (sound plays when dialog opens) — queue onto
+            // THIS pilot so co-op claims/dialogs stay per-pilot.
             if (this.game.currentState && this.game.currentState.queueLevelUp) {
-                this.game.currentState.queueLevelUp(this.level);
+                this.game.currentState.queueLevelUp(this.level, this);
             } else {
                 this.game.sounds.play('select', { volume: 1.0, x: this.worldX, y: this.worldY });
             }

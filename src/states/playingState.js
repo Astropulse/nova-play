@@ -2,6 +2,13 @@
 import { PerfProfiler } from '../engine/perfProfiler.js';
 import { World } from '../world/world.js';
 import { Camera } from '../world/camera.js';
+import { SplitScreenManager, computeSplitLayout } from '../world/splitScreen.js';
+import { KeyboardMouseInputSource, GamepadInputSource } from '../engine/inputSource.js';
+import { SHIPS } from '../data/ships.js';
+
+// Local split-screen co-op caps at 4 pilots (the lobby + drop-in join). The
+// renderer/grid supports up to 8, but couch co-op is designed around 4.
+const MAX_LOCAL_PILOTS = 4;
 import { Player } from '../entities/player.js';
 import { HUD } from '../ui/hud.js';
 import { Asteroid, AsteroidSpawner, Rubble, Scrap, ItemPickup, ProceduralDebris, VoronoiSlicer, ExpOrb, FractureModel, getCachedShatter } from '../entities/asteroid.js';
@@ -76,7 +83,7 @@ function _projSweepHit(proj, cx, cy, cr) {
 }
 
 export class PlayingState {
-    constructor(game, shipData, { skipInit = false, handoff = null, netRun = null } = {}) {
+    constructor(game, shipData, { skipInit = false, handoff = null, netRun = null, localCoop = null } = {}) {
         this.game = game;
         this.shipData = shipData;
         this.paused = false;
@@ -138,6 +145,30 @@ export class PlayingState {
             this.camera.snapTo(this.player);
         }
         this.hud = handoff && handoff.hud ? handoff.hud : new HUD(game, this.player);
+
+        // Local split-screen co-op. `localPlayers` is the roster of locally
+        // simulated pilots; slot 0 is the primary (aliased by this.player /
+        // this.camera / this.hud, so the rest of the single-player-centric code
+        // keeps working). >1 pilot fans the world render into panes, each pane
+        // following its own pilot. Driven from the dev console (`coop <n>`).
+        // Phase 2a: extra pilots are spawned + rendered + followed, but input
+        // routing / per-pilot combat+inventory+death land in later increments.
+        // See memory project_local_coop.
+        this.splitScreen = new SplitScreenManager(game);
+        // slot 0 = primary (aliases this.player/.camera/.hud). Each slot carries
+        // its own HUD so the full HUD can be drawn per-pane, scaled to the pane.
+        this.localPlayers = [{ player: this.player, camera: this.camera, hud: this.hud }];
+        this._coopInv = false; // true while a per-pilot pause/inventory is processed
+        // UI viewport for the pause/inventory: a pane rect in co-op, else null
+        // (= fullscreen). The inventory/pause methods read dimensions through the
+        // _ui* getters so they lay out for the pane, like the HUD.
+        this._uiVp = null;
+
+        // Local co-op roster chosen in the lobby: [{ shipId, device, padIndex }].
+        // Pilot 0 is already built from shipData (= roster[0].shipId); spawn the
+        // rest and bind each pilot's chosen input. (Drop-in join still works
+        // mid-run via _checkCoopJoin.)
+        if (localCoop && localCoop.length > 1) this._initLocalCoop(localCoop);
 
         // Entity lists
         this.projectiles = [];
@@ -262,6 +293,15 @@ export class PlayingState {
         // Ensure initial stats are synced (e.g. if ship starts with items)
         this._onInventoryChanged();
 
+        // Co-op pilots spawned by _initLocalCoop ran BEFORE the state globals
+        // above existed, so normalize their stats now (mirrors the primary).
+        for (let i = 1; i < this.localPlayers.length; i++) {
+            const p = this.localPlayers[i].player;
+            this._onInventoryChanged(p);
+            p.health = p.maxHealth;
+            p.shieldEnergy = p.maxShieldEnergy;
+        }
+
         // Shop UI state
         this.activeShop = null;
         this.isShopOpen = false;
@@ -291,8 +331,19 @@ export class PlayingState {
         this.cinematics = new CinematicDirector(game, this);
 
         // Kill-streak fanfare (rarity vignette + confetti/gore bursts).
-        // Local-only: each player's own kills feed their own streak.
+        // Local-only: each player's own kills feed their own streak. In local
+        // co-op every pilot gets their own KillStreakFX (see _addLocalPilot);
+        // this is the primary's, reachable via player.killStreak for kill
+        // attribution.
         this.killStreak = new KillStreakFX(game, this);
+        this.player.killStreak = this.killStreak;
+        if (this.localPlayers.length > 1) {
+            // Co-op: slot 0 (built before this point by _initLocalCoop) gets the
+            // primary's streak, and it now expires on the primary pilot's own
+            // death (pilot ref) rather than the global game-over flag.
+            this.localPlayers[0].killStreak = this.killStreak;
+            this.killStreak.pilot = this.player;
+        }
 
         // Story-dread ambience: rare uncanny moments keyed to how much of the
         // horror chain the player has witnessed. Cosmetic only.
@@ -308,7 +359,8 @@ export class PlayingState {
         this._wasBoosting = false;
         this.shieldRipples = [];   // { angle, t }
         this.shieldGlint = 0;      // regen sweep timer
-        this.readyAbsorb = [];     // boost/blink-ready: motes drawn into the hull
+        // boost/blink-ready motes live per-pilot on player._readyAbsorb (set
+        // lazily in _spawnReadyAbsorb) so each pane shows only its pilot's effect.
         this._dialogTear = 0;      // hostile-turn transmission tear
         this.radarPingT = 0;       // radar sweep pulse (new intel revealed)
         this._scrapRoll = null;    // { from, t } — HUD scrap counter roll-up
@@ -376,6 +428,11 @@ export class PlayingState {
         this.indicatorRadiusFactorExclamation = 0.42;
 
         this.indicatorOpacities = new Map(); // entity -> { opacity }
+        // Per-pane off-screen-indicator context (co-op): when set, indicators
+        // lay their ring around this pane and fade against this store, so each
+        // pilot gets their own enemy markers relative to their own camera.
+        this._indVp = null;
+        this._indStore = null;
 
         // Broad-phase grid of live enemies, rebuilt each frame. Enemy AI uses it
         // for O(1)-ish neighbour separation instead of an O(n^2) all-pairs scan;
@@ -716,8 +773,16 @@ export class PlayingState {
             this._reconnecting = false;
         }
 
+        // Local co-op: let an unclaimed controller drop in (press Start to join),
+        // and let each pilot pause independently. Like multiplayer, the shared
+        // world does NOT freeze for one pilot — only when EVERY pilot is paused.
+        const coop = !mp && this.localPlayers.length > 1;
+        if (!mp) this._checkCoopJoin();
+        if (coop) this._updateCoopPause();
+        const allPaused = coop && this.localPlayers.every(lp => lp.paused);
+
         // Increment true total time only if not paused, not in shop, and not dead
-        if ((mp || (!this.paused && !this.isShopOpen && !this.isEncounterOpen && !this.isCacheOpen && !this.isLevelUpOpen && !this.isTradeOpen)) && !this.isDead) {
+        if ((mp || (coop && !allPaused) || (!this.paused && !this.isShopOpen && !this.isEncounterOpen && !this.isCacheOpen && !this.isLevelUpOpen && !this.isTradeOpen)) && !this.isDead) {
             this.trueTotalTime += dt;
             if (this.game.achievements) this.game.achievements.tickRun(dt);
         }
@@ -846,7 +911,11 @@ export class PlayingState {
         // While typing in chat, keys belong to the chat box — skip pause/
         // interact handling entirely.
         const typingInChat = mp && this.chatUI && this.chatUI.active;
-        if (!uiBlocked && !typingInChat) {
+        if (!uiBlocked && !typingInChat && coop) {
+            // Local co-op: each pilot interacts independently (their own button +
+            // proximity), opening shops/caches/encounters/inventory in their pane.
+            this._updateCoopInteractions(dt);
+        } else if (!uiBlocked && !typingInChat) {
             this._updateInteractions(dt, mp);
             if (this.paused) {
                 this._updatePauseUI(dt);
@@ -860,12 +929,722 @@ export class PlayingState {
             if (this.game.currentState !== this) return;
         }
 
-        if (uiBlocked && !mp) return;
+        // Single-player: an open overlay freezes the world. Multiplayer AND local
+        // co-op keep the world running underneath (per-pilot controls instead).
+        if (uiBlocked && !mp && !coop) return;
         if (typingInChat) uiBlocked = true;
 
-        this.player.controlsEnabled = !uiBlocked;
+        if (coop) {
+            // Each pilot's ship only stops for ITS own pause; pilot 0 also stops
+            // for the (pilot-0) modal overlays. The world keeps running.
+            for (const lp of this.localPlayers) lp.player.controlsEnabled = !lp.paused;
+            this.player.controlsEnabled = !(uiBlocked || this.localPlayers[0].paused);
+            this._updateCoopInventories(dt);
+            if (this.game.currentState !== this) return; // a pilot's menu nav left the run
+            if (allPaused) return; // everyone paused → freeze the shared world
+        } else {
+            this.player.controlsEnabled = !uiBlocked;
+        }
+
         this._updateWorld(dt, mp);
         if (mp && this.netSync) this.netSync.tick(dt);
+    }
+
+    // Local co-op: each pilot opens THEIR OWN pause/inventory in their pane with
+    // their controller (Start, or Esc for the keyboard pilot); Back/Q quits to
+    // menu. The shared world keeps running for everyone else. One inventory is
+    // open at a time (it owns the shared cursor + drag state).
+    // Each pilot toggles THEIR OWN pause/inventory (multiple can be open at
+    // once). Start (or Esc for the keyboard pilot) opens/closes; Back/Q quits.
+    _updateCoopPause() {
+        const im = this.game.input;
+        for (let i = 0; i < this.localPlayers.length; i++) {
+            const lp = this.localPlayers[i];
+            const toggle = lp.padIndex != null ? im.padButtonJustPressed(lp.padIndex, GP.START)
+                                               : im.isKeyJustPressed('Escape');
+            const quit = lp.paused && (lp.padIndex != null ? im.padButtonJustPressed(lp.padIndex, GP.BACK)
+                                                           : im.isKeyJustPressed('KeyQ'));
+            if (quit) { this.game.setState(new MenuState(this.game)); return; }
+            // While a level-up choice is open, Start/Esc belong to the dialog
+            // (B/Esc dismisses it) — don't close the inventory underneath it.
+            if (toggle && !lp.levelUpDialog && !lp.shop && !lp.cache && !lp.encounter) {
+                lp.paused ? this._closeCoopInv(i) : this._openCoopInv(i);
+            }
+        }
+    }
+
+    // True if a pilot is within interact range of a shop, (interactable) cache,
+    // or non-hostile encounter — drives the per-pilot interact prompt in co-op.
+    _pilotNearInteractable(p) {
+        for (const s of this.shops) {
+            const dx = s.worldX - p.worldX, dy = s.worldY - p.worldY;
+            if (dx * dx + dy * dy < s.interactRange * s.interactRange) return true;
+        }
+        for (const enc of this.encounters) {
+            if (enc.state === ENC_STATE.DEPARTING || enc.state === ENC_STATE.HOSTILE) continue;
+            const dx = enc.worldX - p.worldX, dy = enc.worldY - p.worldY;
+            if (dx * dx + dy * dy < enc.interactRange * enc.interactRange) return true;
+        }
+        for (const c of this.caches) {
+            if (!c.canInteract) continue;
+            const dx = c.worldX - p.worldX, dy = c.worldY - p.worldY;
+            if (dx * dx + dy * dy < c.interactRange * c.interactRange) return true;
+        }
+        return false;
+    }
+
+    // Per-pilot interact (pad X / keyboard E): each non-paused pilot opens
+    // whatever THEY are near — encounter, cache, shop — in their own pane, or
+    // toggles their inventory when nothing is in range. The world keeps running.
+    _updateCoopInteractions(dt) {
+        const im = this.game.input;
+        for (let i = 0; i < this.localPlayers.length; i++) {
+            const lp = this.localPlayers[i];
+            const p = lp.player;
+            if (!p || p.dead || lp.paused) continue; // in-modal pilots handled elsewhere
+            const interact = lp.padIndex != null
+                ? im.padButtonJustPressed(lp.padIndex, GP.X)
+                : im.isKeyJustPressed('KeyE');
+            if (!interact) continue;
+
+            const nearEncounter = this.encounters.find(enc => {
+                if (enc.state === ENC_STATE.DEPARTING || enc.state === ENC_STATE.HOSTILE) return false;
+                const dx = enc.worldX - p.worldX, dy = enc.worldY - p.worldY;
+                return dx * dx + dy * dy < enc.interactRange * enc.interactRange;
+            });
+            const nearCache = this.caches.find(c => {
+                if (!c.canInteract) return false;
+                const dx = c.worldX - p.worldX, dy = c.worldY - p.worldY;
+                return dx * dx + dy * dy < c.interactRange * c.interactRange;
+            });
+            const nearShop = this.shops.find(s => {
+                const dx = s.worldX - p.worldX, dy = s.worldY - p.worldY;
+                return dx * dx + dy * dy < s.interactRange * s.interactRange;
+            });
+
+            if (nearEncounter) {
+                this._openEncounterDialog(nearEncounter, lp);
+            } else if (nearCache) {
+                if (nearCache.state === CACHE_STATE.OPEN) {
+                    this._openCacheUI(nearCache, lp);
+                } else {
+                    nearCache.open();
+                    lp._pendingCache = nearCache;
+                    if (this.game.achievements) this.game.achievements.notify('cache_opened', { cache: nearCache });
+                }
+            } else if (nearShop) {
+                this._openShop(nearShop, lp);
+            } else {
+                this._openCoopInv(i);
+            }
+        }
+    }
+
+    _paneRectFor(i) {
+        return computeSplitLayout(this.localPlayers.length, this.game.width, this.game.height)[i];
+    }
+
+    // Nearest living, non-warping local pilot to an entity (loot magnet anchor).
+    _coopNearestPilot(ent) {
+        let best = null, bestD = Infinity;
+        for (const s of this.localPlayers) {
+            const pl = s.player;
+            if (!pl || pl.dead || pl.isWarping) continue;
+            const dx = pl.worldX - ent.worldX, dy = pl.worldY - ent.worldY;
+            const d = dx * dx + dy * dy;
+            if (d < bestD) { bestD = d; best = pl; }
+        }
+        return best;
+    }
+
+    // Nearest LIVING local pilot to a world point — for targeting/anchoring world
+    // content at any pilot in co-op. Falls back to the primary (single view / all
+    // dead) so callers always get a body.
+    _nearestPilotTo(wx, wy) {
+        if (this.localPlayers.length <= 1) return this.player;
+        let best = this.player, bestD = Infinity;
+        for (const s of this.localPlayers) {
+            const pl = s.player;
+            if (!pl || pl.dead) continue;
+            const dx = pl.worldX - wx, dy = pl.worldY - wy;
+            const d = dx * dx + dy * dy;
+            if (d < bestD) { bestD = d; best = pl; }
+        }
+        return best;
+    }
+
+    // True if ANY living local pilot is within `range` of a world point — for
+    // co-op proximity discovery (shops, caches, events reach whoever flies there).
+    _anyPilotWithin(wx, wy, range) {
+        const r2 = range * range;
+        for (const s of this.localPlayers) {
+            const pl = s.player;
+            if (!pl || pl.dead) continue;
+            const dx = pl.worldX - wx, dy = pl.worldY - wy;
+            if (dx * dx + dy * dy < r2) return true;
+        }
+        return false;
+    }
+
+    // Round-robins wave/encounter anchors across living pilots so threats and
+    // rewards reach everyone over time (deterministic — no RNG). Primary otherwise.
+    _nextWavePilot() {
+        const alive = this.localPlayers.filter(s => s.player && !s.player.dead);
+        if (alive.length <= 1) return this.player;
+        this._coopWaveTurn = ((this._coopWaveTurn || 0) + 1) % alive.length;
+        return alive[this._coopWaveTurn].player;
+    }
+
+    // True if a projectile was fired by a LOCAL pilot (so it damages enemies).
+    // Co-op: any local pilot's shot. MP/single: only this client's own shot
+    // (remote shots arrive as netVisual and deal no local damage) — unchanged.
+    _isLocalShot(proj) {
+        if (this.localPlayers.length > 1) return !!proj.owner && this.localPlayers.some(s => s.player === proj.owner);
+        return proj.owner === this.player;
+    }
+
+    // The pane camera belonging to a pilot (co-op) so feedback shakes the right
+    // viewport; the sim camera otherwise.
+    _pilotCamera(p) {
+        if (this.localPlayers.length > 1) {
+            const s = this.localPlayers.find(s => s.player === p);
+            if (s && s.camera) return s.camera;
+        }
+        return this.camera;
+    }
+
+    // A screen flash for ONE pilot's pane (co-op) — sacrifice, jackpot, etc.
+    // Single view routes to the shared fullscreen flash.
+    _flashPilot(p, color, duration, alpha) {
+        if (this.localPlayers.length > 1) {
+            const s = this.localPlayers.find(s => s.player === p);
+            if (s) { s._flash = { color, timer: duration, dur: duration, alpha }; return; }
+        }
+        this.triggerFlash(color, duration, alpha);
+    }
+
+    // Pulsing flash alpha from a remaining timer + base alpha (shared by the
+    // global flash and per-pilot flashes).
+    _flashAlpha(timer, alphaBase) {
+        const pulse = Math.sin(timer * 6) * 0.5 + 0.5;
+        return Math.min(alphaBase || 0.35, timer * 0.5) * (0.7 + 0.3 * pulse);
+    }
+
+    // Draws a radial flash vignette into a rect (a pane, or the whole screen).
+    _drawFlash(ctx, color, alpha, x, y, w, h) {
+        if (alpha <= 0) return;
+        const cx = x + w / 2, cy = y + h / 2;
+        const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, w * 0.8);
+        grad.addColorStop(0, 'rgba(0,0,0,0)');
+        grad.addColorStop(1, color || '#ff0000');
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = grad;
+        ctx.fillRect(x, y, w, h);
+        ctx.restore();
+    }
+
+    // Auto-weapons (rockets / auto-turret / mechanical claw) for ONE pilot —
+    // fired from that pilot's position with their own per-pilot cooldown + flags.
+    // Called per living pilot so every co-op pilot's items work (like MP clients).
+    _updateAutoWeapons(p, dt) {
+        // Rockets
+        if (p.hasRockets) {
+            p.rocketsTimer = (p.rocketsTimer || 0) - dt;
+            if (p.rocketsTimer <= 0) {
+                let target = null;
+                let minDistSq = 1500 * 1500;
+                for (const en of this.enemies) {
+                    if (!en.alive) continue;
+                    const edx = en.worldX - p.worldX, edy = en.worldY - p.worldY;
+                    const edistSq = edx * edx + edy * edy;
+                    if (edistSq < minDistSq) { target = en; minDistSq = edistSq; }
+                }
+                if (!target) {
+                    for (const ast of this.asteroids) {
+                        if (!ast.alive) continue;
+                        const adx = ast.worldX - p.worldX, ady = ast.worldY - p.worldY;
+                        const adistSq = adx * adx + ady * ady;
+                        if (adistSq < minDistSq) { target = ast; minDistSq = adistSq; }
+                    }
+                }
+                if (!target) {
+                    for (const ev of this.events) {
+                        if (!ev.isAttackable) continue;
+                        const edx = ev.worldX - p.worldX, edy = ev.worldY - p.worldY;
+                        const edistSq = edx * edx + edy * edy;
+                        if (edistSq < minDistSq) { target = ev; minDistSq = edistSq; }
+                    }
+                }
+                if (target) {
+                    const aimAngle = Math.atan2(target.worldY - p.worldY, target.worldX - p.worldX);
+                    const currentBaseDamage = (p.shipData.baseDamage * p.obedienceMult + p.permDamageBonus) * p.laserCartridgeMult;
+                    const damage = (currentBaseDamage * 3.0) * p.laserOverrideMult;
+                    const spriteKey = 'blue_laser_ball_big';
+                    const proj = new Projectile(this.game, p.worldX, p.worldY, aimAngle, 1200, spriteKey, p, damage);
+                    proj.isRocket = true;
+                    proj.target = target;
+                    proj.friendly = true;
+                    if (this.netSync) this.netSync.queueLocalShot(0, proj.worldX, proj.worldY, aimAngle, 1200, spriteKey);
+                    this.projectiles.push(proj);
+                    this.game.sounds.play('laser', { volume: 0.4, x: p.worldX, y: p.worldY });
+                    p.rocketsTimer = p.rocketInterval;
+                }
+            }
+        }
+
+        // Auto Turret
+        if (p.hasAutoTurret) {
+            p.autoTurretTimer -= dt;
+            if (p.autoTurretTimer <= 0) {
+                const turretAngle = p.angle;
+                const turretCone = 50 * (Math.PI / 180);
+                let target = null;
+                let minDistSq = 800 * 800;
+                const coneHit = (ox, oy) => {
+                    const distSq = ox * ox + oy * oy;
+                    if (distSq >= minDistSq) return false;
+                    let diff = Math.atan2(oy, ox) - turretAngle;
+                    while (diff > Math.PI) diff -= Math.PI * 2;
+                    while (diff < -Math.PI) diff += Math.PI * 2;
+                    return Math.abs(diff) < turretCone / 2;
+                };
+                for (const en of this.enemies) {
+                    if (!en.alive) continue;
+                    if (coneHit(en.worldX - p.worldX, en.worldY - p.worldY)) { target = en; minDistSq = (en.worldX - p.worldX) ** 2 + (en.worldY - p.worldY) ** 2; }
+                }
+                for (const ast of this.asteroids) {
+                    if (!ast.alive) continue;
+                    if (coneHit(ast.worldX - p.worldX, ast.worldY - p.worldY)) { target = ast; minDistSq = (ast.worldX - p.worldX) ** 2 + (ast.worldY - p.worldY) ** 2; }
+                }
+                for (const ev of this.events) {
+                    if (!ev.isAttackable) continue;
+                    if (coneHit(ev.worldX - p.worldX, ev.worldY - p.worldY)) { target = ev; minDistSq = (ev.worldX - p.worldX) ** 2 + (ev.worldY - p.worldY) ** 2; }
+                }
+                if (target) {
+                    const noseOffset = 20;
+                    const px = p.worldX + Math.cos(turretAngle) * noseOffset;
+                    const py = p.worldY + Math.sin(turretAngle) * noseOffset;
+                    const aimAngle = Math.atan2(target.worldY - py, target.worldX - px);
+                    const spriteKey = p.hasLaserOverride ? 'blue_laser_ball_big' : 'blue_laser_ball';
+                    const currentBaseDamage = (p.shipData.baseDamage * p.obedienceMult + p.permDamageBonus) * p.laserCartridgeMult;
+                    const damage = currentBaseDamage * p.laserOverrideMult;
+                    const turretProj = new Projectile(this.game, px, py, aimAngle, 2400, spriteKey, p, damage);
+                    turretProj.friendly = true;
+                    if (this.netSync) this.netSync.queueLocalShot(0, px, py, aimAngle, 2400, spriteKey);
+                    this.projectiles.push(turretProj);
+                    this.game.sounds.play('laser', { volume: 0.2, x: px, y: py });
+                    p.autoTurretTimer = 1.0;
+                }
+            }
+        }
+
+        // Mechanical Claw
+        if (p.hasMechanicalClaw) {
+            p.mechanicalClawTimer -= dt;
+            if (p.mechanicalClawTimer <= 0) {
+                let triggered = false;
+                for (const en of this.enemies) {
+                    if (!en.alive) continue;
+                    const edx = en.worldX - p.worldX, edy = en.worldY - p.worldY;
+                    if (edx * edx + edy * edy < 150 * 150) {
+                        en.freeze(3.0);
+                        if (this.netSync && !this.netSync.isHost && this.netSync.reportEnemyContact) {
+                            this.netSync.reportEnemyContact(en, 0, 3.0);
+                        }
+                        triggered = true;
+                    }
+                }
+                if (triggered) {
+                    this.game.sounds.play('shield', { volume: 0.4, x: p.worldX, y: p.worldY });
+                    p.mechanicalClawTimer = 5.0;
+                }
+            }
+        }
+    }
+
+    // Nearest living, non-warping local pilot within (collectRange + radius) of an
+    // entity, or null — the pilot that collects a pickup in co-op.
+    _coopCollectorFor(ent, collectRange) {
+        let best = null, bestD = Infinity;
+        for (const s of this.localPlayers) {
+            const pl = s.player;
+            if (!pl || pl.dead || pl.isWarping) continue;
+            const dx = ent.worldX - pl.worldX, dy = ent.worldY - pl.worldY;
+            const d = dx * dx + dy * dy;
+            const rng = collectRange + pl.radius;
+            if (d < rng * rng && d < bestD) { bestD = d; best = pl; }
+        }
+        return best;
+    }
+
+    // UI dimension context for the pause/inventory: the pane when set (co-op),
+    // else the whole screen. Positions are pane-LOCAL (origin 0,0); the draw
+    // translates by _uiX/_uiY and the update offsets the cursor to match.
+    get _uiW() { return this._uiVp ? this._uiVp.w : this.game.width; }
+    get _uiH() { return this._uiVp ? this._uiVp.h : this.game.height; }
+    get _uiX() { return this._uiVp ? this._uiVp.x : 0; }
+    get _uiY() { return this._uiVp ? this._uiVp.y : 0; }
+    get _uiS() {
+        return this._uiVp ? Math.max(1, Math.round(this.game.uiScale * this._uiVp.h / this.game.height))
+                          : this.game.uiScale;
+    }
+
+    // Level-up queue is PER-PILOT (stored on the Player). `this.levelUpQueue`
+    // transparently proxies to the active pilot — which is the swapped-in pilot
+    // during co-op inventory/claim contexts, or the sole player otherwise. So
+    // every existing `this.levelUpQueue` read/write automatically scopes to the
+    // right pilot, and only that pilot sees their own claim button / dialog.
+    get levelUpQueue() {
+        const p = this.player;
+        if (!p) return (this._orphanLevelQueue || (this._orphanLevelQueue = []));
+        return p._levelUpQueue || (p._levelUpQueue = []);
+    }
+    set levelUpQueue(v) {
+        if (this.player) this.player._levelUpQueue = v;
+        else this._orphanLevelQueue = v;
+    }
+
+    _openCoopInv(i) {
+        const lp = this.localPlayers[i];
+        lp.paused = true;
+        if (!lp.ui) lp.ui = { scrollX: 0, scrollY: 0, draggedItem: null, gpFocus: null, cursorX: 0, cursorY: 0, aHeld: false };
+        const r = this._paneRectFor(i);
+        lp.ui.cursorX = r.x + r.w / 2;
+        lp.ui.cursorY = r.y + r.h / 2;
+        lp.ui.aHeld = false;
+        // The opening press is still down this tick — don't let it act in the UI.
+        lp._skipModalFrame = true;
+        // We drive a per-pilot cursor manually; keep the shared virtual cursor off.
+        this.game.input.setGamepadCursorEnabled(false);
+        this.game.sounds.play('click', 0.5);
+    }
+
+    _closeCoopInv(i) {
+        const lp = this.localPlayers[i];
+        if (lp.ui && lp.ui.draggedItem) {
+            lp.ui.draggedItem.originInventory.addItem(lp.ui.draggedItem.item, lp.ui.draggedItem.x, lp.ui.draggedItem.y);
+            lp.ui.draggedItem = null;
+        }
+        lp.paused = false;
+        if (lp.ui) lp.ui.aHeld = false;
+        this.game.sounds.play('click', 0.5);
+    }
+
+    // Swap the shared pause/inventory state to a pilot's so the existing
+    // _updatePauseUI / _drawPauseOverlay operate on that pilot (player, drag,
+    // scroll, focus) with a virtual-fullscreen cursor (vx,vy). Returns saved state.
+    _swapInvContext(lp, vx, vy, synthBtns, synthJP) {
+        const im = this.game.input;
+        const ui = lp.ui;
+        const saved = {
+            player: this.player, dragged: this.draggedItem,
+            sx: this.playerScrollX, sy: this.playerScrollY, gpFocus: this._gpFocus,
+            mx: im.mouseScreenX, my: im.mouseScreenY, btns: im.mouseButtons, jp: im.mouseButtonsJustPressed,
+            // Modal state (shop/cache) so a pilot's open shop/cache runs on THEIR
+            // refs + scroll, and the shared globals are restored afterward.
+            shop: this.activeShop, isShop: this.isShopOpen,
+            cache: this.activeCacheUI, isCache: this.isCacheOpen, activeCache: this._activeCache,
+            ssx: this.shopScrollX, ssy: this.shopScrollY, csx: this.cacheScrollX, csy: this.cacheScrollY,
+            perm: this._currentPermButtons, paused: this.paused,
+        };
+        this.player = lp.player;
+        this.draggedItem = ui.draggedItem;
+        this.playerScrollX = ui.scrollX; this.playerScrollY = ui.scrollY;
+        this.shopScrollX = ui.shopScrollX || 0; this.shopScrollY = ui.shopScrollY || 0;
+        this.cacheScrollX = ui.cacheScrollX || 0; this.cacheScrollY = ui.cacheScrollY || 0;
+        this._gpFocus = ui.gpFocus;
+        this.activeShop = lp.shop || null; this.isShopOpen = !!lp.shop;
+        this.activeCacheUI = lp.cache || null; this.isCacheOpen = !!lp.cache;
+        this._activeCache = lp.cacheEntity || null;
+        this._currentPermButtons = ui.permButtons || null;
+        im.mouseScreenX = vx; im.mouseScreenY = vy;
+        if (synthBtns) { im.mouseButtons = synthBtns; im.mouseButtonsJustPressed = synthJP; }
+        return saved;
+    }
+
+    _restoreInvContext(lp, saved) {
+        const im = this.game.input;
+        const ui = lp.ui;
+        ui.draggedItem = this.draggedItem;
+        ui.scrollX = this.playerScrollX; ui.scrollY = this.playerScrollY;
+        ui.shopScrollX = this.shopScrollX; ui.shopScrollY = this.shopScrollY;
+        ui.cacheScrollX = this.cacheScrollX; ui.cacheScrollY = this.cacheScrollY;
+        ui.gpFocus = this._gpFocus;
+        ui.permButtons = this._currentPermButtons;
+        // An update path may have closed the modal (cleared activeShop/CacheUI) —
+        // persist that back to the slot.
+        lp.shop = this.isShopOpen ? this.activeShop : null;
+        lp.cache = this.isCacheOpen ? this.activeCacheUI : null;
+        lp.cacheEntity = this._activeCache;
+        this.player = saved.player; this.draggedItem = saved.dragged;
+        this.playerScrollX = saved.sx; this.playerScrollY = saved.sy; this._gpFocus = saved.gpFocus;
+        this.activeShop = saved.shop; this.isShopOpen = saved.isShop;
+        this.activeCacheUI = saved.cache; this.isCacheOpen = saved.isCache; this._activeCache = saved.activeCache;
+        this.shopScrollX = saved.ssx; this.shopScrollY = saved.ssy;
+        this.cacheScrollX = saved.csx; this.cacheScrollY = saved.csy;
+        this._currentPermButtons = saved.perm; this.paused = saved.paused;
+        im.mouseScreenX = saved.mx; im.mouseScreenY = saved.my;
+        im.mouseButtons = saved.btns; im.mouseButtonsJustPressed = saved.jp;
+    }
+
+    // Drive one pilot's in-pane level-up choice screen with their own cursor:
+    // stick/d-pad moves it, A picks the hovered card, B dismisses (re-queues).
+    _updateCoopLevelUp(lp, r, dt) {
+        const im = this.game.input;
+        const ui = lp.ui;
+        let clicked = false, dismiss = false;
+        if (lp.padIndex != null) {
+            const pad = lp.padIndex;
+            let dx = im.padAxis(pad, 'lx') + im.padAxis(pad, 'rx');
+            let dy = im.padAxis(pad, 'ly') + im.padAxis(pad, 'ry');
+            if (im.padButtonDown(pad, GP.DLEFT)) dx -= 1;
+            if (im.padButtonDown(pad, GP.DRIGHT)) dx += 1;
+            if (im.padButtonDown(pad, GP.DUP)) dy -= 1;
+            if (im.padButtonDown(pad, GP.DDOWN)) dy += 1;
+            const mag = Math.hypot(dx, dy);
+            if (mag > 0.01) {
+                const sp = Math.min(1, mag) * 700 * dt;
+                ui.cursorX += (dx / mag) * sp; ui.cursorY += (dy / mag) * sp;
+            }
+            ui.cursorX = Math.max(r.x, Math.min(r.x + r.w, ui.cursorX));
+            ui.cursorY = Math.max(r.y, Math.min(r.y + r.h, ui.cursorY));
+            if (im.padButtonJustPressed(pad, GP.A)) clicked = true;
+            if (im.padButtonJustPressed(pad, GP.B)) dismiss = true;
+        } else {
+            ui.cursorX = im.mouseScreenX; ui.cursorY = im.mouseScreenY;
+            if (im.isMouseJustPressed(0)) clicked = true;
+            if (im.isKeyJustPressed('Escape')) dismiss = true;
+        }
+        const vx = ui.cursorX - r.x, vy = ui.cursorY - r.y;
+        const synthBtns = clicked ? new Set([0]) : null;
+        const synthJP = clicked ? new Set([0]) : null;
+        this._uiVp = r;
+        const saved = this._swapInvContext(lp, vx, vy, synthBtns, synthJP);
+        this._coopInv = true;
+        if (dismiss) lp.levelUpDialog._dismiss();
+        else lp.levelUpDialog.update(dt);
+        if (lp.levelUpDialog && lp.levelUpDialog.closed) this._finishCoopLevelUp(lp);
+        this._coopInv = false;
+        this._uiVp = null;
+        this._restoreInvContext(lp, saved);
+    }
+
+    // Drive one pilot's in-pane encounter dialog: cursor + A (advance / pick the
+    // hovered option) + B (leave, unless forced).
+    _updateCoopEncounter(lp, r, dt) {
+        const im = this.game.input;
+        const ui = lp.ui;
+        let clicked = false, dismiss = false;
+        if (lp.padIndex != null) {
+            const pad = lp.padIndex;
+            let dx = im.padAxis(pad, 'lx') + im.padAxis(pad, 'rx');
+            let dy = im.padAxis(pad, 'ly') + im.padAxis(pad, 'ry');
+            if (im.padButtonDown(pad, GP.DLEFT)) dx -= 1;
+            if (im.padButtonDown(pad, GP.DRIGHT)) dx += 1;
+            if (im.padButtonDown(pad, GP.DUP)) dy -= 1;
+            if (im.padButtonDown(pad, GP.DDOWN)) dy += 1;
+            const mag = Math.hypot(dx, dy);
+            if (mag > 0.01) { const sp = Math.min(1, mag) * 700 * dt; ui.cursorX += (dx / mag) * sp; ui.cursorY += (dy / mag) * sp; }
+            ui.cursorX = Math.max(r.x, Math.min(r.x + r.w, ui.cursorX));
+            ui.cursorY = Math.max(r.y, Math.min(r.y + r.h, ui.cursorY));
+            if (im.padButtonJustPressed(pad, GP.A)) clicked = true;
+            if (im.padButtonJustPressed(pad, GP.B)) dismiss = true;
+        } else {
+            ui.cursorX = im.mouseScreenX; ui.cursorY = im.mouseScreenY;
+            if (im.isMouseJustPressed(0)) clicked = true;
+            if (im.isKeyJustPressed('Escape')) dismiss = true;
+        }
+        const vx = ui.cursorX - r.x, vy = ui.cursorY - r.y;
+        const synthBtns = clicked ? new Set([0]) : null;
+        const synthJP = clicked ? new Set([0]) : null;
+        this._uiVp = r;
+        const saved = this._swapInvContext(lp, vx, vy, synthBtns, synthJP);
+        this._coopInv = true;
+        const dlg = lp.encounter;
+        if (dismiss && !dlg.forced) { dlg.closed = true; dlg.encounter.shouldStay = true; }
+        else dlg.update(dt);
+        this._coopInv = false;
+        this._uiVp = null;
+        this._restoreInvContext(lp, saved);
+        if (dlg.closed) {
+            lp.encounter = null;
+            lp.paused = false;
+            this._finishEncounterDialog(dlg.encounter);
+        }
+    }
+
+    // Drive one pilot's in-pane shop OR cache (drag-drop buy/sell/stash): cursor
+    // + A (grab/drop), X (right-click consume), B / E (close).
+    _updateCoopModal(lp, r, dt) {
+        const im = this.game.input;
+        const ui = lp.ui;
+        let synthBtns = null, synthJP = null, close = false;
+        if (lp.padIndex != null) {
+            const pad = lp.padIndex;
+            let dx = im.padAxis(pad, 'lx') + im.padAxis(pad, 'rx');
+            let dy = im.padAxis(pad, 'ly') + im.padAxis(pad, 'ry');
+            if (im.padButtonDown(pad, GP.DLEFT)) dx -= 1;
+            if (im.padButtonDown(pad, GP.DRIGHT)) dx += 1;
+            if (im.padButtonDown(pad, GP.DUP)) dy -= 1;
+            if (im.padButtonDown(pad, GP.DDOWN)) dy += 1;
+            const mag = Math.hypot(dx, dy);
+            if (mag > 0.01) { const sp = Math.min(1, mag) * 700 * dt; ui.cursorX += (dx / mag) * sp; ui.cursorY += (dy / mag) * sp; }
+            ui.cursorX = Math.max(r.x, Math.min(r.x + r.w, ui.cursorX));
+            ui.cursorY = Math.max(r.y, Math.min(r.y + r.h, ui.cursorY));
+            synthBtns = new Set(); synthJP = new Set();
+            if (im.padButtonJustPressed(pad, GP.A)) { ui.aHeld = !ui.aHeld; if (ui.aHeld) synthJP.add(0); }
+            if (ui.aHeld) synthBtns.add(0);
+            if (im.padButtonJustPressed(pad, GP.Y)) { synthBtns.add(2); synthJP.add(2); } // Y = use item (matches single-player)
+            if (im.padButtonJustPressed(pad, GP.B)) close = true;
+        } else {
+            ui.cursorX = im.mouseScreenX; ui.cursorY = im.mouseScreenY;
+            if (im.isKeyJustPressed('KeyE') || im.isKeyJustPressed('Escape')) close = true;
+        }
+        if (close) {
+            if (lp.shop) this._closeCoopShop(lp);
+            else if (lp.cache) this._closeCoopCache(lp);
+            return;
+        }
+        const vx = ui.cursorX - r.x, vy = ui.cursorY - r.y;
+        this._uiVp = r;
+        const saved = this._swapInvContext(lp, vx, vy, synthBtns, synthJP);
+        this._coopInv = true;
+        if (this.isShopOpen) this._updateShopUI(dt);
+        else if (this.isCacheOpen) this._updateCacheUI(dt);
+        this._coopInv = false;
+        this._uiVp = null;
+        if (this.game.currentState !== this) { this._restoreInvContext(lp, saved); return; }
+        this._restoreInvContext(lp, saved);
+        // A claim-levels click inside the shop/cache opens this pilot's level-up
+        // (on lp.levelUpDialog); the cache may have emptied/closed itself.
+        if (!lp.shop && !lp.cache && !lp.encounter && !lp.levelUpDialog) lp.paused = false;
+    }
+
+    _closeCoopShop(lp) {
+        const ui = lp.ui;
+        if (ui.draggedItem) {
+            ui.draggedItem.originInventory.addItem(ui.draggedItem.item, ui.draggedItem.x, ui.draggedItem.y);
+            if (ui.draggedItem.originInventory === lp.player.inventory) this._onInventoryChanged(lp.player);
+            ui.draggedItem = null;
+        }
+        lp.shop = null;
+        lp.paused = false;
+        this.game.sounds.play('click', 0.5);
+    }
+
+    _closeCoopCache(lp) {
+        const ui = lp.ui;
+        if (ui.draggedItem) {
+            ui.draggedItem.originInventory.addItem(ui.draggedItem.item, ui.draggedItem.x, ui.draggedItem.y);
+            if (ui.draggedItem.originInventory === lp.player.inventory) this._onInventoryChanged(lp.player);
+            ui.draggedItem = null;
+        }
+        if (lp.cache) {
+            if (lp.cache.isAnimating) lp.cache.forceFinalize();
+            lp.cache.close();
+        }
+        if (lp.cacheEntity) lp.cacheEntity.close();
+        lp.cache = null;
+        lp.cacheEntity = null;
+        lp.paused = false;
+        this.game.sounds.play('click', 0.5);
+    }
+
+    // Drive every open pilot's pause/inventory (reuses _updatePauseUI per pilot).
+    // The world keeps running around them.
+    _updateCoopInventories(dt) {
+        const im = this.game.input;
+        im.setGamepadCursorEnabled(false); // per-pilot cursors are driven here
+        for (let i = 0; i < this.localPlayers.length; i++) {
+            const lp = this.localPlayers[i];
+            if (!lp.paused || !lp.ui) continue;
+            // The button press that opened this modal is still "just pressed" this
+            // same tick (interactions run earlier in update) — skip one frame so it
+            // doesn't immediately act inside / close the modal it just opened.
+            if (lp._skipModalFrame) { lp._skipModalFrame = false; continue; }
+            const ui = lp.ui;
+            const r = this._paneRectFor(i);
+
+            // Whichever modal this pilot has open takes over their pane (driven
+            // by their own cursor); the world keeps running for everyone else.
+            if (lp.levelUpDialog) { this._updateCoopLevelUp(lp, r, dt); continue; }
+            if (lp.encounter)     { this._updateCoopEncounter(lp, r, dt); continue; }
+            if (lp.shop || lp.cache) { this._updateCoopModal(lp, r, dt); continue; }
+
+            let synthBtns = null, synthJP = null;
+            if (lp.padIndex != null) {
+                const pad = lp.padIndex;
+                let dx = im.padAxis(pad, 'lx') + im.padAxis(pad, 'rx');
+                let dy = im.padAxis(pad, 'ly') + im.padAxis(pad, 'ry');
+                if (im.padButtonDown(pad, GP.DLEFT)) dx -= 1;
+                if (im.padButtonDown(pad, GP.DRIGHT)) dx += 1;
+                if (im.padButtonDown(pad, GP.DUP)) dy -= 1;
+                if (im.padButtonDown(pad, GP.DDOWN)) dy += 1;
+                const mag = Math.hypot(dx, dy);
+                if (mag > 0.01) {
+                    const sp = Math.min(1, mag) * 700 * dt;
+                    ui.cursorX += (dx / mag) * sp; ui.cursorY += (dy / mag) * sp;
+                }
+                ui.cursorX = Math.max(r.x, Math.min(r.x + r.w, ui.cursorX));
+                ui.cursorY = Math.max(r.y, Math.min(r.y + r.h, ui.cursorY));
+                synthBtns = new Set(); synthJP = new Set();
+                if (im.padButtonJustPressed(pad, GP.A)) { ui.aHeld = !ui.aHeld; if (ui.aHeld) synthJP.add(0); }
+                if (ui.aHeld) synthBtns.add(0);
+                if (im.padButtonJustPressed(pad, GP.Y)) { synthBtns.add(2); synthJP.add(2); } // Y = use item (matches single-player)
+            } else {
+                ui.cursorX = im.mouseScreenX; ui.cursorY = im.mouseScreenY;
+            }
+
+            // Pane-LOCAL cursor: the pause UI lays out for the pane (via _uiVp),
+            // so hit-testing is relative to the pane origin, like the HUD.
+            const vx = ui.cursorX - r.x;
+            const vy = ui.cursorY - r.y;
+            this._uiVp = r;
+            const saved = this._swapInvContext(lp, vx, vy, synthBtns, synthJP);
+            this._coopInv = true;
+            this._updatePauseUI(dt);
+            this._coopInv = false;
+            this._uiVp = null;
+            // _updatePauseUI may navigate to the menu/level-up (setState) — bail.
+            if (this.game.currentState !== this) { this._restoreInvContext(lp, saved); return; }
+            this._restoreInvContext(lp, saved);
+        }
+    }
+
+    // Draw a pilot's pause/inventory scaled into their pane (called inside the
+    // pane clip; this.player is already that pilot's, but we re-swap full state).
+    _drawCoopInv(ctx, i) {
+        const lp = this.localPlayers[i];
+        if (!lp.ui) return;
+        const r = this._paneRectFor(i);
+        // Pane-LOCAL cursor; _drawPauseOverlay shifts pane-local coords into the
+        // pane via _uiX/_uiY, so the UI fills the pane like the HUD (no uniform scale).
+        const vx = lp.ui.cursorX - r.x;
+        const vy = lp.ui.cursorY - r.y;
+        this._uiVp = r;
+        const saved = this._swapInvContext(lp, vx, vy, null, null);
+        ctx.save();
+        this._coopInv = true;
+        // Whichever modal this pilot has open fills their pane.
+        if (lp.levelUpDialog)   lp.levelUpDialog.draw(ctx);
+        else if (lp.encounter)  lp.encounter.draw(ctx);
+        else if (lp.shop)       this._drawShopOverlay(ctx);
+        else if (lp.cache)      this._drawCacheOverlay(ctx);
+        else                    this._drawPauseOverlay(ctx);
+        this._coopInv = false;
+        ctx.restore();
+        this._restoreInvContext(lp, saved);
+        this._uiVp = null;
+
+        // This pilot's cursor reticle (screen space).
+        const cx = lp.ui.cursorX, cy = lp.ui.cursorY;
+        const s = this.game.hudScale;
+        ctx.save();
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(Math.round(cx - 1), Math.round(cy - 3 * s), 2, 6 * s);
+        ctx.fillRect(Math.round(cx - 3 * s), Math.round(cy - 1), 6 * s, 2);
+        ctx.restore();
     }
 
     // The interact/pause input section — extracted from update() so multiplayer
@@ -910,7 +1689,10 @@ export class PlayingState {
                            || gpInput.isGamepadJustPressed(GP.B);
         const gpInteract    = gpInput.isGamepadJustPressed(GP.X);
 
-        if (this.game.input.isKeyJustPressed('Escape') || gpPauseToggle) {
+        // The single global pause menu is single-player only. In local co-op each
+        // pilot pauses independently (handled in _updateCoopPause).
+        const coop = !mp && this.localPlayers.length > 1;
+        if (!coop && (this.game.input.isKeyJustPressed('Escape') || gpPauseToggle)) {
             if (this.paused) {
                 // About to unpause, return dragged item
                 if (this.draggedItem) {
@@ -1004,6 +1786,10 @@ export class PlayingState {
                 this.netSync.sendTradeMsg(MSG.TRADE_REQ, { toPid: nearPlayer.pid });
                 this.spawnFloatingText(this.player.worldX, this.player.worldY, `TRADE REQUEST SENT`, '#9fe8ff');
                 this.game.sounds.play('click', 0.5);
+            } else if (coop) {
+                // Local co-op: nothing in range → toggle THIS pilot's inventory —
+                // the SAME menu Esc/Start opens (never the single-player pause).
+                this.localPlayers[0].paused ? this._closeCoopInv(0) : this._openCoopInv(0);
             } else {
                 // Nothing in range — fall back to toggling the pause menu.
                 if (this.paused) {
@@ -1020,10 +1806,32 @@ export class PlayingState {
         }
     }
 
-    _openShop(shop) {
-        this.activeShop = shop;
-        this.isShopOpen = true;
-        this.paused = true;
+    // Ensures a co-op pilot slot has its UI-state bag (cursor, scroll, etc.),
+    // created lazily so a pilot can open a shop/cache/encounter without first
+    // having opened their inventory. Cursor starts at their pane center.
+    _ensurePilotUI(lp) {
+        if (!lp.ui) lp.ui = { scrollX: 0, scrollY: 0, draggedItem: null, gpFocus: null, cursorX: 0, cursorY: 0, aHeld: false };
+        const i = this.localPlayers.indexOf(lp);
+        const r = this._paneRectFor(i);
+        lp.ui.cursorX = r.x + r.w / 2;
+        lp.ui.cursorY = r.y + r.h / 2;
+        lp.ui.aHeld = false;
+        // Don't let the opening button press act inside the modal this same tick.
+        lp._skipModalFrame = true;
+    }
+
+    _openShop(shop, lp = null) {
+        if (lp) {
+            // Co-op: open in THIS pilot's pane; their ship stops, world runs on.
+            this._ensurePilotUI(lp);
+            lp.shop = shop;
+            lp.paused = true;
+            this.game.input.setGamepadCursorEnabled(false);
+        } else {
+            this.activeShop = shop;
+            this.isShopOpen = true;
+            this.paused = true;
+        }
         this.game.sounds.play('click', 0.5);
         if (this.game.achievements) {
             this.game.achievements.notify('shop_opened', { shop });
@@ -1063,14 +1871,59 @@ export class PlayingState {
     _updateWorld(dt, mp = false) {
         const isNetHost = !mp || (this.netSync && this.netSync.isHost);
         const bodies = mp ? this.netSync.playerBodies() : null;
+        // Local co-op (no netSync): treat every live local pilot as a "body" so
+        // enemies target each pilot and nearby entities activate around them.
+        const coopBodies = (!mp && this.localPlayers.length > 1)
+            ? this.localPlayers.filter(lp => !lp.player.dead).map(lp => lp.player)
+            : null;
 
-        // Update player (freeze during Yellow One scripted sequence)
+        // Mouse aim is measured from the ship's on-screen position (its pane
+        // center). Feed EVERY mouse-aim pilot ITS OWN pane center so the keyboard
+        // pilot aims correctly whichever pane it's in. Single view: pane 0 = full
+        // screen → screen center, unchanged.
+        if (this.splitScreen) {
+            const rects = computeSplitLayout(this.splitScreen.count, this.game.width, this.game.height);
+            for (let i = 0; i < this.localPlayers.length; i++) {
+                const pl = this.localPlayers[i].player;
+                if (!pl || !pl.useMouseAim) continue;
+                const r = rects[i] || rects[0];
+                pl.aimCenterX = r.x + r.w / 2;
+                pl.aimCenterY = r.y + r.h / 2;
+            }
+        }
+
+        // Update pilots (freeze during Yellow One scripted sequence / game over).
+        // Co-op: every local pilot updates with its own input source; a downed
+        // pilot ticks toward respawn instead. this.isDead is the GLOBAL game-over
+        // (all pilots down).
         this.perf.begin('player');
         if (!this.yellowOneScriptActive && !this.isDead) {
-            this.player.update(dt);
+            const coop = this.localPlayers.length > 1;
+            for (const lp of this.localPlayers) {
+                const p = lp.player;
+                if (p.dead) {
+                    if (coop) {
+                        p.respawnTimer -= dt;
+                        if (p.respawnTimer <= 0) this._respawnLocalPilot(p);
+                    }
+                    continue;
+                }
+                p.update(dt);
+            }
         }
         this.perf.end('player');
-        this.game.sounds.setListenerPosition(this.player.worldX, this.player.worldY);
+        // Audio listeners: local co-op hears positional SFX from EVERY living
+        // pilot (nearest-listener wins, so each sound still plays once — no
+        // overlapping/duplicate playback). Single view / MP uses one listener.
+        if (this.localPlayers.length > 1) {
+            const ears = this.localPlayers
+                .filter(lp => lp.player && !lp.player.dead)
+                .map(lp => ({ x: lp.player.worldX, y: lp.player.worldY }));
+            if (ears.length) this.game.sounds.setListeners(ears);
+            else this.game.sounds.setListenerPosition(this.player.worldX, this.player.worldY);
+        } else {
+            this.game.sounds.setListenerPosition(this.player.worldX, this.player.worldY);
+        }
 
         // Advance replicated entities (remote players everywhere; enemy/
         // encounter interpolation on clients).
@@ -1089,6 +1942,8 @@ export class PlayingState {
             let evTarget = this.player;
             if (mp && bodies && bodies.length) {
                 evTarget = this.netSync.nearestBodyTo(ev.worldX, ev.worldY) || this.player;
+            } else if (coopBodies) {
+                evTarget = this._nearestPilotTo(ev.worldX, ev.worldY);
             }
             ev.update(dt, evTarget);
             // Discovery fires when the event physically enters the player's
@@ -1100,13 +1955,17 @@ export class PlayingState {
             // camera which tracks the player. Event radius pads the test so
             // discovery fires the moment any of the event is on screen.
             if (!ev.discovered && !ev.isFinished) {
-                const edx = ev.worldX - this.player.worldX;
-                const edy = ev.worldY - this.player.worldY;
                 const halfViewW = (this.game.width / 2) / this.game.worldScale;
                 const halfViewH = (this.game.height / 2) / this.game.worldScale;
                 const radius = ev.radius || 100;
-                if (Math.abs(edx) < halfViewW + radius
-                    && Math.abs(edy) < halfViewH + radius) {
+                // Discovered the moment ANY pilot has the event on screen (co-op).
+                const seers = coopBodies || [this.player];
+                let seen = false;
+                for (const b of seers) {
+                    if (Math.abs(ev.worldX - b.worldX) < halfViewW + radius
+                        && Math.abs(ev.worldY - b.worldY) < halfViewH + radius) { seen = true; break; }
+                }
+                if (seen) {
                     ev.discovered = true;
                     this.stats.eventsDiscovered++;
                     if (this.game.achievements) {
@@ -1115,10 +1974,11 @@ export class PlayingState {
                 }
             }
             if (ev.isActive) {
-                const edx = ev.worldX - this.player.worldX;
-                const edy = ev.worldY - this.player.worldY;
-                if (edx * edx + edy * edy < 25000000) { // 5000^2
-                    isEventActive = true;
+                // Active if ANY pilot is within range.
+                const bs = coopBodies || [this.player];
+                for (const b of bs) {
+                    const edx = ev.worldX - b.worldX, edy = ev.worldY - b.worldY;
+                    if (edx * edx + edy * edy < 25000000) { isEventActive = true; break; } // 5000^2
                 }
             }
             if (ev.popEnemies) {
@@ -1159,183 +2019,12 @@ export class PlayingState {
         }
         this.lastIsEventActive = isEventActive;
 
-        // --- Active Upgrades Logic ---
-        // Rockets
-        if (this.hasRockets) {
-            this.player.rocketsTimer = (this.player.rocketsTimer || 0) - dt;
-            if (this.player.rocketsTimer <= 0) {
-                let target = null;
-                let minDistSq = 1500 * 1500;
-
-                for (const en of this.enemies) {
-                    if (!en.alive) continue;
-                    const edx = en.worldX - this.player.worldX;
-                    const edy = en.worldY - this.player.worldY;
-                    const edistSq = edx * edx + edy * edy;
-                    if (edistSq < minDistSq) {
-                        target = en;
-                        minDistSq = edistSq;
-                    }
-                }
-
-                if (!target) {
-                    for (const ast of this.asteroids) {
-                        if (!ast.alive) continue;
-                        const adx = ast.worldX - this.player.worldX;
-                        const ady = ast.worldY - this.player.worldY;
-                        const adistSq = adx * adx + ady * ady;
-                        if (adistSq < minDistSq) {
-                            target = ast;
-                            minDistSq = adistSq;
-                        }
-                    }
-                }
-                if (!target) {
-                    for (const ev of this.events) {
-                        if (!ev.isAttackable) continue;
-                        const edx = ev.worldX - this.player.worldX;
-                        const edy = ev.worldY - this.player.worldY;
-                        const edistSq = edx * edx + edy * edy;
-                        if (edistSq < minDistSq) {
-                            target = ev;
-                            minDistSq = edistSq;
-                        }
-                    }
-                }
-
-                if (target) {
-                    const aimAngle = Math.atan2(target.worldY - this.player.worldY, target.worldX - this.player.worldX);
-                    // Increased damage and applied modifiers
-                    const currentBaseDamage = (this.player.shipData.baseDamage * this.player.obedienceMult + this.player.permDamageBonus) * this.player.laserCartridgeMult;
-                    const damage = (currentBaseDamage * 3.0) * this.player.laserOverrideMult;
-                    const spriteKey = 'blue_laser_ball_big';
-
-                    const proj = new Projectile(this.game, this.player.worldX, this.player.worldY, aimAngle, 1200, spriteKey, this.player, damage);
-                    proj.isRocket = true;
-                    proj.target = target;
-                    proj.friendly = true;
-                    if (this.netSync) this.netSync.queueLocalShot(0, proj.worldX, proj.worldY, aimAngle, 1200, spriteKey);
-                    this.projectiles.push(proj);
-                    this.game.sounds.play('laser', { volume: 0.4, x: this.player.worldX, y: this.player.worldY });
-                    this.player.rocketsTimer = this.rocketInterval;
-                }
-            }
-        }
-
-        // Auto Turret
-        if (this.hasAutoTurret) {
-            this.player.autoTurretTimer -= dt;
-            if (this.player.autoTurretTimer <= 0) {
-                // Find enemy in 50 deg cone
-                const turretAngle = this.player.angle;
-                const turretCone = 50 * (Math.PI / 180);
-
-                let target = null;
-                let minDistSq = 800 * 800;
-
-                // Check Enemies
-                for (const en of this.enemies) {
-                    if (!en.alive) continue;
-                    const edx = en.worldX - this.player.worldX;
-                    const edy = en.worldY - this.player.worldY;
-                    const edistSq = edx * edx + edy * edy;
-                    if (edistSq < minDistSq) {
-                        const angleToEn = Math.atan2(edy, edx);
-                        let diff = angleToEn - turretAngle;
-                        while (diff > Math.PI) diff -= Math.PI * 2;
-                        while (diff < -Math.PI) diff += Math.PI * 2;
-
-                        if (Math.abs(diff) < turretCone / 2) {
-                            target = en;
-                            minDistSq = edistSq;
-                        }
-                    }
-                }
-
-                // Check Asteroids
-                for (const ast of this.asteroids) {
-                    if (!ast.alive) continue;
-                    const adx = ast.worldX - this.player.worldX;
-                    const ady = ast.worldY - this.player.worldY;
-                    const adistSq = adx * adx + ady * ady;
-                    if (adistSq < minDistSq) {
-                        const angleToAst = Math.atan2(ady, adx);
-                        let diff = angleToAst - turretAngle;
-                        while (diff > Math.PI) diff -= Math.PI * 2;
-                        while (diff < -Math.PI) diff += Math.PI * 2;
-
-                        if (Math.abs(diff) < turretCone / 2) {
-                            target = ast;
-                            minDistSq = adistSq;
-                        }
-                    }
-                }
-
-                for (const ev of this.events) {
-                    if (!ev.isAttackable) continue;
-                    const edx = ev.worldX - this.player.worldX;
-                    const edy = ev.worldY - this.player.worldY;
-                    const edistSq = edx * edx + edy * edy;
-                    if (edistSq < minDistSq) {
-                        const angleToEv = Math.atan2(edy, edx);
-                        let diff = angleToEv - turretAngle;
-                        while (diff > Math.PI) diff -= Math.PI * 2;
-                        while (diff < -Math.PI) diff += Math.PI * 2;
-
-                        if (Math.abs(diff) < turretCone / 2) {
-                            target = ev;
-                            minDistSq = edistSq;
-                        }
-                    }
-                }
-
-                if (target) {
-                    const noseOffset = 20;
-                    const px = this.player.worldX + Math.cos(turretAngle) * noseOffset;
-                    const py = this.player.worldY + Math.sin(turretAngle) * noseOffset;
-
-                    // Aim directly at target center
-                    const aimAngle = Math.atan2(target.worldY - py, target.worldX - px);
-
-                    const spriteKey = this.player.hasLaserOverride ? 'blue_laser_ball_big' : 'blue_laser_ball';
-                    const currentBaseDamage = (this.player.shipData.baseDamage * this.player.obedienceMult + this.player.permDamageBonus) * this.player.laserCartridgeMult;
-                    const damage = currentBaseDamage * this.player.laserOverrideMult;
-
-                    const turretProj = new Projectile(this.game, px, py, aimAngle, 2400, spriteKey, this.player, damage);
-                    turretProj.friendly = true;
-                    if (this.netSync) this.netSync.queueLocalShot(0, px, py, aimAngle, 2400, spriteKey);
-                    this.projectiles.push(turretProj);
-                    this.game.sounds.play('laser', { volume: 0.2, x: px, y: py });
-                    this.player.autoTurretTimer = 1.0;
-                }
-            }
-        }
-
-        // Mechanical Claw
-        if (this.hasMechanicalClaw) {
-            this.player.mechanicalClawTimer -= dt;
-            if (this.player.mechanicalClawTimer <= 0) {
-                let triggered = false;
-                for (const en of this.enemies) {
-                    if (!en.alive) continue;
-                    const edx = en.worldX - this.player.worldX;
-                    const edy = en.worldY - this.player.worldY;
-                    const edistSq = edx * edx + edy * edy;
-                    if (edistSq < 150 * 150) {
-                        en.freeze(3.0);
-                        // Multiplayer client: the real enemy lives on the host —
-                        // ask it to apply the stun there too.
-                        if (this.netSync && !this.netSync.isHost && this.netSync.reportEnemyContact) {
-                            this.netSync.reportEnemyContact(en, 0, 3.0);
-                        }
-                        triggered = true;
-                    }
-                }
-                if (triggered) {
-                    this.game.sounds.play('shield', { volume: 0.4, x: this.player.worldX, y: this.player.worldY }); // Stun sound
-                    this.player.mechanicalClawTimer = 5.0; // Cooldown for the claw itself
-                }
-            }
+        // --- Active Upgrades (auto-weapons) ---
+        // Each living pilot fires its OWN rockets/turret/claw from its own
+        // position with its own cooldown (mirrors how every MP client runs its
+        // own auto-weapons). Single view / MP = just the primary.
+        for (const _awlp of this.localPlayers) {
+            if (_awlp.player && !_awlp.player.dead) this._updateAutoWeapons(_awlp.player, dt);
         }
         this.perf.begin('misc');
         if (this.yellowOneScriptActive) {
@@ -1351,44 +2040,70 @@ export class PlayingState {
         // Scale FOV from 1.0 to 1.3 based on speed. Max zoom reached at 2000 px/s (typical boost speed)
         const speedFactor = Math.min(1.0, currentSpeed / 2000);
         const speedFovMult = 1.0 + (speedFactor * 0.3);
-        const targetFovMult = this.fovUpgradeMult * speedFovMult;
+        // Primary's OWN fov (item × level) — not the global, which another pilot's
+        // inventory change would clobber (corrupting pane-0 zoom in co-op).
+        const targetFovMult = (this.player.itemFovMult || 1.0) * (this.player.lvlFovMult || 1.0) * speedFovMult;
 
         // Smoothly interpolate FOV to avoid jitter
         const fovLerpSpeed = 5.0; // Adjust for snappiness
         this.currentFovMult += (targetFovMult - this.currentFovMult) * dt * fovLerpSpeed;
 
-        // Apply scale to engine
+        // Apply scale to the active camera (per-camera FOV; split-screen-ready).
         // Dynamic FOV Scaling — Smoothing with Lerp
         const targetScale = 1.0 / this.currentFovMult;
         const scaleStiffness = 4.0; // Pacing of the zoom (higher = faster)
 
-        this.game.worldScaleModifier += (targetScale - this.game.worldScaleModifier) * (1.0 - Math.exp(-scaleStiffness * dt));
+        const fovCam = this.camera;
+        fovCam.scaleModifier += (targetScale - fovCam.scaleModifier) * (1.0 - Math.exp(-scaleStiffness * dt));
         // Recalculate scaling without expensive resize()
         const currentMean = Math.sqrt(this.game.width * this.game.height);
         const refMean = Math.sqrt(2560 * 1440);
-        this.game.worldScale = Math.max(0.1, (2 * (currentMean / refMean)) * this.game.worldScaleModifier);
+        fovCam.scale = Math.max(0.1, (2 * (currentMean / refMean)) * fovCam.scaleModifier);
+        // Shim: aim the global world scale / modifier / camera pointer at the
+        // active camera, so the many draw + LOD sites that still read
+        // game.worldScale (and resize()) track this camera's zoom. Phase 1
+        // re-points these per pane inside the per-viewport draw loop.
+        this.game.worldScale = fovCam.scale;
+        this.game.worldScaleModifier = fovCam.scaleModifier;
+        this.game.camera = fovCam;
+
+        // Co-op: each extra pilot's camera follows its own ship with its own FOV
+        // zoom (the primary above drives the global shim / this.camera).
+        for (let i = 1; i < this.localPlayers.length; i++) {
+            const lp = this.localPlayers[i];
+            if (!lp.camera) continue;
+            const p = lp.player;
+            if (!p.dead) lp.camera.update(dt, p);
+            this._updateCameraFov(dt, lp.camera, p);
+        }
         this.perf.end('misc');
 
         // Shop interaction check (already calculated above for input priority)
 
-        // Collect projectiles from player
-        if (this.player.pendingProjectiles.length > 0) {
-            for (const proj of this.player.pendingProjectiles) {
+        // Collect projectiles from every local pilot (co-op). proj.owner is the
+        // firing pilot, so friendly fire is already filtered out per-pilot.
+        for (const _lp of this.localPlayers) {
+            const pl = _lp.player;
+            if (pl.pendingProjectiles.length === 0) continue;
+            for (const proj of pl.pendingProjectiles) {
                 proj.friendly = true; // player-owned — never collides with player ships
-                if (mp && this.netSync) {
+                if (mp && this.netSync && pl === this.player) {
                     // Replicate as a visual so the other pilots see our lasers.
                     const speed = Math.hypot(proj.vx, proj.vy);
                     this.netSync.queueLocalShot(0, proj.worldX, proj.worldY, proj.angle, speed, proj.spriteKey);
                 }
             }
-            this.projectiles.push(...this.player.pendingProjectiles);
-            this.player.pendingProjectiles.length = 0;
+            this.projectiles.push(...pl.pendingProjectiles);
+            pl.pendingProjectiles.length = 0;
         }
 
-        // --- Primary Weapon Hitscan (Railgun/Energy Blaster) ---
-        if (this.player.pendingRailgunFire) {
-            this.player.pendingRailgunFire = false;
-            this._handlePrimaryWeaponFire();
+        // --- Primary Weapon Hitscan (Railgun/Energy Blaster) — per pilot ---
+        for (const _lp of this.localPlayers) {
+            const pl = _lp.player;
+            if (pl.pendingRailgunFire) {
+                pl.pendingRailgunFire = false;
+                this._handlePrimaryWeaponFire(pl);
+            }
         }
 
         // --- Update Active Beams ---
@@ -1425,19 +2140,23 @@ export class PlayingState {
             }
         }
 
-        // --- Movement fx: boost space-bend level + engine-wash trail ---
+        // --- Movement fx: boost space-bend level (per pilot) + engine-wash trail ---
+        // The post-fx lens hits full strength the instant the boost fires (it's
+        // an impulse — easing the attack just blunts it), then relaxes gently so
+        // the bend doesn't snap off. Each pilot eases its OWN level so its boost
+        // warps only its own pane (co-op); slot 0's level is also mirrored to
+        // this._boostFlowLevel for the single-view / multiplayer post-fx.
+        for (let i = 0; i < this.localPlayers.length; i++) {
+            const slot = this.localPlayers[i];
+            const pl = slot.player;
+            const target = (!pl || pl.dead || this.isDead || pl.isWarping) ? 0 : (pl.boostIntensity || 0);
+            const cur = slot._boostFlow || 0;
+            slot._boostFlow = target > cur ? target : cur + (target - cur) * Math.min(1, dt * 6);
+        }
+        this._boostFlowLevel = this.localPlayers[0]._boostFlow || 0;
+
         if (this.player && !this.isDead) {
             const pl = this.player;
-            // The post-fx lens hits full strength the instant the boost fires
-            // (it's an impulse — easing the attack just blunted it), then
-            // relaxes gently so the bend doesn't snap off
-            const flowTarget = pl.isWarping ? 0 : pl.boostIntensity;
-            if (flowTarget > this._boostFlowLevel) {
-                this._boostFlowLevel = flowTarget;
-            } else {
-                this._boostFlowLevel += (flowTarget - this._boostFlowLevel) * Math.min(1, dt * 6);
-            }
-
             // Pixel exhaust streaming off the hull, denser the faster it flies.
             // The plume fires out the stern along the ship's facing (nose) axis
             // rather than opposite its velocity, so it reads as thruster wash no
@@ -1480,9 +2199,24 @@ export class PlayingState {
             // each tracking that pilot's own movement (so everyone gets a field
             // to fly through), but a rock is vetoed if it would pop into
             // existence inside another pilot's no-spawn bubble.
-            const cap = 180 + (mp ? (this.net.playerCount - 1) * 60 : 0);
+            const cap = 180 + ((mp ? (this.net.playerCount - 1) : (this.localPlayers.length - 1)) * 60);
             if (this.asteroids.length < cap) {
-                if (!mp) {
+                if (!mp && this.localPlayers.length > 1) {
+                    // Co-op: one spawner per pilot (mirrors the MP host) so every
+                    // pilot flies through their own field, even when split up.
+                    if (!this._coopAsteroidSpawners) this._coopAsteroidSpawners = new Map();
+                    for (let i = 0; i < this.localPlayers.length; i++) {
+                        const pl = this.localPlayers[i].player;
+                        if (!pl || pl.dead) continue;
+                        let sp;
+                        if (i === 0) sp = this.asteroidSpawner;
+                        else {
+                            sp = this._coopAsteroidSpawners.get(i);
+                            if (!sp) { sp = new AsteroidSpawner(this.game); this._coopAsteroidSpawners.set(i, sp); }
+                        }
+                        this._mpSpawnAsteroidsFor(dt, sp, pl, pl.asteroidSpawnMult);
+                    }
+                } else if (!mp) {
                     const newAsteroids = this.asteroidSpawner.update(
                         dt, this.player.worldX, this.player.worldY,
                         this.player.vx, this.player.vy, this.player.asteroidSpawnMult
@@ -1509,9 +2243,29 @@ export class PlayingState {
         // the else-branch below; the host's WORLD_STATE stream corrects them.)
         if (isNetHost && !isEventActive && this.eventBufferTimer <= 0) {
 
-            // Spawn caches (rare, distance-accumulator based). Multiplayer:
-            // one spawner per pilot so everyone finds caches on their own path.
-            if (!mp) {
+            // Spawn caches (rare, distance-accumulator based). Multiplayer AND
+            // co-op: one spawner per pilot so everyone finds caches on their own
+            // path, each placed near a randomly chosen live pilot.
+            if (!mp && this.localPlayers.length > 1) {
+                if (!this._coopCacheSpawners) this._coopCacheSpawners = new Map();
+                const live = this.localPlayers.filter(s => s.player && !s.player.dead).map(s => s.player);
+                const randTarget = () => {
+                    const b = live.length ? live[Math.floor(Math.random() * live.length)] : this.player;
+                    return { x: b.worldX, y: b.worldY };
+                };
+                for (let i = 0; i < this.localPlayers.length; i++) {
+                    const pl = this.localPlayers[i].player;
+                    if (!pl || pl.dead) continue;
+                    let cs;
+                    if (i === 0) cs = this.cacheSpawner;
+                    else {
+                        cs = this._coopCacheSpawners.get(i);
+                        if (!cs) { cs = new CacheSpawner(this.game); this._coopCacheSpawners.set(i, cs); }
+                    }
+                    const cc = cs.update(pl.worldX, pl.worldY, this.caches.length, pl.lvlCacheFreqMult, randTarget());
+                    this.caches.push(...cc);
+                }
+            } else if (!mp) {
                 const newCaches = this.cacheSpawner.update(
                     this.player.worldX, this.player.worldY, this.caches.length, this.player.lvlCacheFreqMult
                 );
@@ -1609,7 +2363,10 @@ export class PlayingState {
                 if (this._crashCacheTimer <= 0) {
                     this._crashCacheTimer = 0;
                     if (this.caches.length < CACHE_CONFIG.maxActiveCaches + 2) {
-                        const crashTarget = mp ? this.netSync.waveTargetBody() : this.player;
+                        // Co-op: the reward lands on the pilot the wave targeted.
+                        const crashTarget = mp ? this.netSync.waveTargetBody()
+                            : ((this.localPlayers.length > 1 && this._coopWaveTarget && !this._coopWaveTarget.dead)
+                                ? this._coopWaveTarget : this.player);
                         const crashCache = this.cacheSpawner.spawnCrash(crashTarget.worldX, crashTarget.worldY);
                         this.caches.push(crashCache);
                         if (mp) {
@@ -1678,6 +2435,16 @@ export class PlayingState {
                         spawnAnchor = liveBodies[Math.floor(Math.random() * liveBodies.length)];
                     }
                 }
+            } else if (this.localPlayers.length > 1) {
+                // Co-op mirrors MP: scale with pilot count, anchor on the wave
+                // target mid-wave else a random living pilot.
+                quantityMult = mpQuantityMult(this.localPlayers.length);
+                if (this.enemySpawner.waveQueue > 0 && this._coopWaveTarget && !this._coopWaveTarget.dead) {
+                    spawnAnchor = this._coopWaveTarget;
+                } else {
+                    const live = this.localPlayers.filter(s => s.player && !s.player.dead);
+                    if (live.length) spawnAnchor = live[Math.floor(Math.random() * live.length)].player;
+                }
             }
             const newEnemies = this.enemySpawner.update(
                 dt, spawnAnchor.worldX, spawnAnchor.worldY,
@@ -1740,11 +2507,33 @@ export class PlayingState {
         if (this.flashTimer > 0) {
             this.flashTimer -= dt;
         }
+        // Per-pilot pane flashes (co-op): sacrifice / jackpot on a single pilot.
+        if (this.localPlayers.length > 1) {
+            for (const s of this.localPlayers) {
+                if (s._flash && s._flash.timer > 0) s._flash.timer -= dt;
+            }
+        }
 
         // Cinematic effects tick with the world (multiplayer: never pauses;
         // single player: freezes with the world under menus, like the flash).
         this.cinematics.update(dt);
-        this.killStreak.update(dt);
+        if (this.localPlayers.length > 1) {
+            // Co-op: tick every pilot's streak. Audio corruption is global, so
+            // each pilot updates with applyAudio=false and we set it once from
+            // the loudest pilot's CRT intensity.
+            let maxFx = 0;
+            for (const _kslp of this.localPlayers) {
+                const ks = _kslp.killStreak;
+                if (!ks) continue;
+                ks.update(dt, false);
+                if (ks.fxIntensity > maxFx) maxFx = ks.fxIntensity;
+            }
+            if (this.game.sounds && this.game.sounds.setAudioCorruption) {
+                this.game.sounds.setAudioCorruption(maxFx);
+            }
+        } else {
+            this.killStreak.update(dt);
+        }
         this.dread.update(dt);
         this.ambience.update(dt);
 
@@ -1765,15 +2554,19 @@ export class PlayingState {
             this._scrapRoll.t += dt;
             if (this._scrapRoll.t >= 0.8) this._scrapRoll = null;
         }
-        for (let i = this.readyAbsorb.length - 1; i >= 0; i--) {
-            const p = this.readyAbsorb[i];
-            p.delay -= dt;
-            if (p.delay > 0) continue;
-            p.speed += 380 * dt;      // accelerating pull
-            p.dist -= p.speed * dt;
-            if (p.dist <= 6) {
-                this.readyAbsorb[i] = this.readyAbsorb[this.readyAbsorb.length - 1];
-                this.readyAbsorb.pop();
+        for (const _ralp of this.localPlayers) {
+            const arr = _ralp.player._readyAbsorb;
+            if (!arr || arr.length === 0) continue;
+            for (let i = arr.length - 1; i >= 0; i--) {
+                const p = arr[i];
+                p.delay -= dt;
+                if (p.delay > 0) continue;
+                p.speed += 380 * dt;      // accelerating pull
+                p.dist -= p.speed * dt;
+                if (p.dist <= 6) {
+                    arr[i] = arr[arr.length - 1];
+                    arr.pop();
+                }
             }
         }
 
@@ -1821,9 +2614,10 @@ export class PlayingState {
         // Multiplayer host: each enemy hunts whichever pilot is closest.
         // Clients don't run AI at all — replicas are driven by snapshots.
         const enemyTarget = (e) => {
-            if (!mp || !bodies || bodies.length === 0) return this.player;
+            const bs = bodies || coopBodies;
+            if (!bs || bs.length === 0) return this.player;
             let best = this.player, bestD = Infinity;
-            for (const b of bodies) {
+            for (const b of bs) {
                 const dx = b.worldX - e.worldX, dy = b.worldY - e.worldY;
                 const d = dx * dx + dy * dy;
                 if (d < bestD) { bestD = d; best = b; }
@@ -1941,8 +2735,9 @@ export class PlayingState {
             const cullRange = 3000 * this.currentFovMult;
             const cullRangeSq = cullRange * cullRange;
             const nearAnyBody = (x, y) => {
-                if (mp && bodies && bodies.length) {
-                    for (const b of bodies) {
+                const bs = (mp && bodies && bodies.length) ? bodies : coopBodies;
+                if (bs && bs.length) {
+                    for (const b of bs) {
                         const dx = x - b.worldX, dy = y - b.worldY;
                         if (dx * dx + dy * dy < cullRangeSq) return true;
                     }
@@ -1980,7 +2775,7 @@ export class PlayingState {
         // garbage collection — running it twice a second instead of every
         // frame skips ~300 Set inserts per frame with no observable change.
         this._indicatorSweepTimer = (this._indicatorSweepTimer || 0) - dt;
-        if (this.indicatorOpacities.size > 0 && this._indicatorSweepTimer <= 0) {
+        if (this._indicatorSweepTimer <= 0) {
             this._indicatorSweepTimer = 0.5;
             const liveEntities = new Set();
             for (const e of this.enemies) liveEntities.add(e);
@@ -1995,16 +2790,23 @@ export class PlayingState {
             if (this.netSync) {
                 for (const rp of this.netSync.remotePlayers.values()) liveEntities.add(rp);
             }
-            for (const entity of this.indicatorOpacities.keys()) {
-                if (!liveEntities.has(entity)) {
-                    this.indicatorOpacities.delete(entity);
+            // Local co-op pilots are teammate-dot keys in each pane's store.
+            for (const s of this.localPlayers) liveEntities.add(s.player);
+            const purge = (map) => {
+                if (!map || map.size === 0) return;
+                for (const entity of map.keys()) {
+                    if (!liveEntities.has(entity)) map.delete(entity);
                 }
-            }
+            };
+            purge(this.indicatorOpacities);
+            // Co-op: each pilot keeps its own per-pane enemy-marker fade store.
+            for (const slot of this.localPlayers) purge(slot._indMap);
         }
 
         // Magnet anchor: in multiplayer a pickup vacuums toward whichever
         // pilot is closest (so loot doesn't fly across the screen to the wrong
         // ship); collection itself is still strictly local + host-arbitrated.
+        const coop = !mp && this.localPlayers.length > 1;
         const magnetTargetFor = (ent) => {
             if (mp && bodies && bodies.length) {
                 let best = null, bestD = Infinity;
@@ -2017,6 +2819,9 @@ export class PlayingState {
                 }
                 return best;
             }
+            // Local co-op: loot vacuums toward (and is collected by) the nearest
+            // living pilot, so each pilot keeps its own economy.
+            if (coop) return this._coopNearestPilot(ent);
             return (!this.player.isWarping && !this.isDead) ? this.player : null;
         };
         const canCollect = !this.player.isWarping && !this.isDead;
@@ -2055,8 +2860,20 @@ export class PlayingState {
                 s.update(dt, -99999, -99999); // drift only
             }
 
-            // Collection collision — local pilot only
-            if (canCollect && s.alive) {
+            // Collection collision — co-op: nearest pilot in range collects.
+            if (coop && s.alive) {
+                const collector = this._coopCollectorFor(s, s.collectRange);
+                if (collector) {
+                    s.alive = false;
+                    collector.scrap += s.value;
+                    this.stats.scrapCollected += s.value;
+                    if (this.game.achievements) {
+                        this.game.achievements.notify('scrap_collected', { amount: s.value });
+                    }
+                    this.game.sounds.play('scrap', { volume: 0.4, x: s.worldX, y: s.worldY });
+                    this.spawnFloatingText(s.worldX, s.worldY, `+${s.value}`, '#ffff00');
+                }
+            } else if (canCollect && s.alive) {
                 const dx = s.worldX - this.player.worldX;
                 const dy = s.worldY - this.player.worldY;
                 const collectRange = (s.collectRange + this.player.radius);
@@ -2104,8 +2921,24 @@ export class PlayingState {
                 it.update(dt, -99999, -99999); // Pass dummy coords to prevent magnetization
             }
 
-            // Collection collision — local pilot only
-            if (canCollect && it.alive) {
+            // Collection collision — co-op: nearest pilot in range collects to
+            // its own inventory (leashes to that pilot if full).
+            if (coop && it.alive && (it.pickupDelay || 0) <= 0) {
+                const collector = this._coopCollectorFor(it, it.collectRange);
+                if (collector) {
+                    if (collector.inventory.autoAdd(it.item)) {
+                        it.alive = false;
+                        this.game.sounds.play('select', 0.5);
+                        if (this.game.achievements) {
+                            this.game.achievements.notify('upgrade_collected', { item: it.item });
+                        }
+                        this._onInventoryChanged(collector);
+                        this.celebratePickup(it.item, collector);
+                    } else {
+                        it.markEncountered(collector.worldX, collector.worldY);
+                    }
+                }
+            } else if (canCollect && it.alive) {
                 const dx = it.worldX - this.player.worldX;
                 const dy = it.worldY - this.player.worldY;
                 const collectRange = (it.collectRange + this.player.radius);
@@ -2158,8 +2991,11 @@ export class PlayingState {
             // ride the follow-leash and despawn on their own timer). Host-only
             // in multiplayer; clients mirror the host's despawn broadcasts.
             if (!it.encountered && isNetHost) {
-                const ddx = it.worldX - this.player.worldX;
-                const ddy = it.worldY - this.player.worldY;
+                // Despawn when far from the nearest relevant pilot (any local
+                // pilot in co-op, any networked body in MP).
+                const anchor = coop ? (this._coopNearestPilot(it) || this.player) : this.player;
+                const ddx = it.worldX - anchor.worldX;
+                const ddy = it.worldY - anchor.worldY;
                 if (ddx * ddx + ddy * ddy > 4000 * 4000 && (!mp || !this._anyBodyNear(it.worldX, it.worldY, 4000))) {
                     it.alive = false;
                 }
@@ -2181,17 +3017,42 @@ export class PlayingState {
                     if (!target && !this.net.players.has(orb.ownerPid)) orb.ownerPid = null;
                 }
             }
+            // Co-op: XP belongs to the pilot who landed the kill — the orb homes to
+            // and is collected only by them (it comes to you; no chasing). If that
+            // pilot is gone, the orb falls back to "up for grabs" (nearest pilot).
+            const coopOwned = coop && orb._coopOwner && !orb._coopOwner.dead;
+            if (coopOwned) target = orb._coopOwner;
             if (!target) target = magnetTargetFor(orb) || this.player;
             orb.update(dt, target.worldX, target.worldY);
 
             // Collection collision — local pilot only (and only OUR orbs when owned)
             const canTakeOrb = !owned || orb.ownerPid === this.netSync.myPid;
-            const dx = orb.worldX - this.player.worldX;
-            const dy = orb.worldY - this.player.worldY;
+            // Co-op: distance/despawn anchor is the nearest pilot (the magnet target).
+            const anchor = coop ? (target || this.player) : this.player;
+            const dx = orb.worldX - anchor.worldX;
+            const dy = orb.worldY - anchor.worldY;
             const distSq = dx * dx + dy * dy;
             const collectRange = (orb.collectRange + this.player.radius);
 
-            if (canCollect && canTakeOrb && orb.alive && distSq < collectRange * collectRange) {
+            if (coop && orb.alive) {
+                // Owned → only the killer collects (in range). Unowned → nearest pilot.
+                let collector = null;
+                if (coopOwned) {
+                    const o = orb._coopOwner;
+                    const odx = orb.worldX - o.worldX, ody = orb.worldY - o.worldY;
+                    const rng = orb.collectRange + o.radius;
+                    if (!o.isWarping && odx * odx + ody * ody < rng * rng) collector = o;
+                } else {
+                    collector = this._coopCollectorFor(orb, orb.collectRange);
+                }
+                if (collector) {
+                    orb.alive = false;
+                    const finalExp = Math.ceil(orb.amount * (collector.experienceCondenserMult || 1.0));
+                    collector.addExp(finalExp);
+                    this.game.sounds.play('exp', { volume: 0.15, x: orb.worldX, y: orb.worldY });
+                    this.spawnFloatingText(orb.worldX + (Math.random() - 0.5) * 20, orb.worldY + (Math.random() - 0.5) * 20, `+${finalExp} XP`, '#915dbf');
+                }
+            } else if (canCollect && canTakeOrb && orb.alive && distSq < collectRange * collectRange) {
                 if (mp) {
                     if (this.netSync.isHost) {
                         if (this.netSync.localTake(orb)) {
@@ -2246,7 +3107,7 @@ export class PlayingState {
                     // Replicated visual shots stop on rocks but deal no damage
                     // (the shooter's own machine reports the real hit).
                     if (!proj.netVisual) {
-                        if (this._routeDamage(ast, proj.damage, proj.worldX, proj.worldY)) {
+                        if (this._routeDamage(ast, proj.damage, proj.worldX, proj.worldY, proj.owner)) {
                             this._onEntityDestroyed(ast);
                         } else {
                             this._triggerShakeAt(proj.worldX, proj.worldY, 0.4);
@@ -2272,7 +3133,7 @@ export class PlayingState {
                         }
                     }
                     // Player-only Explosives Unit vs Shared Rockets
-                    if (!proj.netVisual && ((proj.owner === this.player && this.player.hasExplosivesUnit) || proj.isRocket)) {
+                    if (!proj.netVisual && ((this._isLocalShot(proj) && proj.owner.hasExplosivesUnit) || proj.isRocket)) {
                         this._spawnExplosion(proj.worldX, proj.worldY, proj.damage * 0.5);
                     }
                     break;
@@ -2280,8 +3141,8 @@ export class PlayingState {
             }
             if (!proj.alive) continue;
 
-            // Player projectiles vs Enemies/Events
-            if (proj.owner === this.player) {
+            // Player projectiles vs Enemies/Events (any local pilot's shot)
+            if (this._isLocalShot(proj)) {
                 // vs Events
                 for (const ev of this.events) {
                     if (!ev.alive || ev.blocksProjectiles === false) continue;
@@ -2289,7 +3150,7 @@ export class PlayingState {
                     // events without a fitted hitbox); grown by the shot radius.
                     if (ellipseSweep(ev, proj, proj.radius)) {
                         proj.alive = false;
-                        if (this._routeDamage(ev, proj.damage, proj.worldX, proj.worldY)) {
+                        if (this._routeDamage(ev, proj.damage, proj.worldX, proj.worldY, proj.owner)) {
                             this._onEntityDestroyed(ev);
                         } else {
                             this._triggerShakeAt(proj.worldX, proj.worldY, 0.6);
@@ -2300,7 +3161,7 @@ export class PlayingState {
                                 }
                             }
                         }
-                        if (this.player.hasExplosivesUnit || proj.isRocket) {
+                        if ((proj.owner && proj.owner.hasExplosivesUnit) || proj.isRocket) {
                             this._spawnExplosion(proj.worldX, proj.worldY, proj.damage * 0.5);
                         }
                         break;
@@ -2332,7 +3193,7 @@ export class PlayingState {
                                 this._spawnSparks(en.worldX, en.worldY, 14, { color: '#44ddff', speedMin: 160, speedMax: 420 });
                                 this.cinematics.spawnRing(en.worldX, en.worldY, { color: '#44ddff', maxR: Math.round(en.radius * 2.2), dur: 0.4, width: 4 });
                             }
-                            if (this.player.hasExplosivesUnit || proj.isRocket) {
+                            if ((proj.owner && proj.owner.hasExplosivesUnit) || proj.isRocket) {
                                 this._spawnExplosion(proj.worldX, proj.worldY, proj.damage * 0.5);
                             }
                             break;
@@ -2342,72 +3203,79 @@ export class PlayingState {
                             dir: Math.atan2(proj.worldY - en.worldY, proj.worldX - en.worldX),
                             spread: Math.PI * 0.9, color: '#fff2b0'
                         });
-                        if (this._routeDamage(en, proj.damage, proj.worldX, proj.worldY)) {
+                        if (this._routeDamage(en, proj.damage, proj.worldX, proj.worldY, proj.owner)) {
                             this.cinematics.deathPop(en);
                             this._onEntityDestroyed(en);
                         } else {
                             this._triggerShakeAt(proj.worldX, proj.worldY, 0.5);
                         }
-                        if (this.player.hasExplosivesUnit || proj.isRocket) {
+                        if ((proj.owner && proj.owner.hasExplosivesUnit) || proj.isRocket) {
                             this._spawnExplosion(proj.worldX, proj.worldY, proj.damage * 0.5);
                         }
                         break;
                     }
                 }
             }
-            // Enemy projectiles vs Player. `friendly` covers other players'
-            // replicated shots — teammates can never hit each other.
-            else if (proj.owner !== this.player && !proj.friendly && !this.isDead) {
-                const dx = proj.worldX - this.player.worldX;
-                const dy = proj.worldY - this.player.worldY;
-                const cr = proj.radius + this.player.radius;
+            // Enemy projectiles vs Player(s). `friendly` covers players' own +
+            // replicated shots — teammates can never hit each other. Co-op: test
+            // every live local pilot; the first hit consumes the shot.
+            else if (!proj.friendly && !this.isDead) {
+                for (const _lp of this.localPlayers) {
+                    const pl = _lp.player;
+                    if (proj.owner === pl || pl.dead) continue;
+                    const dx = proj.worldX - pl.worldX;
+                    const dy = proj.worldY - pl.worldY;
+                    const cr = proj.radius + pl.radius;
 
-                // Near-miss: a shot slipping just past the hull leaves a streak
-                if (!proj._nearMiss && dx * dx + dy * dy < cr * cr * 5.5) {
-                    proj._nearMiss = true;
-                    const va = Math.atan2(proj.vy || 0, proj.vx || 0);
-                    this._spawnSparks(proj.worldX, proj.worldY, 2,
-                        { dir: va, spread: 0.15, color: '#cfe8ff', speedMin: 320, speedMax: 520 });
-                }
+                    // Near-miss: a shot slipping just past the hull leaves a streak
+                    if (!proj._nearMiss && dx * dx + dy * dy < cr * cr * 5.5) {
+                        proj._nearMiss = true;
+                        const va = Math.atan2(proj.vy || 0, proj.vx || 0);
+                        this._spawnSparks(proj.worldX, proj.worldY, 2,
+                            { dir: va, spread: 0.15, color: '#cfe8ff', speedMin: 320, speedMax: 520 });
+                    }
 
-                // Broad-phase squared-distance check followed by pixel-perfect check
-                if (dx * dx + dy * dy < cr * cr) {
-                    if (this.player.checkPixelCollision(proj.worldX, proj.worldY)) {
+                    // Broad-phase squared-distance check followed by pixel-perfect check
+                    if (dx * dx + dy * dy < cr * cr && pl.checkPixelCollision(proj.worldX, proj.worldY)) {
                         proj.alive = false;
-                        this._damagePlayer(proj.damage, proj.worldX, proj.worldY); // proj.damage is already scaled in Enemy.shoot
+                        this._damagePlayer(proj.damage, proj.worldX, proj.worldY, pl); // proj.damage is already scaled in Enemy.shoot
                         this._spawnSparks(proj.worldX, proj.worldY, 7 + Math.floor(Math.random() * 4), {
-                            dir: Math.atan2(proj.worldY - this.player.worldY, proj.worldX - this.player.worldX),
+                            dir: Math.atan2(proj.worldY - pl.worldY, proj.worldX - pl.worldX),
                             spread: Math.PI * 0.9,
-                            color: this.player.shielding ? '#9fe8ff' : '#ff9a5a'
+                            color: pl.shielding ? '#9fe8ff' : '#ff9a5a'
                         });
 
-                        const kdx = this.player.worldX - proj.worldX;
-                        const kdy = this.player.worldY - proj.worldY;
+                        const kdx = pl.worldX - proj.worldX;
+                        const kdy = pl.worldY - proj.worldY;
                         const dist = Math.sqrt(kdx * kdx + kdy * kdy);
-                        this._applyKnockback(kdx, kdy, dist, 100);
+                        this._applyKnockback(kdx, kdy, dist, 100, pl);
 
                         // Play shield hit sound if shielding
-                        if (this.player.shielding) {
-                            this.game.sounds.play('shield', { volume: 0.5, x: this.player.worldX, y: this.player.worldY });
+                        if (pl.shielding) {
+                            this.game.sounds.play('shield', { volume: 0.5, x: pl.worldX, y: pl.worldY });
                         }
+                        break;
                     }
                 }
             }
         }
 
         // --- Collision: Player vs Everything (Physical) ---
-        if (!this.player.isWarping && !this.isDead) {
+        // Co-op: every live local pilot collides with the shared world.
+        for (const _lp of this.localPlayers) {
+            const pl = _lp.player;
+            if (pl.isWarping || pl.dead || this.isDead) continue;
             // Player vs Asteroids
             for (const ast of this.asteroids) {
                 if (!ast.alive) continue;
-                const dx = this.player.worldX - ast.worldX;
-                const dy = this.player.worldY - ast.worldY;
-                const cr = this.player.radius + ast.radius;
+                const dx = pl.worldX - ast.worldX;
+                const dy = pl.worldY - ast.worldY;
+                const cr = pl.radius + ast.radius;
                 if (dx * dx + dy * dy < cr * cr) {
-                    const wasPendingBellyFlop = this.player._pendingBellyFlop > 0;
+                    const wasPendingBellyFlop = pl._pendingBellyFlop > 0;
                     const dist = Math.sqrt(dx * dx + dy * dy);
-                    ast.onCollision(this.player);
-                    this._damagePlayer(ast.damage * this.player.lvlAsteroidResistanceMult, ast.worldX, ast.worldY);
+                    ast.onCollision(pl);
+                    this._damagePlayer(ast.damage * pl.lvlAsteroidResistanceMult, ast.worldX, ast.worldY, pl);
                     if (this.netSync && !this.netSync.isHost) {
                         // Replica: cosmetic shatter now, host arbitrates the kill + loot.
                         this.netSync.reportAsteroidRam(ast);
@@ -2416,14 +3284,14 @@ export class PlayingState {
                         ast.alive = false;
                         this._onEntityDestroyed(ast);
                     }
-                    this._applyKnockback(dx, dy, dist, 200);
-                    if (this.game.achievements) {
+                    this._applyKnockback(dx, dy, dist, 200, pl);
+                    if (this.game.achievements) { // any local pilot's ram counts
                         this.game.achievements.notify('asteroid_rammed');
                         // Belly Flop: this collision happened right after a
                         // blink landed inside an asteroid, AND it killed us.
-                        if (wasPendingBellyFlop && this.isDead) {
+                        if (wasPendingBellyFlop && pl.dead) {
                             this.game.achievements.notify('belly_flop_death');
-                            this.player._pendingBellyFlop = 0;
+                            pl._pendingBellyFlop = 0;
                         }
                     }
                 }
@@ -2432,43 +3300,44 @@ export class PlayingState {
             // Player vs Enemies (Ramming)
             for (const en of this.enemies) {
                 if (!en.alive || en.invulnTimer > 0 || en.dormant) continue;
-                const dx = this.player.worldX - en.worldX;
-                const dy = this.player.worldY - en.worldY;
+                const dx = pl.worldX - en.worldX;
+                const dy = pl.worldY - en.worldY;
                 // Player hull (circle of player.radius) vs enemy hull ellipse.
-                if (ellipseContains(en, this.player.worldX, this.player.worldY, this.player.radius)) {
+                if (ellipseContains(en, pl.worldX, pl.worldY, pl.radius)) {
                     const dist = Math.sqrt(dx * dx + dy * dy);
-                    this._damagePlayer(20, en.worldX, en.worldY); // Ramming hurts!
+                    this._damagePlayer(20, en.worldX, en.worldY, pl); // Ramming hurts!
                     if (this.netSync && !this.netSync.isHost) {
                         // Compute the contact damage we deal (shield capacitor
                         // builds hit harder) and let the host apply it.
                         let ramDmg = 20;
-                        if (this.player.shielding && this.player.shieldCapacitorCount > 0) {
-                            ramDmg = (20.0 + this.player.shieldCapacitorCount * 40.0) * (this.player.lvlShieldDamageMult || 1.0);
+                        if (pl.shielding && pl.shieldCapacitorCount > 0) {
+                            ramDmg = (20.0 + pl.shieldCapacitorCount * 40.0) * (pl.lvlShieldDamageMult || 1.0);
                         }
                         this.netSync.reportEnemyContact(en, ramDmg);
                         // Brief local invuln mirror so the replica can't re-ram every frame.
                         en.invulnTimer = Math.max(en.invulnTimer, 0.4);
                     } else {
                         if (this.netSync) en._lastDamageBy = this.netSync.myPid;
-                        en.onCollision(this.player);
+                        en._lastDamageByPilot = pl; // co-op: ram kill → this pilot's XP
+                        en.onCollision(pl);
                         if (!en.alive) this._onEntityDestroyed(en);
                     }
-                    this._applyKnockback(dx, dy, dist, 300);
+                    this._applyKnockback(dx, dy, dist, 300, pl);
                 }
             }
 
             // Player vs Events (Ramming)
             for (const ev of this.events) {
                 if (!ev.alive || ev.state !== CTHULHU_STATE.DORMANT) continue;
-                const dx = this.player.worldX - ev.worldX;
-                const dy = this.player.worldY - ev.worldY;
+                const dx = pl.worldX - ev.worldX;
+                const dy = pl.worldY - ev.worldY;
                 // Tighter trigger (half the player hull pad) so you have to nose
                 // well into it to wake it — matches the old inner-radius feel.
-                if (ellipseContains(ev, this.player.worldX, this.player.worldY, this.player.radius * 0.5)) {
+                if (ellipseContains(ev, pl.worldX, pl.worldY, pl.radius * 0.5)) {
                     const dist = Math.sqrt(dx * dx + dy * dy);
-                    this._damagePlayer(20, ev.worldX, ev.worldY);
+                    this._damagePlayer(20, ev.worldX, ev.worldY, pl);
                     this._routeDamage(ev, 1); // Triggers wake (host-arbitrated in MP)
-                    this._applyKnockback(dx, dy, dist, 600); // Big knockback from boss
+                    this._applyKnockback(dx, dy, dist, 600, pl); // Big knockback from boss
                 }
             }
         }
@@ -2533,9 +3402,11 @@ export class PlayingState {
         this._compactAlive(this.shops);
         this._compactAlive(this.caches);
 
-        // Update caches and discovery
+        // Update caches and discovery — against the NEAREST pilot so any pilot
+        // flying up to a cache discovers it (co-op); primary in single view.
         for (const c of this.caches) {
-            c.update(dt, this.player.worldX, this.player.worldY);
+            const cb = this._nearestPilotTo(c.worldX, c.worldY);
+            c.update(dt, cb.worldX, cb.worldY);
         }
 
         // Once the pending cache finishes its opening animation, show the UI
@@ -2547,12 +3418,21 @@ export class PlayingState {
                 this._pendingCache = null;
             }
         }
+        // Co-op: each pilot has their own pending cache → opens in their pane.
+        for (const lp of this.localPlayers) {
+            if (!lp._pendingCache) continue;
+            if (!lp._pendingCache.alive) {
+                lp._pendingCache = null;
+            } else if (lp._pendingCache.state === CACHE_STATE.OPEN) {
+                this._openCacheUI(lp._pendingCache, lp);
+                lp._pendingCache = null;
+            }
+        }
 
-        // Shop proximity discovery & tracking refresh
+        // Shop proximity discovery & tracking refresh — ANY pilot flying near a
+        // shop reveals it (co-op); primary in single view.
         for (const s of this.shops) {
-            const dx = s.worldX - this.player.worldX;
-            const dy = s.worldY - this.player.worldY;
-            if (dx * dx + dy * dy < 1200 * 1200) {
+            if (this._anyPilotWithin(s.worldX, s.worldY, 1200)) {
                 // If not revealed, or revealed but not the most recent one, refresh it
                 if (!s.revealed || this.revealedShops[this.revealedShops.length - 1] !== s) {
                     this._revealShop(s);
@@ -2561,10 +3441,25 @@ export class PlayingState {
         }
 
         // --- Encounter Spawning ---
-        // Track player distance traveled
-        const travelDx = this.player.worldX - this._lastPlayerX;
-        const travelDy = this.player.worldY - this._lastPlayerY;
-        this.playerDistanceTraveled += Math.sqrt(travelDx * travelDx + travelDy * travelDy);
+        // Track distance traveled. Co-op: use the FARTHEST-moving pilot this frame
+        // so any pilot's exploration drives encounter cadence (a stationary
+        // primary doesn't starve the others). Single view = primary's movement.
+        if (this.localPlayers.length > 1) {
+            let moved = 0;
+            for (const s of this.localPlayers) {
+                const pl = s.player; if (!pl) continue;
+                if (s._encLastX === undefined) { s._encLastX = pl.worldX; s._encLastY = pl.worldY; }
+                const dx = pl.worldX - s._encLastX, dy = pl.worldY - s._encLastY;
+                const d = Math.sqrt(dx * dx + dy * dy);
+                if (d > moved) moved = d;
+                s._encLastX = pl.worldX; s._encLastY = pl.worldY;
+            }
+            this.playerDistanceTraveled += moved;
+        } else {
+            const travelDx = this.player.worldX - this._lastPlayerX;
+            const travelDy = this.player.worldY - this._lastPlayerY;
+            this.playerDistanceTraveled += Math.sqrt(travelDx * travelDx + travelDy * travelDy);
+        }
         this._lastPlayerX = this.player.worldX;
         this._lastPlayerY = this.player.worldY;
 
@@ -2575,25 +3470,32 @@ export class PlayingState {
                 let encTarget = this.player;
                 if (mp && enc.netTargetPid !== undefined && enc.netTargetPid !== this.netSync.myPid) {
                     encTarget = this.netSync.remotePlayers.get(enc.netTargetPid) || this.player;
+                } else if (!mp && this.localPlayers.length > 1) {
+                    // Co-op: drive the encounter against the pilot it spawned for
+                    // (falls back to the nearest pilot if that pilot is gone).
+                    encTarget = (enc._coopTarget && !enc._coopTarget.dead)
+                        ? enc._coopTarget : this._nearestPilotTo(enc.worldX, enc.worldY);
                 }
                 enc.update(dt, encTarget);
             }
         }
 
-        // Spawn timer — scales with exploration, must have NO combatants visibly attacking
+        // Spawn timer — scales with exploration, must have NO combatants visibly
+        // attacking NEAR ANY pilot (co-op) so an encounter doesn't pop while a
+        // teammate is mid-fight elsewhere.
         let bossAlive2 = false;
         let enemiesOnScreen = false;
         const ws = this.game.worldScale;
         const halfVW = this.game.width / ws / 2 + 100;
         const halfVH = this.game.height / ws / 2 + 100;
-        const cx = this.camera.x, cy = this.camera.y;
+        const viewers = (coopBodies && coopBodies.length) ? coopBodies : [this.player];
         for (const e of this.enemies) {
             if (!e.alive) continue;
             if (e.isBoss) bossAlive2 = true;
             if (!enemiesOnScreen) {
-                const dx = e.worldX - cx, dy = e.worldY - cy;
-                if (dx > -halfVW && dx < halfVW && dy > -halfVH && dy < halfVH) {
-                    enemiesOnScreen = true;
+                for (const b of viewers) {
+                    const dx = e.worldX - b.worldX, dy = e.worldY - b.worldY;
+                    if (dx > -halfVW && dx < halfVW && dy > -halfVH && dy < halfVH) { enemiesOnScreen = true; break; }
                 }
             }
             if (bossAlive2 && enemiesOnScreen) break;
@@ -2602,11 +3504,13 @@ export class PlayingState {
         if (isNetHost && !bossAlive2 && !isEventActive && !enemiesOnScreen && this.encounters.length === 0) {
             this.encounterSpawnTimer -= dt;
             if (this.encounterSpawnTimer <= 0) {
-                // Multiplayer: the visitor seeks out a random living pilot.
+                // The visitor seeks out a random living pilot (MP and co-op).
                 let encAnchor = null;
                 if (mp) {
                     const liveBodies = this.netSync.playerBodies();
                     if (liveBodies.length) encAnchor = liveBodies[Math.floor(Math.random() * liveBodies.length)];
+                } else if (this.localPlayers.length > 1) {
+                    encAnchor = this._nextWavePilot();
                 }
                 this._spawnEncounter(undefined, encAnchor);
                 // Frequency scales with exploration: more travel/events/shops = shorter wait
@@ -2632,6 +3536,10 @@ export class PlayingState {
             killerPid = entity._lastDamageBy !== undefined ? entity._lastDamageBy : this.netSync.myPid;
         }
         const killerIsLocal = !mp || killerPid === this.netSync.myPid;
+        // Co-op: the local pilot who landed the kill (for XP attribution +
+        // loot drill roll). Falls back to the primary if untracked.
+        const coop = !mp && this.localPlayers.length > 1;
+        const killerPilot = coop ? (entity._lastDamageByPilot || this.player) : this.player;
 
         this._triggerShakeAt(entity.worldX, entity.worldY, entity instanceof Asteroid ? 1.5 : 1.8);
         this.game.sounds.play(entity instanceof Asteroid ? 'asteroid_break' : 'ship_explode', { volume: 0.4, x: entity.worldX, y: entity.worldY });
@@ -2662,14 +3570,15 @@ export class PlayingState {
                 if (this.game.achievements) {
                     this.game.achievements.notify('asteroid_destroyed', {
                         entity,
-                        playerShieldBroken: this.player.shieldBroken && !this.player.shielding
+                        playerShieldBroken: killerPilot.shieldBroken && !killerPilot.shielding
                     });
                 }
             }
         } else if (!(entity instanceof CthulhuEvent) && !(entity instanceof CargoShipEvent)) {
             if (killerIsLocal) {
                 this.stats.enemiesDefeated++;
-                this.killStreak.onKill(entity);
+                // Co-op: the streak belongs to whichever pilot landed the kill.
+                (killerPilot.killStreak || this.killStreak).onKill(entity);
                 if (this.game.achievements) {
                     this.game.achievements.notify('enemy_killed', { entity });
                 }
@@ -2683,15 +3592,23 @@ export class PlayingState {
                 const rp = this.netSync.remotePlayers.get(killerPid);
                 entity._killerDrillMult = rp ? (rp.asteroidDrillMult || 1.0) : 1.0;
             }
+        } else if (coop && entity instanceof Asteroid) {
+            // Co-op: the pilot who broke it rolls the scrap (collection itself is
+            // still no-ownership — nearest pilot vacuums it up).
+            entity._killerDrillMult = killerPilot.asteroidDrillMult || 1.0;
         }
 
         const spawns = entity.getSpawnOnDeath();
         const gameplaySpawns = mp ? [] : null;
-        // Multiplayer: EXP belongs to whoever landed the final blow — the orbs
-        // home to and can only be collected by the killer.
+        // EXP belongs to whoever landed the final blow — the orbs home to and can
+        // only be collected by the killer (MP: ownerPid; co-op: _coopOwner pilot).
         if (mp) {
             for (const s of spawns) {
                 if (s instanceof ExpOrb) s.ownerPid = killerPid;
+            }
+        } else if (coop) {
+            for (const s of spawns) {
+                if (s instanceof ExpOrb) s._coopOwner = killerPilot;
             }
         }
         let enemySpawns = null;
@@ -2723,7 +3640,9 @@ export class PlayingState {
 
     // Every pilot's ship as a targetable "body" (single player: just you).
     getPlayerBodies() {
-        return this.netSync ? this.netSync.playerBodies() : [this.player];
+        if (this.netSync) return this.netSync.playerBodies();
+        if (this.localPlayers.length > 1) return this.localPlayers.map(lp => lp.player);
+        return [this.player];
     }
 
     // Enemy scrap drops scale with lobby size (read by getSpawnOnDeath rolls
@@ -2754,13 +3673,16 @@ export class PlayingState {
     // Route damage from a host-side world check to whichever pilot it hit.
     damagePlayerBody(body, amount, x, y) {
         if (this.netSync) this.netSync.damagePlayerBody(body, amount, x, y);
-        else this._damagePlayer(amount, x, y);
+        else this._damagePlayer(amount, x, y, body); // co-op: hit the right pilot, not always primary
     }
 
     // Local damage to a (possibly replicated) world entity. Returns true if it
     // died — on multiplayer clients that's always false; the host's KILL
     // message is what actually destroys things.
-    _routeDamage(ent, amount, hitX, hitY) {
+    // `attacker` (co-op): the local pilot dealing this damage — recorded so the
+    // kill's XP can be attributed to whoever lands it.
+    _routeDamage(ent, amount, hitX, hitY, attacker) {
+        if (attacker) ent._lastDamageByPilot = attacker;
         if (this.netSync) return this.netSync.damageEntity(ent, amount, hitX, hitY);
         return ent.hit(amount);
     }
@@ -2796,11 +3718,16 @@ export class PlayingState {
 
     // Host: run one pilot's asteroid spawner, vetoing rocks that would pop
     // into existence inside another pilot's view bubble ("blob" spawning).
+    // Spawns a per-pilot asteroid field, vetoing rocks that would pop inside
+    // another pilot's no-spawn bubble. Works for MP (netSync bodies) AND local
+    // co-op (local pilot bodies, no network registration).
     _mpSpawnAsteroidsFor(dt, spawner, body, mult) {
         const spawned = spawner.update(dt, body.worldX, body.worldY, body.vx || 0, body.vy || 0, mult || 1.0);
         if (!spawned.length) return;
         const NO_SPAWN_R = 1500;
-        const bodies = this.netSync.playerBodies();
+        const bodies = this.netSync
+            ? this.netSync.playerBodies()
+            : this.localPlayers.filter(s => s.player && !s.player.dead).map(s => s.player);
         for (const ast of spawned) {
             let vetoed = false;
             for (const b of bodies) {
@@ -2810,7 +3737,7 @@ export class PlayingState {
             }
             if (vetoed) continue;
             this.asteroids.push(ast);
-            this.netSync.registerAsteroid(ast);
+            if (this.netSync) this.netSync.registerAsteroid(ast);
         }
     }
 
@@ -3544,89 +4471,164 @@ export class PlayingState {
         this.game.sounds.startMusic();
     }
 
-    _damagePlayer(amount, hitX, hitY) {
-        if (this.player.invulnTimer > 0 || this.isDead || this.bossDeathImmunityTimer > 0) return;
+    // Per-camera FOV zoom (co-op extra pilots). Mirrors the primary's speed-based
+    // zoom math, but stored on the camera (camera._fovMult / scaleModifier) and
+    // without touching the global worldScale shim.
+    _updateCameraFov(dt, camera, player) {
+        const speed = Math.sqrt(player.vx * player.vx + player.vy * player.vy);
+        const speedFovMult = 1.0 + Math.min(1.0, speed / 2000) * 0.3;
+        const fovUpgradeMult = (player.itemFovMult || 1.0) * (player.lvlFovMult || 1.0);
+        const target = fovUpgradeMult * speedFovMult;
+        const cur = camera._fovMult || 1.0;
+        camera._fovMult = cur + (target - cur) * dt * 5.0;
+        const targetScale = 1.0 / camera._fovMult;
+        camera.scaleModifier += (targetScale - camera.scaleModifier) * (1.0 - Math.exp(-4.0 * dt));
+        const currentMean = Math.sqrt(this.game.width * this.game.height);
+        const refMean = Math.sqrt(2560 * 1440);
+        camera.scale = Math.max(0.1, (2 * (currentMean / refMean)) * camera.scaleModifier);
+    }
+
+    // Co-op: a pilot's health hit 0. Last pilot down → full game over (reuses the
+    // single-player death sequence). Otherwise mark this pilot down; it respawns
+    // near a living teammate after a short delay.
+    _killLocalPilot(p) {
+        p.dead = true;
+        p.alive = false;
+        const living = this.localPlayers.reduce((c, lp) => c + (lp.player.dead ? 0 : 1), 0);
+        if (this.localPlayers.length <= 1 || living === 0) {
+            this._triggerDeath();
+        } else {
+            p.respawnTimer = 5.0;
+            p.shielding = false;
+            p.shieldEnergy = 0;
+            this.game.sounds.play('ship_explode', { volume: 0.6, x: p.worldX, y: p.worldY });
+            this.spawnFloatingText(p.worldX, p.worldY, 'DOWN', '#ff5544');
+            // Localized blow-up at the downed pilot (they respawn shortly) + a
+            // shake on THEIR pane.
+            this._spawnSparks(p.worldX, p.worldY, 20, { color: '#ffb24a', speedMin: 120, speedMax: 460 });
+            this.cinematics.spawnRing(p.worldX, p.worldY, { color: '#ff7744', maxR: 160, dur: 0.5, width: 4 });
+            this._pilotCamera(p).shake(2.5, 10.0);
+        }
+    }
+
+    _respawnLocalPilot(p) {
+        // Respawn beside the NEAREST living teammate.
+        let ally = null, bestD = Infinity;
+        for (const lp of this.localPlayers) {
+            if (lp.player === p || lp.player.dead) continue;
+            const dx = lp.player.worldX - p.worldX, dy = lp.player.worldY - p.worldY;
+            const d = dx * dx + dy * dy;
+            if (d < bestD) { bestD = d; ally = lp; }
+        }
+        if (!ally) return; // none alive → game over handled by _killLocalPilot
+        p.dead = false;
+        p.alive = true;
+        p.health = p.maxHealth;
+        p.shieldEnergy = p.maxShieldEnergy;
+        p.shieldBroken = false;
+        p.invulnTimer = 2.0;
+        p.worldX = ally.player.worldX + (Math.random() - 0.5) * 200;
+        p.worldY = ally.player.worldY + (Math.random() - 0.5) * 200;
+        p.vx = 0; p.vy = 0;
+        // Snap their pane camera to the respawn point so it doesn't pan across.
+        const cam = this._pilotCamera(p);
+        if (cam && cam.snapTo) cam.snapTo(p);
+        this.spawnFloatingText(p.worldX, p.worldY, 'RESPAWN', '#9fe8ff');
+    }
+
+    _damagePlayer(amount, hitX, hitY, player) {
+        const p = player || this.player;
+        if (p.invulnTimer > 0 || p.dead || this.isDead || this.bossDeathImmunityTimer > 0) return;
 
         // Cap damage at 1/5th of max health per instance
-        const finalAmount = Math.min(amount, this.player.maxHealth / 5);
+        const finalAmount = Math.min(amount, p.maxHealth / 5);
+        const isPrimary = (p === this.player);
+        // Per-pilot in co-op: shake the HIT pilot's pane camera, fire feedback for
+        // that pilot. (SP/MP: just the primary — identical to before.)
+        const isLocalPilot = this.localPlayers.length > 1
+            ? this.localPlayers.some(s => s.player === p) : isPrimary;
+        const cam = this._pilotCamera(p);
 
-        if (this.game.achievements) {
+        if (this.game.achievements && isLocalPilot) {
             this.game.achievements.notify('player_damaged', {
                 amount: finalAmount,
-                shielded: !!this.player.shielding
+                shielded: !!p.shielding
             });
         }
 
-        if (this.player.shielding) {
-            this.spawnFloatingText(this.player.worldX, this.player.worldY, `-${Math.ceil(finalAmount)}`, '#44ddff');
-            this.player.shieldEnergy -= finalAmount * 5;
-            // Ripple flare on the bubble rim at the impact angle
-            if (hitX !== undefined && this.shieldRipples.length < 6) {
+        if (p.shielding) {
+            this.spawnFloatingText(p.worldX, p.worldY, `-${Math.ceil(finalAmount)}`, '#44ddff');
+            p.shieldEnergy -= finalAmount * 5;
+            // Ripple flare on the bubble rim at the impact angle. Tagged with the
+            // hit pilot so the post-fx ripples only that pilot's pane (co-op).
+            if (isLocalPilot && hitX !== undefined && this.shieldRipples.length < 8) {
                 this.shieldRipples.push({
-                    angle: Math.atan2(hitY - this.player.worldY, hitX - this.player.worldX),
-                    t: 0
+                    angle: Math.atan2(hitY - p.worldY, hitX - p.worldX),
+                    t: 0,
+                    player: p
                 });
             }
-            if (this.player.shieldEnergy <= 0) {
-                this.player.shieldEnergy = 0;
-                this.player.shieldBroken = true;
-                this.player.shielding = false;
-                this.camera.shake(3.0, 8.0); // Big impact for shield break
-                this.game.sounds.play('shield_break', { volume: 0.7, x: this.player.worldX, y: this.player.worldY });
+            if (p.shieldEnergy <= 0) {
+                p.shieldEnergy = 0;
+                p.shieldBroken = true;
+                p.shielding = false;
+                cam.shake(3.0, 8.0); // Big impact for shield break (this pilot's pane)
+                this.game.sounds.play('shield_break', { volume: 0.7, x: p.worldX, y: p.worldY });
                 // The bubble shatters: shard burst + ring sized to the bubble
-                this.shieldRipples.length = 0;
-                this._spawnSparks(this.player.worldX, this.player.worldY, 14,
+                this.shieldRipples = this.shieldRipples.filter(r => r.player !== p);
+                this._spawnSparks(p.worldX, p.worldY, 14,
                     { color: '#44ddff', speedMin: 160, speedMax: 420 });
-                this.cinematics.spawnRing(this.player.worldX, this.player.worldY,
-                    { color: '#44ddff', maxR: Math.round(this.player.shieldRadius * 1.25), dur: 0.4, width: 4 });
+                this.cinematics.spawnRing(p.worldX, p.worldY,
+                    { color: '#44ddff', maxR: Math.round(p.shieldRadius * 1.25), dur: 0.4, width: 4 });
             } else {
-                this.camera.shake(0.4, 15.0); // Subtle hit feedback
-                this.game.sounds.play('asteroid_break', { volume: 0.3, x: this.player.worldX, y: this.player.worldY }); // Shield hit sound
+                cam.shake(0.4, 15.0); // Subtle hit feedback (this pilot's pane)
+                this.game.sounds.play('asteroid_break', { volume: 0.3, x: p.worldX, y: p.worldY }); // Shield hit sound
             }
         } else {
-            this.spawnFloatingText(this.player.worldX, this.player.worldY, `-${Math.ceil(finalAmount)}`, '#ff4444');
+            this.spawnFloatingText(p.worldX, p.worldY, `-${Math.ceil(finalAmount)}`, '#ff4444');
             // Overheal soaks damage before normal health.
             let dmgRemaining = finalAmount;
-            if (this.player.overheal > 0) {
-                const absorbed = Math.min(this.player.overheal, dmgRemaining);
-                this.player.overheal -= absorbed;
+            if (p.overheal > 0) {
+                const absorbed = Math.min(p.overheal, dmgRemaining);
+                p.overheal -= absorbed;
                 dmgRemaining -= absorbed;
             }
-            this.player.health -= dmgRemaining;
+            p.health -= dmgRemaining;
             // Increased with damage slightly, but with diminishing returns (sqrt)
-            this.camera.shake(Math.sqrt(finalAmount) * 1.2, 15.0);
-            this.game.sounds.play('ship_explode', { volume: 0.5, x: this.player.worldX, y: this.player.worldY });
+            cam.shake(Math.sqrt(finalAmount) * 1.2, 15.0); // this pilot's pane
+            this.game.sounds.play('ship_explode', { volume: 0.5, x: p.worldX, y: p.worldY });
 
-            if (this.player.health <= 0) {
-                if (this.player.hasSacrifice && !this.yellowOneEnraged) {
-                    this.player.hasSacrifice = false; // Consume it
-                    this.spawnFloatingText(this.player.worldX, this.player.worldY, `+${Math.ceil(this.player.maxHealth)}`, '#44ff44');
-                    this.player.health = this.player.maxHealth;
-                    this.player.shieldEnergy = this.player.maxShieldEnergy;
-                    this.player.shieldBroken = false;
-                    this.player.invulnTimer = 3.0; // Extra invuln duration
-                    this.triggerFlash('#b400ff', 1.2, 0.6); // Dramatic purple flash
-                    this.game.sounds.play('shield', { volume: 1.0, x: this.player.worldX, y: this.player.worldY });
+            if (p.health <= 0) {
+                if (p.hasSacrifice && !this.yellowOneEnraged) {
+                    p.hasSacrifice = false; // Consume it
+                    this.spawnFloatingText(p.worldX, p.worldY, `+${Math.ceil(p.maxHealth)}`, '#44ff44');
+                    p.health = p.maxHealth;
+                    p.shieldEnergy = p.maxShieldEnergy;
+                    p.shieldBroken = false;
+                    p.invulnTimer = 3.0; // Extra invuln duration
+                    this._flashPilot(p, '#b400ff', 1.2, 0.6); // Dramatic purple flash (their pane)
+                    this.game.sounds.play('shield', { volume: 1.0, x: p.worldX, y: p.worldY });
 
-                    // Also need to remove the Sacrifice item from inventory
-                    this._removeSacrificeItem();
-                } else if (this.yellowOneEnraged) {
+                    // Also need to remove the Sacrifice item from THIS pilot's inventory
+                    this._removeSacrificeItem(p);
+                } else if (this.yellowOneEnraged && isPrimary) {
                     // Yellow One enraged phase: cutscene handles death, don't trigger normal death
-                    this.player.health = 0;
+                    p.health = 0;
                 } else {
-                    this.player.health = 0;
-                    this._triggerDeath();
+                    p.health = 0;
+                    this._killLocalPilot(p);
                 }
             }
         }
 
-        this.player.invulnTimer = this.player.invulnDuration;
+        p.invulnTimer = p.invulnDuration;
     }
 
-    _applyKnockback(dx, dy, dist, str) {
+    _applyKnockback(dx, dy, dist, str, player) {
+        const p = player || this.player;
         if (dist > 0) {
-            this.player.vx += (dx / dist) * str;
-            this.player.vy += (dy / dist) * str;
+            p.vx += (dx / dist) * str;
+            p.vy += (dy / dist) * str;
         }
     }
 
@@ -3950,10 +4952,13 @@ export class PlayingState {
     // Boost/blink ready: energy motes materialize around the ship and get
     // pulled into the hull. Positions are ship-relative (angle + shrinking
     // distance), so the effect tracks the ship at any speed.
-    _spawnReadyAbsorb() {
-        if (this.readyAbsorb.length > 40) return;
+    _spawnReadyAbsorb(player = this.player) {
+        // Per-pilot: motes live on the pilot whose drive just charged, so in
+        // split-screen only that pilot's pane shows the absorb effect.
+        const arr = player._readyAbsorb || (player._readyAbsorb = []);
+        if (arr.length > 40) return;
         for (let i = 0; i < 14; i++) {
-            this.readyAbsorb.push({
+            arr.push({
                 angle: Math.random() * Math.PI * 2,
                 dist: 55 + Math.random() * 35,
                 speed: 110 + Math.random() * 70,
@@ -3963,14 +4968,15 @@ export class PlayingState {
     }
 
     _drawReadyAbsorb(ctx) {
-        if (this.readyAbsorb.length === 0) return;
+        const arr = this.player._readyAbsorb;
+        if (!arr || arr.length === 0) return;
         const cam = this.camera;
         const ws = this.game.worldScale;
         const px = this.player.worldX * cam.wtsScale + cam.wtsOffX;
         const py = this.player.worldY * cam.wtsScale + cam.wtsOffY;
         ctx.save();
         ctx.globalCompositeOperation = 'lighter';
-        for (const p of this.readyAbsorb) {
+        for (const p of arr) {
             if (p.delay > 0) continue;
             const cosA = Math.cos(p.angle), sinA = Math.sin(p.angle);
             const sx = px + cosA * p.dist * ws;
@@ -4079,6 +5085,318 @@ export class PlayingState {
     draw(ctx) {
         ctx.textBaseline = 'alphabetic';
 
+        // --- World-space layer (background + entities + player + world FX) ---
+        // Drawn once for a single view, or once per split-screen pane. Each pane
+        // swaps in its clone camera (its own viewport + scale) so the existing
+        // camera-relative draw code renders that pane unchanged, clipped to the
+        // pane rect. Screen-space UI (HUD/overlays) is drawn once, afterwards.
+        if (this.splitScreen && this.splitScreen.active) {
+            const views = this.splitScreen.buildViews(this.localPlayers, this.camera);
+            const savedCam = this.camera, savedPlayer = this.player, savedWS = this.game.worldScale;
+            for (let i = 0; i < views.length; i++) {
+                const v = views[i];
+                this.camera = v.camera;
+                this.player = v.player;
+                this.game.camera = v.camera;
+                this.game.worldScale = v.camera.scale;
+                ctx.save();
+                ctx.beginPath();
+                ctx.rect(v.rect.x, v.rect.y, v.rect.w, v.rect.h);
+                ctx.clip();
+                this._drawWorld(ctx);
+                // Kill-streak + dread vignettes sit over the world, under the HUD —
+                // centered on THIS pane. The streak is this pane's pilot's own
+                // (this.player is swapped to v.player above); dread is shared.
+                if (!this.yellowOneScriptActive) {
+                    (this.player.killStreak || this.killStreak).drawOverlay(ctx, v.rect);
+                    this.dread.drawOverlay(ctx, v.rect);
+                }
+                // Full HUD, laid out for THIS pane's actual size/aspect (the HUD
+                // treats the pane rect as its screen — corners + scale per pane).
+                const slot = this.localPlayers[i];
+                if (slot.hud) slot.hud.draw(ctx, v.rect);
+                // The total-run timer rides every pane's top-center.
+                this._drawTotalGameTimer(ctx, v.rect);
+                // Off-screen markers for THIS pilot: their ring, their camera,
+                // their own fade store (so a foe on-screen for one pilot can
+                // still flag off-screen for another). Enemy "!" markers plus
+                // teammate dots (distance to the other pilots).
+                if (!this.yellowOneScriptActive) {
+                    if (!slot._indMap) slot._indMap = new Map();
+                    this._indVp = v.rect;
+                    this._indStore = slot._indMap;
+                    if (this.player.hasWarningSystem) this._drawAsteroidWarnings(ctx);
+                    this._drawShopIndicators(ctx);
+                    this._drawCacheIndicators(ctx);
+                    this._drawEventIndicators(ctx);
+                    this._drawBossWreckIndicators(ctx);
+                    this._drawEnemyIndicators(ctx);
+                    this._drawEncounterIndicators(ctx);
+                    this._drawPlayerIndicators(ctx);
+                    this._indVp = null;
+                    this._indStore = null;
+                }
+                // Flash vignette per pane: shared global events (boss/wave) centered
+                // on this pane, plus this pilot's own flash (sacrifice / jackpot).
+                if (this.flashTimer > 0) {
+                    this._drawFlash(ctx, this.flashColor || '#ff0000',
+                        this._flashAlpha(this.flashTimer, this.flashAlpha), v.rect.x, v.rect.y, v.rect.w, v.rect.h);
+                }
+                if (slot._flash && slot._flash.timer > 0) {
+                    this._drawFlash(ctx, slot._flash.color,
+                        this._flashAlpha(slot._flash.timer, slot._flash.alpha), v.rect.x, v.rect.y, v.rect.w, v.rect.h);
+                }
+                if (slot.paused) this._drawCoopInv(ctx, i);
+                ctx.restore();
+            }
+            this.camera = savedCam;
+            this.player = savedPlayer;
+            this.game.camera = savedCam;
+            this.game.worldScale = savedWS;
+            this._drawSplitBorders(ctx, views);
+        } else {
+            this._drawWorld(ctx);
+        }
+
+        // --- Death: fullscreen death-screen UI (drawn once, not per pane) ---
+        if (this.isDead) {
+            if (this.showDeathScreen) {
+                this._drawDeathScreen(ctx);
+            }
+            // Multiplayer: chat keeps working while dead/spectating.
+            if (this.chatUI) this.chatUI.draw(ctx, this.hud ? this.hud.shieldBarTopY : null);
+            // Yellow One fade overlays on top of the death screen.
+            for (const ev of this.events) {
+                if (ev instanceof YellowOne) {
+                    if (ev.fadeToWhite > 0) {
+                        ctx.save();
+                        ctx.globalAlpha = ev.fadeToWhite;
+                        ctx.fillStyle = '#ffffff';
+                        ctx.fillRect(0, 0, this.game.width, this.game.height);
+                        ctx.restore();
+                    }
+                    break;
+                }
+            }
+            return;
+        }
+
+        // --- Screen-space UI (HUD, indicators, overlays, post-FX) ---
+        this._drawScreenUI(ctx);
+    }
+
+    // Per-pane HUD for co-op (drawn inside each pane's clip): pilot label, level,
+    // scrap, and shield / health / exp bars at the pane's bottom-left, plus a
+    // per-pilot PAUSED overlay. The full single-player HUD is suppressed in co-op.
+    _drawPaneHud(ctx, slot, rect) {
+        const s = this.game.hudScale;
+        const p = slot.player;
+        const idx = this.localPlayers.indexOf(slot);
+        const pad = Math.round(3 * s);
+        const barW = Math.round(48 * s);
+        const barH = Math.round(2.5 * s);
+        const gap = Math.round(s);
+        const x = rect.x + pad;
+
+        ctx.save();
+        ctx.textBaseline = 'alphabetic';
+        ctx.textAlign = 'left';
+        if (p.dead) {
+            ctx.fillStyle = '#ff5544';
+            ctx.font = `${Math.round(7 * s)}px Astro5x`;
+            ctx.fillText(`P${idx + 1} DOWN`, x, rect.y + rect.h - pad);
+            ctx.fillStyle = '#88525a';
+            ctx.font = `${Math.round(5 * s)}px Astro4x`;
+            ctx.fillText(`RESPAWN ${Math.ceil(Math.max(0, p.respawnTimer))}`, x, rect.y + rect.h - pad - Math.round(8 * s));
+        } else {
+            let y = rect.y + rect.h - pad - barH;
+            const bar = (frac, bg, fg) => {
+                ctx.fillStyle = bg; ctx.fillRect(x, y, barW, barH);
+                ctx.fillStyle = fg; ctx.fillRect(x, y, Math.round(barW * Math.max(0, Math.min(1, frac))), barH);
+                y -= barH + gap;
+            };
+            // exp (bottom), health, shield (stacked upward)
+            bar(p.expNeeded > 0 ? p.exp / p.expNeeded : 0, '#0a0f1a', '#915dbf');
+            bar(p.maxHealth > 0 ? p.health / p.maxHealth : 0, '#1a0a0a', '#ff4444');
+            bar(p.maxShieldEnergy > 0 ? p.shieldEnergy / p.maxShieldEnergy : 0, '#0a141a', '#44ddff');
+            // label: P#  LV n   n SCRAP
+            ctx.fillStyle = '#9fb4c4';
+            ctx.font = `${Math.round(5 * s)}px Astro4x`;
+            ctx.fillText(`P${idx + 1}   LV ${p.level || 0}   ${Math.floor(p.scrap || 0)} SCRAP`, x, y - Math.round(2 * s));
+        }
+        ctx.restore();
+        // The paused pilot's real inventory/pause screen is drawn over this pane
+        // by _drawPaneInventory (called from draw()), not here.
+    }
+
+    // Shared (whole-screen) HUD bits for co-op: just the wave countdown, top
+    // center, since per-pilot info lives in each pane.
+    _drawCoopGlobalHud(ctx) {
+        const s = this.game.hudScale;
+        const t = this.waveTimer;
+        if (t === undefined) return;
+        const mins = Math.floor(t / 60);
+        const secs = Math.floor(t % 60).toString().padStart(2, '0');
+        ctx.save();
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        ctx.fillStyle = '#ff4444';
+        ctx.font = `${Math.round(7 * s)}px Astro4x`;
+        ctx.fillText(`NEXT WAVE  ${mins}:${secs}`, this.game.width / 2, Math.round(4 * s));
+        ctx.restore();
+    }
+
+    _drawSplitBorders(ctx, views) {
+        ctx.save();
+        ctx.strokeStyle = '#0a1018';
+        ctx.lineWidth = Math.max(2, Math.round(this.game.hudScale * 0.5));
+        for (const v of views) {
+            ctx.strokeRect(v.rect.x + 0.5, v.rect.y + 0.5, v.rect.w - 1, v.rect.h - 1);
+        }
+        ctx.restore();
+    }
+
+    // Set the local co-op pilot count (1–8). Grows the roster by spawning real
+    // Player instances on a ring around the primary pilot, or trims it back to n.
+    // Slot 0 is always the primary (this.player). The pane count follows the
+    // roster size. Phase 2a: new pilots are simulated bodies + rendered, but not
+    // yet independently controllable (input routing is a later increment).
+    setCoopCount(n) {
+        n = Math.max(1, Math.min(8, n | 0));
+        while (this.localPlayers.length < n) this._addLocalPilot(null);
+        if (this.localPlayers.length > n) this.localPlayers.length = n;
+        this._assignCoopInput();
+        this.splitScreen.setCount(this.localPlayers.length);
+        // Keep slot 0's streak link + per-pilot expiry in sync with the count
+        // (drop-in growth from single-player to co-op and back).
+        this.localPlayers[0].killStreak = this.killStreak;
+        this.killStreak.pilot = this.localPlayers.length > 1 ? this.player : null;
+        return this.localPlayers.length;
+    }
+
+    // Spawn one more local pilot on a ring around the primary, with its own
+    // follow camera. `padIndex` (or null) sets its controller; `shipData`
+    // defaults to the primary's ship. Input bindings are set by the caller
+    // (_assignCoopInput for drop-in, _initLocalCoop for the lobby). Returns slot.
+    _addLocalPilot(padIndex, shipData = this.shipData) {
+        const i = this.localPlayers.length;
+        const ang = (i / 8) * Math.PI * 2;
+        const dist = 420;
+        const p = new Player(this.game, shipData);
+        // Each pilot needs its own inventory (PlayingState builds the primary's;
+        // the Player constructor does not). Sized from this pilot's ship.
+        p.inventory = new Inventory(shipData.storage.cols, shipData.storage.rows);
+        p.inventory.isPlayerInventory = true;
+        p.inventory.playingState = this;
+        p.worldX = this.player.worldX + Math.cos(ang) * dist;
+        p.worldY = this.player.worldY + Math.sin(ang) * dist;
+        p.vx = 0; p.vy = 0;
+        p.angle = -Math.PI / 2;
+        const cam = new Camera(this.game);
+        cam.snapTo(p);
+        // Per-pilot kill streak — only this pilot's kills feed it, expires on
+        // this pilot's death, drawn only in this pilot's pane.
+        p.killStreak = new KillStreakFX(this.game, this);
+        p.killStreak.pilot = p;
+        const slot = { player: p, camera: cam, padIndex, hud: new HUD(this.game, p), killStreak: p.killStreak };
+        this.localPlayers.push(slot);
+        // Normalize derived stats from the (empty) inventory + ship + level-up
+        // defaults — exactly like the primary's init. Without this the pilot keeps
+        // the constructor's placeholder maxShieldEnergy (shield×150, i.e. 1000% in
+        // the stats panel) + uncomputed speed/regen, and shows bogus green stats.
+        // Guarded: during the lobby spawn (_initLocalCoop runs in the constructor,
+        // before the state globals exist) this is skipped and the constructor
+        // normalizes co-op pilots after the primary; drop-in joins run it here.
+        if (this.encounterBonuses) {
+            this._onInventoryChanged(p);
+            p.health = p.maxHealth;
+            p.shieldEnergy = p.maxShieldEnergy;
+        }
+        return slot;
+    }
+
+    // Build the roster chosen in the local-co-op lobby. `roster` is
+    // [{ shipId, device:'kb'|'gamepad', padIndex }]; slot 0 already exists.
+    _initLocalCoop(roster) {
+        const im = this.game.input;
+        const bind = (player, r) => {
+            if (r.device === 'gamepad') {
+                player.input = new GamepadInputSource(im, r.padIndex);
+                player.useMouseAim = false;
+            } else {
+                player.input = new KeyboardMouseInputSource(im);
+                player.useMouseAim = true;
+            }
+        };
+        // Slot 0 (already built from shipData = roster[0].shipId). Its
+        // killStreak link + pilot ref are wired after this.killStreak exists
+        // (this runs from the constructor before the cosmetic globals are built).
+        this.localPlayers[0].padIndex = roster[0].device === 'gamepad' ? roster[0].padIndex : null;
+        bind(this.player, roster[0]);
+        // Remaining pilots.
+        for (let i = 1; i < roster.length && this.localPlayers.length < MAX_LOCAL_PILOTS; i++) {
+            const r = roster[i];
+            const shipData = SHIPS.find(s => s.id === r.shipId) || this.shipData;
+            const slot = this._addLocalPilot(r.device === 'gamepad' ? r.padIndex : null, shipData);
+            bind(slot.player, r);
+        }
+        this.splitScreen.setCount(this.localPlayers.length);
+    }
+
+    // (Re)bind input sources for the current roster. Single pilot: shared
+    // game.input (keyboard+mouse+primary pad) — unchanged single-player. Co-op:
+    // pilot 0 = keyboard+mouse only; each later pilot = one gamepad (its bound
+    // padIndex, else assigned in connection order).
+    _assignCoopInput() {
+        const n = this.localPlayers.length;
+        const p0 = this.localPlayers[0].player;
+        if (n <= 1) {
+            p0.input = null;          // shared game.input
+            p0.useMouseAim = true;
+            return;
+        }
+        p0.input = new KeyboardMouseInputSource(this.game.input);
+        p0.useMouseAim = true;
+        const pads = this.game.input.getConnectedPadIndices();
+        for (let i = 1; i < n; i++) {
+            const slot = this.localPlayers[i];
+            const idx = slot.padIndex != null ? slot.padIndex : (pads[i - 1] != null ? pads[i - 1] : (i - 1));
+            slot.padIndex = idx;
+            slot.player.input = new GamepadInputSource(this.game.input, idx);
+            slot.player.useMouseAim = false;
+        }
+    }
+
+    // Drop-in join: an unclaimed controller pressing Start adds a pilot bound to
+    // it. The first gamepad join also moves pilot 0 to keyboard-only.
+    _checkCoopJoin() {
+        const im = this.game.input;
+        if (!im.getConnectedPadIndices || this.localPlayers.length >= MAX_LOCAL_PILOTS) return;
+        if (this.isDead) return;
+        const claimed = new Set();
+        for (const lp of this.localPlayers) if (lp.padIndex != null) claimed.add(lp.padIndex);
+        // Couch model: pilot 0 is the keyboard/mouse host; controllers join as
+        // P2+. If the lone pilot is *actively driving with a gamepad*, that pad is
+        // theirs — don't let its Start spawn a second pilot and bump them to keys.
+        if (this.localPlayers.length === 1 && im.lastInputDevice === 'gamepad') {
+            const pads = im.getConnectedPadIndices();
+            if (pads.length) claimed.add(pads[0]);
+        }
+        for (const idx of im.getConnectedPadIndices()) {
+            if (claimed.has(idx)) continue;
+            if (this.game.input.padButtonJustPressed(idx, GP.START)) {
+                this._addLocalPilot(idx);
+                this._assignCoopInput();
+                this.splitScreen.setCount(this.localPlayers.length);
+                this.spawnFloatingText(this.player.worldX, this.player.worldY - 60, 'PILOT JOINED', '#9fe8ff');
+                break;
+            }
+        }
+    }
+
+    // World-space render for one view (the active this.camera / this.player):
+    // background, entities, the local ship + its FX. No screen-space UI.
+    _drawWorld(ctx) {
         // --- World / starfield ---
         this.perf.begin('world');
         this.world.draw(ctx, this.camera, this.player, this.totalGameTime);
@@ -4197,32 +5515,10 @@ export class PlayingState {
         }
 
         if (this.isDead) {
-            // Draw debris in world space
-            const centerX = this.game.width / 2;
-            const centerY = this.game.height / 2;
+            // Ship debris (world space). The fullscreen death screen / chat /
+            // Yellow One fades are drawn once by draw() after the pane loop.
             for (const d of this.shipDebris) {
                 d.draw(ctx, this.camera);
-            }
-
-            if (this.showDeathScreen) {
-                this._drawDeathScreen(ctx);
-            }
-
-            // Multiplayer: chat keeps working while dead/spectating.
-            if (this.chatUI) this.chatUI.draw(ctx, this.hud ? this.hud.shieldBarTopY : null);
-
-            // Draw Yellow One fade overlays on top of death screen
-            for (const ev of this.events) {
-                if (ev instanceof YellowOne) {
-                    if (ev.fadeToWhite > 0) {
-                        ctx.save();
-                        ctx.globalAlpha = ev.fadeToWhite;
-                        ctx.fillStyle = '#ffffff';
-                        ctx.fillRect(0, 0, this.game.width, this.game.height);
-                        ctx.restore();
-                    }
-                    break;
-                }
             }
             return;
         }
@@ -4235,12 +5531,26 @@ export class PlayingState {
             drawShipOutline(ctx, this.game, this.camera, this.player.stillImg, this.shipData.id,
                 playerColor(this.netSync.myPid), this.player.worldX, this.player.worldY, this.player.angle);
         }
-        this.player.draw(ctx, this.camera);
+        if (!this.player.dead) this.player.draw(ctx, this.camera);
+        // Co-op teammates: the other live local pilots render as ships in this pane.
+        if (this.localPlayers.length > 1) {
+            for (const lp of this.localPlayers) {
+                if (lp.player !== this.player && !lp.player.dead) lp.player.draw(ctx, this.camera);
+            }
+        }
         this._drawShieldFx(ctx);
         this._drawMuzzleFlashes(ctx);
         this.perf.end('player');
 
-        if ((this.canInteractShop || this.canInteractEncounter || this.canInteractCache || this.canInteractPlayer) && !this.isShopOpen && !this.isEncounterOpen && !this.isCacheOpen && !this.isTradeOpen) {
+        // Interact prompt over the pilot when near something. Co-op computes it
+        // per-pilot (this.player is the current pane's pilot, swapped by the draw
+        // loop), since the global canInteract* flags are single-view only; the
+        // prompt is hidden while that pilot is in any modal.
+        if (this.localPlayers.length > 1) {
+            const slot = this.localPlayers.find(s => s.player === this.player);
+            const inModal = slot && slot.paused;
+            if (!inModal && this._pilotNearInteractable(this.player)) this._drawInteractPrompt(ctx);
+        } else if ((this.canInteractShop || this.canInteractEncounter || this.canInteractCache || this.canInteractPlayer) && !this.isShopOpen && !this.isEncounterOpen && !this.isCacheOpen && !this.isTradeOpen) {
             this._drawInteractPrompt(ctx);
         }
 
@@ -4249,47 +5559,59 @@ export class PlayingState {
         this._drawExplosions(ctx);
         this._drawSparks(ctx);
         this.cinematics.drawWorld(ctx, this.camera);
-        this.killStreak.drawWorld(ctx, this.camera);
+        // Kill-streak confetti/gore bursts are world-space spectacle at the kill
+        // site — every pane should see every pilot's bursts, not just its own.
+        if (this.localPlayers.length > 1) {
+            for (const _kwlp of this.localPlayers) {
+                if (_kwlp.killStreak) _kwlp.killStreak.drawWorld(ctx, this.camera);
+            }
+        } else {
+            this.killStreak.drawWorld(ctx, this.camera);
+        }
 
         // Draw floating texts
         for (const ft of this.floatingTexts) {
             ft.draw(ctx, this.camera);
         }
         this.perf.end('particles');
+    }
 
+    // Screen-space UI: HUD, off-screen indicators, modal overlays, and the
+    // fullscreen post-FX (flash, letterbox). Drawn once over the whole canvas
+    // (not per split-screen pane). Reached only when the local player is alive.
+    _drawScreenUI(ctx) {
         // Hide HUD and all indicators during Yellow One cutscene
         if (!this.yellowOneScriptActive) {
-            // Streak vignette + counter sit under the HUD elements
-            this.killStreak.drawOverlay(ctx);
-            this.dread.drawOverlay(ctx);
-            this.hud.draw(ctx);
+            // Streak vignette + counter and dread hush sit under the HUD. Co-op
+            // draws them per pane (in the pane loop); single view = fullscreen.
+            if (this.localPlayers.length <= 1) {
+                this.killStreak.drawOverlay(ctx);
+                this.dread.drawOverlay(ctx);
+            }
+            // Local co-op: each pane already drew its own full HUD (scaled to the
+            // pane) in the pane loop, so the single fullscreen HUD is skipped.
+            if (this.localPlayers.length <= 1) {
+                this.hud.draw(ctx);
+            }
 
-            // --- Total Game Timer ---
-            this._drawTotalGameTimer(ctx);
+            // --- Total Game Timer --- (co-op draws it per pane in the pane loop)
+            if (this.localPlayers.length <= 1) this._drawTotalGameTimer(ctx);
 
             // --- Health Indicators (Dev Command) ---
             this._drawHealthIndicators(ctx);
 
-            // --- Off-screen Asteroid Warnings (under enemy/boss markers) ---
-            if (this.player.hasWarningSystem) {
-                this._drawAsteroidWarnings(ctx);
+            // Off-screen indicators: co-op draws ALL of these per pane (in the
+            // pane loop) so each pilot gets markers relative to their own camera.
+            // Single view / multiplayer draw them once here.
+            if (this.localPlayers.length <= 1) {
+                if (this.player.hasWarningSystem) this._drawAsteroidWarnings(ctx);
+                this._drawShopIndicators(ctx);
+                this._drawCacheIndicators(ctx);
+                this._drawEventIndicators(ctx);
+                this._drawBossWreckIndicators(ctx);
+                this._drawEnemyIndicators(ctx);
+                this._drawEncounterIndicators(ctx);
             }
-
-            // --- Shop Indicators ---
-            this._drawShopIndicators(ctx);
-
-            // --- Cache Indicators ---
-            this._drawCacheIndicators(ctx);
-
-            // --- Event Indicators ---
-            this._drawEventIndicators(ctx);
-            this._drawBossWreckIndicators(ctx);
-
-            // --- Off-screen Enemy Indicators (drawn last so they're on top) ---
-            this._drawEnemyIndicators(ctx);
-
-            // --- Encounter Indicators ---
-            this._drawEncounterIndicators(ctx);
 
             // --- Teammate Indicators (multiplayer) ---
             if (this.netSync) {
@@ -4345,32 +5667,11 @@ export class PlayingState {
             this._drawTradeRequestPrompt(ctx);
         }
 
-        // Screen Flash Effect (Vignette Pulse)
-        if (this.flashTimer > 0) {
-            const pulse = Math.sin(this.flashTimer * 6) * 0.5 + 0.5;
-            const alpha = Math.min(this.flashAlpha || 0.35, this.flashTimer * 0.5) * (0.7 + 0.3 * pulse);
-
-            // Re-use or create the vignette gradient only when needed
-            const color = this.flashColor || '#ff0000';
-            if (!this._vignetteGrad || this._vignetteWidth !== this.game.width || this._vignetteHeight !== this.game.height || this._lastFlashColor !== color) {
-                this._vignetteWidth = this.game.width;
-                this._vignetteHeight = this.game.height;
-                this._lastFlashColor = color;
-                this._vignetteGrad = ctx.createRadialGradient(
-                    this.game.width / 2, this.game.height / 2, 0,
-                    this.game.width / 2, this.game.height / 2, this.game.width * 0.8
-                );
-
-                // Convert hex/string color to rgba for gradient if needed, or just use it
-                this._vignetteGrad.addColorStop(0, 'rgba(0,0,0,0)');
-                this._vignetteGrad.addColorStop(1, color);
-            }
-
-            ctx.save();
-            ctx.globalAlpha = alpha;
-            ctx.fillStyle = this._vignetteGrad;
-            ctx.fillRect(0, 0, this.game.width, this.game.height);
-            ctx.restore();
+        // Screen Flash Effect (Vignette Pulse) — single view fullscreen. Co-op
+        // draws the flash per pane (centered on each pane) in the pane loop.
+        if (this.localPlayers.length <= 1 && this.flashTimer > 0) {
+            this._drawFlash(ctx, this.flashColor || '#ff0000',
+                this._flashAlpha(this.flashTimer, this.flashAlpha), 0, 0, this.game.width, this.game.height);
         }
 
         // Cinematic overlay (letterbox + warning banner) above HUD and flash,
@@ -4427,11 +5728,28 @@ export class PlayingState {
         ctx.restore();
     }
 
+    // Pane geometry for off-screen indicators. Co-op sets `_indVp` (a pane rect)
+    // + `_indStore` (per-pilot fade map) + swaps this.camera/this.player to the
+    // pane pilot, so the ring centers on the pane and the on-screen test / arrow
+    // direction reference that pilot. Null `_indVp` = whole screen (single view).
+    _indPane() {
+        const vp = this._indVp;
+        const ox = vp ? vp.x : 0, oy = vp ? vp.y : 0;
+        const cw = vp ? vp.w : this.game.width;
+        const ch = vp ? vp.h : this.game.height;
+        const cam = this.camera;
+        const ws = cam.wtsScale != null ? cam.wtsScale : this.game.worldScale;
+        const offX = cam.wtsOffX != null ? cam.wtsOffX : (-cam.x * ws + ox + cw / 2 + cam.shakeX + cam.punchX);
+        const offY = cam.wtsOffY != null ? cam.wtsOffY : (-cam.y * ws + oy + ch / 2 + cam.shakeY + cam.punchY);
+        return { ox, oy, cw, ch, ws, offX, offY };
+    }
+
     _getIndicatorOpacity(entity, shouldShow, dt) {
-        let state = this.indicatorOpacities.get(entity);
+        const store = this._indStore || this.indicatorOpacities;
+        let state = store.get(entity);
         if (!state) {
             state = { opacity: 0 };
-            this.indicatorOpacities.set(entity, state);
+            store.set(entity, state);
         }
 
         const fadeSpeed = 2.0; // Fades in/out in 0.5s
@@ -4545,7 +5863,7 @@ export class PlayingState {
     // Casino jackpot ceremony for rare+ upgrade pickups. Cosmetic only —
     // fires locally for the collecting player (SP, MP host, and MP client
     // confirmation paths all route here).
-    celebratePickup(item) {
+    celebratePickup(item, player = this.player) {
         if (!item || !item.rarity) return;
         // 'unique' is the top of the actual item ladder (horror rewards like
         // the Cosmos Engine) — it gets the full legendary treatment.
@@ -4554,11 +5872,11 @@ export class PlayingState {
         const color = RARITY_COLORS[item.rarity] || '#ffd24a';
         this.cinematics.jackpotReel(item.name || item.id, color, tier);
         this.game.sounds.playJackpot(tier);
-        this._spawnSparks(this.player.worldX, this.player.worldY, 10 + tier * 6,
+        this._spawnSparks(player.worldX, player.worldY, 10 + tier * 6,
             { color: '#ffd24a', speedMin: 120, speedMax: 380 });
-        this.cinematics.spawnRing(this.player.worldX, this.player.worldY,
+        this.cinematics.spawnRing(player.worldX, player.worldY,
             { color, maxR: 160 + tier * 60, dur: 0.5, width: 3 });
-        if (tier === 2) this.triggerFlash('#ffd24a', 0.6, 0.18);
+        if (tier === 2) this._flashPilot(player, '#ffd24a', 0.6, 0.18); // collecting pilot's pane
     }
 
     // A rare+ item landing in the world announces itself with a glint so the
@@ -4573,77 +5891,95 @@ export class PlayingState {
         this._spawnSparks(it.worldX, it.worldY, 8, { color, speedMin: 60, speedMax: 200 });
     }
 
-    // Drives the shader post-fx pass in Game.loop. crt = kill-streak CRT look,
-    // warp/invert = dread insanity moments. All zero = pass skipped entirely.
-    getScreenFx() {
-        if (this.yellowOneScriptActive || this.isDead) return { crt: 0, warp: 0 };
-        const d = this.dread ? this.dread.getFx() : null;
-
-        // Shield impact ripple: true displacement wave across the bubble,
-        // rendered by the post-pass shader from the freshest impact.
+    // Position-based post-fx (ripple/flow/collapse) for ONE pilot, projected
+    // through that pilot's camera (its pane in split-screen). boostFlow is that
+    // pilot's eased boost-bend level. The world-space blink-enemy warp projects
+    // per pane too. Returns { ripple, flow, collapse } (any may be null).
+    _pilotFx(player, camera, boostFlow) {
         let ripple = null, flow = null, collapse = null;
-        if (this.camera.wtsScale !== undefined) {
-            const ws = this.game.worldScale;
-            const cx = this.player.worldX * this.camera.wtsScale + this.camera.wtsOffX;
-            const cy = this.player.worldY * this.camera.wtsScale + this.camera.wtsOffY;
+        if (!player || !camera || camera.wtsScale === undefined) return { ripple, flow, collapse };
+        const ws = camera.wtsScale;
+        const cx = player.worldX * camera.wtsScale + camera.wtsOffX;
+        const cy = player.worldY * camera.wtsScale + camera.wtsOffY;
 
-            if (this.shieldRipples.length > 0) {
-                const rip = this.shieldRipples[this.shieldRipples.length - 1];
-                const p = Math.min(1, rip.t / 0.35);
-                const r = this.player.shieldRadius * ws;
-                ripple = {
-                    x: cx + Math.cos(rip.angle) * r,
-                    y: cy + Math.sin(rip.angle) * r,
-                    cx, cy, r,
-                    strength: 1 - p,
-                    t: rip.t
+        // Freshest shield ripple belonging to this pilot.
+        for (let i = this.shieldRipples.length - 1; i >= 0; i--) {
+            const rip = this.shieldRipples[i];
+            if (rip.player !== player && !(rip.player == null && player === this.player)) continue;
+            const pr = Math.min(1, rip.t / 0.35);
+            const r = player.shieldRadius * ws;
+            ripple = {
+                x: cx + Math.cos(rip.angle) * r, y: cy + Math.sin(rip.angle) * r,
+                cx, cy, r, strength: 1 - pr, t: rip.t
+            };
+            break;
+        }
+
+        // Boost: space bends around the hull along the line of travel.
+        if (boostFlow > 0.01) {
+            const spd = Math.hypot(player.vx, player.vy);
+            if (spd > 1) {
+                flow = {
+                    x: cx, y: cy,
+                    dirX: player.vx / spd, dirY: player.vy / spd,
+                    strength: Math.min(1, boostFlow)
                 };
-            }
-
-            // Boost: space bends around the hull in the direction of travel
-            // (level eased in update so the lens swells/relaxes, never pops)
-            if (this._boostFlowLevel > 0.01) {
-                const spd = Math.hypot(this.player.vx, this.player.vy);
-                if (spd > 1) {
-                    flow = {
-                        x: cx, y: cy,
-                        dirX: this.player.vx / spd, dirY: this.player.vy / spd,
-                        strength: Math.min(1, this._boostFlowLevel)
-                    };
-                }
-            }
-
-            // Teleport: space collapses in toward the ship — strongest
-            // mid-warp, with a smaller settling pulse as the hull phases
-            // back in at the destination
-            const p = this.player;
-            let cStr = 0;
-            if (p.isWarping) {
-                cStr = Math.sin(Math.PI * Math.min(1, p.warpTimer / p.warpDuration));
-            } else if (p.teleportOutlineFade > 0.01) {
-                cStr = p.teleportOutlineFade * 0.55;
-            }
-            if (cStr > 0.01) {
-                collapse = { x: cx, y: cy, r: 270 * ws, strength: cStr };
-            } else if (this._blinkWarp) {
-                // Blink enemy teleport reuses the same space-collapse displacement
-                // (the looper teleport morph), pulsing at the arrival point.
-                const bw = this._blinkWarp;
-                const bx = bw.x * this.camera.wtsScale + this.camera.wtsOffX;
-                const by = bw.y * this.camera.wtsScale + this.camera.wtsOffY;
-                const frac = Math.min(1, Math.max(0, bw.t / bw.dur)); // 1 at spawn → 0 at end
-                // Departure collapse builds to a peak as it teleports AWAY (end of
-                // the tell); arrival collapse peaks the instant it appears, then settles.
-                const bStr = bw.depart ? (1 - frac) : frac;
-                if (bStr > 0.01) collapse = { x: bx, y: by, r: 210 * ws, strength: bStr * 0.9, ab: 0 };
             }
         }
 
-        return {
-            crt: this.killStreak ? this.killStreak.fxIntensity : 0,
-            warp: d ? d.warp : 0,
-            ripple, flow, collapse
-        };
+        // Teleport: space collapses toward this pilot's ship; otherwise the
+        // world-space blink-enemy warp (shared) projects into this pane.
+        let cStr = 0;
+        if (player.isWarping) {
+            cStr = Math.sin(Math.PI * Math.min(1, player.warpTimer / player.warpDuration));
+        } else if (player.teleportOutlineFade > 0.01) {
+            cStr = player.teleportOutlineFade * 0.55;
+        }
+        if (cStr > 0.01) {
+            collapse = { x: cx, y: cy, r: 270 * ws, strength: cStr };
+        } else if (this._blinkWarp) {
+            const bw = this._blinkWarp;
+            const bx = bw.x * camera.wtsScale + camera.wtsOffX;
+            const by = bw.y * camera.wtsScale + camera.wtsOffY;
+            const frac = Math.min(1, Math.max(0, bw.t / bw.dur)); // 1 at spawn → 0 at end
+            const bStr = bw.depart ? (1 - frac) : frac;
+            if (bStr > 0.01) collapse = { x: bx, y: by, r: 210 * ws, strength: bStr * 0.9, ab: 0 };
+        }
+        return { ripple, flow, collapse };
+    }
+
+    // Drives the shader post-fx pass in Game.loop. crt = kill-streak CRT look,
+    // warp = dread insanity moments. Both are global game state (shared streak /
+    // sector dread). In split-screen we return one descriptor per pane so each
+    // window gets its own self-contained effect geometry (barrel/vignette center
+    // on the pane; boost/ripple/teleport positioned by that pilot's camera).
+    // All zero = pass skipped entirely.
+    getScreenFx() {
+        if (this.yellowOneScriptActive || this.isDead) return { crt: 0, warp: 0 };
+        const d = this.dread ? this.dread.getFx() : null;
+        const crt = this.killStreak ? this.killStreak.fxIntensity : 0;
+        const warp = d ? d.warp : 0;
+
+        if (this.splitScreen && this.splitScreen.active) {
+            // Use the per-pane render-clone cameras (built this frame in draw());
+            // they carry each pane's viewport-offset world→screen transform.
+            const rects = computeSplitLayout(this.localPlayers.length, this.game.width, this.game.height);
+            const cams = this.splitScreen._cameras;
+            const panes = [];
+            for (let i = 0; i < this.localPlayers.length; i++) {
+                const slot = this.localPlayers[i];
+                const cam = (cams && cams[i]) ? cams[i] : slot.camera;
+                const f = this._pilotFx(slot.player, cam, slot._boostFlow || 0);
+                // CRT look is per-pilot: each pane's barrel/chroma is driven by
+                // that pilot's own streak, not a shared value.
+                const paneCrt = slot.killStreak ? slot.killStreak.fxIntensity : crt;
+                panes.push({ rect: rects[i], crt: paneCrt, warp, ripple: f.ripple, flow: f.flow, collapse: f.collapse });
+            }
+            return { crt, warp, panes };
+        }
+
+        const f = this._pilotFx(this.player, this.camera, this._boostFlowLevel);
+        return { crt, warp, ripple: f.ripple, flow: f.flow, collapse: f.collapse };
     }
 
     triggerFlash(color = '#ff0000', duration = 0.8, alpha = 0.35) {
@@ -4655,9 +5991,15 @@ export class PlayingState {
     _triggerWave() {
         // Multiplayer: the wave centers on the announced target pilot (chosen
         // when the countdown started, shown in the HUD the whole time).
+        // Co-op: round-robin the target across pilots so threats reach everyone;
+        // remember it so the wave's reward cache drops on the same pilot.
         const mp = !!this.netSync;
-        const targetBody = mp ? this.netSync.waveTargetBody() : this.player;
-        const quantityMult = mp ? mpQuantityMult(this.net.playerCount) : 1.0;
+        const coop = !mp && this.localPlayers.length > 1;
+        const targetBody = mp ? this.netSync.waveTargetBody()
+                              : (coop ? this._nextWavePilot() : this.player);
+        if (coop) this._coopWaveTarget = targetBody;
+        const quantityMult = mp ? mpQuantityMult(this.net.playerCount)
+                                : (coop ? mpQuantityMult(this.localPlayers.length) : 1.0);
         const waveEnemies = this.enemySpawner.spawnWave(targetBody.worldX, targetBody.worldY, this.difficultyScale, quantityMult);
 
         // Check if a boss was spawned
@@ -4678,26 +6020,25 @@ export class PlayingState {
     }
 
     _drawShopIndicators(ctx) {
-        const cw = this.game.width;
-        const ch = this.game.height;
-        const margin = 20 * this.game.uiScale;
+        const { ox, oy, cw, ch, ws, offX, offY } = this._indPane();
 
         const dt = this.game.lastDt || 0.016;
         for (const shop of this.shops) {
             if (!shop.revealed) continue;
-            const screen = this.camera.worldToScreen(shop.worldX, shop.worldY, cw, ch);
+            const screenX = shop.worldX * ws + offX;
+            const screenY = shop.worldY * ws + offY;
 
             const dx = shop.worldX - this.player.worldX;
             const dy = shop.worldY - this.player.worldY;
             const angle = Math.atan2(dy, dx);
 
             // If on screen, shouldShow is false (to trigger fade out)
-            const isOnScreen = screen.x >= 0 && screen.x <= cw && screen.y >= 0 && screen.y <= ch;
+            const isOnScreen = screenX >= ox && screenX <= ox + cw && screenY >= oy && screenY <= oy + ch;
             const opacity = this._getIndicatorOpacity(shop, !isOnScreen, dt);
             if (opacity <= 0) continue;
 
-            const cx = cw / 2;
-            const cy = ch / 2;
+            const cx = ox + cw / 2;
+            const cy = oy + ch / 2;
             const radius = Math.min(cw, ch) * this.indicatorRadiusFactorArrow;
             const ix = cx + Math.cos(angle) * radius;
             const iy = cy + Math.sin(angle) * radius;
@@ -4738,25 +6079,25 @@ export class PlayingState {
     }
 
     _drawCacheIndicators(ctx) {
-        const cw = this.game.width;
-        const ch = this.game.height;
+        const { ox, oy, cw, ch, ws, offX, offY } = this._indPane();
         const dt = this.game.lastDt || 0.016;
 
         for (const cache of this.caches) {
             // Only show indicator for found (not yet emptied/despawning) caches
             if (!cache.isFound || cache.state === CACHE_STATE.EMPTIED || cache.state === CACHE_STATE.DESPAWNING) continue;
 
-            const screen = this.camera.worldToScreen(cache.worldX, cache.worldY, cw, ch);
+            const screenX = cache.worldX * ws + offX;
+            const screenY = cache.worldY * ws + offY;
             const dx = cache.worldX - this.player.worldX;
             const dy = cache.worldY - this.player.worldY;
             const angle = Math.atan2(dy, dx);
 
-            const isOnScreen = screen.x >= 0 && screen.x <= cw && screen.y >= 0 && screen.y <= ch;
+            const isOnScreen = screenX >= ox && screenX <= ox + cw && screenY >= oy && screenY <= oy + ch;
             const opacity = this._getIndicatorOpacity(cache, !isOnScreen, dt);
             if (opacity <= 0) continue;
 
-            const cx = cw / 2;
-            const cy = ch / 2;
+            const cx = ox + cw / 2;
+            const cy = oy + ch / 2;
             const radius = Math.min(cw, ch) * this.indicatorRadiusFactorArrow;
             const ix = cx + Math.cos(angle) * radius;
             const iy = cy + Math.sin(angle) * radius;
@@ -4795,26 +6136,25 @@ export class PlayingState {
     }
 
     _drawEventIndicators(ctx) {
-        const cw = this.game.width;
-        const ch = this.game.height;
-        const margin = 20 * this.game.uiScale;
+        const { ox, oy, cw, ch, ws, offX, offY } = this._indPane();
 
         const dt = this.game.lastDt || 0.016;
         for (const ev of this.events) {
             if (!ev.revealed || ev.isFinished) continue; // Keep marker until destroyed or finished (scrap spawned)
-            const screen = this.camera.worldToScreen(ev.worldX, ev.worldY, cw, ch);
+            const screenX = ev.worldX * ws + offX;
+            const screenY = ev.worldY * ws + offY;
 
             const dx = ev.worldX - this.player.worldX;
             const dy = ev.worldY - this.player.worldY;
             const angle = Math.atan2(dy, dx);
 
             // If on screen, shouldShow is false
-            const isOnScreen = screen.x >= 0 && screen.x <= cw && screen.y >= 0 && screen.y <= ch;
+            const isOnScreen = screenX >= ox && screenX <= ox + cw && screenY >= oy && screenY <= oy + ch;
             const opacity = this._getIndicatorOpacity(ev, !isOnScreen, dt);
             if (opacity <= 0) continue;
 
-            const cx = cw / 2;
-            const cy = ch / 2;
+            const cx = ox + cw / 2;
+            const cy = oy + ch / 2;
             const radius = Math.min(cw, ch) * this.indicatorRadiusFactorArrow;
             const ix = cx + Math.cos(angle) * radius;
             const iy = cy + Math.sin(angle) * radius;
@@ -4856,24 +6196,23 @@ export class PlayingState {
 
     _drawBossWreckIndicators(ctx) {
         if (this.bossWrecks.length === 0) return;
-        const cw = this.game.width;
-        const ch = this.game.height;
-        const margin = 20 * this.game.uiScale;
+        const { ox, oy, cw, ch, ws, offX, offY } = this._indPane();
 
         const dt = this.game.lastDt || 0.016;
         for (const wreck of this.bossWrecks) {
-            const screen = this.camera.worldToScreen(wreck.worldX, wreck.worldY, cw, ch);
+            const screenX = wreck.worldX * ws + offX;
+            const screenY = wreck.worldY * ws + offY;
 
             const dx = wreck.worldX - this.player.worldX;
             const dy = wreck.worldY - this.player.worldY;
             const angle = Math.atan2(dy, dx);
 
-            const isOnScreen = screen.x >= 0 && screen.x <= cw && screen.y >= 0 && screen.y <= ch;
+            const isOnScreen = screenX >= ox && screenX <= ox + cw && screenY >= oy && screenY <= oy + ch;
             const opacity = this._getIndicatorOpacity(wreck, !isOnScreen, dt);
             if (opacity <= 0) continue;
 
-            const cx = cw / 2;
-            const cy = ch / 2;
+            const cx = ox + cw / 2;
+            const cy = oy + ch / 2;
             const radius = Math.min(cw, ch) * this.indicatorRadiusFactorArrow;
             const ix = cx + Math.cos(angle) * radius;
             const iy = cy + Math.sin(angle) * radius;
@@ -4912,9 +6251,9 @@ export class PlayingState {
     _drawCacheOverlay(ctx) {
         if (!this.activeCacheUI) return;
         const ui      = this.activeCacheUI;
-        const cw      = this.game.width;
-        const ch      = this.game.height;
-        const uiScale = this.game.uiScale;
+        const cw      = this._uiW;
+        const ch      = this._uiH;
+        const uiScale = this._uiS;
         const slotSize = 32 * uiScale;
 
         const cacheInv  = ui.cacheInventory;
@@ -4924,6 +6263,8 @@ export class PlayingState {
         const playerLayout = this._getInventoryLayout(playerInv, 'player');
 
         ctx.save();
+        // Pane-local positions; shift into the pane (no-op fullscreen).
+        ctx.translate(this._uiX, this._uiY);
         ctx.globalAlpha = ui.panelAlpha;
 
         ctx.fillStyle = 'rgba(0, 0, 0, 0.82)';
@@ -4975,7 +6316,7 @@ export class PlayingState {
             ]);
         }
 
-        this._drawStatsPanel(ctx);
+        this._drawStatsPanel(ctx, cacheLayout.panelX);
         this._drawClaimLevelsButton(ctx);
 
         // Gamepad selection corners draw over all static UI (including the
@@ -4996,10 +6337,12 @@ export class PlayingState {
 
     _drawShopOverlay(ctx) {
         ctx.save();
-        const cw = this.game.width;
-        const ch = this.game.height;
-        const uiScale = this.game.uiScale;
+        const cw = this._uiW;
+        const ch = this._uiH;
+        const uiScale = this._uiS;
         const slotSize = 32 * uiScale;
+        // Pane-local positions; shift into the pane (no-op fullscreen).
+        ctx.translate(this._uiX, this._uiY);
 
         ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
         ctx.fillRect(0, 0, cw, ch);
@@ -5128,7 +6471,7 @@ export class PlayingState {
             { inv: playerInv, layout: playerLayout, scrollX: this.playerScrollX, scrollY: this.playerScrollY }
         ]);
 
-        this._drawStatsPanel(ctx);
+        this._drawStatsPanel(ctx, shopLayout.panelX);
         this._drawClaimLevelsButton(ctx);
 
         // Selection corners go above static UI so they frame the focused
@@ -5141,11 +6484,18 @@ export class PlayingState {
         this._drawCombinePreview(ctx, [
             { inv: playerInv, layout: playerLayout, scrollX: this.playerScrollX, scrollY: this.playerScrollY }
         ]);
+
+        ctx.restore(); // balances the ctx.save() at the top — was missing, which
+                       // in co-op leaked a pane clip and froze the other pilot's screen.
     }
 
-    _drawTotalGameTimer(ctx) {
-        const cw = this.game.width;
-        const hudScale = this.game.hudScale;
+    // vp (optional): a pane rect — the timer rides that pane's top-center at the
+    // pane's HUD scale. Null = whole screen (single view), unchanged.
+    _drawTotalGameTimer(ctx, vp = null) {
+        const cx = vp ? (vp.x + vp.w / 2) : (this.game.width / 2);
+        const top = vp ? vp.y : 0;
+        const hudScale = vp ? Math.max(1, Math.round(this.game.hudScale * vp.h / this.game.height))
+                            : this.game.hudScale;
 
         ctx.save();
         ctx.fillStyle = '#888888'; // Grey
@@ -5157,7 +6507,7 @@ export class PlayingState {
         const seconds = Math.floor(this.trueTotalTime % 60);
         const timeStr = `${minutes}:${seconds.toString().padStart(2, '0')}`;
 
-        ctx.fillText(timeStr, cw / 2, 10 * hudScale);
+        ctx.fillText(timeStr, cx, top + 10 * hudScale);
         ctx.restore();
     }
 
@@ -5182,15 +6532,15 @@ export class PlayingState {
     }
 
     _getInventoryLayout(inv, yHint) {
-        const uiScale = this.game.uiScale;
+        const uiScale = this._uiS;
         const slotSize = 32 * uiScale;
         const borderSize = 48 * uiScale;
 
         const gridW = inv.cols * slotSize;
         const gridH = inv.rows * slotSize;
 
-        const maxW = Math.floor(this.game.width * 0.4);
-        const maxH = Math.floor(this.game.height * 0.4);
+        const maxW = Math.floor(this._uiW * 0.4);
+        const maxH = Math.floor(this._uiH * 0.4);
 
         let gridVisCols = inv.cols;
         let gridVisRows = inv.rows;
@@ -5211,12 +6561,12 @@ export class PlayingState {
         const scrollableX = inv.cols > gridVisCols;
         const scrollableY = inv.rows > gridVisRows;
 
-        const panelX = Math.floor((this.game.width - totalW) / 2);
+        const panelX = Math.floor((this._uiW - totalW) / 2);
 
         // yHint is 'shop', 'player', or 'pause'
         let panelY;
         if (yHint === 'shop') panelY = uiScale * 20;
-        else if (yHint === 'player') panelY = this.game.height - totalH - uiScale * 40;
+        else if (yHint === 'player') panelY = this._uiH - totalH - uiScale * 40;
         else if (yHint === 'pause') panelY = uiScale * 24;
 
         const visW = gridVisCols * slotSize;
@@ -5350,7 +6700,7 @@ export class PlayingState {
         }
 
         // Draw overflow scroll indicators
-        const shadowSize = 12 * this.game.uiScale;
+        const shadowSize = 12 * this._uiS;
         const maxAlpha = 0.6;
 
         if (scrollX > 0) {
@@ -5393,9 +6743,9 @@ export class PlayingState {
 
     _drawTooltip(ctx, item, mouse, opts = {}) {
         const previewLabel = opts.previewLabel || null;
-        const cw = this.game.width;
-        const ch = this.game.height;
-        const uiScale = this.game.uiScale;
+        const cw = this._uiW;
+        const ch = this._uiH;
+        const uiScale = this._uiS;
 
         const pad = 8 * uiScale;
         const fontSize = Math.floor(5 * uiScale);
@@ -5893,7 +7243,7 @@ export class PlayingState {
         ctx.drawImage(frame, mouse.x - offsetX, mouse.y - offsetY, w, h);
         if (shopInv && this.draggedItem.originInventory === shopInv) {
             ctx.fillStyle = this.player.scrap >= item.cost ? '#44ff44' : '#ff4444';
-            ctx.font = `${6 * this.game.uiScale}px Astro4x`;
+            ctx.font = `${6 * this._uiS}px Astro4x`;
             ctx.textAlign = 'center';
             ctx.fillText(`COST: ${item.cost}`, mouse.x - offsetX + w / 2, mouse.y - offsetY + h + 10);
         }
@@ -5907,7 +7257,7 @@ export class PlayingState {
         const cl = this.pauseButtons.claimLevels;
         if (cl.w <= 0) return;
         const count = this.levelUpQueue.length;
-        const us = this.game.uiScale;
+        const us = this._uiS;
         const mult = this.pendingLevelUpMult || 1;
         const hasMult = mult > 1.00001;
         const { x, y, w, h } = cl;
@@ -6071,7 +7421,7 @@ export class PlayingState {
     // Tries to pick up an item from inv at the mouse position. Returns true if successful.
     // scrollXKey / scrollYKey are property names on `this`.
     _tryPickUpItem(mouse, inv, layout, scrollXKey, scrollYKey) {
-        const slotSize = 32 * this.game.uiScale;
+        const slotSize = 32 * this._uiS;
         const vx = mouse.x - layout.gridVisX;
         const vy = mouse.y - layout.gridVisY;
         if (vx < 0 || vx >= layout.visW || vy < 0 || vy >= layout.visH) return false;
@@ -6098,7 +7448,7 @@ export class PlayingState {
 
     // Returns the snapped grid {col, row} for dropping the dragged item onto a panel.
     _getDropPosition(mouse, layout, scrollXKey, scrollYKey) {
-        const slotSize = 32 * this.game.uiScale;
+        const slotSize = 32 * this._uiS;
         return {
             col: Math.floor((mouse.x - layout.gridVisX + this[scrollXKey] - this.draggedItem.offsetX) / slotSize + 0.5),
             row: Math.floor((mouse.y - layout.gridVisY + this[scrollYKey] - this.draggedItem.offsetY) / slotSize + 0.5)
@@ -6109,7 +7459,7 @@ export class PlayingState {
     _applyEdgeScroll(dt, panels, baseSpeed = 300) {
         if (!this.draggedItem) return;
         const mouse = this.game.getMousePos();
-        const uiScale = this.game.uiScale;
+        const uiScale = this._uiS;
         const edgeMargin = 24 * uiScale;
         const speed = baseSpeed * dt * uiScale;
         for (const p of panels) {
@@ -6138,7 +7488,7 @@ export class PlayingState {
         const cl = this.pauseButtons.claimLevels;
         if (this.levelUpQueue.length > 0 && this._statsPanelRect) {
             const sp = this._statsPanelRect;
-            const us = this.game.uiScale;
+            const us = this._uiS;
             cl.x = Math.floor(sp.x);
             cl.y = Math.floor(sp.y + sp.h + us * 6);
             cl.w = Math.floor(sp.w);
@@ -6280,8 +7630,8 @@ export class PlayingState {
         }
 
         // Skip gamepad focus during the rolling animation — only the skip
-        // input matters in that state.
-        if (!ui.isAnimating) {
+        // input matters in that state. (Co-op drives cursors per-pilot.)
+        if (!ui.isAnimating && !this._coopInv) {
             this._gamepadInventoryUpdate(dt, panels, extraButtons);
         }
 
@@ -6378,14 +7728,15 @@ export class PlayingState {
         if (this._updateClaimLevelsButton(mouse, 'cache')) return;
 
         // ── E / ESC / gamepad B / X / Back / Start close ─────────────────────
+        // Co-op closes via the per-pilot driver (_updateCoopModal).
         const input = this.game.input;
-        const closePressed =
+        const closePressed = !this._coopInv && (
             input.isKeyJustPressed('KeyE') ||
             input.isKeyJustPressed('Escape') ||
             input.isGamepadJustPressed(GP.B) ||
             input.isGamepadJustPressed(GP.X) ||
             input.isGamepadJustPressed(GP.BACK) ||
-            input.isGamepadJustPressed(GP.START);
+            input.isGamepadJustPressed(GP.START));
         if (closePressed) {
             if (this.draggedItem) {
                 this.draggedItem.originInventory.addItem(this.draggedItem.item, this.draggedItem.x, this.draggedItem.y);
@@ -6461,7 +7812,7 @@ export class PlayingState {
             });
         }
 
-        this._gamepadInventoryUpdate(dt, panels, extraButtons);
+        if (!this._coopInv) this._gamepadInventoryUpdate(dt, panels, extraButtons);
 
         const mouse = this.game.getMousePos();
 
@@ -6570,12 +7921,14 @@ export class PlayingState {
         if (this._updateClaimLevelsButton(mouse, 'shop')) return;
 
         const input = this.game.input;
-        const closePressed =
+        // Co-op closes via the per-pilot driver (_updateCoopModal) so the right
+        // pilot's pad/key closes the right pilot's shop.
+        const closePressed = !this._coopInv && (
             input.isKeyJustPressed('KeyE') ||
             input.isKeyJustPressed('Escape') ||
             input.isGamepadJustPressed(GP.B) ||
             input.isGamepadJustPressed(GP.BACK) ||
-            input.isGamepadJustPressed(GP.START);
+            input.isGamepadJustPressed(GP.START));
         if (closePressed) {
             if (this.draggedItem) {
                 this.draggedItem.originInventory.addItem(this.draggedItem.item, this.draggedItem.x, this.draggedItem.y);
@@ -6596,9 +7949,9 @@ export class PlayingState {
     }
 
     _updatePauseUI(dt) {
-        const uiScale = this.game.uiScale;
-        const cw = this.game.width;
-        const ch = this.game.height;
+        const uiScale = this._uiS;
+        const cw = this._uiW;
+        const ch = this._uiH;
 
         const playerInv    = this.player.inventory;
         const playerLayout = this._getInventoryLayout(playerInv, 'pause');
@@ -6714,7 +8067,9 @@ export class PlayingState {
         // targets are Yes/No — suppress the inventory panels so stick
         // navigation can't fall back into cargo slots.
         const gamepadPanels = this.confirmRestart ? [] : panels;
-        this._gamepadInventoryUpdate(dt, gamepadPanels, pauseExtraButtons);
+        // In local co-op each pilot drives its own cursor (synthesised in
+        // _updateCoopInventories); the primary-pad slot-snap would fight it.
+        if (!this._coopInv) this._gamepadInventoryUpdate(dt, gamepadPanels, pauseExtraButtons);
 
         const mouse = this.game.getMousePos();
 
@@ -6807,18 +8162,29 @@ export class PlayingState {
     }
 
     _drawInteractPrompt(ctx) {
-        const cw = this.game.width;
-        const ch = this.game.height;
         const uiScale = this.game.uiScale;
+        // Project above the pilot's ship via the active camera so it sits right
+        // over them in their pane (co-op) or at screen center (single view).
+        const cam = this.camera;
+        const ws = cam.wtsScale != null ? cam.wtsScale : this.game.worldScale;
+        const sx = cam.wtsOffX != null ? (this.player.worldX * ws + cam.wtsOffX) : (this.game.width / 2);
+        const sy = cam.wtsOffY != null ? (this.player.worldY * ws + cam.wtsOffY) : (this.game.height / 2);
+        // The key depends on the pilot's device: gamepad pilots press X, the
+        // keyboard pilot presses E. Single view follows the last input device.
+        let isPad;
+        if (this.localPlayers.length > 1) {
+            const slot = this.localPlayers.find(s => s.player === this.player);
+            isPad = !!slot && slot.padIndex != null;
+        } else {
+            isPad = this.game.input.isGamepadActive();
+        }
 
         ctx.save();
         ctx.fillStyle = '#ffff44';
         ctx.font = `${10 * uiScale}px Astro5x`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'bottom';
-        // Above player (player is centered at cw/2, ch/2) - Increased height
-        const label = this.game.input.isGamepadActive() ? 'X' : 'E';
-        ctx.fillText(label, cw / 2, ch / 2 - 60 * this.game.worldScale);
+        ctx.fillText(isPad ? 'X' : 'E', sx, sy - 60 * ws);
         ctx.restore();
     }
 
@@ -6861,8 +8227,11 @@ export class PlayingState {
         return power;
     }
 
-    _onInventoryChanged() {
-        const p = this.player;
+    // Recomputes a pilot's effective stats from its inventory + level-ups.
+    // Defaults to the active pilot (this.player), which is the swapped-in pilot
+    // during co-op inventory contexts; co-op pickups pass the collecting pilot.
+    _onInventoryChanged(player = this.player) {
+        const p = player;
 
         // Reset multipliers and flags
         p.fireRateMult = 1.0;
@@ -6915,11 +8284,13 @@ export class PlayingState {
         p.targetingConeDeg = 10;       // half-cone for targeting module seek
         p.boostDriveMult = 1.0;        // boost-drive thrust mult
         p.repeaterRateBonus = 0;       // extra repeater fire-rate fraction
-        this.rocketInterval = 3.0;     // seconds between rockets
+        // Auto-weapon flags are PER-PILOT (each pilot fires their own in co-op,
+        // mirroring how each MP client runs its own auto-weapons).
+        p.rocketInterval = 3.0;        // seconds between rockets
 
-        this.hasAutoTurret = false;
-        this.hasMechanicalClaw = false;
-        this.hasRockets = false;
+        p.hasAutoTurret = false;
+        p.hasMechanicalClaw = false;
+        p.hasRockets = false;
 
         let boostCooldownMult = 1.0;
         let boostRangeMult = 1.0;
@@ -6953,8 +8324,8 @@ export class PlayingState {
             }
             if (item.id === 'field_array') shieldDrainMult *= Math.max(0.05, 1 - (item.bonus ?? 0.30));
             if (item.id === 'scrap_drone') scrapRangeMult *= 1 + (item.bonus ?? 3.0);
-            if (item.id === 'auto_turret') this.hasAutoTurret = true;
-            if (item.id === 'mechanical_claw') this.hasMechanicalClaw = true;
+            if (item.id === 'auto_turret') p.hasAutoTurret = true;
+            if (item.id === 'mechanical_claw') p.hasMechanicalClaw = true;
             if (item.id === 'railgun') {
                 p.hasRailgun = true;
                 p.railgunDmgMult = Math.max(p.railgunDmgMult, 1 + (item.bonus ?? 0));
@@ -6998,8 +8369,8 @@ export class PlayingState {
             if (item.id === 'explosives_unit') p.hasExplosivesUnit = true;
             if (item.id === 'small_boosters') p.boostSpeedMult *= 1 + (item.bonus ?? 0.10);
             if (item.id === 'rockets') {
-                this.hasRockets = true;
-                this.rocketInterval = Math.min(this.rocketInterval, item.bonus ?? 3.0);
+                p.hasRockets = true;
+                p.rocketInterval = Math.min(p.rocketInterval, item.bonus ?? 3.0);
             }
             if (item.id === 'ancient_curse') p.hasAncientCurse = true;
             if (item.id === 'boost_drive') {
@@ -7036,7 +8407,9 @@ export class PlayingState {
             if (item.id === 'laser_cartridge') p.laserCartridgeMult += (item.bonus ?? 0.1);
         }
 
-        const targetRows = this.inventoryRows + cargoExpansions;
+        // Base rows from THIS pilot's own ship (co-op pilots may fly a different
+        // hull than the primary), plus any cargo-expansion items.
+        const targetRows = p.shipData.storage.rows + cargoExpansions;
         if (p.inventory.rows !== targetRows) {
             const ejected = p.inventory.resize(p.inventory.cols, targetRows);
             if (ejected && ejected.length > 0) {
@@ -7044,8 +8417,12 @@ export class PlayingState {
             }
         }
 
-        // Store FOV upgrade contribution (include level-up FOV bonus here)
-        this.fovUpgradeMult = fovMult * p.lvlFovMult;
+        // Store FOV upgrade contribution PER-PILOT (item-based, e.g. sensor
+        // accelerator). The camera FOV combines this with the pilot's lvlFovMult.
+        // (Was a single global this.fovUpgradeMult, which one pilot's pickup would
+        // overwrite — corrupting the primary/pane-0 zoom in co-op.)
+        p.itemFovMult = fovMult;
+        this.fovUpgradeMult = fovMult * p.lvlFovMult; // kept for the stats fallback
 
         if (repeaters > 0) {
             let rMult = 0.5;
@@ -7129,13 +8506,14 @@ export class PlayingState {
         }
     }
 
-    _removeSacrificeItem() {
-        if (!this.player.inventory) return;
-        const entry = this.player.inventory.items.find(i => i.item.id === 'sacrifice');
+    _removeSacrificeItem(player = this.player) {
+        const p = player;
+        if (!p.inventory) return;
+        const entry = p.inventory.items.find(i => i.item.id === 'sacrifice');
         if (entry) {
-            this.player.inventory.removeItemAt(entry.x, entry.y);
-            this._onInventoryChanged();
-            this.game.sounds.play('asteroid_break', { volume: 0.8, x: this.player.worldX, y: this.player.worldY });
+            p.inventory.removeItemAt(entry.x, entry.y);
+            this._onInventoryChanged(p);
+            this.game.sounds.play('asteroid_break', { volume: 0.8, x: p.worldX, y: p.worldY });
         }
     }
 
@@ -7230,6 +8608,10 @@ export class PlayingState {
             // simulates the ship against the pilot it spawned for.
             encounter.netTargetPid = (anchor === this.player || !anchor.pid) ? this.netSync.myPid : anchor.pid;
             this.netSync.registerEncounter(encounter);
+        } else if (this.localPlayers.length > 1) {
+            // Co-op: simulate against the anchored pilot; dialog generated lazily
+            // on interaction (scaled to whichever pilot talks to it).
+            encounter._coopTarget = anchor;
         } else {
             const dialog = generateEncounterDialog(type, this.player, this);
             encounter.dialogData = dialog;
@@ -7240,34 +8622,44 @@ export class PlayingState {
         this.game.sounds.play('boost', 0.8);
     }
 
-    _openCacheUI(cache) {
-        this._activeCache = cache;
-
+    _openCacheUI(cache, lp = null) {
+        const player = lp ? lp.player : this.player;
+        let ui;
         if (cache._cachedUI && !cache._cachedUI.closed) {
             // Reuse the existing UI — no fade, just re-show it
-            const ui = cache._cachedUI;
-            ui.playerInventory = this.player.inventory;
+            ui = cache._cachedUI;
+            ui.playerInventory = player.inventory;
             ui.uiState    = 'idle';  // CUI_STATE.IDLE
             ui.panelAlpha = 1;
             ui.closed     = false;
-            this.activeCacheUI = ui;
         } else {
-            const ui = new CacheUI(this.game, cache, this.player.inventory);
-            cache._cachedUI    = ui;
-            this.activeCacheUI = ui;
+            ui = new CacheUI(this.game, cache, player.inventory);
+            cache._cachedUI = ui;
         }
-
-        this.isCacheOpen = true;
-        this.paused      = true;
+        if (lp) {
+            // Co-op: this pilot's pane.
+            this._ensurePilotUI(lp);
+            lp.cache = ui;
+            lp.cacheEntity = cache;
+            lp.paused = true;
+            this.game.input.setGamepadCursorEnabled(false);
+        } else {
+            this._activeCache  = cache;
+            this.activeCacheUI = ui;
+            this.isCacheOpen = true;
+            this.paused      = true;
+        }
     }
 
-    queueLevelUp(level) {
-        this.levelUpQueue.push(level);
+    // Called from Player.addExp on the pilot that leveled. Queues onto THAT
+    // pilot's own queue so only they get the claim prompt / dialog.
+    queueLevelUp(level, player = this.player) {
+        (player._levelUpQueue || (player._levelUpQueue = [])).push(level);
         this.game.sounds.play('level', 0.5);
-        // Level-up burst off the ship
-        this.cinematics.spawnRing(this.player.worldX, this.player.worldY,
+        // Level-up burst off the leveling ship
+        this.cinematics.spawnRing(player.worldX, player.worldY,
             { color: '#ffd24a', maxR: 140, dur: 0.5, width: 3 });
-        this._spawnSparks(this.player.worldX, this.player.worldY, 16,
+        this._spawnSparks(player.worldX, player.worldY, 16,
             { color: '#ffd24a', speedMin: 120, speedMax: 360 });
     }
 
@@ -7275,27 +8667,65 @@ export class PlayingState {
         // Reuse the cached roll if the player previously Esc'd out of this level,
         // so exiting can't re-roll the choices.
         const savedRoll = this._levelUpRolls[level] || null;
-        this.activeLevelUpDialog = new LevelUpDialog(this.game, this.player, this, level, savedRoll);
+        const dlg = new LevelUpDialog(this.game, this.player, this, level, savedRoll);
+        // Co-op: the claim happened inside this pilot's pane/inventory — keep the
+        // choice screen IN THAT PANE (driven by their cursor), world running for
+        // the others. No global pause; skip disabled to avoid shared-skip bleed.
+        if (this._coopInv) {
+            const lp = this.localPlayers.find(s => s.player === this.player);
+            if (lp) {
+                dlg._coop = true;
+                dlg.canSkip = false;
+                lp.levelUpDialog = dlg;
+                this.game.sounds.play('scrap', 0.8);
+                return;
+            }
+        }
+        this.activeLevelUpDialog = dlg;
         this.isLevelUpOpen = true;
         this.paused        = true;
         this.game.sounds.play('scrap', 0.8);
     }
 
-    _openEncounterDialog(encounter) {
+    // Co-op level-up close: re-queue if dismissed (Esc/B), else advance to this
+    // pilot's next queued level in-pane. Runs in the pilot's swapped context, so
+    // this.levelUpQueue is that pilot's queue.
+    _finishCoopLevelUp(lp) {
+        const dlg = lp.levelUpDialog;
+        lp.levelUpDialog = null;
+        if (!dlg) return;
+        if (dlg.dismissed) {
+            this.levelUpQueue.unshift(dlg.level);
+            this._levelUpRolls[dlg.level] = { choices: dlg.choices, bonusMult: dlg.bonusMult };
+        } else {
+            delete this._levelUpRolls[dlg.level];
+            if (this.levelUpQueue.length > 0) this._openLevelUpDialog(this.levelUpQueue.shift());
+        }
+    }
+
+    _openEncounterDialog(encounter, lp = null) {
         encounter.startInteraction();
 
-        // Multiplayer: dialogs generate at interaction time for whoever locked
-        // the encounter, scaled to THEIR scrap/upgrades.
+        const player = lp ? lp.player : this.player;
+        // Dialogs generate at interaction time for the interacting pilot, scaled
+        // to THEIR scrap/upgrades.
         if (!encounter.dialogData) {
-            encounter.dialogData = generateEncounterDialog(encounter.encounterType, this.player, this);
+            encounter.dialogData = generateEncounterDialog(encounter.encounterType, player, this);
         }
 
-        // Use the dialog that was generated when the encounter spawned
-        this.activeEncounterDialog = new EncounterDialog(
-            this.game, encounter, encounter.dialogData, this.player, this
-        );
-        this.isEncounterOpen = true;
-        this.paused = true;
+        const dlg = new EncounterDialog(this.game, encounter, encounter.dialogData, player, this);
+        if (lp) {
+            // Co-op: in THIS pilot's pane, driven by their cursor.
+            this._ensurePilotUI(lp);
+            dlg._coop = true;
+            lp.encounter = dlg;
+            lp.paused = true;
+            this.game.input.setGamepadCursorEnabled(false);
+        } else {
+            this.activeEncounterDialog = dlg;
+            this.isEncounterOpen = true;
+            this.paused = true;
+        }
         this.game.sounds.play('click', 0.5);
 
         if (this.game.achievements) {
@@ -7406,24 +8836,55 @@ export class PlayingState {
     // there — it never disappears, no matter how far they roam). Their name
     // (first 5 characters) sits above the dot.
     _drawPlayerIndicators(ctx) {
-        const cw = this.game.width;
-        const ch = this.game.height;
+        // Pane context (co-op): ring + on-screen test reference this pilot's pane
+        // and camera; null = whole screen (multiplayer single view).
+        const vp = this._indVp;
+        const ox = vp ? vp.x : 0;
+        const oy = vp ? vp.y : 0;
+        const cw = vp ? vp.w : this.game.width;
+        const ch = vp ? vp.h : this.game.height;
         const dt = this.game.lastDt || 0.016;
-        const hudScale = this.game.hudScale;
+        const hudScale = vp ? Math.max(1, Math.round(this.game.hudScale * vp.h / this.game.height))
+                            : this.game.hudScale;
+        const cam = this.camera;
+        const ws = cam.wtsScale != null ? cam.wtsScale : this.game.worldScale;
+        const offX = cam.wtsOffX != null ? cam.wtsOffX : (-cam.x * ws + ox + cw / 2 + cam.shakeX + cam.punchX);
+        const offY = cam.wtsOffY != null ? cam.wtsOffY : (-cam.y * ws + oy + ch / 2 + cam.shakeY + cam.punchY);
 
         const NEAR = 1000, FAR = 25000;
 
-        for (const rp of this.netSync.remotePlayers.values()) {
-            if (!rp._hasState || rp.isDead) continue;
-            const screen = this.camera.worldToScreen(rp.worldX, rp.worldY, cw, ch);
+        // The "other pilots": networked teammates (MP) or the OTHER local pilots
+        // (co-op), normalized to { key, x, y, name, color }.
+        const others = [];
+        if (this.netSync) {
+            for (const rp of this.netSync.remotePlayers.values()) {
+                if (!rp._hasState || rp.isDead) continue;
+                others.push({ key: rp, x: rp.worldX, y: rp.worldY, name: rp.name.toUpperCase().slice(0, 5), color: playerColor(rp.pid) });
+            }
+        } else if (this.localPlayers.length > 1) {
+            for (let i = 0; i < this.localPlayers.length; i++) {
+                const s = this.localPlayers[i];
+                if (s.player === this.player || !s.player || s.player.dead) continue;
+                others.push({ key: s.player, x: s.player.worldX, y: s.player.worldY, name: `P${i + 1}`, color: playerColor(i) });
+            }
+        }
+        if (others.length === 0) return;
 
-            const dx = rp.worldX - this.player.worldX;
-            const dy = rp.worldY - this.player.worldY;
+        const cx = ox + cw / 2;
+        const cy = oy + ch / 2;
+        const radius = Math.min(cw, ch) * this.indicatorRadiusFactorExclamation;
+
+        for (const o of others) {
+            const screenX = o.x * ws + offX;
+            const screenY = o.y * ws + offY;
+
+            const dx = o.x - this.player.worldX;
+            const dy = o.y - this.player.worldY;
             const dist = Math.sqrt(dx * dx + dy * dy);
             const angle = Math.atan2(dy, dx);
 
-            const isOnScreen = screen.x >= 0 && screen.x <= cw && screen.y >= 0 && screen.y <= ch;
-            const opacity = this._getIndicatorOpacity(rp, !isOnScreen, dt);
+            const isOnScreen = screenX >= ox && screenX <= ox + cw && screenY >= oy && screenY <= oy + ch;
+            const opacity = this._getIndicatorOpacity(o.key, !isOnScreen, dt);
             if (opacity <= 0) continue;
 
             // 6 HUD pixels at ≤1000 units → 1 at ≥25000, whole pixels only.
@@ -7431,16 +8892,12 @@ export class PlayingState {
             const sizeUnits = Math.max(1, Math.min(6, Math.round(6 - t * 5)));
             const px = sizeUnits * hudScale;
 
-            const cx = cw / 2;
-            const cy = ch / 2;
-            const radius = Math.min(cw, ch) * this.indicatorRadiusFactorExclamation;
             const ix = cx + Math.cos(angle) * radius;
             const iy = cy + Math.sin(angle) * radius;
-            const color = playerColor(rp.pid);
 
             ctx.save();
             ctx.globalAlpha = opacity;
-            ctx.fillStyle = color;
+            ctx.fillStyle = o.color;
             // Pixel circle, cell by cell (1 cell = 1 HUD pixel).
             const mask = PlayingState.PLAYER_DOT_MASKS[sizeUnits] || PlayingState.PLAYER_DOT_MASKS[1];
             const originX = Math.floor(ix - px / 2);
@@ -7456,7 +8913,7 @@ export class PlayingState {
             ctx.font = `${5 * hudScale}px Astro4x`;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'alphabetic';
-            ctx.fillText(rp.name.toUpperCase().slice(0, 5), ix, Math.floor(iy - px / 2) - Math.floor(hudScale * 2));
+            ctx.fillText(o.name, ix, Math.floor(iy - px / 2) - Math.floor(hudScale * 2));
 
             // Distance (Below the dot), matching shop/event indicators.
             ctx.globalAlpha = opacity * 0.7;
@@ -7609,28 +9066,27 @@ export class PlayingState {
     }
 
     _drawEncounterIndicators(ctx) {
-        const cw = this.game.width;
-        const ch = this.game.height;
-        const margin = 20 * this.game.uiScale;
+        const { ox, oy, cw, ch, ws, offX, offY } = this._indPane();
 
         const dt = this.game.lastDt || 0.016;
         for (const enc of this.encounters) {
             if (!enc.alive || enc.state === ENC_STATE.HOSTILE || enc.state === ENC_STATE.DEPARTING) continue;
 
-            const screen = this.camera.worldToScreen(enc.worldX, enc.worldY, cw, ch);
+            const screenX = enc.worldX * ws + offX;
+            const screenY = enc.worldY * ws + offY;
 
             const dx = enc.worldX - this.player.worldX;
             const dy = enc.worldY - this.player.worldY;
             const dist = Math.sqrt(dx * dx + dy * dy);
 
-            const isOnScreen = screen.x >= 0 && screen.x <= cw && screen.y >= 0 && screen.y <= ch;
+            const isOnScreen = screenX >= ox && screenX <= ox + cw && screenY >= oy && screenY <= oy + ch;
             const isWithinDist = dist <= Math.max(cw, ch) * 3;
             const opacity = this._getIndicatorOpacity(enc, !isOnScreen && isWithinDist, dt);
             if (opacity <= 0) continue;
 
             const angle = Math.atan2(dy, dx);
-            const cx = cw / 2;
-            const cy = ch / 2;
+            const cx = ox + cw / 2;
+            const cy = oy + ch / 2;
             const radius = Math.min(cw, ch) * this.indicatorRadiusFactorArrow;
             const ix = cx + Math.cos(angle) * radius;
             const iy = cy + Math.sin(angle) * radius;
@@ -7679,18 +9135,28 @@ export class PlayingState {
     }
 
     _drawEnemyIndicators(ctx) {
-        const cw = this.game.width;
-        const ch = this.game.height;
-        const margin = 15 * this.game.uiScale;
+        // Pane context (co-op): the ring frames this pilot's pane and the
+        // on-screen test / fade run against this pilot's camera + store. Null =
+        // the whole screen (single player / multiplayer), unchanged.
+        const vp = this._indVp;
+        const ox = vp ? vp.x : 0;
+        const oy = vp ? vp.y : 0;
+        const cw = vp ? vp.w : this.game.width;
+        const ch = vp ? vp.h : this.game.height;
+        const store = this._indStore || this.indicatorOpacities;
 
         const dt = this.game.lastDt || 0.016;
         const maxIndicatorDist = Math.max(cw, ch) * 2;
         const maxIndicatorDistSq = maxIndicatorDist * maxIndicatorDist;
-        // Inlined world→screen (hoisted constants) so the per-enemy on-screen
-        // test allocates no {x,y} object — matters once a wave fills the list.
-        const ws = this.game.worldScale;
-        const offX = -this.camera.x * ws + cw / 2 + this.camera.shakeX + this.camera.punchX;
-        const offY = -this.camera.y * ws + ch / 2 + this.camera.shakeY + this.camera.punchY;
+        // Use the (pane) camera's precomputed world→screen transform so the
+        // on-screen test and the ring both reference this pilot's actual
+        // viewport. Inlined (no {x,y} alloc) — matters once a wave fills the list.
+        const cam = this.camera;
+        const ws = cam.wtsScale != null ? cam.wtsScale : this.game.worldScale;
+        const offX = cam.wtsOffX != null ? cam.wtsOffX
+                   : (-cam.x * ws + ox + cw / 2 + cam.shakeX + cam.punchX);
+        const offY = cam.wtsOffY != null ? cam.wtsOffY
+                   : (-cam.y * ws + oy + ch / 2 + cam.shakeY + cam.punchY);
 
         // Font/align/baseline + the save/restore are hoisted out of the loop:
         // setting ctx.font re-parses it, which dominated this draw once a wave
@@ -7700,13 +9166,17 @@ export class PlayingState {
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
 
+        const cx = ox + cw / 2;
+        const cy = oy + ch / 2;
+        const radius = Math.min(cw, ch) * this.indicatorRadiusFactorExclamation;
+
         for (const en of this.enemies) {
             const dx = en.worldX - this.player.worldX;
             const dy = en.worldY - this.player.worldY;
             const distSq = dx * dx + dy * dy;
 
             if (distSq > maxIndicatorDistSq) {
-                const state = this.indicatorOpacities.get(en);
+                const state = store.get(en);
                 if (state && state.opacity > 0) {
                     state.opacity = Math.max(0, state.opacity - dt * 2.0);
                 }
@@ -7717,15 +9187,12 @@ export class PlayingState {
             const screenY = en.worldY * ws + offY;
             const dist = Math.sqrt(distSq);
 
-            const isOnScreen = screenX >= 0 && screenX <= cw && screenY >= 0 && screenY <= ch;
+            const isOnScreen = screenX >= ox && screenX <= ox + cw && screenY >= oy && screenY <= oy + ch;
             const isWithinDist = dist <= maxIndicatorDist;
             const opacity = this._getIndicatorOpacity(en, !isOnScreen && isWithinDist, dt);
             if (opacity <= 0) continue;
 
             const angle = Math.atan2(dy, dx);
-            const cx = cw / 2;
-            const cy = ch / 2;
-            const radius = Math.min(cw, ch) * this.indicatorRadiusFactorExclamation;
             const ix = cx + Math.cos(angle) * radius;
             const iy = cy + Math.sin(angle) * radius;
 
@@ -7740,9 +9207,8 @@ export class PlayingState {
     }
 
     _drawAsteroidWarnings(ctx) {
-        const cw = this.game.width;
-        const ch = this.game.height;
-        const margin = 15 * this.game.uiScale;
+        const { ox, oy, cw, ch, ws, offX, offY } = this._indPane();
+        const store = this._indStore || this.indicatorOpacities;
 
         const dt = this.game.lastDt || 0.016;
         // Pre-compute max relevant distance squared to skip far asteroids entirely
@@ -7759,24 +9225,25 @@ export class PlayingState {
             // Quick reject: skip asteroids way too far to ever show an indicator
             if (distSq > maxIndicatorDistSq) {
                 // If it had an opacity, let it fade (but don't compute screen pos)
-                const state = this.indicatorOpacities.get(ast);
+                const state = store.get(ast);
                 if (state && state.opacity > 0) {
                     state.opacity = Math.max(0, state.opacity - dt * 2.0);
                 }
                 continue;
             }
 
-            const screen = this.camera.worldToScreen(ast.worldX, ast.worldY, cw, ch);
+            const screenX = ast.worldX * ws + offX;
+            const screenY = ast.worldY * ws + offY;
             const dist = Math.sqrt(distSq);
 
-            const isOnScreen = screen.x >= 0 && screen.x <= cw && screen.y >= 0 && screen.y <= ch;
+            const isOnScreen = screenX >= ox && screenX <= ox + cw && screenY >= oy && screenY <= oy + ch;
             const isWithinDist = dist <= maxIndicatorDist;
             const opacity = this._getIndicatorOpacity(ast, !isOnScreen && isWithinDist, dt);
             if (opacity <= 0) continue;
 
             const angle = Math.atan2(dy, dx);
-            const cx = cw / 2;
-            const cy = ch / 2;
+            const cx = ox + cw / 2;
+            const cy = oy + ch / 2;
             const radius = Math.min(cw, ch) * this.indicatorRadiusFactorExclamation;
             const ix = cx + Math.cos(angle) * radius;
             const iy = cy + Math.sin(angle) * radius;
@@ -7817,9 +9284,11 @@ export class PlayingState {
 
     _drawPauseOverlay(ctx) {
         ctx.save();
-        const cw = this.game.width;
-        const ch = this.game.height;
-        const uiScale = this.game.uiScale;
+        const cw = this._uiW;
+        const ch = this._uiH;
+        const uiScale = this._uiS;
+        // Positions are pane-local; shift into the pane (no-op fullscreen).
+        ctx.translate(this._uiX, this._uiY);
 
         ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
         ctx.fillRect(0, 0, cw, ch);
@@ -7908,7 +9377,7 @@ export class PlayingState {
             ctx.textBaseline = 'bottom';
         }
 
-        this._drawStatsPanel(ctx);
+        this._drawStatsPanel(ctx, playerLayout.panelX);
         if (!this.confirmRestart) this._drawClaimLevelsButton(ctx);
 
         // Selection corners render above all static pause UI so they frame
@@ -7925,9 +9394,12 @@ export class PlayingState {
         ctx.restore();
     }
 
-    _drawStatsPanel(ctx) {
+    // invLeftX (optional): the x of the adjacent centered inventory's left edge.
+    // When the two-column panel would collide with it (narrow screen/pane), the
+    // stats collapse into a single, taller column.
+    _drawStatsPanel(ctx, invLeftX = null) {
         const p  = this.player;
-        const us = this.game.uiScale;
+        const us = this._uiS;
 
         const statFont = Math.floor(6 * us);
         const headFont = Math.floor(7 * us);
@@ -7963,7 +9435,7 @@ export class PlayingState {
         const turnMult      = p.lvlTurnSpeedMult * p.mechanicalEngineTurnMult;
         const expMult       = p.lvlExpGainMult * p.experienceCondenserMult;
         const hullRegen     = p.lvlHpRegen + p.naniteRegen;
-        const fovMult       = this.fovUpgradeMult ?? p.lvlFovMult;
+        const fovMult       = (p.itemFovMult || 1.0) * p.lvlFovMult;
         // Guaranteed extra projectiles per volley beyond the single baseline shot
         // (Multishot doubles origins; Energy Blaster fires a 3+ spread per origin).
         const origins   = p.hasMultishotGuns ? 2 : 1;
@@ -8011,13 +9483,20 @@ export class PlayingState {
         const colAW    = maxNameA + ipad + maxValW;
         const colBW    = maxNameB + ipad + maxValW;
 
-        const rows   = Math.max(colA.length, colB.length);
-        const panelW = opad + colAW + cGap + colBW + opad;
-        const panelH = opad + headFont + sep + rows * lh + opad;
-
         // Offset from screen edge
         const px = Math.floor(20 * us);
         const py = Math.floor(20 * us);
+
+        const twoColW = opad + colAW + cGap + colBW + opad;
+        // Too narrow: the two-column panel would reach the centered inventory.
+        // Stack both columns into one (taller, single-column) panel instead.
+        const single = invLeftX != null && (px + twoColW + cGap) > invLeftX;
+        const entries = single ? colA.concat(colB) : null;
+        const singleColW = single ? Math.max(maxNameA, maxNameB) + ipad + maxValW : 0;
+
+        const rows   = single ? entries.length : Math.max(colA.length, colB.length);
+        const panelW = single ? (opad + singleColW + opad) : twoColW;
+        const panelH = opad + headFont + sep + rows * lh + opad;
 
         // Background
         ctx.fillStyle   = 'rgba(4, 8, 18, 0.92)';
@@ -8068,11 +9547,17 @@ export class PlayingState {
             ctx.fillText(valStr, colX + colW, y);
         };
 
-        for (let i = 0; i < colA.length; i++) {
-            drawEntry(px + opad, startY + i * lh, colA[i][0], colA[i][1], colAW, colA[i][2]);
-        }
-        for (let i = 0; i < colB.length; i++) {
-            drawEntry(px + opad + colAW + cGap, startY + i * lh, colB[i][0], colB[i][1], colBW, colB[i][2]);
+        if (single) {
+            for (let i = 0; i < entries.length; i++) {
+                drawEntry(px + opad, startY + i * lh, entries[i][0], entries[i][1], singleColW, entries[i][2]);
+            }
+        } else {
+            for (let i = 0; i < colA.length; i++) {
+                drawEntry(px + opad, startY + i * lh, colA[i][0], colA[i][1], colAW, colA[i][2]);
+            }
+            for (let i = 0; i < colB.length; i++) {
+                drawEntry(px + opad + colAW + cGap, startY + i * lh, colB[i][0], colB[i][1], colBW, colB[i][2]);
+            }
         }
 
         // Cache bounds for button positioning in _updatePauseUI
@@ -8098,10 +9583,10 @@ export class PlayingState {
         const sM = M * prescale;
 
         // Destination sizes - clamp corners so they don't exceed half the panel
-        const dcFull = C * this.game.uiScale;
+        const dcFull = C * this._uiS;
         const dcX = Math.min(dcFull, w / 2);
         const dcY = Math.min(dcFull, h / 2);
-        const dm = M * this.game.uiScale;
+        const dm = M * this._uiS;
 
         // Source crop ratios (1.0 when full size, <1.0 when cropped)
         const cropX = dcX / dcFull;
@@ -8140,14 +9625,14 @@ export class PlayingState {
         ctx.drawImage(canvas, sC + sM + (sC - sCX), sC + sM + (sC - sCY), sCX, sCY, x + dcX + mw, by, dcX, dcY); // BR
     }
 
-    _handlePrimaryWeaponFire() {
-        if (this.player.hasRailgun && this.player.isFiring) {
-            this.camera.shake(1.8, 12.0);
+    _handlePrimaryWeaponFire(p = this.player) {
+        const cam = this._pilotCamera(p);
+        if (p.hasRailgun && p.isFiring) {
+            cam.shake(1.8, 12.0);
         }
-        if (this.player.hasEnergyBlaster && this.player.isFiring) {
-            this.camera.shake(1.0, 15.0);
+        if (p.hasEnergyBlaster && p.isFiring) {
+            cam.shake(1.0, 15.0);
         }
-        const p = this.player;
         const noseOffset = 36;
 
         // Determine firing origins
@@ -8190,7 +9675,7 @@ export class PlayingState {
                     const angle = fireAngle + spread;
                     const dirX = Math.cos(angle);
                     const dirY = Math.sin(angle);
-                    this._fireSingleBeam(origin.x, origin.y, dirX, dirY, beamLength, currentBaseDamage * 0.6 * dmgReduc * damageMult);
+                    this._fireSingleBeam(origin.x, origin.y, dirX, dirY, beamLength, currentBaseDamage * 0.6 * dmgReduc * damageMult, p);
                 }
             });
         } else { // Default to Railgun if no Energy Blaster
@@ -8198,20 +9683,20 @@ export class PlayingState {
                 const fireAngle = p.getTargetAngle(origin.x, origin.y);
                 const dirX = Math.cos(fireAngle);
                 const dirY = Math.sin(fireAngle);
-                // The big gun has recoil — view kicks opposite the beam
-                this.camera.punch(-dirX, -dirY, 9);
-                this._fireSingleBeam(origin.x, origin.y, dirX, dirY, beamLength, currentBaseDamage * 2.5 * p.railgunDmgMult * damageMult);
+                // The big gun has recoil — view kicks opposite the beam (this pilot's pane)
+                cam.punch(-dirX, -dirY, 9);
+                this._fireSingleBeam(origin.x, origin.y, dirX, dirY, beamLength, currentBaseDamage * 2.5 * p.railgunDmgMult * damageMult, p);
                 // Extra beams from Multi-Shot level-up — increasing spread, reduced damage
                 for (let ei = 0; ei < p.lvlExtraProjectiles; ei++) {
                     const spread = (0.08 + ei * 0.06) * (Math.random() < 0.5 ? 1 : -1);
                     const a = fireAngle + spread;
-                    this._fireSingleBeam(origin.x, origin.y, Math.cos(a), Math.sin(a), beamLength, currentBaseDamage * 2.5 * p.railgunDmgMult * damageMult * 0.7);
+                    this._fireSingleBeam(origin.x, origin.y, Math.cos(a), Math.sin(a), beamLength, currentBaseDamage * 2.5 * p.railgunDmgMult * damageMult * 0.7, p);
                 }
             });
         }
     }
 
-    _fireSingleBeam(startX, startY, dirX, dirY, length, damage) {
+    _fireSingleBeam(startX, startY, dirX, dirY, length, damage, shooter = this.player) {
         // Replicate the beam flash to the other pilots (visual only).
         if (this.netSync) {
             this.netSync.queueLocalShot(1, startX, startY, Math.atan2(dirY, dirX), 0, 'blue_laser_ball');
@@ -8222,10 +9707,10 @@ export class PlayingState {
             if (!ast.alive) continue;
             if (this._rayIntersectsCircle(startX, startY, dirX, dirY, length, ast.worldX, ast.worldY, ast.radius)) {
                 this.game.sounds.play('hit', 0.6);
-                if (this._routeDamage(ast, damage)) {
+                if (this._routeDamage(ast, damage, undefined, undefined, shooter)) {
                     this._onEntityDestroyed(ast);
                 }
-                if (this.player.hasExplosivesUnit) {
+                if (shooter.hasExplosivesUnit) {
                     // Approximate hit location on the asteroid
                     const dx = ast.worldX - startX, dy = ast.worldY - startY;
                     const projDistance = Math.max(0, dx * dirX + dy * dirY);
@@ -8241,10 +9726,10 @@ export class PlayingState {
             if (!en.alive) continue;
             if (this._rayIntersectsCircle(startX, startY, dirX, dirY, length, en.worldX, en.worldY, en.radius)) {
                 this.game.sounds.play('hit', 0.6);
-                if (this._routeDamage(en, damage)) {
+                if (this._routeDamage(en, damage, undefined, undefined, shooter)) {
                     this._onEntityDestroyed(en);
                 }
-                if (this.player.hasExplosivesUnit) {
+                if (shooter.hasExplosivesUnit) {
                     const dx = en.worldX - startX, dy = en.worldY - startY;
                     const projDistance = Math.max(0, dx * dirX + dy * dirY);
                     const hitX = startX + dirX * projDistance;
@@ -8259,7 +9744,7 @@ export class PlayingState {
             if (!ev.alive) continue;
             if (this._rayIntersectsCircle(startX, startY, dirX, dirY, length, ev.worldX, ev.worldY, ev.radius)) {
                 this.game.sounds.play('hit', 0.6);
-                if (this._routeDamage(ev, damage)) {
+                if (this._routeDamage(ev, damage, undefined, undefined, shooter)) {
                     this._onEntityDestroyed(ev);
                 } else if (ev.state === CTHULHU_STATE.DESTRUCTIBLE) {
                     const dx = ev.worldX - startX, dy = ev.worldY - startY;
@@ -8270,7 +9755,7 @@ export class PlayingState {
                         this.rubble.push(new Rubble(this.game, hitX, hitY));
                     }
                 }
-                if (this.player.hasExplosivesUnit) {
+                if (shooter.hasExplosivesUnit) {
                     const dx = ev.worldX - startX, dy = ev.worldY - startY;
                     const projDistance = Math.max(0, dx * dirX + dy * dirY);
                     const hitX = startX + dirX * projDistance;

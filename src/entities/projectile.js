@@ -112,14 +112,15 @@ export class Projectile {
     // dominant projectile draw cost when a wave fills the screen with fire.
     _drawBody(ctx, camera) {
         if (!this.alive) return;
-        const ws = this.game.worldScale;
-        const camX = camera.x, camY = camera.y;
-        const halfCW = this.game.width / 2 + camera.shakeX;
-        const halfCH = this.game.height / 2 + camera.shakeY;
-
         if (!this.img) return;
-        const hx = (this.worldX - camX) * ws + halfCW;
-        const hy = (this.worldY - camY) * ws + halfCH;
+        // Project through the camera's precomputed transform, which is
+        // viewport-aware: split-screen panes set wts* to their pane center.
+        // Using this.game.width/2 here (as before) pegged projectiles to the
+        // screen middle, so in split view they appeared to fire from the centre.
+        const ws = camera.wtsScale;
+        const offX = camera.wtsOffX, offY = camera.wtsOffY;
+        const hx = this.worldX * ws + offX;
+        const hy = this.worldY * ws + offY;
         const img = this.img.canvas || this.img;
         // Display size matches the original sprite (prescale 4 → /4).
         const w = img.width * ws / 4;
@@ -135,8 +136,8 @@ export class Projectile {
             const idx = (this.historyHead - (hLen - 1) + hMax) % hMax;
             const tail = this.history[idx];
             if (tail) {
-                const tx = (tail.x - camX) * ws + halfCW;
-                const ty = (tail.y - camY) * ws + halfCH;
+                const tx = tail.x * ws + offX;
+                const ty = tail.y * ws + offY;
                 const dx = hx - tx, dy = hy - ty;
                 const len = Math.sqrt(dx * dx + dy * dy);
                 if (len > 1) {

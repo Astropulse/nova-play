@@ -359,7 +359,10 @@ export class Game {
                 this.screenFx.render(ZERO_FX, now / 1000);
             } else {
                 const sfxT0 = performance.now();
-                this.screenFx.render(fx, now / 1000);
+                // Split-screen returns one descriptor per pane (each scissored to
+                // its rect); single view returns the flat descriptor.
+                if (fx.panes) this.screenFx.renderPanes(fx.panes, now / 1000);
+                else this.screenFx.render(fx, now / 1000);
                 // Only sample frames where the pass actually did work (an effect
                 // was active); the full-frame upload cost is hardware-bound, not
                 // scene-bound, so a clean average identifies weak hardware

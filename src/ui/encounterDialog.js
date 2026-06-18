@@ -152,9 +152,10 @@ export class EncounterDialog {
                     this.state = DIALOG_STATE.SHOWING_OPTIONS;
                 }
 
-                // Click / Space / gamepad A or X to skip typing
-                if (input.isMouseJustPressed(0) || input.isKeyJustPressed('Space')
-                    || input.isGamepadJustPressed(GP.A) || input.isGamepadJustPressed(GP.X)) {
+                // Click / Space / gamepad A or X to skip typing. (Co-op: the
+                // pilot's A is synthesized as a mouse click by the driver.)
+                if (input.isMouseJustPressed(0) || (!this._coop && (input.isKeyJustPressed('Space')
+                    || input.isGamepadJustPressed(GP.A) || input.isGamepadJustPressed(GP.X)))) {
                     this.revealedChars = this.totalChars;
                     this.state = DIALOG_STATE.SHOWING_OPTIONS;
                 }
@@ -162,59 +163,63 @@ export class EncounterDialog {
             }
 
             case DIALOG_STATE.SHOWING_OPTIONS: {
-                // Handle click on options
+                // Handle click on options (the co-op cursor synthesizes this).
                 if (input.isMouseJustPressed(0) && this.hoveredOption >= 0) {
                     this._selectOption(this.hoveredOption);
                 }
 
-                // Number keys 1-9
-                for (let i = 0; i < Math.min(this.options.length, 9); i++) {
-                    if (input.isKeyJustPressed(`Digit${i + 1}`)) {
-                        this._selectOption(i);
+                // Shared keyboard/gamepad nav — single view only; co-op pilots
+                // drive their own dialog by cursor (B-to-close via the driver).
+                if (!this._coop) {
+                    // Number keys 1-9
+                    for (let i = 0; i < Math.min(this.options.length, 9); i++) {
+                        if (input.isKeyJustPressed(`Digit${i + 1}`)) {
+                            this._selectOption(i);
+                        }
                     }
-                }
 
-                // Keyboard arrow navigation.
-                if (input.isKeyJustPressed('ArrowUp') || input.isKeyJustPressed('KeyW')) {
-                    this._stepSelection(-1);
-                }
-                if (input.isKeyJustPressed('ArrowDown') || input.isKeyJustPressed('KeyS')) {
-                    this._stepSelection(1);
-                }
-
-                // Gamepad: d-pad / left stick move a single vertical focus that
-                // runs from the message's upgrade references (top) down through
-                // the options. A confirms an option, B closes.
-                if (input.isGamepadJustPressed(GP.DUP))   this._stepGamepadFocus(-1);
-                if (input.isGamepadJustPressed(GP.DDOWN)) this._stepGamepadFocus(1);
-
-                const stickY = input.leftStickY;
-                if (Math.abs(stickY) > 0.55) {
-                    if (!this._stickLatched) {
-                        this._stickLatched = true;
-                        this._stepGamepadFocus(stickY < 0 ? -1 : 1);
+                    // Keyboard arrow navigation.
+                    if (input.isKeyJustPressed('ArrowUp') || input.isKeyJustPressed('KeyW')) {
+                        this._stepSelection(-1);
                     }
-                } else if (Math.abs(stickY) < 0.25) {
-                    this._stickLatched = false;
-                }
+                    if (input.isKeyJustPressed('ArrowDown') || input.isKeyJustPressed('KeyS')) {
+                        this._stepSelection(1);
+                    }
 
-                // Keyboard Enter confirms the selected option.
-                if (input.isKeyJustPressed('Enter')
-                    && this.keyboardSelected >= 0 && this.keyboardSelected < this.options.length) {
-                    this._selectOption(this.keyboardSelected);
-                }
+                    // Gamepad: d-pad / left stick move a single vertical focus that
+                    // runs from the message's upgrade references (top) down through
+                    // the options. A confirms an option, B closes.
+                    if (input.isGamepadJustPressed(GP.DUP))   this._stepGamepadFocus(-1);
+                    if (input.isGamepadJustPressed(GP.DDOWN)) this._stepGamepadFocus(1);
 
-                // Gamepad A confirms only when an option is focused (does nothing
-                // while inspecting an upgrade tooltip).
-                if (input.isGamepadJustPressed(GP.A) && this.gpFocusKind === 'option'
-                    && this.keyboardSelected >= 0 && this.keyboardSelected < this.options.length) {
-                    this._selectOption(this.keyboardSelected);
-                }
+                    const stickY = input.leftStickY;
+                    if (Math.abs(stickY) > 0.55) {
+                        if (!this._stickLatched) {
+                            this._stickLatched = true;
+                            this._stepGamepadFocus(stickY < 0 ? -1 : 1);
+                        }
+                    } else if (Math.abs(stickY) < 0.25) {
+                        this._stickLatched = false;
+                    }
 
-                // Escape or B to close (blocked on forced encounters)
-                if (!this.forced && (input.isKeyJustPressed('Escape') || input.isGamepadJustPressed(GP.B))) {
-                    this.closed = true;
-                    this.encounter.shouldStay = true;
+                    // Keyboard Enter confirms the selected option.
+                    if (input.isKeyJustPressed('Enter')
+                        && this.keyboardSelected >= 0 && this.keyboardSelected < this.options.length) {
+                        this._selectOption(this.keyboardSelected);
+                    }
+
+                    // Gamepad A confirms only when an option is focused (does nothing
+                    // while inspecting an upgrade tooltip).
+                    if (input.isGamepadJustPressed(GP.A) && this.gpFocusKind === 'option'
+                        && this.keyboardSelected >= 0 && this.keyboardSelected < this.options.length) {
+                        this._selectOption(this.keyboardSelected);
+                    }
+
+                    // Escape or B to close (blocked on forced encounters)
+                    if (!this.forced && (input.isKeyJustPressed('Escape') || input.isGamepadJustPressed(GP.B))) {
+                        this.closed = true;
+                        this.encounter.shouldStay = true;
+                    }
                 }
                 break;
             }
@@ -244,8 +249,8 @@ export class EncounterDialog {
                 }
 
                 // Click / Space / gamepad A or X to skip response typing
-                if (input.isMouseJustPressed(0) || input.isKeyJustPressed('Space')
-                    || input.isGamepadJustPressed(GP.A) || input.isGamepadJustPressed(GP.X)) {
+                if (input.isMouseJustPressed(0) || (!this._coop && (input.isKeyJustPressed('Space')
+                    || input.isGamepadJustPressed(GP.A) || input.isGamepadJustPressed(GP.X)))) {
                     this.responseRevealedChars = this.responseTotalChars;
                     if (this.options.length === 0) {
                         this.responseCloseTimer = 0.5;
@@ -259,7 +264,7 @@ export class EncounterDialog {
         this.hoveredUpgrade = null;
         this._tooltipAnchor = null;
 
-        if (input.isGamepadActive()) {
+        if (!this._coop && input.isGamepadActive()) {
             // Controller: a tooltip shows only while the vertical focus sits on
             // one of the message's upgrade references (reached by navigating up
             // above the first option).
@@ -387,9 +392,16 @@ export class EncounterDialog {
     draw(ctx) {
         if (this.closed) return;
 
-        const cw = this.game.width;
-        const ch = this.game.height;
-        const uiScale = this.game.uiScale;
+        // Co-op: the owning PlayingState sets a pane viewport so the dialog lays
+        // out for that pilot's pane and translates into it. Null = fullscreen.
+        const ps = this.playingState;
+        const vp = ps && ps._uiVp;
+        const cw = vp ? ps._uiW : this.game.width;
+        const ch = vp ? ps._uiH : this.game.height;
+        const uiScale = vp ? ps._uiS : this.game.uiScale;
+
+        ctx.save();
+        ctx.translate(vp ? ps._uiX : 0, vp ? ps._uiY : 0);
 
         // Dim background
         ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
@@ -615,6 +627,7 @@ export class EncounterDialog {
         }
 
         ctx.restore();
+        ctx.restore(); // pane translate
     }
 
     _wrapSegments(ctx, segments, maxWidth) {
@@ -742,8 +755,10 @@ export class EncounterDialog {
     }
 
     _drawUpgradeTooltip(ctx, upg) {
-        const uiScale = this.game.uiScale;
-        const gamepadActive = this.game.input.isGamepadActive();
+        const ps = this.playingState;
+        const vp = ps && ps._uiVp;
+        const uiScale = vp ? ps._uiS : this.game.uiScale;
+        const gamepadActive = !this._coop && this.game.input.isGamepadActive();
 
         const pad = 8 * uiScale;
         const fontSize = Math.floor(5 * uiScale);
@@ -793,8 +808,10 @@ export class EncounterDialog {
 
         let tx = ax + 10;
         let ty = ay + 10;
-        if (tx + tw > this.game.width) tx = ax - tw - 10;
-        if (ty + th > this.game.height) ty = ay - th - 10;
+        const clampW = vp ? ps._uiW : this.game.width;
+        const clampH = vp ? ps._uiH : this.game.height;
+        if (tx + tw > clampW) tx = ax - tw - 10;
+        if (ty + th > clampH) ty = ay - th - 10;
         if (tx < 0) tx = 0;
         if (ty < 0) ty = 0;
 

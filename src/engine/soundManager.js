@@ -131,11 +131,38 @@ export class SoundManager {
         // Spatial Audio Properties
         this.listenerX = 0;
         this.listenerY = 0;
+        // Local co-op: multiple listeners (one per pilot) sharing one output. A
+        // positional sound uses the NEAREST listener's distance, so it's audible
+        // around any pilot and still plays only once. null = single-listener.
+        this.listeners = null;
     }
 
     setListenerPosition(x, y) {
         this.listenerX = x;
         this.listenerY = y;
+        this.listeners = null;
+    }
+
+    // positions: array of {x, y} (live pilots). Pass null/empty to revert to the
+    // single listener set via setListenerPosition.
+    setListeners(positions) {
+        this.listeners = (positions && positions.length) ? positions : null;
+        if (this.listeners) { this.listenerX = positions[0].x; this.listenerY = positions[0].y; }
+    }
+
+    // Distance from a world point to the nearest active listener.
+    _listenerDist(x, y) {
+        if (this.listeners) {
+            let best = Infinity;
+            for (const L of this.listeners) {
+                const dx = x - L.x, dy = y - L.y;
+                const d = dx * dx + dy * dy;
+                if (d < best) best = d;
+            }
+            return Math.sqrt(best);
+        }
+        const dx = x - this.listenerX, dy = y - this.listenerY;
+        return Math.sqrt(dx * dx + dy * dy);
     }
 
     // Register sounds - we'll fetch them as buffers
@@ -864,9 +891,7 @@ export class SoundManager {
         }
 
         if (x !== null && y !== null) {
-            const dx = x - this.listenerX;
-            const dy = y - this.listenerY;
-            const dist = Math.sqrt(dx * dx + dy * dy);
+            const dist = this._listenerDist(x, y); // nearest pilot in co-op
             if (dist >= maxDist) return;
             if (dist > minPassDist) {
                 const attenuation = 1.0 - ((dist - minPassDist) / (maxDist - minPassDist));

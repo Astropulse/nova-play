@@ -78,6 +78,7 @@ document.createElement = function (t, ...r) { if (typeof t === 'string' && t.toL
             // Per-particle-type draw-submission split (ms/frame).
             pdraw: { scrap: round(a.pdraw.scrap / n), rubble: round(a.pdraw.rubble / n), orb: round(a.pdraw.orb / n), ft: round(a.pdraw.ft / n) },
             avoidSplit: { ast: round((Enemy._pAst || 0) / n), sep: round((Enemy._pSep || 0) / n), dodge: round((Enemy._pDodge || 0) / n) },
+            pilots: S.localPlayers ? S.localPlayers.length : 1,
             en: S.enemies.length, ast: S.asteroids.length, proj: S.projectiles.length, canvases: canvasCreated,
             // Live particle-population counts — "sheer number of calculations".
             counts: { spk: S.sparks.length, rub: S.rubble.length, ft: S.floatingTexts.length, orb: S.expOrbs.length, scr: S.scrapEntities.length, exp: (S.explosions || []).length },
@@ -136,8 +137,53 @@ document.createElement = function (t, ...r) { if (typeof t === 'string' && t.toL
     // projectile-dodge) so we see which sub-part of avoidance costs the most.
     Enemy._PROF = true; Enemy._pAst = 0; Enemy._pSep = 0; Enemy._pDodge = 0;
 
+    // N-player co-op driver (engaged by the scenario when ?coop=N>1). Each
+    // follower pilot is driven INDEPENDENTLY by its own lightweight AI — it picks
+    // its OWN nearest target (enemy, else asteroid), aims + fires at it, and
+    // closes to weapon range; with nothing to fight it regroups toward the
+    // primary at its own formation offset so its pane stays in the action. No
+    // shared/mirrored controls (that caused the lock-step artifacts), and they
+    // move with real physics → smooth independent cameras. This exercises the
+    // true N-body sim + N-pane render through the same arc.
+    function _nearestTo(p, list, maxD) {
+        let best = null, bd = maxD * maxD;
+        for (const e of list) {
+            if (!e || e.alive === false) continue;
+            const dx = e.worldX - p.worldX, dy = e.worldY - p.worldY, d = dx * dx + dy * dy;
+            if (d < bd) { bd = d; best = e; }
+        }
+        return best;
+    }
+    function coopDrive() {
+        if (!S.splitScreen || !S.splitScreen.active) return;
+        const lps = S.localPlayers;
+        const pr = lps[0].player;
+        for (let i = 1; i < lps.length; i++) {
+            const slot = lps[i], p = slot.player, inp = slot._perfInput;
+            if (!p || p.dead || !inp) continue;
+            const tgt = _nearestTo(p, S.enemies, 1800) || _nearestTo(p, S.asteroids, 1100);
+            let tx, ty, fire, standoff;
+            if (tgt) { tx = tgt.worldX; ty = tgt.worldY; fire = true; standoff = 300; }
+            else {
+                // Regroup at this follower's own formation slot around the primary.
+                const a = slot._homeAngle || 0;
+                tx = pr.worldX + Math.cos(a) * 260; ty = pr.worldY + Math.sin(a) * 260;
+                fire = false; standoff = 150;
+            }
+            let dx = tx - p.worldX, dy = ty - p.worldY;
+            const dist = Math.hypot(dx, dy) || 1; dx /= dist; dy /= dist;
+            inp._rx = dx; inp._ry = dy;                          // aim at own target
+            const move = dist > standoff;
+            inp._lx = move ? dx : 0; inp._ly = move ? dy : 0;    // close to range / regroup
+            inp._fire = fire;
+            const boost = move && dist > 1000;
+            inp._boostJP = boost && !slot._pb; slot._pb = boost; // own boost edge
+            inp._boost = boost;
+        }
+    }
+
     const origUpdate = S.update.bind(S);
-    S.update = function (dt) { const t0 = performance.now(); origUpdate(dt); acc.upd += performance.now() - t0; afterUpd.clear(); for (const [k, v] of S.perf._current) afterUpd.set(k, v); };
+    S.update = function (dt) { coopDrive(); const t0 = performance.now(); origUpdate(dt); acc.upd += performance.now() - t0; afterUpd.clear(); for (const [k, v] of S.perf._current) afterUpd.set(k, v); };
     const origDraw = S.draw.bind(S);
     S.draw = function (ctx) {
         const t0 = performance.now(); origDraw(ctx); acc.draw += performance.now() - t0;
@@ -170,6 +216,44 @@ document.createElement = function (t, ...r) { if (typeof t === 'string' && t.toL
         const buffDamage = () => { S.player.laserCartridgeMult = (S.player.laserCartridgeMult || 1) * 3; };
         buffDamage();
 
+        // ── Optional N-player local co-op (?coop=N, 2..8) ──────────────────────
+        const COOP = Math.max(1, Math.min(8, parseInt(new URLSearchParams(location.search).get('coop') || '1', 10) || 1));
+        if (COOP > 1) {
+            // Each pilot flies a DIFFERENT hull (the 4 ship types cycle): primary =
+            // SHIPS[0], followers = SHIPS[1..]. Spawn them with explicit shipData
+            // instead of setCoopCount (which clones the primary's ship).
+            for (let i = 1; i < COOP; i++) S._addLocalPilot(null, SHIPS[i % SHIPS.length]);
+            S._assignCoopInput();
+            S.splitScreen.setCount(S.localPlayers.length);
+            bot.log('coop pilots: ' + S.localPlayers.length + ' ships: ' + S.localPlayers.map(lp => lp.player.shipData.id).join(','));
+            const loadout = ['repeater', 'laser_override', 'laser_cartridge', 'mechanical_engines', 'rockets', 'auto_turret'];
+            for (let i = 1; i < S.localPlayers.length; i++) {
+                const slot = S.localPlayers[i], p = slot.player;
+                loadout.forEach(id => { const u = UPGRADES.find(x => x.id === id); if (u && p.inventory.autoAdd) p.inventory.autoAdd(u); });
+                try { S._onInventoryChanged(p); } catch (e) {}
+                p.invulnTimer = 1e9;
+                p.laserCartridgeMult = (p.laserCartridgeMult || 1) * 3;
+                p.health = p.maxHealth; p.shieldEnergy = p.maxShieldEnergy;
+                // Synthetic driver: sticks/triggers set each frame by coopDrive
+                // (this pilot's own AI). Matches the GamepadInputSource surface.
+                const inp = {
+                    usesMouseAim: false, _lx: 0, _ly: 0, _rx: 1, _ry: 0, _fire: false, _boost: false, _boostJP: false,
+                    get leftStickX() { return this._lx; }, get leftStickY() { return this._ly; },
+                    get rightStickX() { return this._rx; }, get rightStickY() { return this._ry; },
+                    isKeyDown: () => false, isKeyJustPressed: () => false,
+                    isMouseDown: () => false, isMouseJustPressed: () => false,
+                    isGamepadDown: () => false, isGamepadJustPressed: () => false,
+                    isTriggerDown(side) { return side === 'right' ? this._fire : (side === 'left' ? this._boost : false); },
+                    isTriggerJustPressed(side) { return side === 'left' ? this._boostJP : false; },
+                };
+                p.input = inp;
+                slot._perfInput = inp;
+                slot._homeAngle = (i - 1) / Math.max(1, COOP - 1) * Math.PI * 2; // own formation slot
+            }
+        }
+        // In co-op the bot still drives the primary; modals open in pilot 0's pane.
+        const lp0 = COOP > 1 ? S.localPlayers[0] : null;
+
         setPhase('STAY');
         await bot.stayPut(5000, false);
 
@@ -190,24 +274,27 @@ document.createElement = function (t, ...r) { if (typeof t === 'string' && t.toL
         setPhase('SHOP');              // spawn a shop, fly to it, open, buy, close
         { const sh = new Shop(g, P().worldX + 700, P().worldY + 200); S.shops.push(sh);
           await bot.flyTo(sh.worldX, sh.worldY, 200, 15000);
-          S._openShop(sh); await waitFor(() => S.isShopOpen, 2000);
+          // Co-op: open in the primary pilot's pane only (per-pilot modal).
+          S._openShop(sh, lp0); await waitFor(() => lp0 ? !!lp0.shop : S.isShopOpen, 2000);
           await sleep(1500); // shop overlay drawing
           ['shield_booster', 'small_battery'].forEach(give); try { S._onInventoryChanged(); } catch (e) {}
           buffDamage(); // _onInventoryChanged recomputes the mult — re-assert 3x
           await sleep(1000);
-          S.isShopOpen = false; S.paused = false; S.activeShop = null; }
+          if (lp0) S._closeCoopShop(lp0); else { S.isShopOpen = false; S.paused = false; S.activeShop = null; } }
 
         setPhase('CACHE_ROLL');        // THE reported lag: rolling animation
         let cache = null;
         { cache = S.cacheSpawner.spawnNear(P().worldX, P().worldY, 250, 450); S.caches.push(cache);
           await bot.flyTo(cache.worldX, cache.worldY, 170, 12000);
-          S._openCacheUI(cache); await waitFor(() => S.isCacheOpen, 2000);
+          S._openCacheUI(cache, lp0);
+          const cacheUI = () => lp0 ? lp0.cache : S.activeCacheUI;
+          await waitFor(() => !!cacheUI(), 2000);
           // measure through the rolling/reveal animation specifically
-          await waitFor(() => S.activeCacheUI && S.activeCacheUI.uiState === 'idle', 7000); }
+          await waitFor(() => cacheUI() && cacheUI().uiState === 'idle', 7000); }
 
         setPhase('CACHE_IDLE');
         await sleep(1500);
-        { if (S.activeCacheUI) S.activeCacheUI.close(); await waitFor(() => !S.isCacheOpen, 3000); }
+        { if (lp0) S._closeCoopCache(lp0); else { if (S.activeCacheUI) S.activeCacheUI.close(); } await sleep(300); }
 
         setPhase('FLY_AWAY');
         await bot.flyOut(1200, Math.PI, 8000);
@@ -218,11 +305,13 @@ document.createElement = function (t, ...r) { if (typeof t === 'string' && t.toL
           if (enc) {
             enc.worldX = P().worldX + 500; enc.worldY = P().worldY; // bring it close for the test
             await bot.flyTo(enc.worldX, enc.worldY, 220, 10000);
-            S._openEncounterDialog(enc); await waitFor(() => S.isEncounterOpen, 2000);
+            // Co-op: dialog in the primary pilot's pane only.
+            S._openEncounterDialog(enc, lp0);
+            await waitFor(() => lp0 ? !!lp0.encounter : S.isEncounterOpen, 2000);
             await sleep(1200); // dialog drawing
             enc.shouldConvertHostile = true;
-            if (S.activeEncounterDialog) S.activeEncounterDialog.closed = true;
-            await waitFor(() => !S.isEncounterOpen, 2000);
+            if (lp0) { lp0.encounter = null; lp0.paused = false; }
+            else if (S.activeEncounterDialog) { S.activeEncounterDialog.closed = true; await waitFor(() => !S.isEncounterOpen, 2000); }
             await bot.destroy('enemies', 0, 15000);
           } }
 

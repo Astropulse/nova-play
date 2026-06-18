@@ -55,7 +55,9 @@ export class InputManager {
         this.mousePanDeltaX = 0;
         this.mousePanDeltaY = 0;
 
-        // Gamepad
+        // Gamepad — the legacy top-level fields mirror the *primary* pad (first
+        // connected) for single-player and UI. Per-pad state lives in `_pads`
+        // so local co-op can route each controller to its own pilot.
         this.gamepadConnected = false;
         this.leftStickX = 0;
         this.leftStickY = 0;
@@ -65,6 +67,8 @@ export class InputManager {
         this.rightTrigger = 0;
         this._gpButtons = new Array(16).fill(false);
         this._gpButtonsPrev = new Array(16).fill(false);
+        // Per-pad state: index → { connected, lx,ly,rx,ry, lt,rt, buttons[16], prev[16] }
+        this._pads = [];
 
         // Input device tracking
         this.lastInputDevice = 'mouse';
@@ -159,57 +163,85 @@ export class InputManager {
 
     _pollGamepad() {
         const pads = (typeof navigator !== 'undefined' && navigator.getGamepads) ? navigator.getGamepads() : null;
-        let active = null;
-        if (pads) {
-            for (const p of pads) {
-                if (p && p.connected) { active = p; break; }
+        const len = pads ? pads.length : 0;
+
+        let primary = -1;
+        let anyActivity = false;
+        for (let pi = 0; pi < len; pi++) {
+            const p = pads[pi];
+            let pad = this._pads[pi];
+            if (!pad) {
+                pad = { connected: false, lx: 0, ly: 0, rx: 0, ry: 0, lt: 0, rt: 0,
+                        buttons: new Array(16).fill(false), prev: new Array(16).fill(false) };
+                this._pads[pi] = pad;
             }
-        }
-        this.gamepadConnected = !!active;
+            if (!p || !p.connected) {
+                pad.connected = false;
+                pad.lx = pad.ly = pad.rx = pad.ry = pad.lt = pad.rt = 0;
+                for (let i = 0; i < 16; i++) pad.buttons[i] = false;
+                continue;
+            }
+            pad.connected = true;
+            if (primary < 0) primary = pi;
 
-        // Reset to neutral when nothing is connected so stale values don't linger.
-        if (!active) {
-            this.leftStickX = 0;
-            this.leftStickY = 0;
-            this.rightStickX = 0;
-            this.rightStickY = 0;
-            this.leftTrigger = 0;
-            this.rightTrigger = 0;
+            pad.lx = this._applyDeadzone(p.axes[0] || 0);
+            pad.ly = this._applyDeadzone(p.axes[1] || 0);
+            pad.rx = this._applyDeadzone(p.axes[2] || 0);
+            pad.ry = this._applyDeadzone(p.axes[3] || 0);
+            const lt = p.buttons[GP.LT], rt = p.buttons[GP.RT];
+            pad.lt = lt ? (lt.value || (lt.pressed ? 1 : 0)) : 0;
+            pad.rt = rt ? (rt.value || (rt.pressed ? 1 : 0)) : 0;
+            for (let i = 0; i < 16; i++) {
+                const b = p.buttons[i];
+                pad.buttons[i] = !!(b && (b.pressed || (b.value !== undefined && b.value > 0.5)));
+            }
+            const tilt = Math.max(Math.abs(pad.lx), Math.abs(pad.ly), Math.abs(pad.rx), Math.abs(pad.ry)) > 0.1;
+            if (tilt || pad.buttons.some(Boolean) || pad.lt > 0.1 || pad.rt > 0.1) anyActivity = true;
+        }
+
+        this.gamepadConnected = primary >= 0;
+
+        // Mirror the primary pad into the legacy top-level fields (single-player
+        // + UI cursor read these).
+        if (primary >= 0) {
+            const pad = this._pads[primary];
+            this.leftStickX = pad.lx; this.leftStickY = pad.ly;
+            this.rightStickX = pad.rx; this.rightStickY = pad.ry;
+            this.leftTrigger = pad.lt; this.rightTrigger = pad.rt;
+            for (let i = 0; i < 16; i++) this._gpButtons[i] = pad.buttons[i];
+        } else {
+            this.leftStickX = 0; this.leftStickY = 0;
+            this.rightStickX = 0; this.rightStickY = 0;
+            this.leftTrigger = 0; this.rightTrigger = 0;
             for (let i = 0; i < 16; i++) this._gpButtons[i] = false;
-            return;
         }
 
-        this.leftStickX  = this._applyDeadzone(active.axes[0] || 0);
-        this.leftStickY  = this._applyDeadzone(active.axes[1] || 0);
-        this.rightStickX = this._applyDeadzone(active.axes[2] || 0);
-        this.rightStickY = this._applyDeadzone(active.axes[3] || 0);
+        if (anyActivity) this.lastInputDevice = 'gamepad';
+    }
 
-        // Triggers are analog on button.value in standard mapping.
-        const lt = active.buttons[GP.LT];
-        const rt = active.buttons[GP.RT];
-        this.leftTrigger  = lt ? (lt.value || (lt.pressed ? 1 : 0)) : 0;
-        this.rightTrigger = rt ? (rt.value || (rt.pressed ? 1 : 0)) : 0;
-
-        for (let i = 0; i < 16; i++) {
-            const b = active.buttons[i];
-            this._gpButtons[i] = !!(b && (b.pressed || (b.value !== undefined && b.value > 0.5)));
-        }
-
-        // Detect activity for device tracking.
-        const anyStickTilt = Math.max(
-            Math.abs(this.leftStickX), Math.abs(this.leftStickY),
-            Math.abs(this.rightStickX), Math.abs(this.rightStickY)
-        ) > 0.1;
-        const anyButton = this._gpButtons.some(Boolean) || this.leftTrigger > 0.1 || this.rightTrigger > 0.1;
-        if (anyStickTilt || anyButton) {
-            this.lastInputDevice = 'gamepad';
-        }
+    // ── Per-pad accessors (local co-op routes each controller to a pilot) ──
+    padConnected(i) { const p = this._pads[i]; return !!(p && p.connected); }
+    getConnectedPadIndices() {
+        const out = [];
+        for (let i = 0; i < this._pads.length; i++) if (this._pads[i] && this._pads[i].connected) out.push(i);
+        return out;
+    }
+    padAxis(i, name) { const p = this._pads[i]; return p ? (p[name] || 0) : 0; }
+    padButtonDown(i, btn) { const p = this._pads[i]; return !!(p && p.buttons[btn]); }
+    padButtonJustPressed(i, btn) { const p = this._pads[i]; return !!(p && p.buttons[btn] && !p.prev[btn]); }
+    padTrigger(i, side) { const p = this._pads[i]; if (!p) return 0; return side === 'left' ? p.lt : p.rt; }
+    padTriggerDown(i, side) { return this.padTrigger(i, side) >= TRIGGER_THRESHOLD; }
+    padTriggerJustPressed(i, side) {
+        const idx = side === 'left' ? GP.LT : GP.RT;
+        return this.padButtonJustPressed(i, idx);
     }
 
     // Called by UI consumers (inventory / pause / cache / shop) to let the
     // gamepad drive a virtual cursor. The caller should pass `false` when the
     // mode ends (release A-drag, close the UI) so nothing leaks.
-    setGamepadCursorEnabled(enabled) {
+    // padIndex (or null = primary) routes the virtual cursor to one controller;
+    // clampRect (or null = whole canvas) confines it to a split-screen pane.
+    setGamepadCursorEnabled(enabled, padIndex = null, clampRect = null) {
         if (!enabled && this._gpCursorEnabled) {
             // Ensure the synthesised button doesn't stay pressed after we leave.
             if (this._gpVirtualMouseDown) {
@@ -218,6 +250,8 @@ export class InputManager {
             }
         }
         this._gpCursorEnabled = enabled;
+        this._gpCursorPad = enabled ? padIndex : null;
+        this._gpCursorClamp = enabled ? clampRect : null;
     }
 
     isGamepadActive() {
@@ -232,13 +266,21 @@ export class InputManager {
     _updateGamepadVirtualCursor(dt, speed = 800) {
         if (!this._gpCursorEnabled || !this.gamepadConnected) return;
 
+        // Local co-op routes the cursor to a SPECIFIC pad + clamps it to that
+        // pilot's pane (set via setGamepadCursorEnabled). Default: primary pad,
+        // whole canvas.
+        const pi = this._gpCursorPad;
+        const ax = (n) => pi != null ? this.padAxis(pi, n) : this[n === 'lx' ? 'leftStickX' : n === 'ly' ? 'leftStickY' : n === 'rx' ? 'rightStickX' : 'rightStickY'];
+        const btn = (b) => pi != null ? this.padButtonDown(pi, b) : this._gpButtons[b];
+        const btnJP = (b) => pi != null ? this.padButtonJustPressed(pi, b) : (this._gpButtons[b] && !this._gpButtonsPrev[b]);
+
         // Combine left stick with d-pad (d-pad gives a constant-speed pulse).
-        let dx = this.leftStickX + this.rightStickX;
-        let dy = this.leftStickY + this.rightStickY;
-        if (this._gpButtons[GP.DLEFT])  dx -= 1;
-        if (this._gpButtons[GP.DRIGHT]) dx += 1;
-        if (this._gpButtons[GP.DUP])    dy -= 1;
-        if (this._gpButtons[GP.DDOWN])  dy += 1;
+        let dx = ax('lx') + ax('rx');
+        let dy = ax('ly') + ax('ry');
+        if (btn(GP.DLEFT))  dx -= 1;
+        if (btn(GP.DRIGHT)) dx += 1;
+        if (btn(GP.DUP))    dy -= 1;
+        if (btn(GP.DDOWN))  dy += 1;
 
         const mag = Math.sqrt(dx * dx + dy * dy);
         if (mag > 0) {
@@ -250,19 +292,21 @@ export class InputManager {
             this.mouseScreenX += nx * scale * speed * dt;
             this.mouseScreenY += ny * scale * speed * dt;
 
-            // Clamp to canvas so the cursor can't vanish.
-            const w = this.canvas.width;
-            const h = this.canvas.height;
-            if (this.mouseScreenX < 0) this.mouseScreenX = 0;
-            else if (this.mouseScreenX > w) this.mouseScreenX = w;
-            if (this.mouseScreenY < 0) this.mouseScreenY = 0;
-            else if (this.mouseScreenY > h) this.mouseScreenY = h;
+            // Clamp to the clamp rect (pane) or the whole canvas.
+            const cr = this._gpCursorClamp;
+            const x0 = cr ? cr.x : 0, y0 = cr ? cr.y : 0;
+            const x1 = cr ? cr.x + cr.w : this.canvas.width;
+            const y1 = cr ? cr.y + cr.h : this.canvas.height;
+            if (this.mouseScreenX < x0) this.mouseScreenX = x0;
+            else if (this.mouseScreenX > x1) this.mouseScreenX = x1;
+            if (this.mouseScreenY < y0) this.mouseScreenY = y0;
+            else if (this.mouseScreenY > y1) this.mouseScreenY = y1;
         }
 
         // A button toggles a synthesised left-mouse-button "hold". First tap
         // presses it (pickup), next tap releases it (drop) — matching the
         // existing drag-drop contract.
-        const aJustPressed = this._gpButtons[GP.A] && !this._gpButtonsPrev[GP.A];
+        const aJustPressed = btnJP(GP.A);
         if (aJustPressed) {
             if (this._gpVirtualMouseDown) {
                 this._gpVirtualMouseDown = false;
@@ -275,7 +319,7 @@ export class InputManager {
         }
 
         // Synthesise a right-click (consumable use) on the X button.
-        const xJustPressed = this._gpButtons[GP.X] && !this._gpButtonsPrev[GP.X];
+        const xJustPressed = btnJP(GP.X);
         if (xJustPressed) {
             this.mouseButtonsJustPressed.add(2);
             // Briefly hold then release — a single-frame "pulse".
@@ -292,6 +336,9 @@ export class InputManager {
         // consumers that call isGamepadJustPressed() after update() see a
         // true edge (current-frame pressed, prev-frame not).
         for (let i = 0; i < 16; i++) this._gpButtonsPrev[i] = this._gpButtons[i];
+        for (const pad of this._pads) {
+            if (pad) for (let i = 0; i < 16; i++) pad.prev[i] = pad.buttons[i];
+        }
         this._gpVirtualMouseDownPrev = this._gpVirtualMouseDown;
 
         // Poll hardware gamepad state so everything downstream sees the
