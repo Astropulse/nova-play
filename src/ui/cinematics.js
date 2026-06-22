@@ -80,14 +80,17 @@ export class CinematicDirector {
     }
 
     // Jackpot reel: the item name spins like a slot readout before settling.
-    jackpotReel(text, color, tier) {
+    // pilot (co-op): the local player who collected it, so the reel centers on
+    // THEIR pane instead of the whole screen.
+    jackpotReel(text, color, tier, pilot = null) {
         this.reel = {
             text: String(text).toUpperCase(),
             color,
             tier,
             t: 0,
             settleAt: 0.45,
-            dur: 1.7
+            dur: 1.7,
+            pilot
         };
     }
 
@@ -311,12 +314,24 @@ export class CinematicDirector {
         const H = this.game.height;
         const hudScale = this.game.hudScale;
 
-        // Jackpot reel — spins above the ship, settles on the prize name
+        // Jackpot reel — spins above the ship, settles on the prize name.
+        // Co-op: center on the COLLECTING pilot's pane (scaled to it), not the
+        // whole screen, so the prize reads for whoever grabbed it.
         if (this.reel) {
             const r = this.reel;
-            const cy = Math.round(H * 0.40);
-            const cx = Math.round(W / 2);
-            const o = Math.max(1, Math.round(hudScale / 2));
+            let cx = Math.round(W / 2);
+            let cy = Math.round(H * 0.40);
+            let rScale = hudScale;
+            if (st.localPlayers && st.localPlayers.length > 1 && r.pilot) {
+                const i = st.localPlayers.findIndex(lp => lp.player === r.pilot);
+                if (i >= 0 && st._paneRectFor) {
+                    const pr = st._paneRectFor(i);
+                    cx = Math.round(pr.x + pr.w / 2);
+                    cy = Math.round(pr.y + pr.h * 0.40);
+                    rScale = Math.max(1, hudScale * pr.h / H);
+                }
+            }
+            const o = Math.max(1, Math.round(rScale / 2));
             const fadeOut = r.t > r.dur - 0.4 ? (r.dur - r.t) / 0.4 : 1;
             let text, color, scale = 1;
             if (r.t < r.settleAt) {
@@ -338,7 +353,7 @@ export class CinematicDirector {
             ctx.save();
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.font = `${Math.floor(7 * hudScale * scale)}px Astro4x`;
+            ctx.font = `${Math.floor(7 * rScale * scale)}px Astro4x`;
             ctx.globalAlpha = fadeOut;
             ctx.fillStyle = '#000000';
             ctx.fillText(text, cx - o, cy);

@@ -159,6 +159,8 @@ export class PlayingState {
         // its own HUD so the full HUD can be drawn per-pane, scaled to the pane.
         this.localPlayers = [{ player: this.player, camera: this.camera, hud: this.hud }];
         this._coopInv = false; // true while a per-pilot pause/inventory is processed
+        this._coopGpNav = false; // true while a co-op GAMEPAD pilot runs the single-player slot-snap nav
+        this._coopGpDraw = false; // true while drawing a co-op GAMEPAD pilot's focus corners
         // UI viewport for the pause/inventory: a pane rect in co-op, else null
         // (= fullscreen). The inventory/pause methods read dimensions through the
         // _ui* getters so they lay out for the pane, like the HUD.
@@ -1347,6 +1349,10 @@ export class PlayingState {
             cache: this.activeCacheUI, isCache: this.isCacheOpen, activeCache: this._activeCache,
             ssx: this.shopScrollX, ssy: this.shopScrollY, csx: this.cacheScrollX, csy: this.cacheScrollY,
             perm: this._currentPermButtons, paused: this.paused,
+            // Claim-levels button is per-pilot: its visibility (w>0) + geometry +
+            // focusability must reflect THIS pilot's own level queue, not the last
+            // pilot to update (which made it show / be reachable in every pane).
+            claimBtn: this.pauseButtons.claimLevels,
         };
         this.player = lp.player;
         this.draggedItem = ui.draggedItem;
@@ -1358,6 +1364,7 @@ export class PlayingState {
         this.activeCacheUI = lp.cache || null; this.isCacheOpen = !!lp.cache;
         this._activeCache = lp.cacheEntity || null;
         this._currentPermButtons = ui.permButtons || null;
+        this.pauseButtons.claimLevels = ui.claimBtn || (ui.claimBtn = { x: 0, y: 0, w: 0, h: 0, hovered: false });
         im.mouseScreenX = vx; im.mouseScreenY = vy;
         if (synthBtns) { im.mouseButtons = synthBtns; im.mouseButtonsJustPressed = synthJP; }
         return saved;
@@ -1372,6 +1379,7 @@ export class PlayingState {
         ui.cacheScrollX = this.cacheScrollX; ui.cacheScrollY = this.cacheScrollY;
         ui.gpFocus = this._gpFocus;
         ui.permButtons = this._currentPermButtons;
+        ui.claimBtn = this.pauseButtons.claimLevels;
         // An update path may have closed the modal (cleared activeShop/CacheUI) —
         // persist that back to the slot.
         lp.shop = this.isShopOpen ? this.activeShop : null;
@@ -1384,6 +1392,7 @@ export class PlayingState {
         this.shopScrollX = saved.ssx; this.shopScrollY = saved.ssy;
         this.cacheScrollX = saved.csx; this.cacheScrollY = saved.csy;
         this._currentPermButtons = saved.perm; this.paused = saved.paused;
+        this.pauseButtons.claimLevels = saved.claimBtn;
         im.mouseScreenX = saved.mx; im.mouseScreenY = saved.my;
         im.mouseButtons = saved.btns; im.mouseButtonsJustPressed = saved.jp;
     }
@@ -1476,9 +1485,89 @@ export class PlayingState {
 
     // Drive one pilot's in-pane shop OR cache (drag-drop buy/sell/stash): cursor
     // + A (grab/drop), X (right-click consume), B / E (close).
+    // Drive one GAMEPAD pilot's in-pane inventory / shop / cache with the SAME
+    // controls single-player uses: slot-to-slot focus stepping when idle, a free
+    // stick cursor while carrying an item (A picks up / drops, Y uses, B closes).
+    // Achieved by running the unmodified single-player UI update on this pilot's
+    // pad via the InputManager active-pad redirect. `runUpdate(dt)` runs the
+    // matching update (shop/cache/pause) inside the per-pilot swap.
+    _coopGamepadUI(lp, r, dt, runUpdate) {
+        const im = this.game.input;
+        const ui = lp.ui;
+        const pad = lp.padIndex;
+        const clamp = () => {
+            ui.cursorX = Math.max(r.x, Math.min(r.x + r.w, ui.cursorX));
+            ui.cursorY = Math.max(r.y, Math.min(r.y + r.h, ui.cursorY));
+        };
+        if (ui.draggedItem) {
+            // Carrying an item: free stick cursor; A drops at the cursor, Y uses.
+            let dx = im.padAxis(pad, 'lx') + im.padAxis(pad, 'rx');
+            let dy = im.padAxis(pad, 'ly') + im.padAxis(pad, 'ry');
+            if (im.padButtonDown(pad, GP.DLEFT)) dx -= 1;
+            if (im.padButtonDown(pad, GP.DRIGHT)) dx += 1;
+            if (im.padButtonDown(pad, GP.DUP)) dy -= 1;
+            if (im.padButtonDown(pad, GP.DDOWN)) dy += 1;
+            const mag = Math.hypot(dx, dy);
+            if (mag > 0.01) { const sp = Math.min(1, mag) * 800 * dt; ui.cursorX += (dx / mag) * sp; ui.cursorY += (dy / mag) * sp; }
+            clamp();
+            const synthBtns = new Set([0]); const synthJP = new Set();
+            if (im.padButtonJustPressed(pad, GP.A)) synthBtns.delete(0);          // A → release = drop
+            if (im.padButtonJustPressed(pad, GP.Y)) { synthBtns.add(2); synthJP.add(2); } // Y → use
+            this._uiVp = r;
+            const saved = this._swapInvContext(lp, ui.cursorX - r.x, ui.cursorY - r.y, synthBtns, synthJP);
+            this._coopInv = true;
+            runUpdate(dt);
+            this._coopInv = false;
+            this._restoreInvContext(lp, saved);
+            this._uiVp = null;
+        } else {
+            // Idle: single-player slot-snap focus stepping on THIS pilot's pad.
+            im.setActivePad(pad);
+            // Per-pilot auto-repeat state (so two pilots stepping at once don't
+            // thrash the shared timers); _gpFocus itself is swapped by the context.
+            const rep = { dx: this._gpHeldDx, dy: this._gpHeldDy, t: this._gpHeldTime, rd: this._gpRepeatDelay, fc: this._gpFocusablesCache };
+            this._gpHeldDx = ui._gpHeldDx || 0; this._gpHeldDy = ui._gpHeldDy || 0;
+            this._gpHeldTime = ui._gpHeldTime || 0; this._gpRepeatDelay = ui._gpRepeatDelay || 0;
+            this._gpFocusablesCache = ui._gpFocusablesCache || null;
+            this._uiVp = r;
+            const saved = this._swapInvContext(lp, ui.cursorX - r.x, ui.cursorY - r.y, new Set(), new Set());
+            this._coopInv = true; this._coopGpNav = true;
+            runUpdate(dt);
+            this._coopGpNav = false; this._coopInv = false;
+            // Park the pilot's reticle on the focused slot/button (pane-local → abs).
+            ui.cursorX = im.mouseScreenX + r.x; ui.cursorY = im.mouseScreenY + r.y;
+            clamp();
+            this._restoreInvContext(lp, saved);
+            this._uiVp = null;
+            ui._gpHeldDx = this._gpHeldDx; ui._gpHeldDy = this._gpHeldDy;
+            ui._gpHeldTime = this._gpHeldTime; ui._gpRepeatDelay = this._gpRepeatDelay;
+            ui._gpFocusablesCache = this._gpFocusablesCache;
+            this._gpHeldDx = rep.dx; this._gpHeldDy = rep.dy; this._gpHeldTime = rep.t;
+            this._gpRepeatDelay = rep.rd; this._gpFocusablesCache = rep.fc;
+            im._gpVirtualMouseDown = false;  // don't leak the SP virtual-drag flag
+            im.restoreActivePad();
+        }
+        // B closes the open modal (matches single-player's B/BACK close).
+        if (im.padButtonJustPressed(pad, GP.B)) {
+            if (lp.shop) this._closeCoopShop(lp);
+            else if (lp.cache) this._closeCoopCache(lp);
+            else { const idx = this.localPlayers.indexOf(lp); if (idx >= 0) this._closeCoopInv(idx); }
+        }
+    }
+
     _updateCoopModal(lp, r, dt) {
         const im = this.game.input;
         const ui = lp.ui;
+        // Gamepad pilots run the SAME single-player shop/cache controls
+        // (slot-snap focus + free drag) on their own pad; keyboard pilots below
+        // use the mouse cursor.
+        if (lp.padIndex != null) {
+            this._coopGamepadUI(lp, r, dt, (d) => {
+                if (this.isShopOpen) this._updateShopUI(d);
+                else if (this.isCacheOpen) this._updateCacheUI(d);
+            });
+            return;
+        }
         let synthBtns = null, synthJP = null, close = false;
         if (lp.padIndex != null) {
             const pad = lp.padIndex;
@@ -1571,6 +1660,9 @@ export class PlayingState {
             if (lp.levelUpDialog) { this._updateCoopLevelUp(lp, r, dt); continue; }
             if (lp.encounter)     { this._updateCoopEncounter(lp, r, dt); continue; }
             if (lp.shop || lp.cache) { this._updateCoopModal(lp, r, dt); continue; }
+            // Gamepad pilots use the SAME single-player inventory controls
+            // (slot-snap focus + free drag); keyboard pilots use the mouse cursor.
+            if (lp.padIndex != null) { this._coopGamepadUI(lp, r, dt, (d) => this._updatePauseUI(d)); continue; }
 
             let synthBtns = null, synthJP = null;
             if (lp.padIndex != null) {
@@ -1626,25 +1718,37 @@ export class PlayingState {
         const saved = this._swapInvContext(lp, vx, vy, null, null);
         ctx.save();
         this._coopInv = true;
+        // Gamepad pilots show the single-player focus CORNERS (via
+        // _drawGamepadSelection inside the overlay) instead of a cursor dot —
+        // feed THIS pilot's focusables and bypass the global active-device guard.
+        const gpPilot = lp.padIndex != null;
+        let savedFocusables;
+        if (gpPilot) { savedFocusables = this._gpFocusablesCache; this._gpFocusablesCache = lp.ui._gpFocusablesCache || null; this._coopGpDraw = true; }
         // Whichever modal this pilot has open fills their pane.
         if (lp.levelUpDialog)   lp.levelUpDialog.draw(ctx);
         else if (lp.encounter)  lp.encounter.draw(ctx);
         else if (lp.shop)       this._drawShopOverlay(ctx);
         else if (lp.cache)      this._drawCacheOverlay(ctx);
         else                    this._drawPauseOverlay(ctx);
+        if (gpPilot) { this._coopGpDraw = false; this._gpFocusablesCache = savedFocusables; }
         this._coopInv = false;
         ctx.restore();
         this._restoreInvContext(lp, saved);
         this._uiVp = null;
 
-        // This pilot's cursor reticle (screen space).
-        const cx = lp.ui.cursorX, cy = lp.ui.cursorY;
-        const s = this.game.hudScale;
-        ctx.save();
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(Math.round(cx - 1), Math.round(cy - 3 * s), 2, 6 * s);
-        ctx.fillRect(Math.round(cx - 3 * s), Math.round(cy - 1), 6 * s, 2);
-        ctx.restore();
+        // Cursor reticle: drawn for cursor-driven UIs only — keyboard pilots
+        // always, and gamepad pilots only in the still-cursor dialogs (encounter /
+        // level-up). Gamepad inventory/shop/cache uses the focus corners above.
+        const cursorDriven = lp.padIndex == null || lp.encounter || lp.levelUpDialog;
+        if (cursorDriven) {
+            const cx = lp.ui.cursorX, cy = lp.ui.cursorY;
+            const s = this.game.hudScale;
+            ctx.save();
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(Math.round(cx - 1), Math.round(cy - 3 * s), 2, 6 * s);
+            ctx.fillRect(Math.round(cx - 3 * s), Math.round(cy - 1), 6 * s, 2);
+            ctx.restore();
+        }
     }
 
     // The interact/pause input section — extracted from update() so multiplayer
@@ -3654,6 +3758,24 @@ export class PlayingState {
     // Drop an item into space. Single player / host: spawn it (and replicate).
     // Multiplayer client: ask the host to spawn it so EVERY pilot can see and
     // grab it — never a local-only ghost item.
+    // World position for an item dropped from the inventory into space. Single
+    // view: the sim camera's screen→world. Co-op: the item must land where the
+    // pilot released it on THEIR pane — `mouse` is the pane-local cursor (set by
+    // _swapInvContext) and `this.player` is the dropping pilot, so invert that
+    // pilot's pane RENDER camera (viewport-offset + per-pane FOV scale).
+    _dropWorldPos(mouse) {
+        if (this._coopInv && this._uiVp) {
+            const i = this.localPlayers.findIndex(lp => lp.player === this.player);
+            const cam = (this.splitScreen && this.splitScreen._cameras[i]) || null;
+            if (i >= 0 && cam && cam.wtsScale) {
+                const r = this._uiVp;
+                const absX = mouse.x + r.x, absY = mouse.y + r.y; // pane-local → absolute
+                return { x: (absX - cam.wtsOffX) / cam.wtsScale, y: (absY - cam.wtsOffY) / cam.wtsScale };
+            }
+        }
+        return this.camera.screenToWorld(mouse.x, mouse.y, this.game.width, this.game.height);
+    }
+
     _dropItemToSpace(item, x, y, vx = null, vy = null, pickupDelay = 0) {
         if (this.netSync && !this.netSync.isHost) {
             this.net.send(MSG.DROP_ITEM, {
@@ -5870,7 +5992,7 @@ export class PlayingState {
         const tier = { rare: 0, epic: 1, legendary: 2, unique: 2 }[item.rarity];
         if (tier === undefined) return;
         const color = RARITY_COLORS[item.rarity] || '#ffd24a';
-        this.cinematics.jackpotReel(item.name || item.id, color, tier);
+        this.cinematics.jackpotReel(item.name || item.id, color, tier, player);
         this.game.sounds.playJackpot(tier);
         this._spawnSparks(player.worldX, player.worldY, 10 + tier * 6,
             { color: '#ffd24a', speedMin: 120, speedMax: 380 });
@@ -7057,7 +7179,10 @@ export class PlayingState {
         // Idle snap mode: no smooth cursor, focus jumps slot-to-slot.
         input.setGamepadCursorEnabled(false);
 
-        if (!input.isGamepadActive()) {
+        // Co-op (_coopGpNav): this pilot IS on a gamepad regardless of what the
+        // other pilots are doing with mouse/keyboard, so skip the active-device
+        // guard (which exists to avoid fighting a mouse user in single view).
+        if (!this._coopGpNav && !input.isGamepadActive()) {
             // Gamepad connected but user is using mouse — leave focus alone
             // so we don't fight them.
             this._gpFocusablesCache = null;
@@ -7172,7 +7297,9 @@ export class PlayingState {
     // shows the snapped drop position on whichever panel the cursor is over.
     _drawGamepadSelection(ctx, panels) {
         const input = this.game.input;
-        if (!input.isGamepadActive()) return;
+        // Co-op gamepad pilot (_coopGpDraw): show corners regardless of which
+        // device was last active globally — this pilot is on a pad.
+        if (!this._coopGpDraw && !input.isGamepadActive()) return;
 
         if (this.draggedItem) {
             // Smooth-cursor mode — corners frame the snapped drop cell.
@@ -7261,7 +7388,9 @@ export class PlayingState {
         const mult = this.pendingLevelUpMult || 1;
         const hasMult = mult > 1.00001;
         const { x, y, w, h } = cl;
-        const hov = cl.hovered;
+        // Per-pilot hover (see _updateClaimLevelsButton): `this.player` is the
+        // pane's pilot in co-op, the sole player otherwise.
+        const hov = !!(this.player && this.player._claimHovered);
 
         // Flash yellow (b=0) -> white (b=255), matching the level text.
         const b = Math.round((Math.sin(performance.now() * 0.005) * 0.5 + 0.5) * 255);
@@ -7493,9 +7622,15 @@ export class PlayingState {
             cl.y = Math.floor(sp.y + sp.h + us * 6);
             cl.w = Math.floor(sp.w);
             cl.h = Math.floor(us * 20);
-            cl.hovered = mouse.x >= cl.x && mouse.x <= cl.x + cl.w &&
+            // Hover is PER-PILOT (co-op draws every pane from the shared `cl`
+            // geometry, so a shared hovered flag would light the button in every
+            // pilot's pane). Store it on the active pilot — `this.player` is the
+            // pane's pilot here (swapped by _swapInvContext) and the sole player
+            // in single-view, so this is correct in both.
+            const over = mouse.x >= cl.x && mouse.x <= cl.x + cl.w &&
                          mouse.y >= cl.y && mouse.y <= cl.y + cl.h;
-            if (this.game.input.isMouseJustPressed(0) && cl.hovered && !this.draggedItem) {
+            this.player._claimHovered = over;
+            if (this.game.input.isMouseJustPressed(0) && over && !this.draggedItem) {
                 this._levelUpOrigin = origin;
                 this._openLevelUpDialog(this.levelUpQueue.shift());
                 return true;
@@ -7503,6 +7638,7 @@ export class PlayingState {
         } else {
             cl.w = 0;
             cl.h = 0;
+            this.player._claimHovered = false;
         }
         return false;
     }
@@ -7631,7 +7767,7 @@ export class PlayingState {
 
         // Skip gamepad focus during the rolling animation — only the skip
         // input matters in that state. (Co-op drives cursors per-pilot.)
-        if (!ui.isAnimating && !this._coopInv) {
+        if (!ui.isAnimating && (!this._coopInv || this._coopGpNav)) {
             this._gamepadInventoryUpdate(dt, panels, extraButtons);
         }
 
@@ -7703,7 +7839,7 @@ export class PlayingState {
                                      mouse.y >= playerLayout.gridVisY && mouse.y <= playerLayout.gridVisY + playerLayout.visH;
 
                     if (!inCache && !inPlayer) {
-                        const worldMouse = this.camera.screenToWorld(mouse.x, mouse.y, this.game.width, this.game.height);
+                        const worldMouse = this._dropWorldPos(mouse);
                         const dropOffset  = (Math.random() - 0.5) * 20;
                         const dropOffset2 = (Math.random() - 0.5) * 20;
                         this._dropItemToSpace(this.draggedItem.item, worldMouse.x + dropOffset, worldMouse.y + dropOffset2);
@@ -7812,7 +7948,7 @@ export class PlayingState {
             });
         }
 
-        if (!this._coopInv) this._gamepadInventoryUpdate(dt, panels, extraButtons);
+        if (!this._coopInv || this._coopGpNav) this._gamepadInventoryUpdate(dt, panels, extraButtons);
 
         const mouse = this.game.getMousePos();
 
@@ -7906,7 +8042,7 @@ export class PlayingState {
                     this.draggedItem.originInventory.addItem(this.draggedItem.item, this.draggedItem.x, this.draggedItem.y);
                     this.game.sounds.play('click', 0.3);
                 } else {
-                    const worldMouse = this.camera.screenToWorld(mouse.x, mouse.y, this.game.width, this.game.height);
+                    const worldMouse = this._dropWorldPos(mouse);
                     const dropOffset  = (Math.random() - 0.5) * 20;
                     const dropOffset2 = (Math.random() - 0.5) * 20;
                     this._dropItemToSpace(this.draggedItem.item, worldMouse.x + dropOffset, worldMouse.y + dropOffset2);
@@ -8067,9 +8203,10 @@ export class PlayingState {
         // targets are Yes/No — suppress the inventory panels so stick
         // navigation can't fall back into cargo slots.
         const gamepadPanels = this.confirmRestart ? [] : panels;
-        // In local co-op each pilot drives its own cursor (synthesised in
-        // _updateCoopInventories); the primary-pad slot-snap would fight it.
-        if (!this._coopInv) this._gamepadInventoryUpdate(dt, gamepadPanels, pauseExtraButtons);
+        // In local co-op each gamepad pilot runs this SAME slot-snap nav on its
+        // own pad (active-pad redirect, gated by _coopGpNav); keyboard pilots use
+        // their synthesised cursor instead.
+        if (!this._coopInv || this._coopGpNav) this._gamepadInventoryUpdate(dt, gamepadPanels, pauseExtraButtons);
 
         const mouse = this.game.getMousePos();
 
@@ -8150,7 +8287,7 @@ export class PlayingState {
                 this._onInventoryChanged();
                 this._gpFocus = { kind: 'slot', panelKey: 'player', col: pCol, row: pRow };
             } else {
-                const worldMouse = this.camera.screenToWorld(mouse.x, mouse.y, this.game.width, this.game.height);
+                const worldMouse = this._dropWorldPos(mouse);
                 const dropOffset  = (Math.random() - 0.5) * 20;
                 const dropOffset2 = (Math.random() - 0.5) * 20;
                 this._dropItemToSpace(this.draggedItem.item, worldMouse.x + dropOffset, worldMouse.y + dropOffset2);
@@ -10121,6 +10258,19 @@ export class PlayingState {
                 return;
             }
             this.game.sounds.play('select', 1.0);
+            if (this.localPlayers && this.localPlayers.length > 1) {
+                // Local co-op: restart a fresh run with the SAME lineup — each
+                // pilot's ship + controller (keyboard / which gamepad) preserved —
+                // rather than dropping back to single-player. Rebuild the lobby
+                // roster ([{ shipId, device, padIndex }]) from the live pilots.
+                const roster = this.localPlayers.map(lp => ({
+                    shipId: lp.player.shipData.id,
+                    device: lp.padIndex != null ? 'gamepad' : 'kb',
+                    padIndex: lp.padIndex != null ? lp.padIndex : null,
+                }));
+                this.game.setState(new PlayingState(this.game, this.localPlayers[0].player.shipData, { localCoop: roster }));
+                return;
+            }
             this.game.setState(new PlayingState(this.game, this.shipData));
         };
         const shipSelection = () => {

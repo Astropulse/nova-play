@@ -541,7 +541,10 @@ export class EncounterDialog {
             const optFontSize = Math.floor(6 * uiScale);
             ctx.font = `${optFontSize}px Astro4x`;
 
-            const gamepadActive = this.game.input.isGamepadActive();
+            // Co-op drives this dialog by the pilot's CURSOR (not the shared
+            // gamepad focus), so highlight the cursor-hovered option there — same
+            // guard the rest of the file uses (e.g. tooltip block below).
+            const gamepadActive = !this._coop && this.game.input.isGamepadActive();
 
             for (let i = 0; i < this.options.length; i++) {
                 const optY = textY + i * lineHeight;

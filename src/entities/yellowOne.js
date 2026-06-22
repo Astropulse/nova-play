@@ -1117,7 +1117,11 @@ export class YellowOne {
         player.inventory.deserialize(this.playerSnapshot.inventory);
 
         if (this.game.currentState) {
-            this.game.currentState._onInventoryChanged(false);
+            // Recompute derived stats for the restored player. NOTE: the param
+            // is the *player*, not a flag — passing `false` here set p = false
+            // and threw on the first `p.foo =` (strict-mode ES module), killing
+            // the rAF loop mid-cutscene → stuck on the full-white fade frame.
+            this.game.currentState._onInventoryChanged(player);
         }
     }
 

@@ -219,6 +219,37 @@ export class InputManager {
         if (anyActivity) this.lastInputDevice = 'gamepad';
     }
 
+    // Temporarily mirror a SPECIFIC pad into the legacy "active pad" fields
+    // (leftStickX, _gpButtons, triggers, …) that all the single-player gamepad
+    // code reads. Local co-op wraps each pilot's UI update in
+    // setActivePad(theirPad) … restoreActivePad() so the EXACT single-player
+    // handlers (inventory focus-stepping, dialog nav) drive that pilot's pad,
+    // giving 1:1 controls without per-pad forks. Nestable-safe via a saved snapshot.
+    setActivePad(i) {
+        const pad = this._pads[i];
+        if (!pad) return false;
+        if (!this._savedActivePad) {
+            this._savedActivePad = {
+                lx: this.leftStickX, ly: this.leftStickY, rx: this.rightStickX, ry: this.rightStickY,
+                lt: this.leftTrigger, rt: this.rightTrigger,
+                btns: this._gpButtons.slice(), prev: this._gpButtonsPrev.slice(),
+            };
+        }
+        this.leftStickX = pad.lx; this.leftStickY = pad.ly;
+        this.rightStickX = pad.rx; this.rightStickY = pad.ry;
+        this.leftTrigger = pad.lt; this.rightTrigger = pad.rt;
+        for (let k = 0; k < 16; k++) { this._gpButtons[k] = pad.buttons[k]; this._gpButtonsPrev[k] = pad.prev[k]; }
+        return true;
+    }
+    restoreActivePad() {
+        const s = this._savedActivePad;
+        if (!s) return;
+        this.leftStickX = s.lx; this.leftStickY = s.ly; this.rightStickX = s.rx; this.rightStickY = s.ry;
+        this.leftTrigger = s.lt; this.rightTrigger = s.rt;
+        for (let k = 0; k < 16; k++) { this._gpButtons[k] = s.btns[k]; this._gpButtonsPrev[k] = s.prev[k]; }
+        this._savedActivePad = null;
+    }
+
     // ── Per-pad accessors (local co-op routes each controller to a pilot) ──
     padConnected(i) { const p = this._pads[i]; return !!(p && p.connected); }
     getConnectedPadIndices() {
