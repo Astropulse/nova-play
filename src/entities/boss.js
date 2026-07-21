@@ -1,7 +1,7 @@
 import { Projectile } from './projectile.js';
 import { Scrap, VoronoiSlicer, ProceduralDebris, ItemPickup, Asteroid, ExpOrb, getCachedShatter } from './asteroid.js';
 import { UPGRADES } from '../data/upgrades.js';
-import { pickFireExplosion, fireExplosionFrame } from '../engine/vfx.js';
+import { pickFireExplosion, fireExplosionFrame, drawBeamStrip } from '../engine/vfx.js';
 
 export const BOSS_PHASE = {
     INTRO: 'intro',
@@ -395,14 +395,7 @@ export class Boss {
         const logicalH = img.height || canvas.height;
         const tileW = logicalW * this.game.worldScale;
         const tileH = logicalH * this.game.worldScale;
-        // Tiles step 1px short of their width — fractional positions otherwise
-        // open hairline seams between segments.
-        const step = Math.max(1, tileW - 1);
-        const count = Math.ceil((range * this.game.worldScale) / step);
-
-        for (let i = 0; i < count; i++) {
-            ctx.drawImage(canvas, i * step, -tileH / 2, tileW, tileH);
-        }
+        drawBeamStrip(ctx, img, tileW, tileH, range * this.game.worldScale);
         ctx.restore();
     }
 

@@ -42,6 +42,7 @@ import { GP } from '../engine/inputManager.js';
 import { ellipseContains, ellipseSweep } from '../engine/collision.js';
 import { RandomStreams, randomSeed, RNG } from '../engine/rng.js';
 import { HostWorldSync, ClientWorldSync, mpQuantityMult, mpHealthMult, mpScrapMult } from '../net/netSync.js';
+import { drawBeamStrip } from '../engine/vfx.js';
 import { MSG, KIND } from '../net/protocol.js';
 import { ChatOverlay, playerColor } from '../ui/chat.js';
 import { TradeUI } from '../ui/tradeUI.js';
@@ -2151,9 +2152,13 @@ export class PlayingState {
         // --- Active Upgrades (auto-weapons) ---
         // Each living pilot fires its OWN rockets/turret/claw from its own
         // position with its own cooldown (mirrors how every MP client runs its
-        // own auto-weapons). Single view / MP = just the primary.
-        for (const _awlp of this.localPlayers) {
-            if (_awlp.player && !_awlp.player.dead) this._updateAutoWeapons(_awlp.player, dt);
+        // own auto-weapons). Single view / MP = just the primary. Held entirely
+        // during the Yellow One cutscene (the player is technically alive on
+        // screen there — no rockets over the King's ceremony) and game over.
+        if (!this.yellowOneScriptActive && !this.isDead) {
+            for (const _awlp of this.localPlayers) {
+                if (_awlp.player && !_awlp.player.dead) this._updateAutoWeapons(_awlp.player, dt);
+            }
         }
         this.perf.begin('misc');
         if (this.yellowOneScriptActive) {
@@ -5341,9 +5346,11 @@ export class PlayingState {
             }
             // Multiplayer: chat keeps working while dead/spectating.
             if (this.chatUI) this.chatUI.draw(ctx, this.hud ? this.hud.shieldBarTopY : null);
-            // Yellow One fade overlays on top of the death screen.
+            // Yellow One fade overlays on top of the death screen. Match the
+            // SCRIPTED instance specifically — a first-YellowOne match can hit
+            // the world's dormant one if a second ever exists (test harness).
             for (const ev of this.events) {
-                if (ev instanceof YellowOne) {
+                if (ev instanceof YellowOne && ev.state === YO_STATE.SCRIPTED) {
                     if (ev.fadeToWhite > 0) {
                         ctx.save();
                         ctx.globalAlpha = ev.fadeToWhite;
@@ -5855,8 +5862,11 @@ export class PlayingState {
         this.cinematics.drawOverlay(ctx);
 
         // --- Yellow One scripted fade overlays ---
+        // (Match the SCRIPTED instance, not just the first YellowOne — the
+        // world always holds a dormant one, and a harness-spawned second
+        // instance would otherwise shadow the fading one.)
         for (const ev of this.events) {
-            if (ev instanceof YellowOne) {
+            if (ev instanceof YellowOne && ev.state === YO_STATE.SCRIPTED) {
                 if (ev.fadeToWhite > 0) {
                     ctx.save();
                     ctx.globalAlpha = ev.fadeToWhite;
@@ -6131,7 +6141,21 @@ export class PlayingState {
     // on the pane; boost/ripple/teleport positioned by that pilot's camera).
     // All zero = pass skipped entirely.
     getScreenFx() {
-        if (this.yellowOneScriptActive || this.isDead) return { crt: 0, warp: 0 };
+        if (this.yellowOneScriptActive) {
+            // The cutscene owns the shader pass: as the shatter approaches, the
+            // whole picture slowly falls toward the scroll (the same space-
+            // collapse the teleport uses, aimed at the deed). Streak/dread stay
+            // dark. Fullscreen even in co-op — the cutscene locks to one camera.
+            for (const ev of this.events) {
+                if (ev instanceof YellowOne && ev.state === YO_STATE.SCRIPTED) {
+                    const collapse = ev.getCinematicFx ? ev.getCinematicFx(this.camera) : null;
+                    if (collapse) return { crt: 0, warp: 0, collapse };
+                    break;
+                }
+            }
+            return { crt: 0, warp: 0 };
+        }
+        if (this.isDead) return { crt: 0, warp: 0 };
         const d = this.dread ? this.dread.getFx() : null;
         const crt = this.killStreak ? this.killStreak.fxIntensity : 0;
         const warp = d ? d.warp : 0;
@@ -10073,11 +10097,7 @@ export class PlayingState {
         ctx.translate(startX, startY);
         ctx.rotate(angle);
 
-        // 1px tile overlap — fractional positions otherwise open hairline seams.
-        const step = Math.max(1, tileW - 1);
-        for (let i = 0; i < count; i++) {
-            ctx.drawImage(canvas, i * step, -tileH / 2, tileW, tileH);
-        }
+        drawBeamStrip(ctx, img, tileW, tileH, count * tileW);
 
         ctx.restore();
     }

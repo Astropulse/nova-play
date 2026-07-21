@@ -32,3 +32,49 @@ export function fireExplosionFrame(frames, animTimer) {
     }
     return frames[frames.length - 1];
 }
+
+// ─── Tiled beam strips ──────────────────────────────────────────────────────
+// Beams (railgun lines, boss mega-beams, the Seraph's fire beam) are long rows
+// of one small repeating tile. Drawing them tile-by-tile can't be seamless:
+// fractional tile positions open hairline gaps (antialiased edges), and
+// overlapping the tiles instead doubles the translucent pixels into bright
+// lines. So each tile is pre-tiled ONCE into a long strip canvas at native
+// resolution with integer offsets (seam-free by construction), and a beam then
+// renders as a single stretched drawImage of that strip — no seams, and 1–2
+// draw calls instead of hundreds.
+
+const STRIP_TILES = 48;        // long enough to cross any screen in one strip
+const _stripCache = new Map(); // tile canvas -> pre-tiled strip canvas
+
+function _getStrip(tileCanvas) {
+    let strip = _stripCache.get(tileCanvas);
+    if (!strip) {
+        strip = document.createElement('canvas');
+        strip.width = tileCanvas.width * STRIP_TILES;
+        strip.height = tileCanvas.height;
+        const g = strip.getContext('2d');
+        for (let i = 0; i < STRIP_TILES; i++) {
+            g.drawImage(tileCanvas, i * tileCanvas.width, 0);
+        }
+        _stripCache.set(tileCanvas, strip);
+    }
+    return strip;
+}
+
+// Draw a beam `screenLen` px long along +x from the current origin — the
+// caller has already translated/rotated and set alpha/composite. `img` is the
+// tile asset ({canvas,width,height} object, GIF frame, or raw canvas);
+// tileW/tileH are its on-screen tile size. Beams longer than one strip repeat
+// it (the rare strip-to-strip junction lands far off-screen).
+export function drawBeamStrip(ctx, img, tileW, tileH, screenLen) {
+    if (!img || tileW <= 0) return;
+    const tileCanvas = img.canvas || img;
+    const strip = _getStrip(tileCanvas);
+    let x = 0;
+    while (x < screenLen) {
+        const tiles = Math.min(STRIP_TILES, Math.ceil((screenLen - x) / tileW));
+        ctx.drawImage(strip, 0, 0, tiles * tileCanvas.width, strip.height,
+            x, -tileH / 2, tiles * tileW, tileH);
+        x += tiles * tileW;
+    }
+}

@@ -5,7 +5,7 @@ import { UPGRADES } from '../data/upgrades.js';
 import { Starcore } from './starcore.js';
 import { AsteroidCrusher } from './asteroidCrusher.js';
 import { EventHorizon } from './eventHorizon.js';
-import { pickFireExplosion, fireExplosionFrame } from '../engine/vfx.js';
+import { pickFireExplosion, fireExplosionFrame, drawBeamStrip } from '../engine/vfx.js';
 
 const AI_STATE = {
     PURSUIT: 'pursuit',   // Move toward player
@@ -1246,11 +1246,7 @@ export class Enemy {
                 ctx.rotate(this.angle);
                 const tileW = (targetImg.width || targetImg.canvas.width) * this.game.worldScale;
                 const tileH = (targetImg.height || targetImg.canvas.height) * this.game.worldScale;
-                // 1px tile overlap — fractional positions otherwise open hairline seams.
-                const step = Math.max(1, tileW - 1);
-                for (let i = 0; i < 180; i++) {
-                    ctx.drawImage(targetImg.canvas || targetImg, i * step, -tileH / 2, tileW, tileH);
-                }
+                drawBeamStrip(ctx, targetImg, tileW, tileH, 180 * tileW);
                 ctx.restore();
             }
         }
@@ -1266,11 +1262,7 @@ export class Enemy {
                     ctx.rotate(beam.angle);
                     const tileW = (beamImg.width || beamImg.canvas.width) * this.game.worldScale;
                     const tileH = (beamImg.height || beamImg.canvas.height) * this.game.worldScale;
-                    // 1px tile overlap — fractional positions otherwise open hairline seams.
-                    const step = Math.max(1, tileW - 1);
-                    for (let i = 0; i < 240; i++) {
-                        ctx.drawImage(beamImg.canvas || beamImg, i * step, -tileH / 2, tileW, tileH);
-                    }
+                    drawBeamStrip(ctx, beamImg, tileW, tileH, 240 * tileW);
                     ctx.restore();
                 }
             }

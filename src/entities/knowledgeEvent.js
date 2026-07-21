@@ -2,6 +2,7 @@ import { Enemy } from './enemy.js';
 import { Rubble, ItemPickup, Scrap, ExpOrb } from './asteroid.js';
 import { UPGRADES } from '../data/upgrades.js';
 import { Projectile } from './projectile.js';
+import { drawBeamStrip } from '../engine/vfx.js';
 
 export const KNOWLEDGE_STATE = {
     DORMANT: 0,
@@ -682,12 +683,7 @@ export class KnowledgeEvent {
         const tileW = logicalW * this.game.worldScale;
         const tileH = logicalH * this.game.worldScale;
         const count = 150; // Tile long enough to cover 12000+ length
-        // 1px tile overlap — fractional positions otherwise open hairline seams.
-        const step = Math.max(1, tileW - 1);
-
-        for (let i = 0; i < count; i++) {
-            ctx.drawImage(canvas, i * step, -tileH / 2, tileW, tileH);
-        }
+        drawBeamStrip(ctx, img, tileW, tileH, count * tileW);
         ctx.restore();
     }
 

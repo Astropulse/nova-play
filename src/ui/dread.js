@@ -53,6 +53,7 @@ export class DreadDirector {
         this.glitchCoords = 0;
         this.warp = null;      // { t, dur, peak } — reality-warp shader pulse
         this.shadows = [];     // hallucinated ships at the edge of vision
+        this._frenzyNext = 0.5; // fast clock for the Yellow One's stalk
         this._shadowCache = new Map();
         this._creepGrad = null; // origin-centered gradient, translated per frame
 
@@ -102,6 +103,24 @@ export class DreadDirector {
                     this._trigger(key);
                 }
             }
+        }
+
+        // The Yellow One's stalk: while he silently follows the player
+        // (pre-fight), reality degrades relentlessly — a haunting moment lands
+        // at LEAST every couple of seconds, usually faster. Same moments as
+        // the slow scheduler above, on its own compressed clock.
+        let stalk = false;
+        for (const ev of this.state.events) {
+            if (ev instanceof YellowOne && ev.state === YO_STATE.FOLLOWING) { stalk = true; break; }
+        }
+        if (stalk && !suppressed) {
+            this._frenzyNext -= dt;
+            if (this._frenzyNext <= 0) {
+                this._frenzyNext = 0.4 + Math.random() * 1.1; // ≤1.5s gap, guaranteed
+                this._triggerStalkMoment();
+            }
+        } else {
+            this._frenzyNext = Math.min(this._frenzyNext, 0.5);
         }
 
         for (let i = this.patches.length - 1; i >= 0; i--) {
@@ -238,6 +257,21 @@ export class DreadDirector {
             warp = Math.sin(p * Math.PI) * this.warp.peak;
         }
         return { warp };
+    }
+
+    // One stalk-frenzy moment, weighted toward the cheap, high-read effects
+    // (reality warps, ghost ships, HUD garbage). The Eye stays rare even here
+    // — it lasts 7s and loses its menace if it's always open.
+    _triggerStalkMoment() {
+        const roll = Math.random();
+        if (roll < 0.30) this._trigger('warp');
+        else if (roll < 0.52) this._trigger('shadow');
+        else if (roll < 0.68) this._trigger('hudGlitch');
+        else if (roll < 0.82) this._trigger('patches');
+        else if (roll < 0.91) this._trigger('yellowCreep');
+        else if (roll < 0.97) this._trigger('sting');
+        else if (!this.eye) this._trigger('eye');
+        else this._trigger('warp');
     }
 
     _trigger(key) {

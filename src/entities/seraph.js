@@ -2,7 +2,7 @@ import { Scrap, ItemPickup, ExpOrb, ProceduralDebris, Asteroid, getCachedShatter
 import { UPGRADES } from '../data/upgrades.js';
 import { ellipseContains } from '../engine/collision.js';
 import { Projectile } from './projectile.js';
-import { pickFireExplosion, fireExplosionFrame } from '../engine/vfx.js';
+import { pickFireExplosion, fireExplosionFrame, drawBeamStrip } from '../engine/vfx.js';
 
 export const SERAPH_STATE = {
     IDLE: 'seraph_idle',   // Pre-fight float, invulnerable (never 'dormant' — that
@@ -1491,16 +1491,13 @@ export class Seraph {
 
         // Segments first so the start cap overlaps their seam.
         if (segFrame) {
-            const segImg = segFrame.canvas || segFrame;
-            const tw = (segFrame.width || segImg.width) * ws;
-            const th = (segFrame.height || segImg.height) * ws;
+            const tw = (segFrame.width || segFrame.canvas.width) * ws;
+            const th = (segFrame.height || segFrame.canvas.height) * ws;
             const startX = ((startFrame.width || 59) * 0.7) * ws;
-            // 1px tile overlap — fractional positions otherwise open hairline seams.
-            const step = Math.max(1, tw - 1);
-            const count = Math.ceil((BEAM_RANGE * ws - startX) / step);
-            for (let i = 0; i < count; i++) {
-                ctx.drawImage(segImg, startX + i * step, -th / 2, tw, th);
-            }
+            ctx.save();
+            ctx.translate(startX, 0);
+            drawBeamStrip(ctx, segFrame, tw, th, BEAM_RANGE * ws - startX);
+            ctx.restore();
         }
 
         const startImg = startFrame.canvas || startFrame;
@@ -1519,12 +1516,7 @@ export class Seraph {
         const canvas = img.canvas || img;
         const tileW = (img.width || canvas.width) * this.game.worldScale;
         const tileH = (img.height || canvas.height) * this.game.worldScale;
-        // 1px tile overlap — fractional positions otherwise open hairline seams.
-        const step = Math.max(1, tileW - 1);
-        const count = Math.ceil((range * this.game.worldScale) / step);
-        for (let i = 0; i < count; i++) {
-            ctx.drawImage(canvas, i * step, -tileH / 2, tileW, tileH);
-        }
+        drawBeamStrip(ctx, img, tileW, tileH, range * this.game.worldScale);
         ctx.restore();
     }
 }

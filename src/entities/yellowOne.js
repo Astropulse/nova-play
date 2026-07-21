@@ -3,6 +3,7 @@ import { Enemy } from './enemy.js';
 import { Scrap, ItemPickup, ExpOrb, VoronoiSlicer, ProceduralDebris } from './asteroid.js';
 import { UPGRADES } from '../data/upgrades.js';
 import { MUSIC_STATE } from '../engine/soundManager.js';
+import { drawBeamStrip } from '../engine/vfx.js';
 
 export const YO_STATE = {
     IDLE: 'idle',
@@ -13,6 +14,22 @@ export const YO_STATE = {
     SCRIPTED: 'scripted',
     FINISHED: 'finished'
 };
+
+// King's Victory trumpet chart — [start, end] seconds into the track, hand-
+// mapped to the fanfare phrases. Every note start makes the heralds blare
+// (recoil + confetti); held notes keep a confetti stream going.
+const KV_TRUMPET_NOTES = [
+    [2.70, 3.78], [3.80, 5.17], [5.17, 5.31], [5.32, 5.45], [5.46, 7.11],
+    [7.12, 7.53], [7.53, 7.59], [7.59, 7.66], [7.66, 7.95], [7.95, 8.22],
+    [8.22, 8.77], [9.88, 10.40], [10.41, 11.00], [11.01, 11.60],
+    [14.33, 14.54], [14.61, 14.86], [14.90, 15.37], [17.77, 19.22]
+];
+const KV_HERALDS_IN = 1.9;    // winged trumpets swoop in (under the white fade tail)
+const KV_HERALDS_OUT = 20.2;  // they ascend away before the constellation
+// Flat pixel confetti — golds and whites off the trumpet art, one pale blue
+// accent from the wings. No gradients anywhere in the spectacle layer.
+const CONFETTI_COLORS = ['#ffdd44', '#ffffff', '#ffe9a8', '#e8c84a', '#b8e6ff'];
+const MAX_CONFETTI = 450;
 
 export class YellowOne {
     constructor(game, worldX, worldY) {
@@ -123,6 +140,18 @@ export class YellowOne {
         this.christusGif = game.assets.get('christus_victor_gif');
         this.christusFrame = 0;
         this.christusTimer = 0;
+
+        // King's Victory spectacle (scripted phase 2)
+        this.trumpets = [];      // 4 winged heralds ringing the scroll
+        this.confetti = [];      // flat pixel confetti from the bells
+        this.motes = [];         // light motes: falling shower / suction spiral
+        this.shockwaves = [];    // expanding rings on the shatter
+        this.sparkles = [];      // white motes around the glowing Christus
+        this._kvTrack = null;    // the actual audio element — sync clock
+        this._activeNote = -1;
+        this._streamAcc = 0;
+        this._sparkleAcc = 0;
+        this._moteAcc = 0;
     }
 
     update(dt, player) {
@@ -391,6 +420,12 @@ export class YellowOne {
             for (const proj of state.projectiles) {
                 proj.alive = false;
             }
+            // Clear the battlefield entirely — any enemies that survived the
+            // enrage vanish with the armada (silent despawn via compaction).
+            // Nothing may fire over the King's ceremony.
+            for (const en of state.enemies) {
+                en.alive = false;
+            }
             state.yellowOneEnraged = false;
             // Trigger the real death visuals (debris, death screen, stats)
             // but mark that buttons should be blocked
@@ -527,6 +562,11 @@ export class YellowOne {
                 this.worldY = player.worldY;
                 this.christusX = player.worldX + 400;
                 this.christusY = player.worldY;
+
+                // Spectacle: keep the real audio element as the sync clock and
+                // station the winged heralds around where the deed will appear.
+                this._kvTrack = kvTrack || null;
+                this._setupHeralds(player);
             }
             return;
         }
@@ -539,17 +579,21 @@ export class YellowOne {
 
         const kv = this.scriptTimer; // Time since King's Victory started
 
-        // At 7s: Deed appears in shower of light
+        // At 7s: Deed appears in shower of light (position was staked out by
+        // _setupHeralds at phase start — the heralds already ring the spot)
         if (kv >= 7 && !this.deedVisible) {
             this.deedVisible = true;
-            this.deedWorldX = player.worldX;
-            this.deedWorldY = player.worldY - 150;
             this.game.sounds.play('shield', { volume: 0.8, x: this.deedWorldX, y: this.deedWorldY });
             this.game.sounds.play('level', { volume: 0.6, x: this.deedWorldX, y: this.deedWorldY });
             this.game.camera.shake(0.5);
+            const st = this.game.currentState;
+            if (st && st.triggerFlash) st.triggerFlash('#ffffff', 0.6, 0.22);
         }
 
-        // At 10s: Deed shatters into 7 pieces
+        // At 10s: Deed shatters into 7 pieces. The collapse warp releases on
+        // the same frame (getCinematicFx gates on deedShattered) — the held
+        // breath lets go all at once: rings, gold flash, confetti from every
+        // bell, and the big shake.
         if (kv >= 10 && !this.deedShattered) {
             this.deedShattered = true;
             this._shatterDeed();
@@ -557,6 +601,13 @@ export class YellowOne {
             this.game.sounds.play('ship_explode', { volume: 0.6, x: this.deedWorldX, y: this.deedWorldY });
             this.game.sounds.play('shield_break', { volume: 0.7, x: this.deedWorldX, y: this.deedWorldY });
             this.game.camera.shake(3.0);
+            this.shockwaves.push(
+                { t: 0, dur: 0.85, maxR: 520, color: '#ffe9a8', width: 4 },
+                { t: 0, dur: 0.55, maxR: 320, color: '#ffffff', width: 2 }
+            );
+            for (const tp of this.trumpets) this._spawnConfettiBurst(tp, 40);
+            const st = this.game.currentState;
+            if (st && st.triggerFlash) st.triggerFlash('#ffdd44', 0.7, 0.3);
         }
 
         // Update deed pieces (ProceduralDebris)
@@ -654,6 +705,9 @@ export class YellowOne {
                 this.christusFrame = (this.christusFrame + 1) % this.christusGif.length;
             }
         }
+
+        // King's Victory spectacle: heralds, confetti, light motes, sparkles
+        this._updateSpectacle(dt);
     }
 
     // ─── MOVEMENT ──────────────────────────────────────────────────────
@@ -1196,6 +1250,261 @@ export class YellowOne {
         }
     }
 
+    // ─── KING'S VICTORY SPECTACLE ──────────────────────────────────────
+
+    // The music itself is the metronome: read the playhead off the actual
+    // audio element so the heralds blare on the audible notes rather than a
+    // timer that drifted through a slow frame. Falls back to scriptTimer.
+    _kvClock() {
+        const t = this._kvTrack;
+        if (t && !t.paused && t.currentTime > 0.05) return t.currentTime;
+        return this.scriptTimer;
+    }
+
+    // Four winged trumpets in heraldic corners around where the deed will
+    // materialize, bells all aimed inward at the scroll. They swoop down from
+    // high off-screen while the white fade is still clearing.
+    _setupHeralds(player) {
+        // The deed materializes here at 7s — staked out now so the heralds,
+        // rays and collapse warp all agree on the spot before it exists.
+        this.deedWorldX = player.worldX;
+        this.deedWorldY = player.worldY - 150;
+
+        // Formation positions are computed per-frame from the live viewport
+        // (see _updateSpectacle) so all four stay on screen at any window
+        // size / FOV. Here: which sprite, which side, and the bell geometry.
+        const defs = [
+            { up: false, flip: false }, // top-right → blares down-left
+            { up: false, flip: true },  // top-left → blares down-right
+            { up: true, flip: false },  // bottom-right → blares up-left
+            { up: true, flip: true }    // bottom-left → blares up-right
+        ];
+        this.trumpets = defs.map((d, i) => ({
+            key: d.up ? 'vfx_trumpet_up' : 'vfx_trumpet_down',
+            up: d.up, flip: d.flip,
+            x: 0, y: 0,
+            enterT: KV_HERALDS_IN + i * 0.12,
+            bob: i * 1.7,      // hover phase offset
+            blare: 0,          // 0..1 envelope driving tilt/glow/scale
+            pop: 0,            // note-attack recoil, decays fast
+            // Bell mouth (logical px from sprite center) + blare direction,
+            // measured off the 128×128 art in unflipped sprite space.
+            bellX: d.flip ? 46 : -46,
+            bellY: d.up ? -30 : 22,
+            dirX: (d.flip ? 1 : -1) * 0.66,
+            dirY: d.up ? -0.75 : 0.75,
+            visible: false
+        }));
+        this._activeNote = -1;
+        this._streamAcc = 0;
+    }
+
+    _updateSpectacle(dt) {
+        const kv = this._kvClock();
+
+        // Which chart note (if any) is sounding right now?
+        let noteIdx = -1, noteDur = 0;
+        for (let i = 0; i < KV_TRUMPET_NOTES.length; i++) {
+            const n = KV_TRUMPET_NOTES[i];
+            if (kv >= n[0] && kv < n[1]) { noteIdx = i; noteDur = n[1] - n[0]; break; }
+        }
+
+        // Note attack: every herald recoils and fires a confetti burst, sized
+        // by how long the phrase holds. Long phrases rattle the camera a touch.
+        if (noteIdx !== this._activeNote) {
+            this._activeNote = noteIdx;
+            if (noteIdx >= 0) {
+                for (const tp of this.trumpets) {
+                    if (!tp.visible) continue;
+                    tp.pop = 1;
+                    this._spawnConfettiBurst(tp, Math.round(10 + 22 * Math.min(1, noteDur)));
+                }
+                if (noteDur > 1.0) this.game.camera.shake(0.4);
+            }
+        }
+
+        // Held notes keep a lazy confetti stream flowing from every bell.
+        if (noteIdx >= 0 && noteDur > 0.5) {
+            this._streamAcc += dt * 10;
+            while (this._streamAcc >= 1) {
+                this._streamAcc -= 1;
+                for (const tp of this.trumpets) {
+                    if (tp.visible) this._spawnConfettiParticle(tp, 0.55);
+                }
+            }
+        }
+
+        // Herald motion: swoop in (cubic ease-out), winged hover, ascend away.
+        // The formation is a fan around the scroll — wider on top, the player's
+        // ship framed between the bottom pair — sized off the LIVE viewport so
+        // every window size / FOV keeps all four on screen.
+        const ws = this.game.worldScale || 1;
+        const halfW = (this.game.width / 2) / ws;
+        const halfH = (this.game.height / 2) / ws;
+        for (const tp of this.trumpets) {
+            const sideX = Math.min(260, halfW * 0.52) * (tp.up ? 0.72 : 1);
+            const homeX = this.deedWorldX + (tp.flip ? -sideX : sideX);
+            const homeY = this.deedWorldY + (tp.up
+                ? Math.min(150, halfH * 0.36)
+                : -Math.min(115, halfH * 0.28));
+            const et = (kv - tp.enterT) / 0.75;
+            if (et <= 0) { tp.visible = false; continue; }
+            tp.visible = true;
+            const e = Math.min(1, et);
+            const ease = 1 - Math.pow(1 - e, 3);
+            let x = homeX + (tp.flip ? -1 : 1) * halfW * 0.7 * (1 - ease);
+            let y = homeY - halfH * 0.85 * (1 - ease);
+            x += Math.sin(kv * 1.3 + tp.bob) * 4 * ease;
+            y += Math.sin(kv * 2.1 + tp.bob) * 7 * ease;
+            if (kv >= KV_HERALDS_OUT) {
+                const o = (kv - KV_HERALDS_OUT) / 0.8;
+                y -= o * o * halfH * 2.4;
+                x += (tp.flip ? -1 : 1) * o * o * halfW * 0.5;
+            }
+            tp.x = x;
+            tp.y = y;
+
+            // Blare envelope: fast attack on a note, slower brass release
+            const target = noteIdx >= 0 ? 1 : 0;
+            const rate = target > tp.blare ? 22 : 6;
+            tp.blare += (target - tp.blare) * Math.min(1, rate * dt);
+            tp.pop = Math.max(0, tp.pop - dt * 5.5);
+        }
+
+        // Light motes: a falling shower onto the arriving scroll, joined by a
+        // suction spiral that feeds the collapse warp until the shatter.
+        if (this.deedVisible && !this.deedShattered) {
+            const prog = Math.min(1, Math.max(0, (kv - 7.0) / 3.0));
+            this._moteAcc += dt * 26;
+            while (this._moteAcc >= 1) {
+                this._moteAcc -= 1;
+                if (prog < 0.4 || Math.random() < 0.35) {
+                    this.motes.push({
+                        mode: 'fall',
+                        x: this.deedWorldX + (Math.random() - 0.5) * 200,
+                        y: this.deedWorldY - 260 - Math.random() * 240,
+                        vx: (Math.random() - 0.5) * 15,
+                        vy: 90 + Math.random() * 120,
+                        t: 0, dur: 1.6 + Math.random() * 0.8,
+                        color: Math.random() < 0.5 ? '#ffffff' : '#ffe9a8',
+                        size: 2 + Math.random() * 2
+                    });
+                } else {
+                    const a = Math.random() * Math.PI * 2;
+                    const r = 300 + Math.random() * 160;
+                    this.motes.push({
+                        mode: 'suck',
+                        x: this.deedWorldX + Math.cos(a) * r,
+                        y: this.deedWorldY + Math.sin(a) * r,
+                        vx: 0, vy: 0,
+                        t: 0, dur: 3.0,
+                        color: Math.random() < 0.6 ? '#ffdd44' : '#ffffff',
+                        size: 2 + Math.random() * 2
+                    });
+                }
+            }
+        }
+        for (let i = this.motes.length - 1; i >= 0; i--) {
+            const m = this.motes[i];
+            m.t += dt;
+            if (m.mode === 'suck') {
+                if (this.deedShattered) { this.motes.splice(i, 1); continue; }
+                const dx = this.deedWorldX - m.x, dy = this.deedWorldY - m.y;
+                const d = Math.sqrt(dx * dx + dy * dy) || 1;
+                const prog = Math.min(1, Math.max(0, (kv - 7.0) / 3.0));
+                const pull = 90 + 320 * prog;
+                // Inward pull with a sideways curl — the teleport spiral
+                m.vx = (dx / d) * pull + (-dy / d) * 55;
+                m.vy = (dy / d) * pull + (dx / d) * 55;
+                if (d < 22) { this.motes.splice(i, 1); continue; }
+            }
+            m.x += m.vx * dt;
+            m.y += m.vy * dt;
+            if (m.t >= m.dur) this.motes.splice(i, 1);
+        }
+
+        // Confetti physics: burst, flutter, slow to a float.
+        for (let i = this.confetti.length - 1; i >= 0; i--) {
+            const c = this.confetti[i];
+            c.t += dt;
+            if (c.t >= c.dur) { this.confetti.splice(i, 1); continue; }
+            const drag = Math.pow(0.96, dt * 60);
+            c.vx *= drag;
+            c.vy *= drag;
+            c.vx += Math.sin(c.t * 2.6 + c.seed) * 26 * dt; // lazy flutter
+            c.vy += 14 * dt;                                // gentle settle
+            c.x += c.vx * dt;
+            c.y += c.vy * dt;
+            c.rot += c.spin * dt;
+        }
+
+        // Shockwave rings
+        for (let i = this.shockwaves.length - 1; i >= 0; i--) {
+            const s = this.shockwaves[i];
+            s.t += dt;
+            if (s.t >= s.dur) this.shockwaves.splice(i, 1);
+        }
+
+        // Christus sparkles: white motes rising off him while he glows
+        if (this.christusGlowing && !this.constellationVisible) {
+            this._sparkleAcc += dt * 12;
+            while (this._sparkleAcc >= 1) {
+                this._sparkleAcc -= 1;
+                this.sparkles.push({
+                    x: this.christusX + (Math.random() - 0.5) * 260,
+                    y: this.christusY + (Math.random() - 0.5) * 300,
+                    vy: -18 - Math.random() * 30,
+                    t: 0, dur: 1.3 + Math.random() * 0.9,
+                    size: 2 + Math.random() * 2
+                });
+            }
+        }
+        for (let i = this.sparkles.length - 1; i >= 0; i--) {
+            const s = this.sparkles[i];
+            s.t += dt;
+            s.y += s.vy * dt;
+            if (s.t >= s.dur) this.sparkles.splice(i, 1);
+        }
+    }
+
+    _spawnConfettiParticle(tp, speedMult = 1) {
+        if (this.confetti.length >= MAX_CONFETTI) return;
+        const base = Math.atan2(tp.dirY, tp.dirX);
+        const a = base + (Math.random() - 0.5) * 1.0;
+        const sp = (180 + Math.random() * 260) * speedMult;
+        this.confetti.push({
+            x: tp.x + tp.bellX, y: tp.y + tp.bellY,
+            vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+            rot: Math.random() * Math.PI,
+            spin: (Math.random() - 0.5) * 9,
+            size: 3 + Math.random() * 3,
+            color: CONFETTI_COLORS[Math.floor(Math.random() * CONFETTI_COLORS.length)],
+            seed: Math.random() * 10,
+            t: 0, dur: 1.5 + Math.random() * 1.2
+        });
+    }
+
+    _spawnConfettiBurst(tp, count) {
+        for (let i = 0; i < count; i++) this._spawnConfettiParticle(tp);
+    }
+
+    // Cutscene shader pass: from the deed's arrival to its shatter, screen
+    // space slowly falls toward the scroll — the teleport collapse aimed at
+    // the deed, eased in over the full three seconds so the pull is felt
+    // before it's seen. Returns null the frame it shatters: the release.
+    getCinematicFx(camera) {
+        if (this.state !== YO_STATE.SCRIPTED || this.scriptPhase !== 2) return null;
+        if (!this.deedVisible || this.deedShattered) return null;
+        const kv = this._kvClock();
+        const prog = Math.min(1, Math.max(0, (kv - 7.0) / 3.0));
+        if (prog <= 0.01) return null;
+        // Quadratic ease-in with a faint heartbeat as it peaks
+        const strength = Math.min(0.9, prog * prog * 0.8 * (1 + 0.08 * prog * Math.sin(kv * 9)));
+        const screen = camera.worldToScreen(this.deedWorldX, this.deedWorldY, this.game.width, this.game.height);
+        const r = Math.min(this.game.width, this.game.height) * (0.6 - 0.18 * prog);
+        return { x: screen.x, y: screen.y, r, strength };
+    }
+
     _dropLoot() {
         // Scrap
         for (let i = 0; i < 8; i++) {
@@ -1418,6 +1727,9 @@ export class YellowOne {
     _drawScriptedElements(ctx, camera) {
         const kv = this.scriptTimer;
 
+        // Radial light rays sit behind everything at the deed's spot
+        this._drawRays(ctx, camera, this._kvClock());
+
         // Draw Christus Victor
         if (this.christusAlpha > 0) {
             let cvFrame = null;
@@ -1482,6 +1794,139 @@ export class YellowOne {
                 piece.draw(ctx, camera);
             }
         }
+
+        // Spectacle layers over the set pieces: rings, heralds, then particles
+        this._drawShockwaves(ctx, camera);
+        this._drawHeralds(ctx, camera);
+        this._drawMotes(ctx, camera);
+        this._drawConfetti(ctx, camera);
+        this._drawSparkles(ctx, camera);
+    }
+
+    // Fan of flat translucent rays turning slowly behind the deed — the
+    // "shower of light" made literal, each ray breathing on its own beat.
+    _drawRays(ctx, camera, kv) {
+        if (!this.deedVisible || this.deedShattered) return;
+        const ws = this.game.worldScale;
+        const fadeIn = Math.min(1, (kv - 7) / 1.2);
+        if (fadeIn <= 0) return;
+        const screen = camera.worldToScreen(this.deedWorldX, this.deedWorldY, this.game.width, this.game.height);
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.translate(screen.x, screen.y);
+        const N = 12;
+        for (let i = 0; i < N; i++) {
+            const ang = kv * 0.18 + (i / N) * Math.PI * 2;
+            const len = (170 + 80 * fadeIn + 26 * Math.sin(kv * 2.3 + i * 1.7)) * ws;
+            const halfW = 0.075; // half-spread in radians
+            ctx.globalAlpha = fadeIn * (0.055 + 0.045 * Math.sin(kv * 3.1 + i * 2.3));
+            ctx.fillStyle = i % 2 ? '#ffdd44' : '#fff6cc';
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            ctx.lineTo(Math.cos(ang - halfW) * len, Math.sin(ang - halfW) * len);
+            ctx.lineTo(Math.cos(ang + halfW) * len, Math.sin(ang + halfW) * len);
+            ctx.closePath();
+            ctx.fill();
+        }
+        ctx.restore();
+    }
+
+    _drawShockwaves(ctx, camera) {
+        if (this.shockwaves.length === 0) return;
+        const ws = this.game.worldScale;
+        const screen = camera.worldToScreen(this.deedWorldX, this.deedWorldY, this.game.width, this.game.height);
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        for (const s of this.shockwaves) {
+            const p = s.t / s.dur;
+            ctx.globalAlpha = (1 - p) * 0.8;
+            ctx.strokeStyle = s.color;
+            ctx.lineWidth = Math.max(1, s.width * (1 - p * 0.6) * ws);
+            ctx.beginPath();
+            ctx.arc(screen.x, screen.y, Math.max(1, s.maxR * (1 - Math.pow(1 - p, 2)) * ws), 0, Math.PI * 2);
+            ctx.stroke();
+        }
+        ctx.restore();
+    }
+
+    _drawHeralds(ctx, camera) {
+        if (this.trumpets.length === 0) return;
+        const kv = this._kvClock();
+        const ws = this.game.worldScale;
+        for (const tp of this.trumpets) {
+            if (!tp.visible) continue;
+            const img = this.game.assets.get(tp.key);
+            if (!img) continue;
+            const canvas = img.canvas || img;
+            const logicalW = img.width || canvas.width;
+            const logicalH = img.height || canvas.height;
+            const screen = camera.worldToScreen(tp.x, tp.y, this.game.width, this.game.height);
+            const scale = ws * (1 + 0.07 * tp.blare + 0.12 * tp.pop * tp.pop);
+            const w = logicalW * scale, h = logicalH * scale;
+            ctx.save();
+            ctx.translate(screen.x, screen.y);
+            if (tp.flip) ctx.scale(-1, 1);
+            // Lean into the note with a brass vibrato while it holds
+            ctx.rotate(-0.07 * tp.blare + 0.05 * tp.blare * Math.sin(kv * 22 + tp.bob));
+            if (tp.blare > 0.05) {
+                ctx.shadowBlur = 20 * ws * tp.blare;
+                ctx.shadowColor = '#ffdd44';
+            }
+            ctx.drawImage(canvas, -w / 2, -h / 2, w, h);
+            ctx.restore();
+        }
+    }
+
+    _drawMotes(ctx, camera) {
+        if (this.motes.length === 0) return;
+        const ws = this.game.worldScale;
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        for (const m of this.motes) {
+            const p = Math.min(1, m.t / m.dur);
+            ctx.globalAlpha = Math.sin(p * Math.PI) * 0.85;
+            ctx.fillStyle = m.color;
+            const screen = camera.worldToScreen(m.x, m.y, this.game.width, this.game.height);
+            const s = m.size * ws;
+            ctx.fillRect(screen.x - s / 2, screen.y - s / 2, s, s);
+        }
+        ctx.restore();
+    }
+
+    _drawConfetti(ctx, camera) {
+        if (this.confetti.length === 0) return;
+        const ws = this.game.worldScale;
+        ctx.save();
+        for (const c of this.confetti) {
+            const fade = c.dur - c.t;
+            ctx.globalAlpha = fade < 0.5 ? Math.max(0, fade * 2) : 1;
+            ctx.fillStyle = c.color;
+            const screen = camera.worldToScreen(c.x, c.y, this.game.width, this.game.height);
+            const s = c.size * ws;
+            ctx.translate(screen.x, screen.y);
+            ctx.rotate(c.rot);
+            // Rectangular slip of paper — the tumble reads through the spin
+            ctx.fillRect(-s / 2, -s / 4, s, s / 2);
+            ctx.rotate(-c.rot);
+            ctx.translate(-screen.x, -screen.y);
+        }
+        ctx.restore();
+    }
+
+    _drawSparkles(ctx, camera) {
+        if (this.sparkles.length === 0) return;
+        const ws = this.game.worldScale;
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.fillStyle = '#ffffff';
+        for (const s of this.sparkles) {
+            const p = s.t / s.dur;
+            ctx.globalAlpha = Math.sin(p * Math.PI) * 0.9;
+            const screen = camera.worldToScreen(s.x, s.y, this.game.width, this.game.height);
+            const sz = s.size * ws;
+            ctx.fillRect(screen.x - sz / 2, screen.y - sz / 2, sz, sz);
+        }
+        ctx.restore();
     }
 
     _drawConstellation(ctx, camera) {
@@ -1515,12 +1960,7 @@ export class YellowOne {
         const tileW = logicalW * this.game.worldScale;
         const tileH = logicalH * this.game.worldScale;
         const count = Math.ceil(15000 / logicalW);
-        // 1px tile overlap — fractional positions otherwise open hairline seams.
-        const step = Math.max(1, tileW - 1);
-
-        for (let i = 0; i < count; i++) {
-            ctx.drawImage(canvas, i * step, -tileH / 2, tileW, tileH);
-        }
+        drawBeamStrip(ctx, img, tileW, tileH, count * tileW);
         ctx.restore();
     }
 
