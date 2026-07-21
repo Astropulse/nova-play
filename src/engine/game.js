@@ -181,6 +181,21 @@ export class Game {
             this.sounds.register('click', [
                 'Assets/Sounds/Effects/click.wav',
             ]),
+            // Registered singly (not as one variant pool): the herald fanfare
+            // picks its own index so the animation can match that burst's
+            // measured length/phrasing (see cinematics.js TRUMPET_BURSTS).
+            this.sounds.register('trumpet_1', [
+                'Assets/Sounds/Effects/trumpet_1.wav',
+            ]),
+            this.sounds.register('trumpet_2', [
+                'Assets/Sounds/Effects/trumpet_2.wav',
+            ]),
+            this.sounds.register('trumpet_3', [
+                'Assets/Sounds/Effects/trumpet_3.wav',
+            ]),
+            this.sounds.register('trumpet_4', [
+                'Assets/Sounds/Effects/trumpet_4.wav',
+            ]),
             this.sounds.register('select', [
                 'Assets/Sounds/Effects/select.wav',
             ]),
@@ -265,6 +280,7 @@ export class Game {
         this.sounds.registerBossMusic('The Yellow One', 'Assets/Sounds/Songs/Boss/The Yellow One.mp3');
         this.sounds.registerBossMusic('King\'s Victory', 'Assets/Sounds/Songs/Boss/King\'s Victory.mp3');
         this.sounds.registerBossMusic('Burning Seraph', 'Assets/Sounds/Songs/Boss/Burning Seraph.mp3');
+        this.sounds.registerBossMusic('Wheels Within Wheels', 'Assets/Sounds/Songs/Boss/Wheels Within Wheels.mp3');
 
         this.sounds.registerTitleMusic('Assets/Sounds/Songs/Title/NOVA.mp3');
         this.sounds.registerGameOverMusic('Assets/Sounds/Songs/Game Over/Sendoff.mp3');
@@ -915,6 +931,7 @@ export class Game {
             'deed': 'Assets/Events/christus_victor/deed.png',
             'seraph_base_closed': 'Assets/Events/seraph/seraph_base_closed.png',
             'seraph_base_open': 'Assets/Events/seraph/seraph_base_open.png',
+            'wheels_base': 'Assets/Events/wheels/wheels.png',
             // Space backgrounds
             'starfield_0': 'Assets/Space/starfield_0.png',
             'starfield_1': 'Assets/Space/starfield_1.png',
@@ -1123,6 +1140,9 @@ export class Game {
             'seraph_attack_2_closed': 'Assets/Events/seraph/seraph_attack_2_closed.gif',
             'seraph_attack_2_opened': 'Assets/Events/seraph/seraph_attack_2_opened.gif',
             'seraph_attack_3_opened': 'Assets/Events/seraph/seraph_attack_3_opened.gif',
+            'wheels_back': 'Assets/Events/wheels/wheels_back.gif',
+            'wheels_front': 'Assets/Events/wheels/wheels_front.gif',
+            'wheels_fire': 'Assets/Events/wheels/wheels_fire.gif',
             'fire_beam': 'Assets/VFX/fire_beam.gif',
             'fire_beam_start': 'Assets/VFX/fire_beam_start.gif',
             'fireball': 'Assets/VFX/fireball.gif',

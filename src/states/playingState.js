@@ -26,6 +26,7 @@ import { AsteroidCrusher } from '../entities/asteroidCrusher.js';
 import { EventHorizon } from '../entities/eventHorizon.js';
 import { YellowOne, YO_STATE } from '../entities/yellowOne.js';
 import { Seraph, SERAPH_STATE } from '../entities/seraph.js';
+import { Wheels, WHEELS_STATE } from '../entities/wheels.js';
 import { MenuState } from './menuState.js';
 import { AchievementsState } from './achievementsState.js';
 import { ACHIEVEMENTS } from '../data/achievements.js';
@@ -655,6 +656,29 @@ export class PlayingState {
                 : [this.player];
             for (const p of pilots) {
                 if (p.hasYellowGlow) p.yellowGlowTarget = { x: seraph.worldX, y: seraph.worldY };
+            }
+        }
+    }
+
+    // Called when the Seraph falls: set the Wheels turning ~30k out and swing
+    // the yellow glow onto it (the glow reverts to spawn once the Wheels dies).
+    // Idempotent — also invoked from deserialize for saves made mid-chain.
+    _spawnWheelsAfterSeraph() {
+        let wheels = this.events.find(ev => ev instanceof Wheels);
+        if (!wheels) {
+            const angle = Math.random() * Math.PI * 2;
+            const dist = 28000 + Math.random() * 4000;
+            wheels = new Wheels(this.game,
+                this.player.worldX + Math.cos(angle) * dist,
+                this.player.worldY + Math.sin(angle) * dist);
+            this.events.push(wheels);
+        }
+        if (!wheels.isFinished) {
+            const pilots = this.localPlayers.length > 1
+                ? this.localPlayers.map(s => s.player).filter(Boolean)
+                : [this.player];
+            for (const p of pilots) {
+                if (p.hasYellowGlow) p.yellowGlowTarget = { x: wheels.worldX, y: wheels.worldY };
             }
         }
     }
@@ -4886,7 +4910,8 @@ export class PlayingState {
             'FracturedStationEvent': FracturedStationEvent,
             'KnowledgeEvent': KnowledgeEvent,
             'YellowOne': YellowOne,
-            'Seraph': Seraph
+            'Seraph': Seraph,
+            'Wheels': Wheels
         };
 
         for (const evData of data.events) {
@@ -4944,6 +4969,21 @@ export class PlayingState {
                             ev.maxHealth = 50;
                         }
                     }
+                    if (evData.type === 'Wheels') {
+                        ev.isFinished = evData.isFinished || false;
+                        if (ev.isFinished || ev.state === WHEELS_STATE.FINISHED) {
+                            ev.state = WHEELS_STATE.FINISHED;
+                            ev.isFinished = true;
+                            ev.alive = false;
+                        } else {
+                            // Mid-fight saves restart the duel fresh on approach.
+                            ev.state = WHEELS_STATE.IDLE;
+                            ev.invulnerable = true;
+                            ev.fightStarted = false;
+                            ev.health = 50;
+                            ev.maxHealth = 50;
+                        }
+                    }
                 }
                 ev.revealed = evData.revealed;
                 ev.discovered = evData.discovered;
@@ -4951,12 +4991,20 @@ export class PlayingState {
             }
         }
 
-        // Post-Yellow One: while the Seraph lives, the player's yellow glow
-        // points at it (defaults back to spawn {0,0} otherwise).
+        // Post-Yellow One boss chain: the yellow glow points at the furthest
+        // still-living link — Seraph first, then the Wheels (defaults back to
+        // spawn {0,0} otherwise). A save written after the Seraph fell but
+        // before this feature existed gets its Wheels conjured here.
         {
             const seraphEv = this.events.find(ev => ev instanceof Seraph);
+            if (seraphEv && seraphEv.isFinished && !this.events.some(ev => ev instanceof Wheels)) {
+                this._spawnWheelsAfterSeraph();
+            }
+            const wheelsEv = this.events.find(ev => ev instanceof Wheels);
             if (this.player.hasYellowGlow && seraphEv && !seraphEv.isFinished) {
                 this.player.yellowGlowTarget = { x: seraphEv.worldX, y: seraphEv.worldY };
+            } else if (this.player.hasYellowGlow && wheelsEv && !wheelsEv.isFinished) {
+                this.player.yellowGlowTarget = { x: wheelsEv.worldX, y: wheelsEv.worldY };
             }
         }
 
@@ -9213,7 +9261,8 @@ export class PlayingState {
             'FracturedStationEvent': FracturedStationEvent,
             'KnowledgeEvent': KnowledgeEvent,
             'YellowOne': YellowOne,
-            'Seraph': Seraph
+            'Seraph': Seraph,
+            'Wheels': Wheels
         };
         this.events = [];
         for (const evData of (snap.events || [])) {
@@ -9245,6 +9294,19 @@ export class PlayingState {
                     ev.invulnerable = true;
                     ev.fightStarted = false;
                     ev.form = 'closed';
+                    ev.health = 50;
+                    ev.maxHealth = 50;
+                }
+            }
+            if (evData.type === 'Wheels') {
+                // Same locally-scripted treatment as the Seraph.
+                if (ev.isFinished) {
+                    ev.state = WHEELS_STATE.FINISHED;
+                    ev.alive = false;
+                } else {
+                    ev.state = WHEELS_STATE.IDLE;
+                    ev.invulnerable = true;
+                    ev.fightStarted = false;
                     ev.health = 50;
                     ev.maxHealth = 50;
                 }
@@ -9298,11 +9360,15 @@ export class PlayingState {
             this.camera.snapTo(this.player);
         }
 
-        // Post-Yellow One glow: re-aim at the lobby's Seraph if one is up.
+        // Post-Yellow One glow: re-aim at the lobby's live chain boss — the
+        // Seraph first, then the Wheels.
         {
             const seraphEv = this.events.find(ev => ev instanceof Seraph);
+            const wheelsEv = this.events.find(ev => ev instanceof Wheels);
             if (this.player.hasYellowGlow && seraphEv && !seraphEv.isFinished) {
                 this.player.yellowGlowTarget = { x: seraphEv.worldX, y: seraphEv.worldY };
+            } else if (this.player.hasYellowGlow && wheelsEv && !wheelsEv.isFinished) {
+                this.player.yellowGlowTarget = { x: wheelsEv.worldX, y: wheelsEv.worldY };
             }
         }
 

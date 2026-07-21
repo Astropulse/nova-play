@@ -13,6 +13,18 @@ const WARN_DURATION = 2.9;     // total warning sequence length (s)
 const WARN_BARS_OUT = 2.2;     // when the letterbox starts retracting
 const MAX_RINGS = 12;
 
+// Herald fanfare chart — measured off the actual WAV envelopes (RMS windows):
+//   blast = sounding length (the tail past it is room decay), pops = note
+//   attacks within the phrase (seconds after the burst starts). trumpet_1 is
+//   a triple-tongued fanfare pulsing about every 0.45s; the others are single
+//   blasts of differing lengths.
+const TRUMPET_BURSTS = [
+    { key: 'trumpet_1', blast: 2.0, pops: [0, 0.45, 0.9, 1.35] },
+    { key: 'trumpet_2', blast: 1.1, pops: [0] },
+    { key: 'trumpet_3', blast: 1.7, pops: [0] },
+    { key: 'trumpet_4', blast: 1.15, pops: [0] },
+];
+
 // Screen-level cinematic effects: letterbox bars, warning banner, world-space
 // shockwave rings and boss death silhouettes. Strictly cosmetic — it never
 // pauses the simulation (multiplayer invariant), uses Math.random() only, and
@@ -33,6 +45,7 @@ export class CinematicDirector {
         this.rings = [];           // world-space shockwave rings
         this.silhouettes = [];     // boss death flash-frames
         this.reel = null;          // jackpot slot-reel name reveal
+        this.heralds = [];         // trumpet fanfares (post-Yellow One boss deaths)
 
         this._watched = [];        // bosses we're tracking for transitions
         this._silhouetteCache = new Map();
@@ -77,6 +90,54 @@ export class CinematicDirector {
             this.reel.t += dt;
             if (this.reel.t >= this.reel.dur) this.reel = null;
         }
+
+        this._updateHeralds(dt);
+    }
+
+    _updateHeralds(dt) {
+        for (let i = this.heralds.length - 1; i >= 0; i--) {
+            const h = this.heralds[i];
+            h.t += dt;
+            const bt = h.t - h.swoop; // time since the blast began
+
+            // The burst fires the moment the swoop lands.
+            if (!h.played && bt >= 0) {
+                h.played = true;
+                this.game.sounds.play(h.soundKey, { volume: 0.85, x: h.x, y: h.y });
+            }
+
+            // Phrase attacks: recoil pop + a gold burst from the bell. Multi-pop
+            // charts (trumpet_1's triple-tonguing) re-fire on every swell.
+            while (h.pops.length && bt >= h.pops[0]) {
+                h.pops.shift();
+                h.pop = 1;
+                this._heraldBellSparks(h, 10 + Math.floor(Math.random() * 6));
+            }
+            h.pop = Math.max(0, h.pop - dt * 4.5);
+
+            // Blare envelope rides the sounding length; a lazy spark stream
+            // flows from the bell while the note holds.
+            h.blare = bt < 0 ? 0 : Math.max(0, Math.min(1, Math.min(bt / 0.08, (h.blast - bt) / 0.25)));
+            if (h.blare > 0.4) {
+                h.streamAcc += dt * 7;
+                while (h.streamAcc >= 1) {
+                    h.streamAcc -= 1;
+                    this._heraldBellSparks(h, 1);
+                }
+            }
+
+            if (bt >= h.blast + 0.25 + 0.7) this.heralds.splice(i, 1);
+        }
+    }
+
+    _heraldBellSparks(h, count) {
+        if (!this.state || !this.state._spawnSparks) return;
+        const flip = h.flip ? -1 : 1;
+        this.state._spawnSparks(h.x + 46 * -flip, h.y + 22, count, {
+            dir: Math.atan2(0.75, -0.66 * flip), spread: 0.55,
+            color: Math.random() < 0.5 ? '#ffd050' : '#ffee99',
+            speedMin: 120, speedMax: 320
+        });
     }
 
     // Jackpot reel: the item name spins like a slot readout before settling.
@@ -234,6 +295,29 @@ export class CinematicDirector {
         });
     }
 
+    // A lone winged herald (the Yellow One ceremony's trumpet art) swoops in
+    // above a fallen post-Yellow One boss and sounds a single burst. Each of
+    // the four recordings phrases differently, so the animation is fitted to
+    // the chosen burst via TRUMPET_BURSTS (sounding length + swell chart).
+    trumpetFanfare(worldX, worldY) {
+        const cfg = TRUMPET_BURSTS[Math.floor(Math.random() * TRUMPET_BURSTS.length)];
+        this.heralds.push({
+            t: 0,
+            x: worldX, y: worldY - 210,   // hovers above the wreck, blaring down at it
+            key: 'vfx_trumpet_down',
+            flip: Math.random() < 0.5,
+            swoop: 0.55,
+            soundKey: cfg.key,
+            blast: cfg.blast,
+            pops: cfg.pops.slice(),
+            pop: 0,
+            blare: 0,
+            streamAcc: 0,
+            played: false,
+            bob: Math.random() * Math.PI * 2
+        });
+    }
+
     _getSilhouette(spriteKey) {
         let entry = this._silhouetteCache.get(spriteKey);
         if (entry !== undefined) return entry;
@@ -261,6 +345,12 @@ export class CinematicDirector {
 
     // World-space effects: drawn with the entities, under HUD.
     drawWorld(ctx, camera) {
+        if (this.rings.length === 0 && this.silhouettes.length === 0 &&
+            this.heralds.length === 0) return;
+
+        // Heralds are solid pixel art — drawn source-over, before the additive
+        // rings/silhouettes pass.
+        if (this.heralds.length > 0) this._drawHeralds(ctx, camera);
         if (this.rings.length === 0 && this.silhouettes.length === 0) return;
 
         ctx.save();
@@ -297,6 +387,52 @@ export class CinematicDirector {
         }
 
         ctx.restore();
+    }
+
+    // Swoop in from high overhead (ease-out cubic), winged hover + brass
+    // vibrato while the note blares, ascend away once the burst ends. Same
+    // visual language as the King's Victory ceremony heralds.
+    _drawHeralds(ctx, camera) {
+        for (const h of this.heralds) {
+            const img = this.game.assets.get(h.key);
+            if (!img) continue;
+            const canvas = img.canvas || img;
+            const logicalW = img.width || canvas.width;
+            const logicalH = img.height || canvas.height;
+
+            const e = Math.min(1, h.t / h.swoop);
+            const ease = 1 - Math.pow(1 - e, 3);
+            let wx = h.x + (h.flip ? -1 : 1) * 260 * (1 - ease);
+            let wy = h.y - 340 * (1 - ease);
+            wx += Math.sin(h.t * 1.3 + h.bob) * 4 * ease;
+            wy += Math.sin(h.t * 2.1 + h.bob) * 7 * ease;
+
+            let alpha = 1;
+            const out = h.t - h.swoop - h.blast - 0.25;
+            if (out > 0) {
+                const o = Math.min(1, out / 0.7);
+                wy -= o * o * 520;
+                wx += (h.flip ? -1 : 1) * o * o * 130;
+                alpha = 1 - o;
+            }
+
+            const screen = camera.worldToScreen(wx, wy, this.game.width, this.game.height);
+            const ws = this.game.worldScale;
+            const scale = ws * (1 + 0.07 * h.blare + 0.12 * h.pop * h.pop);
+            const w = logicalW * scale, hh = logicalH * scale;
+            ctx.save();
+            ctx.globalAlpha = alpha;
+            ctx.translate(screen.x, screen.y);
+            if (h.flip) ctx.scale(-1, 1);
+            // Lean into the note with a brass vibrato while it holds.
+            ctx.rotate(-0.07 * h.blare + 0.05 * h.blare * Math.sin(h.t * 22 + h.bob));
+            if (h.blare > 0.05) {
+                ctx.shadowBlur = 20 * ws * h.blare;
+                ctx.shadowColor = '#ffdd44';
+            }
+            ctx.drawImage(canvas, -w / 2, -hh / 2, w, hh);
+            ctx.restore();
+        }
     }
 
     // Screen-space overlay: letterbox + warning banner. Drawn above the HUD.

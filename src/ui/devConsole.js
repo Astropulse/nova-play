@@ -146,7 +146,7 @@ export class DevConsole {
         const d = state.difficultyScale;
         const power = state._calculatePlayerPowerLevel ? state._calculatePlayerPowerLevel() : 0;
         console.log(`difficultyScale = ${d.toFixed(2)}  (gameTime ${Math.round(state.totalGameTime)}s, playerPower ${power.toFixed(2)})`);
-        console.log(`  → Seraph pool at this diff: ${Math.round(2600 + 600 * d)}  |  YellowOne: ${Math.round(2000 + 400 * d)}`);
+        console.log(`  → Seraph/Wheels pool at this diff: ${Math.round(4200 + 1000 * d)}  |  YellowOne: ${Math.round(2000 + 400 * d)}`);
     }
 
     _cmdTime(args) {
@@ -360,7 +360,7 @@ export class DevConsole {
         if (!state || !state.events) return;
 
         if (args.length < 1) {
-            console.log("Locate requires an event type: knowledge, cthulhu, station, cargo, yellowone, seraph");
+            console.log("Locate requires an event type: knowledge, cthulhu, station, cargo, yellowone, seraph, wheels");
             return;
         }
 
@@ -375,6 +375,7 @@ export class DevConsole {
             else if (type === 'cargo' && name.includes('cargo')) targetEvent = ev;
             else if ((type === 'yellowone' || type === 'yellow') && name.includes('yellow')) targetEvent = ev;
             else if (type === 'seraph' && name.includes('seraph')) targetEvent = ev;
+            else if (type === 'wheels' && name.includes('wheels')) targetEvent = ev;
         }
 
         if (targetEvent) {
@@ -456,6 +457,21 @@ export class DevConsole {
                     seraph.revealed = true;
                     state.events.push(seraph);
                     console.log(`Seraph spawned at ${Math.floor(seraph.worldX)}, ${Math.floor(seraph.worldY)}`);
+                });
+            } else if (bossId === 'wheels') {
+                // Event-based boss: spawns into the events list, fight starts on
+                // approach (like finding it in the wild post-Seraph).
+                import('../entities/wheels.js').then(({ Wheels }) => {
+                    const angle = Math.random() * Math.PI * 2;
+                    const dist = 1600;
+                    const wheels = new Wheels(
+                        this.game,
+                        state.player.worldX + Math.cos(angle) * dist,
+                        state.player.worldY + Math.sin(angle) * dist
+                    );
+                    wheels.revealed = true;
+                    state.events.push(wheels);
+                    console.log(`Wheels spawned at ${Math.floor(wheels.worldX)}, ${Math.floor(wheels.worldY)}`);
                 });
             }
         }

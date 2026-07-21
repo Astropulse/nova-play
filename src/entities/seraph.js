@@ -1221,10 +1221,19 @@ export class Seraph {
                 if (state.cinematics) {
                     state.cinematics.spawnRing(this.worldX, this.worldY, { color: '#ffd050', maxR: 420, dur: 1.0, width: 6 });
                     state.cinematics.spawnRing(this.worldX, this.worldY, { color: '#ff7a2a', maxR: 280, dur: 0.7, width: 4 });
+                    // A herald announces the fall of one of heaven's own.
+                    if (state.cinematics.trumpetFanfare) {
+                        state.cinematics.trumpetFanfare(this.worldX, this.worldY);
+                    }
                 }
-                // The yellow glow's job is done — point it home again.
-                for (const body of state.getPlayerBodies ? state.getPlayerBodies() : [state.player]) {
-                    if (body && body.hasYellowGlow) body.yellowGlowTarget = { x: 0, y: 0 };
+                // The chain goes on: the Wheels start turning somewhere out in
+                // the dark, and the yellow glow swings onto them.
+                if (state._spawnWheelsAfterSeraph) {
+                    state._spawnWheelsAfterSeraph();
+                } else {
+                    for (const body of state.getPlayerBodies ? state.getPlayerBodies() : [state.player]) {
+                        if (body && body.hasYellowGlow) body.yellowGlowTarget = { x: 0, y: 0 };
+                    }
                 }
                 if (state._onEntityDestroyed) state._onEntityDestroyed(this);
             }

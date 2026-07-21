@@ -57,7 +57,7 @@ const ST = { WINDUP: 1, RAM: 2, TARGETING: 4, DYING: 8, PHASE2: 16, INTRO: 32 };
 // Events whose fights are scripted per-pilot — the host only syncs their
 // health/finished flags; their states/positions stay locally simulated so the
 // cutscenes/sequences play correctly for whoever is actually there.
-const LOCAL_SCRIPTED_EVENTS = new Set(['YellowOne', 'KnowledgeEvent', 'Seraph']);
+const LOCAL_SCRIPTED_EVENTS = new Set(['YellowOne', 'KnowledgeEvent', 'Seraph', 'Wheels']);
 
 // Some events expose worldX/worldY as getter-only computed properties
 // (FracturedStationEvent derives them from its station list). Position sync
