@@ -11,6 +11,7 @@
 import { FractureModel, getCachedShatter, ExpOrb } from '../entities/asteroid.js';
 import { Enemy } from '../entities/enemy.js';
 import { ScreenFX } from './screenFx.js';
+import { FIRE_EXPLOSION_KEYS } from './vfx.js';
 
 // Piece counts must match what _generateProceduralDebris asks for — the
 // shatter cache keeps whichever layout is built first. Shared with
@@ -45,6 +46,12 @@ function buildTasks(game) {
                 if (f) ExpOrb._getGlowForFrame(f);
             }
         }
+    });
+
+    // Death-explosion GIF variants: slice + prescale each variant's atlas frames
+    // now so the first ship/boss death doesn't materialize them mid-combat.
+    tasks.push(() => {
+        for (const key of FIRE_EXPLOSION_KEYS) game.assets.get(key);
     });
 
     // (Lasers now render as simple stroked streaks — no glow sprite to pre-bake.)

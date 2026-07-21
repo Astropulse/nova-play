@@ -73,7 +73,7 @@ export class YellowOne {
 
         // Summoned ships
         this.summonedShips = [];
-        this.maxSummonedShips = 8;
+        this.maxSummonedShips = 10;
 
         // Animation state for attacks
         this.attackAnimTimer = 0;
@@ -218,14 +218,16 @@ export class YellowOne {
             this.phase1Triggered = true;
             this.state = YO_STATE.PHASE1;
             this.invulnerable = false;
-            this.summonTimer = 2.0;
-            this.crushTimer = 5.0;
+            this.summonTimer = 1.5;
+            this.crushTimer = 3.5;
             this.dashTimer = 1.0;
             this.game.camera.shake(2.0);
 
-            // Set real health now — difficultyScale is guaranteed valid during gameplay
+            // Set real health now — difficultyScale is guaranteed valid during
+            // gameplay. Endgame tuning: the player hunting the Yellow One is
+            // usually near max power, so the pool is large and scales linearly.
             const diff = this.game.currentState.difficultyScale;
-            this.health = 1200 + 220 * diff;
+            this.health = 2000 + 400 * diff;
             this.maxHealth = this.health;
         }
     }
@@ -240,14 +242,14 @@ export class YellowOne {
         this.summonTimer -= dt;
         if (this.summonTimer <= 0) {
             this._summonAttack(player);
-            this.summonTimer = 4.0 + Math.random() * 2.0;
+            this.summonTimer = 3.0 + Math.random() * 1.5;
         }
 
         // Crush attack
         this.crushTimer -= dt;
         if (this.crushTimer <= 0) {
             this._crushAttack(player);
-            this.crushTimer = 3.5 + Math.random() * 2.0;
+            this.crushTimer = 2.5 + Math.random() * 1.5;
         }
 
         // Phase transition at 40% health
@@ -271,14 +273,14 @@ export class YellowOne {
         this.teleportTimer -= dt;
         if (this.teleportTimer <= 0) {
             this._teleportNearPlayer(player);
-            this.teleportTimer = this.teleportCooldown * (0.6 + Math.random() * 0.4);
+            this.teleportTimer = this.teleportCooldown * (0.5 + Math.random() * 0.35);
         }
 
         // Faster attacks
         this.summonTimer -= dt;
         if (this.summonTimer <= 0) {
             this._summonAttack(player);
-            this.summonTimer = 3.0 + Math.random() * 1.5;
+            this.summonTimer = 2.0 + Math.random() * 1.0;
         }
 
         this.crushTimer -= dt;
@@ -292,7 +294,7 @@ export class YellowOne {
             } else {
                 this._hurlShip(player);
             }
-            this.crushTimer = 2.5 + Math.random() * 1.5;
+            this.crushTimer = 1.7 + Math.random() * 1.0;
         }
 
         // Check for "death" - transition to enraged
@@ -623,6 +625,12 @@ export class YellowOne {
                 this.game.currentState.player.hasYellowGlow = true;
             }
 
+            // The next hunt: place the Burning Seraph far out in the dark and
+            // aim the fresh yellow glow at it (instead of back at spawn).
+            if (this.game.currentState && this.game.currentState._spawnSeraphAfterYellowOne) {
+                this.game.currentState._spawnSeraphAfterYellowOne();
+            }
+
             // Mark as finished
             this.isFinished = true;
             this.state = YO_STATE.FINISHED;
@@ -796,7 +804,7 @@ export class YellowOne {
         this.currentGif = this.summonGif;
         this.gifFrame = 0;
         this.gifTimer = 0;
-        this._pendingSummonCount = 1 + (Math.random() < 0.4 ? 1 : 0);
+        this._pendingSummonCount = 1 + (Math.random() < 0.55 ? 1 : 0);
         this._summonAnimPlaying = true;
         this._summonSoundPlayed = false;
     }
@@ -1078,7 +1086,21 @@ export class YellowOne {
     // ─── DAMAGE ────────────────────────────────────────────────────────
 
     hit(damage) {
-        if (this.invulnerable) return false;
+        if (this.invulnerable) {
+            // Following (pre-fight) he can't be hurt yet — grey ZERO numbers
+            // make the invulnerability legible (rate-limited vs rapid fire).
+            if (this.state === YO_STATE.FOLLOWING) {
+                const st = this.game.currentState;
+                const now = (st && st.totalGameTime) || 0;
+                if (st && st.spawnFloatingText && now - (this._lastZeroText || 0) > 0.09) {
+                    this._lastZeroText = now;
+                    st.spawnFloatingText(
+                        this.worldX + (Math.random() - 0.5) * 80,
+                        this.worldY + (Math.random() - 0.5) * 100, '0', '#9aa4ae');
+                }
+            }
+            return false;
+        }
         if (this.state === YO_STATE.ENRAGED || this.state === YO_STATE.SCRIPTED || this.state === YO_STATE.FINISHED) return false;
 
         this.health -= damage;
@@ -1493,9 +1515,11 @@ export class YellowOne {
         const tileW = logicalW * this.game.worldScale;
         const tileH = logicalH * this.game.worldScale;
         const count = Math.ceil(15000 / logicalW);
+        // 1px tile overlap — fractional positions otherwise open hairline seams.
+        const step = Math.max(1, tileW - 1);
 
         for (let i = 0; i < count; i++) {
-            ctx.drawImage(canvas, i * tileW, -tileH / 2, tileW, tileH);
+            ctx.drawImage(canvas, i * step, -tileH / 2, tileW, tileH);
         }
         ctx.restore();
     }

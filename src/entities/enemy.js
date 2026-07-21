@@ -5,6 +5,7 @@ import { UPGRADES } from '../data/upgrades.js';
 import { Starcore } from './starcore.js';
 import { AsteroidCrusher } from './asteroidCrusher.js';
 import { EventHorizon } from './eventHorizon.js';
+import { pickFireExplosion, fireExplosionFrame } from '../engine/vfx.js';
 
 const AI_STATE = {
     PURSUIT: 'pursuit',   // Move toward player
@@ -1167,7 +1168,9 @@ export class Enemy {
             }
         }
 
-        if (rand() < 0.01) {
+        // Locators only drop while there are still signals left to find.
+        // The roll is consumed either way to keep the seeded stream aligned.
+        if (rand() < 0.01 && this.game.currentState?.hasUndiscoveredSignals?.()) {
             const locator = UPGRADES.find(u => u.id === 'advanced_locator');
             if (locator) {
                 spawns.push(new ItemPickup(this.game, this.worldX, this.worldY, locator));
@@ -1243,8 +1246,10 @@ export class Enemy {
                 ctx.rotate(this.angle);
                 const tileW = (targetImg.width || targetImg.canvas.width) * this.game.worldScale;
                 const tileH = (targetImg.height || targetImg.canvas.height) * this.game.worldScale;
+                // 1px tile overlap — fractional positions otherwise open hairline seams.
+                const step = Math.max(1, tileW - 1);
                 for (let i = 0; i < 180; i++) {
-                    ctx.drawImage(targetImg.canvas || targetImg, i * tileW, -tileH / 2, tileW, tileH);
+                    ctx.drawImage(targetImg.canvas || targetImg, i * step, -tileH / 2, tileW, tileH);
                 }
                 ctx.restore();
             }
@@ -1261,8 +1266,10 @@ export class Enemy {
                     ctx.rotate(beam.angle);
                     const tileW = (beamImg.width || beamImg.canvas.width) * this.game.worldScale;
                     const tileH = (beamImg.height || beamImg.canvas.height) * this.game.worldScale;
+                    // 1px tile overlap — fractional positions otherwise open hairline seams.
+                    const step = Math.max(1, tileW - 1);
                     for (let i = 0; i < 240; i++) {
-                        ctx.drawImage(beamImg.canvas || beamImg, i * tileW, -tileH / 2, tileW, tileH);
+                        ctx.drawImage(beamImg.canvas || beamImg, i * step, -tileH / 2, tileW, tileH);
                     }
                     ctx.restore();
                 }
@@ -1644,7 +1651,8 @@ export class KamikazeEnemy extends Enemy {
         for (let i = 0; i < count; i++) spawns.push(new Scrap(this.game, this.worldX, this.worldY));
         for (let i = 0; i < 4; i++) spawns.push(new Rubble(this.game, this.worldX, this.worldY));
 
-        if (Math.random() < 0.01) {
+        // Locators only drop while there are still signals left to find.
+        if (Math.random() < 0.01 && this.game.currentState?.hasUndiscoveredSignals?.()) {
             const locator = UPGRADES.find(u => u.id === 'advanced_locator');
             if (locator) {
                 spawns.push(new ItemPickup(this.game, this.worldX, this.worldY, locator));
@@ -1716,7 +1724,8 @@ export class CthulhuEnemy extends Enemy {
         for (let i = 0; i < count; i++) spawns.push(new Scrap(this.game, this.worldX, this.worldY));
         for (let i = 0; i < 4; i++) spawns.push(new Rubble(this.game, this.worldX, this.worldY));
 
-        if (Math.random() < 0.01) {
+        // Locators only drop while there are still signals left to find.
+        if (Math.random() < 0.01 && this.game.currentState?.hasUndiscoveredSignals?.()) {
             const locator = UPGRADES.find(u => u.id === 'advanced_locator');
             if (locator) {
                 spawns.push(new ItemPickup(this.game, this.worldX, this.worldY, locator));
@@ -2704,9 +2713,6 @@ export class HostileEncounter extends Enemy {
             return;
         }
 
-        const fireFrames = this.game.assets.get('fire_explosion');
-        const totalExplosionDuration = fireFrames ? fireFrames.reduce((sum, f) => sum + f.delay, 0) : 500;
-
         this.deathExplosions = [];
         const baseStaggers = [0, 0.3, 0.6, 0.9, 1.2];
         const asset = img;
@@ -2735,6 +2741,7 @@ export class HostileEncounter extends Enemy {
 
         for (let i = 0; i < baseStaggers.length; i++) {
             const pt = solidPoints[Math.floor(Math.random() * solidPoints.length)];
+            const { key, totalDuration } = pickFireExplosion(this.game.assets);
             this.deathExplosions.push({
                 lx: pt.lx,
                 ly: pt.ly,
@@ -2742,7 +2749,8 @@ export class HostileEncounter extends Enemy {
                 fired: false,
                 finished: false,
                 animTimer: 0,
-                totalDuration: totalExplosionDuration,
+                fireKey: key,
+                totalDuration,
                 scale: 0.8 + Math.random() * 0.7
             });
         }
@@ -2753,8 +2761,6 @@ export class HostileEncounter extends Enemy {
         super.draw(ctx, camera);
 
         if (this.isDying && this.deathExplosions) {
-            const fireFrames = this.game.assets.get('fire_explosion');
-            if (!fireFrames) return;
             const screen = camera.worldToScreen(this.worldX, this.worldY, this.game.width, this.game.height);
 
             ctx.save();
@@ -2762,17 +2768,12 @@ export class HostileEncounter extends Enemy {
             ctx.rotate(this.angle + Math.PI / 2);
 
             for (const ex of this.deathExplosions) {
-                if (ex.fired && !ex.finished) {
-                    let frame = fireFrames[0];
-                    let elapsed = ex.animTimer;
-                    for (const f of fireFrames) {
-                        if (elapsed < f.delay) { frame = f; break; }
-                        elapsed -= f.delay;
-                    }
-                    const ew = (frame.width || frame.canvas.width / 4) * this.game.worldScale * ex.scale;
-                    const eh = (frame.height || frame.canvas.height / 4) * this.game.worldScale * ex.scale;
-                    ctx.drawImage(frame.canvas || frame, ex.lx * this.game.worldScale - ew / 2, ex.ly * this.game.worldScale - eh / 2, ew, eh);
-                }
+                if (!ex.fired || ex.finished) continue;
+                const frame = fireExplosionFrame(this.game.assets.get(ex.fireKey), ex.animTimer);
+                if (!frame) continue;
+                const ew = (frame.width || frame.canvas.width / 4) * this.game.worldScale * ex.scale;
+                const eh = (frame.height || frame.canvas.height / 4) * this.game.worldScale * ex.scale;
+                ctx.drawImage(frame.canvas || frame, ex.lx * this.game.worldScale - ew / 2, ex.ly * this.game.worldScale - eh / 2, ew, eh);
             }
             ctx.restore();
         }

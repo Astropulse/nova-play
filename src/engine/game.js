@@ -264,6 +264,7 @@ export class Game {
         this.sounds.registerBossMusic('Starcore Showdown', 'Assets/Sounds/Songs/Boss/Starcore Showdown.mp3');
         this.sounds.registerBossMusic('The Yellow One', 'Assets/Sounds/Songs/Boss/The Yellow One.mp3');
         this.sounds.registerBossMusic('King\'s Victory', 'Assets/Sounds/Songs/Boss/King\'s Victory.mp3');
+        this.sounds.registerBossMusic('Burning Seraph', 'Assets/Sounds/Songs/Boss/Burning Seraph.mp3');
 
         this.sounds.registerTitleMusic('Assets/Sounds/Songs/Title/NOVA.mp3');
         this.sounds.registerGameOverMusic('Assets/Sounds/Songs/Game Over/Sendoff.mp3');
@@ -912,6 +913,8 @@ export class Game {
             'christus_victor_star_0': 'Assets/Events/christus_victor/christus_victor_star_0.png',
             'christus_victor_star_1': 'Assets/Events/christus_victor/christus_victor_star_1.png',
             'deed': 'Assets/Events/christus_victor/deed.png',
+            'seraph_base_closed': 'Assets/Events/seraph/seraph_base_closed.png',
+            'seraph_base_open': 'Assets/Events/seraph/seraph_base_open.png',
             // Space backgrounds
             'starfield_0': 'Assets/Space/starfield_0.png',
             'starfield_1': 'Assets/Space/starfield_1.png',
@@ -1089,7 +1092,11 @@ export class Game {
 
     _getGifManifest() {
         return {
-            'fire_explosion': 'Assets/VFX/fire_explosion.gif',
+            // fire_explosion.gif was split into three variants; the base key
+            // stays aliased to _1 so every existing consumer keeps working.
+            'fire_explosion': 'Assets/VFX/fire_explosion_1.gif',
+            'fire_explosion_2': 'Assets/VFX/fire_explosion_2.gif',
+            'fire_explosion_3': 'Assets/VFX/fire_explosion_3.gif',
             'exp': 'Assets/VFX/exp.gif',
             'blue_laser_explosion': 'Assets/VFX/blue_laser_explosion.gif',
             'cruiser_flying': 'Assets/Ships/Cruiser/cruiser_flying.gif',
@@ -1107,6 +1114,18 @@ export class Game {
             'yellow_one_dead': 'Assets/Events/yellow_one/yellow_one_dead.gif',
             'yellow_one_summon': 'Assets/Events/yellow_one/yellow_one_summon.gif',
             'christus_victor_gif': 'Assets/Events/christus_victor/christus_victor.gif',
+            'seraph_idle_closed': 'Assets/Events/seraph/seraph_idle_closed.gif',
+            'seraph_idle_opened': 'Assets/Events/seraph/seraph_idle_opened.gif',
+            'seraph_open': 'Assets/Events/seraph/seraph_open.gif',
+            'seraph_close': 'Assets/Events/seraph/seraph_close.gif',
+            'seraph_attack_1_closed': 'Assets/Events/seraph/seraph_attack_1_closed.gif',
+            'seraph_attack_1_opened': 'Assets/Events/seraph/seraph_attack_1_opened.gif',
+            'seraph_attack_2_closed': 'Assets/Events/seraph/seraph_attack_2_closed.gif',
+            'seraph_attack_2_opened': 'Assets/Events/seraph/seraph_attack_2_opened.gif',
+            'seraph_attack_3_opened': 'Assets/Events/seraph/seraph_attack_3_opened.gif',
+            'fire_beam': 'Assets/VFX/fire_beam.gif',
+            'fire_beam_start': 'Assets/VFX/fire_beam_start.gif',
+            'fireball': 'Assets/VFX/fireball.gif',
         };
     }
 

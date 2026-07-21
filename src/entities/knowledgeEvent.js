@@ -682,9 +682,11 @@ export class KnowledgeEvent {
         const tileW = logicalW * this.game.worldScale;
         const tileH = logicalH * this.game.worldScale;
         const count = 150; // Tile long enough to cover 12000+ length
+        // 1px tile overlap — fractional positions otherwise open hairline seams.
+        const step = Math.max(1, tileW - 1);
 
         for (let i = 0; i < count; i++) {
-            ctx.drawImage(canvas, i * tileW, -tileH / 2, tileW, tileH);
+            ctx.drawImage(canvas, i * step, -tileH / 2, tileW, tileH);
         }
         ctx.restore();
     }

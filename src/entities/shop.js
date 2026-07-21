@@ -65,8 +65,12 @@ export class Shop {
         const count = 3 + Math.floor(rand() * 4);
 
         // Filter upgrades that can actually fit in 6x4, excluding the map from random rolls
+        // Locators are dropped from the stock list once every signal in the
+        // sector has been found — there'd be nothing left for them to point at.
+        const signalsLeft = this.game.currentState?.hasUndiscoveredSignals?.() ?? true;
         const possibleUpgrades = UPGRADES.filter(u =>
             u.id !== 'shop_map' &&
+            (signalsLeft || u.id !== 'advanced_locator') &&
             u.rarity !== 'unique' &&
             (u.width <= this.inventory.cols && u.height <= this.inventory.rows)
         );

@@ -28,6 +28,7 @@ export class DevConsole {
             'encounter': (args) => this._cmdEncounter(args),
             'cache': (args) => this._cmdCache(args),
             'seed': (args) => this._cmdSeed(args),
+            'diff': (args) => this._cmdDiff(args),
             'dev': () => this._cmdDev(),
             'fps_uncap': () => this._cmdFPSUncap(),
             'perf': () => this._cmdPerf(),
@@ -121,6 +122,31 @@ export class DevConsole {
         }
         this.inputBuffer = '';
         this.active = false;
+    }
+
+    // Print the live difficulty (no args), or pin it to a value by solving for
+    // the totalGameTime that produces it (difficulty is recomputed every frame
+    // from game time + player power, so setting the scale directly wouldn't
+    // stick). `diff 20` → jumps the run clock so difficultyScale ≈ 20.
+    _cmdDiff(args) {
+        const state = this.game.currentState;
+        if (!state || state.difficultyScale === undefined) { console.log('Not in a run.'); return; }
+
+        if (args.length >= 1) {
+            const target = parseFloat(args[0]);
+            if (isNaN(target) || target < 1) { console.log('Usage: diff [value >= 1]'); return; }
+            const power = state._calculatePlayerPowerLevel ? state._calculatePlayerPowerLevel() : 0;
+            const rampMax = state.difficultyGain * Math.pow(state.difficultyRampTime, state.difficultyExponent);
+            // Invert the steady-phase formula; clamp into the steady phase.
+            const t = Math.max(state.difficultyRampTime + 1,
+                state.difficultyRampTime + (target - 1 - rampMax - power) / state.difficultySteadyRate);
+            this._cmdTime([String(Math.round(t))]);
+        }
+
+        const d = state.difficultyScale;
+        const power = state._calculatePlayerPowerLevel ? state._calculatePlayerPowerLevel() : 0;
+        console.log(`difficultyScale = ${d.toFixed(2)}  (gameTime ${Math.round(state.totalGameTime)}s, playerPower ${power.toFixed(2)})`);
+        console.log(`  → Seraph pool at this diff: ${Math.round(2600 + 600 * d)}  |  YellowOne: ${Math.round(2000 + 400 * d)}`);
     }
 
     _cmdTime(args) {
@@ -334,7 +360,7 @@ export class DevConsole {
         if (!state || !state.events) return;
 
         if (args.length < 1) {
-            console.log("Locate requires an event type: knowledge, cthulhu, station, cargo, yellowone");
+            console.log("Locate requires an event type: knowledge, cthulhu, station, cargo, yellowone, seraph");
             return;
         }
 
@@ -348,6 +374,7 @@ export class DevConsole {
             else if (type === 'station' && name.includes('station')) targetEvent = ev;
             else if (type === 'cargo' && name.includes('cargo')) targetEvent = ev;
             else if ((type === 'yellowone' || type === 'yellow') && name.includes('yellow')) targetEvent = ev;
+            else if (type === 'seraph' && name.includes('seraph')) targetEvent = ev;
         }
 
         if (targetEvent) {
@@ -414,6 +441,21 @@ export class DevConsole {
                     if (state._addEnemies) state._addEnemies([boss]); else state.enemies.push(boss);
                     state.triggerFlash('#ffffff', 1.2, 0.5);
                     this.game.sounds.playSpecificMusic(boss.musicKey || 'Event Horizon Chase');
+                });
+            } else if (bossId === 'seraph') {
+                // Event-based boss: spawns into the events list, fight starts on
+                // approach (like finding it in the wild post-Yellow One).
+                import('../entities/seraph.js').then(({ Seraph }) => {
+                    const angle = Math.random() * Math.PI * 2;
+                    const dist = 1600;
+                    const seraph = new Seraph(
+                        this.game,
+                        state.player.worldX + Math.cos(angle) * dist,
+                        state.player.worldY + Math.sin(angle) * dist
+                    );
+                    seraph.revealed = true;
+                    state.events.push(seraph);
+                    console.log(`Seraph spawned at ${Math.floor(seraph.worldX)}, ${Math.floor(seraph.worldY)}`);
                 });
             }
         }

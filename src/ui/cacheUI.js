@@ -176,7 +176,9 @@ export class CacheUI {
     _buildSilhouettes() {
         const maxW = this.cacheInventory.cols;
         const maxH = this.cacheInventory.rows;
-        const fitting = UPGRADES.filter(u => u.width <= maxW && u.height <= maxH);
+        const signalsLeft = this.game.currentState?.hasUndiscoveredSignals?.() ?? true;
+        const fitting = UPGRADES.filter(u => u.width <= maxW && u.height <= maxH &&
+            (signalsLeft || u.id !== 'advanced_locator'));
         // Fall back to all upgrades if nothing fits (shouldn't happen)
         const pool = fitting.length > 0 ? fitting : [...UPGRADES];
         this.silhouettes = pool.sort(() => Math.random() - 0.5).slice(0, Math.min(16, pool.length));
@@ -186,8 +188,13 @@ export class CacheUI {
     _rollUpgrade() {
         const luck = (this.game.currentState?.player?.luck) ?? 1.0;
 
+        // Locators drop out of the pool once every signal in the sector has
+        // been found — there'd be nothing left for them to point at.
+        const signalsLeft = this.game.currentState?.hasUndiscoveredSignals?.() ?? true;
+
         const possible = UPGRADES.filter(u =>
             u.rarity !== 'unique' &&
+            (signalsLeft || u.id !== 'advanced_locator') &&
             !this.revealedItems.find(r => r.id === u.id) &&
             this._findSlotFor(u) !== null
         );

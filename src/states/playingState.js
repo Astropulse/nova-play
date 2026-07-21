@@ -25,6 +25,7 @@ import { Starcore } from '../entities/starcore.js';
 import { AsteroidCrusher } from '../entities/asteroidCrusher.js';
 import { EventHorizon } from '../entities/eventHorizon.js';
 import { YellowOne, YO_STATE } from '../entities/yellowOne.js';
+import { Seraph, SERAPH_STATE } from '../entities/seraph.js';
 import { MenuState } from './menuState.js';
 import { AchievementsState } from './achievementsState.js';
 import { ACHIEVEMENTS } from '../data/achievements.js';
@@ -631,6 +632,30 @@ export class PlayingState {
         const yox = Math.cos(yoAngle) * yoDist;
         const yoy = Math.sin(yoAngle) * yoDist;
         this.events.push(new YellowOne(this.game, yox, yoy));
+    }
+
+    // Called by YellowOne when its victory cutscene ends: roost the Burning
+    // Seraph ~30k out from wherever the player stands, and point the freshly
+    // earned yellow glow at it (the glow reverts to spawn once the Seraph
+    // falls). One-time placement — a save/load rebuilds it from the event list.
+    _spawnSeraphAfterYellowOne() {
+        let seraph = this.events.find(ev => ev instanceof Seraph);
+        if (!seraph) {
+            const angle = Math.random() * Math.PI * 2;
+            const dist = 28000 + Math.random() * 4000;
+            seraph = new Seraph(this.game,
+                this.player.worldX + Math.cos(angle) * dist,
+                this.player.worldY + Math.sin(angle) * dist);
+            this.events.push(seraph);
+        }
+        if (!seraph.isFinished) {
+            const pilots = this.localPlayers.length > 1
+                ? this.localPlayers.map(s => s.player).filter(Boolean)
+                : [this.player];
+            for (const p of pilots) {
+                if (p.hasYellowGlow) p.yellowGlowTarget = { x: seraph.worldX, y: seraph.worldY };
+            }
+        }
     }
 
     _spawnInitialAsteroids() {
@@ -3659,11 +3684,13 @@ export class PlayingState {
                 }
             }
 
-            // Spawn a cache on boss death (always)
+            // Spawn a cache on boss death (always). Only the host replicates it —
+            // a client can reach here via its locally-scripted Seraph, whose
+            // cache (like the rest of that fight) stays local.
             if (this.caches.length < CACHE_CONFIG.maxActiveCaches + 2) {
                 const bossCache = this.cacheSpawner.spawnNear(entity.worldX, entity.worldY, 0, 0);
                 this.caches.push(bossCache);
-                if (mp) this.netSync.registerCache(bossCache);
+                if (mp && this.netSync.isHost) this.netSync.registerCache(bossCache);
             }
         }
         // Track stats — in multiplayer these are personal: only the pilot who
@@ -4853,7 +4880,8 @@ export class PlayingState {
             'CargoShipEvent': CargoShipEvent,
             'FracturedStationEvent': FracturedStationEvent,
             'KnowledgeEvent': KnowledgeEvent,
-            'YellowOne': YellowOne
+            'YellowOne': YellowOne,
+            'Seraph': Seraph
         };
 
         for (const evData of data.events) {
@@ -4894,10 +4922,36 @@ export class PlayingState {
                             ev.alive = true;
                         }
                     }
+                    if (evData.type === 'Seraph') {
+                        ev.isFinished = evData.isFinished || false;
+                        if (ev.isFinished || ev.state === SERAPH_STATE.FINISHED) {
+                            ev.state = SERAPH_STATE.FINISHED;
+                            ev.isFinished = true;
+                            ev.alive = false;
+                        } else {
+                            // A mid-fight save restarts the duel fresh on approach
+                            // (the real health pool is re-rolled at fight start).
+                            ev.state = SERAPH_STATE.IDLE;
+                            ev.invulnerable = true;
+                            ev.fightStarted = false;
+                            ev.form = 'closed';
+                            ev.health = 50;
+                            ev.maxHealth = 50;
+                        }
+                    }
                 }
                 ev.revealed = evData.revealed;
                 ev.discovered = evData.discovered;
                 this.events.push(ev);
+            }
+        }
+
+        // Post-Yellow One: while the Seraph lives, the player's yellow glow
+        // points at it (defaults back to spawn {0,0} otherwise).
+        {
+            const seraphEv = this.events.find(ev => ev instanceof Seraph);
+            if (this.player.hasYellowGlow && seraphEv && !seraphEv.isFinished) {
+                this.player.yellowGlowTarget = { x: seraphEv.worldX, y: seraphEv.worldY };
             }
         }
 
@@ -8704,6 +8758,17 @@ export class PlayingState {
         return true;
     }
 
+    // True while at least one world event is still an undiscovered signal — i.e.
+    // an Advanced Locator would actually have something to point at. Loot/stock
+    // rolls gate locator drops on this so the item stops appearing once every
+    // signal in the sector has been found (it spawns again if a new one does).
+    hasUndiscoveredSignals() {
+        for (const ev of this.events) {
+            if (!ev.revealed && !ev.isFinished) return true;
+        }
+        return false;
+    }
+
     revealNearestEvent() {
         let nearest = null;
         let minDistSq = Infinity;
@@ -9123,7 +9188,8 @@ export class PlayingState {
             'CargoShipEvent': CargoShipEvent,
             'FracturedStationEvent': FracturedStationEvent,
             'KnowledgeEvent': KnowledgeEvent,
-            'YellowOne': YellowOne
+            'YellowOne': YellowOne,
+            'Seraph': Seraph
         };
         this.events = [];
         for (const evData of (snap.events || [])) {
@@ -9144,6 +9210,21 @@ export class PlayingState {
             if (evData.isFinished) ev.isFinished = true;
             if (evData.invulnerable !== undefined) ev.invulnerable = evData.invulnerable;
             if (evData.phase1Triggered !== undefined) ev.phase1Triggered = evData.phase1Triggered;
+            if (evData.type === 'Seraph') {
+                // Locally-scripted fight (LOCAL_SCRIPTED_EVENTS): joiners get a
+                // fresh idle Seraph at the host's location unless it's done.
+                if (ev.isFinished) {
+                    ev.state = SERAPH_STATE.FINISHED;
+                    ev.alive = false;
+                } else {
+                    ev.state = SERAPH_STATE.IDLE;
+                    ev.invulnerable = true;
+                    ev.fightStarted = false;
+                    ev.form = 'closed';
+                    ev.health = 50;
+                    ev.maxHealth = 50;
+                }
+            }
             ev.netId = evData.netId;
             this.events.push(ev);
         }
@@ -9191,6 +9272,14 @@ export class PlayingState {
             this.player.worldY = snap.spawnY || 0;
             this.player.invulnTimer = 2.5;
             this.camera.snapTo(this.player);
+        }
+
+        // Post-Yellow One glow: re-aim at the lobby's Seraph if one is up.
+        {
+            const seraphEv = this.events.find(ev => ev instanceof Seraph);
+            if (this.player.hasYellowGlow && seraphEv && !seraphEv.isFinished) {
+                this.player.yellowGlowTarget = { x: seraphEv.worldX, y: seraphEv.worldY };
+            }
         }
 
         // Drop into the same song (and playhead) the rest of the lobby is hearing.
@@ -9984,8 +10073,10 @@ export class PlayingState {
         ctx.translate(startX, startY);
         ctx.rotate(angle);
 
+        // 1px tile overlap — fractional positions otherwise open hairline seams.
+        const step = Math.max(1, tileW - 1);
         for (let i = 0; i < count; i++) {
-            ctx.drawImage(canvas, i * tileW, -tileH / 2, tileW, tileH);
+            ctx.drawImage(canvas, i * step, -tileH / 2, tileW, tileH);
         }
 
         ctx.restore();

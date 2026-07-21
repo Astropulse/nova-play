@@ -16,9 +16,22 @@ export class Projectile {
         this.owner = owner; // Who fired this (to prevent self-damage)
         this.spriteKey = spriteKey; // kept for multiplayer replication
 
-        // One-shot image for the laser ball
+        // One-shot image for the laser ball. Animated (GIF) sprite keys yield a
+        // frame array — cycle through it in update(); each frame object has the
+        // same {canvas, width, height} shape as a static asset, so the draw
+        // path is unchanged.
         this.img = game.assets.get(spriteKey);
+        this._frames = null;
+        if (Array.isArray(this.img)) {
+            this._frames = this.img;
+            this._frameIdx = Math.floor(Math.random() * this._frames.length); // desync swarms
+            this._frameT = 0;
+            this.img = this._frames[this._frameIdx];
+        }
         this.angle = angle;
+        // Drawn-sprite rotation offset. Ship-style art faces UP (+π/2, the
+        // default); right-facing art (e.g. 'fireball') should set this to 0.
+        this.spriteRotOffset = Math.PI / 2;
 
         this.isRocket = false;
         this.target = null;
@@ -39,9 +52,21 @@ export class Projectile {
         if (spriteKey.includes('yellow')) this.glowColor = '#ffdd44';
         else if (spriteKey.includes('red')) this.glowColor = '#ff4444';
         else if (spriteKey.includes('green')) this.glowColor = '#44ff44';
+        else if (spriteKey.includes('fire')) this.glowColor = '#ff8833';
     }
 
     update(dt) {
+        // Advance GIF frames (animated sprites only)
+        if (this._frames) {
+            this._frameT += dt * 1000;
+            const fr = this._frames[this._frameIdx];
+            if (this._frameT >= (fr.delay || 100)) {
+                this._frameT = 0;
+                this._frameIdx = (this._frameIdx + 1) % this._frames.length;
+                this.img = this._frames[this._frameIdx];
+            }
+        }
+
         // Record trail history (ring buffer — no array shifting)
         this.historyHead = (this.historyHead + 1) % this.maxHistory;
         const slot = this.history[this.historyHead];
@@ -171,7 +196,7 @@ export class Projectile {
         // 2. Core — the real laser sprite, drawn LAST (on top of the trail) and
         // at full opacity so it stays the crisp bright bolt, with the faded
         // tapered streak sitting behind it.
-        const ma = this.angle + Math.PI / 2;
+        const ma = this.angle + this.spriteRotOffset;
         const mc = Math.cos(ma), msn = Math.sin(ma);
         ctx.setTransform(mc, msn, -msn, mc, hx, hy);
         ctx.drawImage(img, -w / 2, -h / 2, w, h);

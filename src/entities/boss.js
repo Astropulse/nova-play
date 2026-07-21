@@ -1,6 +1,7 @@
 import { Projectile } from './projectile.js';
 import { Scrap, VoronoiSlicer, ProceduralDebris, ItemPickup, Asteroid, ExpOrb, getCachedShatter } from './asteroid.js';
 import { UPGRADES } from '../data/upgrades.js';
+import { pickFireExplosion, fireExplosionFrame } from '../engine/vfx.js';
 
 export const BOSS_PHASE = {
     INTRO: 'intro',
@@ -237,9 +238,6 @@ export class Boss {
         const width = asset.width || img.width;
         const height = asset.height || img.height;
 
-        const fireFrames = this.game.assets.get('fire_explosion');
-        const totalExplosionDuration = fireFrames ? fireFrames.reduce((sum, f) => sum + f.delay, 0) : 500;
-
         this.deathExplosions = [];
         const numExplosions = 4 + Math.floor(Math.random() * 4);
 
@@ -273,6 +271,7 @@ export class Boss {
 
         for (let i = 0; i < Math.min(numExplosions, baseStaggers.length); i++) {
             const pt = solidPoints[Math.floor(Math.random() * solidPoints.length)];
+            const { key, totalDuration } = pickFireExplosion(this.game.assets);
             this.deathExplosions.push({
                 lx: pt.lx,
                 ly: pt.ly,
@@ -280,7 +279,8 @@ export class Boss {
                 fired: false,
                 finished: false,
                 animTimer: 0,
-                totalDuration: totalExplosionDuration,
+                fireKey: key,
+                totalDuration,
                 scale: 0.8 + Math.random() * 0.7
             });
         }
@@ -368,27 +368,15 @@ export class Boss {
 
         // Draw death explosions
         if (this.state === BOSS_STATE.DYING && this.deathExplosions) {
-            const fireFrames = this.game.assets.get('fire_explosion');
-            if (fireFrames) {
-                for (const ex of this.deathExplosions) {
-                    if (ex.fired && !ex.finished) {
-                        // Find current frame for this specific explosion
-                        let frameImg = fireFrames[0];
-                        let elapsed = ex.animTimer;
-                        for (const f of fireFrames) {
-                            if (elapsed < f.delay) {
-                                frameImg = f;
-                                break;
-                            }
-                            elapsed -= f.delay;
-                        }
-
-                        // GIF frames from decodeGif already have a logical .width property
-                        const ew = (frameImg.width || frameImg.canvas.width / 4) * this.game.worldScale * ex.scale;
-                        const eh = (frameImg.height || frameImg.canvas.height / 4) * this.game.worldScale * ex.scale;
-                        ctx.drawImage(frameImg.canvas || frameImg, ex.lx * this.game.worldScale - ew / 2, ex.ly * this.game.worldScale - eh / 2, ew, eh);
-                    }
-                }
+            for (const ex of this.deathExplosions) {
+                if (!ex.fired || ex.finished) continue;
+                // Each blast plays its own randomly-chosen variant.
+                const frameImg = fireExplosionFrame(this.game.assets.get(ex.fireKey), ex.animTimer);
+                if (!frameImg) continue;
+                // GIF frames from the atlas already carry a logical .width property.
+                const ew = (frameImg.width || frameImg.canvas.width / 4) * this.game.worldScale * ex.scale;
+                const eh = (frameImg.height || frameImg.canvas.height / 4) * this.game.worldScale * ex.scale;
+                ctx.drawImage(frameImg.canvas || frameImg, ex.lx * this.game.worldScale - ew / 2, ex.ly * this.game.worldScale - eh / 2, ew, eh);
             }
         }
 
@@ -407,10 +395,13 @@ export class Boss {
         const logicalH = img.height || canvas.height;
         const tileW = logicalW * this.game.worldScale;
         const tileH = logicalH * this.game.worldScale;
-        const count = Math.ceil((range * this.game.worldScale) / tileW);
+        // Tiles step 1px short of their width — fractional positions otherwise
+        // open hairline seams between segments.
+        const step = Math.max(1, tileW - 1);
+        const count = Math.ceil((range * this.game.worldScale) / step);
 
         for (let i = 0; i < count; i++) {
-            ctx.drawImage(canvas, i * tileW, -tileH / 2, tileW, tileH);
+            ctx.drawImage(canvas, i * step, -tileH / 2, tileW, tileH);
         }
         ctx.restore();
     }
@@ -488,8 +479,10 @@ export class Boss {
             }
         }
 
-        // 2. Advanced Locator (20% chance)
-        if (rand() < 0.20) {
+        // 2. Advanced Locator (20% chance) — skipped once every signal in the
+        // sector has been found. The roll is consumed either way so the seeded
+        // loot stream stays aligned.
+        if (rand() < 0.20 && this.game.currentState?.hasUndiscoveredSignals?.()) {
             const locatorData = UPGRADES.find(u => u.id === 'advanced_locator');
             if (locatorData) {
                 const angle = Math.random() * Math.PI * 2;

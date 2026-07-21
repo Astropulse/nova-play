@@ -57,7 +57,7 @@ const ST = { WINDUP: 1, RAM: 2, TARGETING: 4, DYING: 8, PHASE2: 16, INTRO: 32 };
 // Events whose fights are scripted per-pilot — the host only syncs their
 // health/finished flags; their states/positions stay locally simulated so the
 // cutscenes/sequences play correctly for whoever is actually there.
-const LOCAL_SCRIPTED_EVENTS = new Set(['YellowOne', 'KnowledgeEvent']);
+const LOCAL_SCRIPTED_EVENTS = new Set(['YellowOne', 'KnowledgeEvent', 'Seraph']);
 
 // Some events expose worldX/worldY as getter-only computed properties
 // (FracturedStationEvent derives them from its station list). Position sync
@@ -1475,7 +1475,12 @@ export class ClientWorldSync extends BaseWorldSync {
         if (ent instanceof Asteroid) { kind = KIND.ASTEROID; nid = ent.netId; }
         else if (this.state.events.includes(ent)) { kind = KIND.EVENT; nid = ent.netId; }
         else { kind = KIND.ENEMY; nid = ent.netId; }
-        if (nid === undefined) return false;
+        if (nid === undefined) {
+            // Events spawned locally mid-run (the post-Yellow One Seraph) have
+            // no host authority — resolve the hit on the local sim.
+            if (kind === KIND.EVENT) return ent.hit(amount);
+            return false;
+        }
 
         // Local prediction: tick HP down but never kill — the host's KILL is
         // the only thing that destroys a replicated entity.
