@@ -131,6 +131,8 @@ export const ENEMY_CLS = {
     CRUSHER: 11,
     HORIZON: 12,
     SCAVENGER: 13,
+    LOCUST: 14,
+    SWARM_MOTHER: 15,
 };
 
 // Projectile sprite ids — keep a stable indexed table so projectile spawn

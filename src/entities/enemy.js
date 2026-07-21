@@ -7,7 +7,7 @@ import { AsteroidCrusher } from './asteroidCrusher.js';
 import { EventHorizon } from './eventHorizon.js';
 import { pickFireExplosion, fireExplosionFrame, drawBeamStrip } from '../engine/vfx.js';
 
-const AI_STATE = {
+export const AI_STATE = {
     PURSUIT: 'pursuit',   // Move toward player
     ATTACK: 'attack',     // Point and fire
     BREAK: 'break',       // Short turn to reposition

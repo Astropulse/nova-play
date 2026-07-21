@@ -27,6 +27,7 @@ import { EventHorizon } from '../entities/eventHorizon.js';
 import { YellowOne, YO_STATE } from '../entities/yellowOne.js';
 import { Seraph, SERAPH_STATE } from '../entities/seraph.js';
 import { Wheels, WHEELS_STATE } from '../entities/wheels.js';
+import { Hive, HIVE_STATE } from '../entities/swarm.js';
 import { MenuState } from './menuState.js';
 import { AchievementsState } from './achievementsState.js';
 import { ACHIEVEMENTS } from '../data/achievements.js';
@@ -679,6 +680,30 @@ export class PlayingState {
                 : [this.player];
             for (const p of pilots) {
                 if (p.hasYellowGlow) p.yellowGlowTarget = { x: wheels.worldX, y: wheels.worldY };
+            }
+        }
+    }
+
+    // Called when the Wheels stop turning: roost the Hive ~30k out and swing
+    // the yellow glow onto it (the glow reverts to spawn once the whole swarm
+    // — hive, mother, and locusts — is destroyed). Idempotent, like the rest
+    // of the chain; also invoked from deserialize for saves made mid-chain.
+    _spawnHiveAfterWheels() {
+        let hive = this.events.find(ev => ev instanceof Hive);
+        if (!hive) {
+            const angle = Math.random() * Math.PI * 2;
+            const dist = 28000 + Math.random() * 4000;
+            hive = new Hive(this.game,
+                this.player.worldX + Math.cos(angle) * dist,
+                this.player.worldY + Math.sin(angle) * dist);
+            this.events.push(hive);
+        }
+        if (!hive.isFinished) {
+            const pilots = this.localPlayers.length > 1
+                ? this.localPlayers.map(s => s.player).filter(Boolean)
+                : [this.player];
+            for (const p of pilots) {
+                if (p.hasYellowGlow) p.yellowGlowTarget = { x: hive.worldX, y: hive.worldY };
             }
         }
     }
@@ -2839,7 +2864,10 @@ export class PlayingState {
                     const dyArr = e.worldY - this.player.worldY;
                     minDistSq = dxArr * dxArr + dyArr * dyArr;
                 }
-                if (minDistSq > despawnR * despawnR && !e.isBoss) {
+                // noDespawn: swarm members (mother/locusts) are anchored to
+                // the Hive, which is routinely further than the cull radius —
+                // distance-culling them would gut the encounter.
+                if (minDistSq > despawnR * despawnR && !e.isBoss && !e.noDespawn) {
                     e.alive = false;
                     if (despawnedEnemies) despawnedEnemies.push(e);
                 }
@@ -3316,6 +3344,14 @@ export class PlayingState {
                             if (ev.state === 4) { // 4 = DESTRUCTIBLE
                                 for (let j = 0; j < 2; j++) {
                                     this.rubble.push(new Rubble(this.game, proj.worldX, proj.worldY));
+                                }
+                            }
+                            // Asteroid-style chip damage (the Hive): break rim
+                            // cells off at the impact point.
+                            if (ev.chipHit) {
+                                const chips = ev.chipHit(proj.worldX, proj.worldY);
+                                for (const c of chips) {
+                                    if (this.rubble.length < 250) this.rubble.push(c);
                                 }
                             }
                         }
@@ -4911,7 +4947,8 @@ export class PlayingState {
             'KnowledgeEvent': KnowledgeEvent,
             'YellowOne': YellowOne,
             'Seraph': Seraph,
-            'Wheels': Wheels
+            'Wheels': Wheels,
+            'Hive': Hive
         };
 
         for (const evData of data.events) {
@@ -4984,6 +5021,21 @@ export class PlayingState {
                             ev.maxHealth = 50;
                         }
                     }
+                    if (evData.type === 'Hive') {
+                        ev.isFinished = evData.isFinished || false;
+                        if (ev.isFinished || ev.state === HIVE_STATE.FINISHED) {
+                            ev.state = HIVE_STATE.FINISHED;
+                            ev.isFinished = true;
+                            ev.alive = false;
+                        } else {
+                            // Mid-fight saves restart the whole encounter fresh
+                            // on approach (the swarm itself isn't serialized).
+                            ev.state = HIVE_STATE.IDLE;
+                            ev.fightStarted = false;
+                            ev.health = 50;
+                            ev.maxHealth = 50;
+                        }
+                    }
                 }
                 ev.revealed = evData.revealed;
                 ev.discovered = evData.discovered;
@@ -4992,19 +5044,25 @@ export class PlayingState {
         }
 
         // Post-Yellow One boss chain: the yellow glow points at the furthest
-        // still-living link — Seraph first, then the Wheels (defaults back to
-        // spawn {0,0} otherwise). A save written after the Seraph fell but
-        // before this feature existed gets its Wheels conjured here.
+        // still-living link — Seraph, then the Wheels, then the Hive (defaults
+        // back to spawn {0,0} otherwise). Saves written before a later link
+        // existed get the next link conjured here.
         {
             const seraphEv = this.events.find(ev => ev instanceof Seraph);
             if (seraphEv && seraphEv.isFinished && !this.events.some(ev => ev instanceof Wheels)) {
                 this._spawnWheelsAfterSeraph();
             }
             const wheelsEv = this.events.find(ev => ev instanceof Wheels);
+            if (wheelsEv && wheelsEv.isFinished && !this.events.some(ev => ev instanceof Hive)) {
+                this._spawnHiveAfterWheels();
+            }
+            const hiveEv = this.events.find(ev => ev instanceof Hive);
             if (this.player.hasYellowGlow && seraphEv && !seraphEv.isFinished) {
                 this.player.yellowGlowTarget = { x: seraphEv.worldX, y: seraphEv.worldY };
             } else if (this.player.hasYellowGlow && wheelsEv && !wheelsEv.isFinished) {
                 this.player.yellowGlowTarget = { x: wheelsEv.worldX, y: wheelsEv.worldY };
+            } else if (this.player.hasYellowGlow && hiveEv && !hiveEv.isFinished) {
+                this.player.yellowGlowTarget = { x: hiveEv.worldX, y: hiveEv.worldY };
             }
         }
 
@@ -9262,7 +9320,8 @@ export class PlayingState {
             'KnowledgeEvent': KnowledgeEvent,
             'YellowOne': YellowOne,
             'Seraph': Seraph,
-            'Wheels': Wheels
+            'Wheels': Wheels,
+            'Hive': Hive
         };
         this.events = [];
         for (const evData of (snap.events || [])) {
@@ -9306,6 +9365,18 @@ export class PlayingState {
                 } else {
                     ev.state = WHEELS_STATE.IDLE;
                     ev.invulnerable = true;
+                    ev.fightStarted = false;
+                    ev.health = 50;
+                    ev.maxHealth = 50;
+                }
+            }
+            if (evData.type === 'Hive') {
+                // Same locally-scripted treatment as the Seraph/Wheels.
+                if (ev.isFinished) {
+                    ev.state = HIVE_STATE.FINISHED;
+                    ev.alive = false;
+                } else {
+                    ev.state = HIVE_STATE.IDLE;
                     ev.fightStarted = false;
                     ev.health = 50;
                     ev.maxHealth = 50;
@@ -9361,14 +9432,17 @@ export class PlayingState {
         }
 
         // Post-Yellow One glow: re-aim at the lobby's live chain boss — the
-        // Seraph first, then the Wheels.
+        // Seraph first, then the Wheels, then the Hive.
         {
             const seraphEv = this.events.find(ev => ev instanceof Seraph);
             const wheelsEv = this.events.find(ev => ev instanceof Wheels);
+            const hiveEv = this.events.find(ev => ev instanceof Hive);
             if (this.player.hasYellowGlow && seraphEv && !seraphEv.isFinished) {
                 this.player.yellowGlowTarget = { x: seraphEv.worldX, y: seraphEv.worldY };
             } else if (this.player.hasYellowGlow && wheelsEv && !wheelsEv.isFinished) {
                 this.player.yellowGlowTarget = { x: wheelsEv.worldX, y: wheelsEv.worldY };
+            } else if (this.player.hasYellowGlow && hiveEv && !hiveEv.isFinished) {
+                this.player.yellowGlowTarget = { x: hiveEv.worldX, y: hiveEv.worldY };
             }
         }
 

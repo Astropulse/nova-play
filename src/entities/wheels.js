@@ -843,9 +843,14 @@ export class Wheels {
                         state.cinematics.trumpetFanfare(this.worldX, this.worldY);
                     }
                 }
-                // End of the glow chain (for now) — point the way home again.
-                for (const body of state.getPlayerBodies ? state.getPlayerBodies() : [state.player]) {
-                    if (body && body.hasYellowGlow) body.yellowGlowTarget = { x: 0, y: 0 };
+                // The chain goes on: somewhere out in the dark, something is
+                // building a nest. The glow swings onto the Hive.
+                if (state._spawnHiveAfterWheels) {
+                    state._spawnHiveAfterWheels();
+                } else {
+                    for (const body of state.getPlayerBodies ? state.getPlayerBodies() : [state.player]) {
+                        if (body && body.hasYellowGlow) body.yellowGlowTarget = { x: 0, y: 0 };
+                    }
                 }
                 if (state._onEntityDestroyed) state._onEntityDestroyed(this);
             }

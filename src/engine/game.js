@@ -281,6 +281,7 @@ export class Game {
         this.sounds.registerBossMusic('King\'s Victory', 'Assets/Sounds/Songs/Boss/King\'s Victory.mp3');
         this.sounds.registerBossMusic('Burning Seraph', 'Assets/Sounds/Songs/Boss/Burning Seraph.mp3');
         this.sounds.registerBossMusic('Wheels Within Wheels', 'Assets/Sounds/Songs/Boss/Wheels Within Wheels.mp3');
+        this.sounds.registerBossMusic('Pit of Locusts', 'Assets/Sounds/Songs/Boss/Pit of Locusts.mp3');
 
         this.sounds.registerTitleMusic('Assets/Sounds/Songs/Title/NOVA.mp3');
         this.sounds.registerGameOverMusic('Assets/Sounds/Songs/Game Over/Sendoff.mp3');
@@ -932,6 +933,12 @@ export class Game {
             'seraph_base_closed': 'Assets/Events/seraph/seraph_base_closed.png',
             'seraph_base_open': 'Assets/Events/seraph/seraph_base_open.png',
             'wheels_base': 'Assets/Events/wheels/wheels.png',
+            'hive': 'Assets/Events/hive.png',
+            'locust_0': 'Assets/Ships/Swarm/locust_0.png',
+            'locust_1': 'Assets/Ships/Swarm/locust_1.png',
+            'locust_2': 'Assets/Ships/Swarm/locust_2.png',
+            'locust_3': 'Assets/Ships/Swarm/locust_3.png',
+            'locust_4': 'Assets/Ships/Swarm/locust_4.png',
             // Space backgrounds
             'starfield_0': 'Assets/Space/starfield_0.png',
             'starfield_1': 'Assets/Space/starfield_1.png',
@@ -1143,6 +1150,8 @@ export class Game {
             'wheels_back': 'Assets/Events/wheels/wheels_back.gif',
             'wheels_front': 'Assets/Events/wheels/wheels_front.gif',
             'wheels_fire': 'Assets/Events/wheels/wheels_fire.gif',
+            'mother_idle': 'Assets/Ships/Swarm/Mother/mother_idle.gif',
+            'mother_wings': 'Assets/Ships/Swarm/Mother/mother_wings.gif',
             'fire_beam': 'Assets/VFX/fire_beam.gif',
             'fire_beam_start': 'Assets/VFX/fire_beam_start.gif',
             'fireball': 'Assets/VFX/fireball.gif',

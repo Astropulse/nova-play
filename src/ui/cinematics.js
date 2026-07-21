@@ -220,11 +220,21 @@ export class CinematicDirector {
         this._warnElapsed = 0;
         this.card = {
             title: 'WARNING',
-            subtitle: BOSS_SUBTITLES[boss.spriteKey] || DEFAULT_SUBTITLE
+            subtitle: BOSS_SUBTITLES[boss.spriteKey] || DEFAULT_SUBTITLE,
+            color: '#ff4444'
         };
         if (this.game.sounds && this.game.sounds.playKlaxon) {
             this.game.sounds.playKlaxon();
         }
+    }
+
+    // Generic version of the boss-warning banner for scripted events (e.g. the
+    // Hive's FAMINE leash): same letterbox/band/teletype language, custom title
+    // and accent color. No klaxon — callers bring their own sound.
+    announce(title, subtitle, color = '#ff4444') {
+        if (this._warnElapsed >= 0) return; // one banner at a time
+        this._warnElapsed = 0;
+        this.card = { title: String(title).toUpperCase(), subtitle: String(subtitle).toUpperCase(), color };
     }
 
     // Fullscreen flash/shake only when the moment happens near the local view —
@@ -530,13 +540,15 @@ export class CinematicDirector {
             ctx.fillStyle = '#000000';
             ctx.fillRect(0, bandY, W, bandH);
 
+            const accent = this.card.color || '#ff4444';
             const pulse = 0.55 + 0.35 * Math.sin(t * 6.0);
             ctx.globalAlpha = pulse * bandAlpha;
-            ctx.fillStyle = '#ff4444';
+            ctx.fillStyle = accent;
             ctx.fillRect(0, bandY, W, line);
             ctx.fillRect(0, bandY + bandH - line, W, line);
 
             // Title — HUD-style 4-pass black outline, soft arcade blink
+            const title = this.card.title || 'WARNING';
             const titleY = bandY + Math.round(7.5 * hudScale);
             const blink = (t % 0.7) < 0.45 ? 1 : 0.45;
             const o = Math.max(1, Math.round(hudScale / 2));
@@ -544,12 +556,12 @@ export class CinematicDirector {
             ctx.font = `${Math.floor(10 * hudScale)}px Astro4x`;
             ctx.globalAlpha = blink * bandAlpha;
             ctx.fillStyle = '#000000';
-            ctx.fillText('WARNING', cx - o, titleY);
-            ctx.fillText('WARNING', cx + o, titleY);
-            ctx.fillText('WARNING', cx, titleY - o);
-            ctx.fillText('WARNING', cx, titleY + o);
-            ctx.fillStyle = '#ff4444';
-            ctx.fillText('WARNING', cx, titleY);
+            ctx.fillText(title, cx - o, titleY);
+            ctx.fillText(title, cx + o, titleY);
+            ctx.fillText(title, cx, titleY - o);
+            ctx.fillText(title, cx, titleY + o);
+            ctx.fillStyle = accent;
+            ctx.fillText(title, cx, titleY);
 
             // Subtitle teletypes in beneath the title (steady, no blink)
             if (t > 0.45) {

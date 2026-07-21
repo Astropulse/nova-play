@@ -146,7 +146,7 @@ export class DevConsole {
         const d = state.difficultyScale;
         const power = state._calculatePlayerPowerLevel ? state._calculatePlayerPowerLevel() : 0;
         console.log(`difficultyScale = ${d.toFixed(2)}  (gameTime ${Math.round(state.totalGameTime)}s, playerPower ${power.toFixed(2)})`);
-        console.log(`  → Seraph/Wheels pool at this diff: ${Math.round(4200 + 1000 * d)}  |  YellowOne: ${Math.round(2000 + 400 * d)}`);
+        console.log(`  → Seraph/Wheels pool at this diff: ${Math.round(4200 + 1000 * d)}  |  YellowOne: ${Math.round(2000 + 400 * d)}  |  Hive: ${Math.round(5200 + 1200 * d)} (+Mother ${Math.round(2800 + 650 * d)})`);
     }
 
     _cmdTime(args) {
@@ -360,7 +360,7 @@ export class DevConsole {
         if (!state || !state.events) return;
 
         if (args.length < 1) {
-            console.log("Locate requires an event type: knowledge, cthulhu, station, cargo, yellowone, seraph, wheels");
+            console.log("Locate requires an event type: knowledge, cthulhu, station, cargo, yellowone, seraph, wheels, hive");
             return;
         }
 
@@ -376,6 +376,7 @@ export class DevConsole {
             else if ((type === 'yellowone' || type === 'yellow') && name.includes('yellow')) targetEvent = ev;
             else if (type === 'seraph' && name.includes('seraph')) targetEvent = ev;
             else if (type === 'wheels' && name.includes('wheels')) targetEvent = ev;
+            else if (type === 'hive' && name.includes('hive')) targetEvent = ev;
         }
 
         if (targetEvent) {
@@ -472,6 +473,21 @@ export class DevConsole {
                     wheels.revealed = true;
                     state.events.push(wheels);
                     console.log(`Wheels spawned at ${Math.floor(wheels.worldX)}, ${Math.floor(wheels.worldY)}`);
+                });
+            } else if (bossId === 'hive' || bossId === 'swarm') {
+                // Event-based boss: the whole swarm encounter (hive + mother +
+                // locust brood manifest on approach; fight starts near/on hit).
+                import('../entities/swarm.js').then(({ Hive }) => {
+                    const angle = Math.random() * Math.PI * 2;
+                    const dist = 2400;
+                    const hive = new Hive(
+                        this.game,
+                        state.player.worldX + Math.cos(angle) * dist,
+                        state.player.worldY + Math.sin(angle) * dist
+                    );
+                    hive.revealed = true;
+                    state.events.push(hive);
+                    console.log(`Hive spawned at ${Math.floor(hive.worldX)}, ${Math.floor(hive.worldY)}`);
                 });
             }
         }
