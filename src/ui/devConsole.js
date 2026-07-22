@@ -360,7 +360,7 @@ export class DevConsole {
         if (!state || !state.events) return;
 
         if (args.length < 1) {
-            console.log("Locate requires an event type: knowledge, cthulhu, station, cargo, yellowone, seraph, wheels, hive");
+            console.log("Locate requires an event type: knowledge, cthulhu, station, cargo, yellowone, seraph, wheels, hive, bones");
             return;
         }
 
@@ -377,6 +377,7 @@ export class DevConsole {
             else if (type === 'seraph' && name.includes('seraph')) targetEvent = ev;
             else if (type === 'wheels' && name.includes('wheels')) targetEvent = ev;
             else if (type === 'hive' && name.includes('hive')) targetEvent = ev;
+            else if ((type === 'bones' || type === 'carcosa') && name.includes('carcosa')) targetEvent = ev;
         }
 
         if (targetEvent) {
@@ -488,6 +489,21 @@ export class DevConsole {
                     hive.revealed = true;
                     state.events.push(hive);
                     console.log(`Hive spawned at ${Math.floor(hive.worldX)}, ${Math.floor(hive.worldY)}`);
+                });
+            } else if (bossId === 'bones' || bossId === 'carcosa') {
+                // Event-based boss: Carcosa + its whole bone belt. Spawned far
+                // enough out that the belt ring doesn't land on the player.
+                import('../entities/bones.js').then(({ Carcosa }) => {
+                    const angle = Math.random() * Math.PI * 2;
+                    const dist = 8000;
+                    const carcosa = new Carcosa(
+                        this.game,
+                        state.player.worldX + Math.cos(angle) * dist,
+                        state.player.worldY + Math.sin(angle) * dist
+                    );
+                    carcosa.revealed = true;
+                    state.events.push(carcosa);
+                    console.log(`Carcosa spawned at ${Math.floor(carcosa.worldX)}, ${Math.floor(carcosa.worldY)} (fly the signal — the belt is wide)`);
                 });
             }
         }

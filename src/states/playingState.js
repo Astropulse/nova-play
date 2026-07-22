@@ -28,6 +28,7 @@ import { YellowOne, YO_STATE } from '../entities/yellowOne.js';
 import { Seraph, SERAPH_STATE } from '../entities/seraph.js';
 import { Wheels, WHEELS_STATE } from '../entities/wheels.js';
 import { Hive, HIVE_STATE } from '../entities/swarm.js';
+import { Carcosa, CARCOSA_STATE } from '../entities/bones.js';
 import { MenuState } from './menuState.js';
 import { AchievementsState } from './achievementsState.js';
 import { ACHIEVEMENTS } from '../data/achievements.js';
@@ -704,6 +705,30 @@ export class PlayingState {
                 : [this.player];
             for (const p of pilots) {
                 if (p.hasYellowGlow) p.yellowGlowTarget = { x: hive.worldX, y: hive.worldY };
+            }
+        }
+    }
+
+    // Called when the whole swarm is destroyed: raise Carcosa and its starfield
+    // of bones ~30k out and swing the yellow glow onto it (the glow reverts to
+    // spawn once the tribute is claimed). Idempotent, like the rest of the
+    // chain; also invoked from deserialize for saves made mid-chain.
+    _spawnCarcosaAfterHive() {
+        let carcosa = this.events.find(ev => ev instanceof Carcosa);
+        if (!carcosa) {
+            const angle = Math.random() * Math.PI * 2;
+            const dist = 28000 + Math.random() * 4000;
+            carcosa = new Carcosa(this.game,
+                this.player.worldX + Math.cos(angle) * dist,
+                this.player.worldY + Math.sin(angle) * dist);
+            this.events.push(carcosa);
+        }
+        if (!carcosa.isFinished) {
+            const pilots = this.localPlayers.length > 1
+                ? this.localPlayers.map(s => s.player).filter(Boolean)
+                : [this.player];
+            for (const p of pilots) {
+                if (p.hasYellowGlow) p.yellowGlowTarget = { x: carcosa.worldX, y: carcosa.worldY };
             }
         }
     }
@@ -4948,7 +4973,8 @@ export class PlayingState {
             'YellowOne': YellowOne,
             'Seraph': Seraph,
             'Wheels': Wheels,
-            'Hive': Hive
+            'Hive': Hive,
+            'Carcosa': Carcosa
         };
 
         for (const evData of data.events) {
@@ -5026,7 +5052,10 @@ export class PlayingState {
                         if (ev.isFinished || ev.state === HIVE_STATE.FINISHED) {
                             ev.state = HIVE_STATE.FINISHED;
                             ev.isFinished = true;
-                            ev.alive = false;
+                            ev.radius = 0;
+                            // alive stays true: the finished Hive is the
+                            // persistent "swarm beaten" marker (see
+                            // _finishEncounter).
                         } else {
                             // Mid-fight saves restart the whole encounter fresh
                             // on approach (the swarm itself isn't serialized).
@@ -5034,6 +5063,24 @@ export class PlayingState {
                             ev.fightStarted = false;
                             ev.health = 50;
                             ev.maxHealth = 50;
+                        }
+                    }
+                    if (evData.type === 'Carcosa') {
+                        ev.isFinished = evData.isFinished || false;
+                        if (ev.isFinished || ev.state === CARCOSA_STATE.FINISHED) {
+                            // The rebuilt city persists forever as the "bones
+                            // beaten" marker (and a monument); alive stays true.
+                            ev.state = CARCOSA_STATE.FINISHED;
+                            ev.isFinished = true;
+                            ev.rebuilt = true;
+                            ev.cachesDropped = true;
+                        } else {
+                            // Mid-encounter saves restart the whole field fresh
+                            // on approach (husks/belt are rebuilt procedurally,
+                            // risen ships aren't serialized).
+                            ev.state = CARCOSA_STATE.DORMANT;
+                            ev.fightStarted = false;
+                            ev.musicStarted = false;
                         }
                     }
                 }
@@ -5056,13 +5103,32 @@ export class PlayingState {
             if (wheelsEv && wheelsEv.isFinished && !this.events.some(ev => ev instanceof Hive)) {
                 this._spawnHiveAfterWheels();
             }
+            // Legacy saves (pre-Hive builds): finished chain bosses were
+            // compacted out of the events list entirely, so a run that beat
+            // the Wheels before this feature has NO chain events but still
+            // carries the yellow glow. Each link exists from the moment its
+            // predecessor dies until it's beaten, so "glow + no links + no
+            // hive" can only mean the chain progressed past the Wheels —
+            // conjure the Hive and let the glow swing onto it. (The finished
+            // Hive itself persists alive as a marker, so a beaten swarm can
+            // never re-trigger this.)
+            if (this.player.hasYellowGlow && !seraphEv && !wheelsEv &&
+                !this.events.some(ev => ev instanceof Hive)) {
+                this._spawnHiveAfterWheels();
+            }
             const hiveEv = this.events.find(ev => ev instanceof Hive);
+            if (hiveEv && hiveEv.isFinished && !this.events.some(ev => ev instanceof Carcosa)) {
+                this._spawnCarcosaAfterHive();
+            }
+            const carcosaEv = this.events.find(ev => ev instanceof Carcosa);
             if (this.player.hasYellowGlow && seraphEv && !seraphEv.isFinished) {
                 this.player.yellowGlowTarget = { x: seraphEv.worldX, y: seraphEv.worldY };
             } else if (this.player.hasYellowGlow && wheelsEv && !wheelsEv.isFinished) {
                 this.player.yellowGlowTarget = { x: wheelsEv.worldX, y: wheelsEv.worldY };
             } else if (this.player.hasYellowGlow && hiveEv && !hiveEv.isFinished) {
                 this.player.yellowGlowTarget = { x: hiveEv.worldX, y: hiveEv.worldY };
+            } else if (this.player.hasYellowGlow && carcosaEv && !carcosaEv.isFinished) {
+                this.player.yellowGlowTarget = { x: carcosaEv.worldX, y: carcosaEv.worldY };
             }
         }
 
@@ -9321,7 +9387,8 @@ export class PlayingState {
             'YellowOne': YellowOne,
             'Seraph': Seraph,
             'Wheels': Wheels,
-            'Hive': Hive
+            'Hive': Hive,
+            'Carcosa': Carcosa
         };
         this.events = [];
         for (const evData of (snap.events || [])) {
@@ -9374,12 +9441,24 @@ export class PlayingState {
                 // Same locally-scripted treatment as the Seraph/Wheels.
                 if (ev.isFinished) {
                     ev.state = HIVE_STATE.FINISHED;
-                    ev.alive = false;
+                    ev.radius = 0; // alive stays true — inert "beaten" marker
                 } else {
                     ev.state = HIVE_STATE.IDLE;
                     ev.fightStarted = false;
                     ev.health = 50;
                     ev.maxHealth = 50;
+                }
+            }
+            if (evData.type === 'Carcosa') {
+                // Same locally-scripted treatment as the rest of the chain.
+                if (ev.isFinished) {
+                    ev.state = CARCOSA_STATE.FINISHED;
+                    ev.rebuilt = true;
+                    ev.cachesDropped = true; // alive stays true — monument
+                } else {
+                    ev.state = CARCOSA_STATE.DORMANT;
+                    ev.fightStarted = false;
+                    ev.musicStarted = false;
                 }
             }
             ev.netId = evData.netId;

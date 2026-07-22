@@ -29,6 +29,7 @@ import { Projectile } from '../entities/projectile.js';
 import { Asteroid, Scrap, ItemPickup, ExpOrb, Rubble } from '../entities/asteroid.js';
 import { Enemy, KamikazeEnemy, CthulhuEnemy, HostileEncounter, NaniteEnemy, NaniteDrone, ShieldEnemy, MissileEnemy, BlinkEnemy, BerserkEnemy, ScavengerEnemy } from '../entities/enemy.js';
 import { LocustEnemy, SwarmMother } from '../entities/swarm.js';
+import { BoneEnemy } from '../entities/bones.js';
 import { Starcore } from '../entities/starcore.js';
 import { AsteroidCrusher } from '../entities/asteroidCrusher.js';
 import { EventHorizon } from '../entities/eventHorizon.js';
@@ -58,7 +59,7 @@ const ST = { WINDUP: 1, RAM: 2, TARGETING: 4, DYING: 8, PHASE2: 16, INTRO: 32 };
 // Events whose fights are scripted per-pilot — the host only syncs their
 // health/finished flags; their states/positions stay locally simulated so the
 // cutscenes/sequences play correctly for whoever is actually there.
-const LOCAL_SCRIPTED_EVENTS = new Set(['YellowOne', 'KnowledgeEvent', 'Seraph', 'Wheels', 'Hive']);
+const LOCAL_SCRIPTED_EVENTS = new Set(['YellowOne', 'KnowledgeEvent', 'Seraph', 'Wheels', 'Hive', 'Carcosa']);
 
 // Some events expose worldX/worldY as getter-only computed properties
 // (FracturedStationEvent derives them from its station list). Position sync
@@ -93,6 +94,7 @@ function classifyEnemy(en) {
     if (en instanceof ScavengerEnemy) return ENEMY_CLS.SCAVENGER;
     if (en instanceof SwarmMother) return ENEMY_CLS.SWARM_MOTHER;
     if (en instanceof LocustEnemy) return ENEMY_CLS.LOCUST;
+    if (en instanceof BoneEnemy) return ENEMY_CLS.BONE;
     return ENEMY_CLS.BASIC;
 }
 
@@ -1244,6 +1246,13 @@ export class ClientWorldSync extends BaseWorldSync {
             case ENEMY_CLS.SCAVENGER: en = new ScavengerEnemy(this.game, d.x, d.y, d.ds); break;
             case ENEMY_CLS.LOCUST: en = new LocustEnemy(this.game, d.x, d.y, d.ds); break;
             case ENEMY_CLS.SWARM_MOTHER: en = new SwarmMother(this.game, d.x, d.y, d.ds); break;
+            case ENEMY_CLS.BONE: {
+                // Variant rides in the spriteKey ('bone_N') so the client's
+                // reanimation gif matches the hull the host rolled.
+                const m = /^bone_(\d)/.exec(d.spriteKey || '');
+                en = new BoneEnemy(this.game, d.x, d.y, d.ds, null, m ? parseInt(m[1], 10) : null);
+                break;
+            }
             default: en = new Enemy(this.game, d.x, d.y, d.ds);
         }
         if (d.spriteKey && d.cls !== ENEMY_CLS.HOSTILE_ENCOUNTER && !(en instanceof Boss)) {

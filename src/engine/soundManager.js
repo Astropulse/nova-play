@@ -233,7 +233,7 @@ export class SoundManager {
         }
     }
 
-    setTargetState(state, force = false) {
+    setTargetState(state, force = false, immediate = false) {
         if (this.musicLocked) return;
         if (this.targetMusicState === state) return;
 
@@ -264,8 +264,10 @@ export class SoundManager {
         this.maxTransitionWait = cutoff;
         this.transitionWaitTimer = 0;
 
-        // If instant, execute now
-        if (cutoff === 0) {
+        // If instant, execute now. `immediate` skips the cutoff wait — used
+        // when resuming from enforced silence (Carcosa tribute), where the
+        // old boss track must never resurface during the transition window.
+        if (cutoff === 0 || immediate) {
             this._executeTransition();
         } else {
             this.isTransitioning = true;
@@ -556,8 +558,8 @@ export class SoundManager {
         this.playSpecificMusic(key);
     }
 
-    restoreMusic() {
-        this.setTargetState(MUSIC_STATE.EXPLORATION, true);
+    restoreMusic(immediate = false) {
+        this.setTargetState(MUSIC_STATE.EXPLORATION, true, immediate);
     }
 
     setMusicVolume(v) {

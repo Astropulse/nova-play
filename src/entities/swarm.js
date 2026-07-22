@@ -1477,7 +1477,11 @@ export class Hive {
     _finishEncounter() {
         this.state = HIVE_STATE.FINISHED;
         this.isFinished = true;
-        this.alive = false;
+        // Stays alive=true (like the finished YellowOne) so it survives the
+        // per-frame dead-entity compaction and keeps serializing: without a
+        // finished Hive in the save, a load can't tell "swarm beaten" from
+        // "swarm pending" and would conjure a fresh one. Inert either way:
+        // radius 0 since BROKEN, update/draw early-return on FINISHED.
 
         const state = this.game.currentState;
         if (state) {
@@ -1501,9 +1505,13 @@ export class Hive {
             } else {
                 this.game.sounds.restoreMusic();
             }
-            // End of the glow chain (for now) — point the way home again.
-            for (const body of state.getPlayerBodies ? state.getPlayerBodies() : [state.player]) {
-                if (body && body.hasYellowGlow) body.yellowGlowTarget = { x: 0, y: 0 };
+            // The hunt continues: raise Carcosa and swing the glow onto it.
+            if (state._spawnCarcosaAfterHive) {
+                state._spawnCarcosaAfterHive();
+            } else {
+                for (const body of state.getPlayerBodies ? state.getPlayerBodies() : [state.player]) {
+                    if (body && body.hasYellowGlow) body.yellowGlowTarget = { x: 0, y: 0 };
+                }
             }
         }
         if (this.game.achievements) {

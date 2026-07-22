@@ -1,6 +1,7 @@
 import { KnowledgeEvent, KNOWLEDGE_STATE } from '../entities/knowledgeEvent.js';
 import { CthulhuEvent, CTHULHU_STATE } from '../entities/cthulhuEvent.js';
 import { YellowOne, YO_STATE } from '../entities/yellowOne.js';
+import { Carcosa } from '../entities/bones.js';
 
 // DreadLevel: a cosmetic 0..4 measure of how far the player has looked into
 // the things that should not be looked into. Unlike the kill streak, dread is
@@ -113,10 +114,32 @@ export class DreadDirector {
         for (const ev of this.state.events) {
             if (ev instanceof YellowOne && ev.state === YO_STATE.FOLLOWING) { stalk = true; break; }
         }
-        if (stalk && !suppressed) {
-            this._frenzyNext -= dt;
+
+        // Carcosa's static: nearing the starfield of bones frays reality on a
+        // sliding scale — the same haunting-moment pool as the stalk, firing
+        // faster the closer you get, plus a standing shader warp (getFx) and a
+        // faint tremor — all of it until the city is rebuilt.
+        let carcosa = 0;
+        let tribute = 0;
+        for (const ev of this.state.events) {
+            if (!(ev instanceof Carcosa)) continue;
+            if (ev.dreadFactor) carcosa = Math.max(carcosa, ev.dreadFactor);
+            // Post-fight: total silence until the tribute is claimed.
+            if (ev.awaitingTribute) tribute = 1;
+        }
+        this.carcosaProx = (this.carcosaProx || 0)
+            + (carcosa - (this.carcosaProx || 0)) * (1 - Math.exp(-2 * dt));
+        this._tributeSilence = (this._tributeSilence || 0)
+            + (tribute - (this._tributeSilence || 0)) * (1 - Math.exp(-1.2 * dt));
+        if (this.carcosaProx > 0.35) {
+            this.game.camera.rumble((this.carcosaProx - 0.35) * 0.4);
+        }
+
+        const frenzy = stalk ? 1 : (this.carcosaProx > 0.06 ? 0.1 + 0.9 * this.carcosaProx : 0);
+        if (frenzy > 0 && !suppressed) {
+            this._frenzyNext -= dt * frenzy;
             if (this._frenzyNext <= 0) {
-                this._frenzyNext = 0.4 + Math.random() * 1.1; // ≤1.5s gap, guaranteed
+                this._frenzyNext = 0.4 + Math.random() * 1.1; // ≤1.5s gap at full pressure
                 this._triggerStalkMoment();
             }
         } else {
@@ -174,7 +197,8 @@ export class DreadDirector {
         const prox = this._horrorProximity();
         this.horrorProx = (this.horrorProx || 0) + (prox - (this.horrorProx || 0)) * (1 - Math.exp(-2 * dt));
         if (this.game.sounds && this.game.sounds.setMusicDuck) {
-            this.game.sounds.setMusicDuck(this.horrorProx * 0.75);
+            // Tribute silence outranks the approach hush — full duck.
+            this.game.sounds.setMusicDuck(Math.max(this.horrorProx * 0.75, this._tributeSilence || 0));
         }
     }
 
@@ -188,14 +212,22 @@ export class DreadDirector {
         let best = 0;
         for (const ev of st.events) {
             let dormant = false;
+            let start = START, full = FULL;
             if (ev instanceof KnowledgeEvent) dormant = ev.state === KNOWLEDGE_STATE.DORMANT;
             else if (ev instanceof CthulhuEvent) dormant = ev.state === CTHULHU_STATE.DORMANT;
             else if (ev instanceof YellowOne) dormant = ev.state === YO_STATE.IDLE;
+            else if (ev instanceof Carcosa) {
+                // The hush reaches out past the bone belt — the main music
+                // dies on the approach, well before the event song takes over
+                // (once that starts, hushActive drops and the duck releases).
+                dormant = ev.hushActive;
+                start = 7000; full = 2800;
+            }
             if (!dormant) continue;
             const dx = ev.worldX - p.worldX;
             const dy = ev.worldY - p.worldY;
             const d = Math.sqrt(dx * dx + dy * dy);
-            if (d < START) best = Math.max(best, Math.min(1, (START - d) / (START - FULL)));
+            if (d < start) best = Math.max(best, Math.min(1, (start - d) / (start - full)));
         }
         return best;
     }
@@ -255,6 +287,12 @@ export class DreadDirector {
         if (this.warp) {
             const p = this.warp.t / this.warp.dur;
             warp = Math.sin(p * Math.PI) * this.warp.peak;
+        }
+        // Carcosa's standing distortion floor: the closer to the dead city,
+        // the more the whole screen tears and desaturates (transient pulses
+        // still spike above it).
+        if (this.carcosaProx > 0.05) {
+            warp = Math.max(warp, this.carcosaProx * 0.38);
         }
         return { warp };
     }

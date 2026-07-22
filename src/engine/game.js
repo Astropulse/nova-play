@@ -282,6 +282,7 @@ export class Game {
         this.sounds.registerBossMusic('Burning Seraph', 'Assets/Sounds/Songs/Boss/Burning Seraph.mp3');
         this.sounds.registerBossMusic('Wheels Within Wheels', 'Assets/Sounds/Songs/Boss/Wheels Within Wheels.mp3');
         this.sounds.registerBossMusic('Pit of Locusts', 'Assets/Sounds/Songs/Boss/Pit of Locusts.mp3');
+        this.sounds.registerBossMusic('Starfield of Bones', 'Assets/Sounds/Songs/Boss/Starfield of Bones.mp3');
 
         this.sounds.registerTitleMusic('Assets/Sounds/Songs/Title/NOVA.mp3');
         this.sounds.registerGameOverMusic('Assets/Sounds/Songs/Game Over/Sendoff.mp3');
@@ -934,6 +935,20 @@ export class Game {
             'seraph_base_open': 'Assets/Events/seraph/seraph_base_open.png',
             'wheels_base': 'Assets/Events/wheels/wheels.png',
             'hive': 'Assets/Events/hive.png',
+            'carcosa': 'Assets/Events/carcosa.png',
+            'carcosa_rebuilt': 'Assets/Events/carcosa_rebuilt.png',
+            'bone_0': 'Assets/Ships/Bone/bone_0.png',
+            'bone_1': 'Assets/Ships/Bone/bone_1.png',
+            'bone_2': 'Assets/Ships/Bone/bone_2.png',
+            'bone_3': 'Assets/Ships/Bone/bone_3.png',
+            'bone_0_dormant': 'Assets/Ships/Bone/bone_0_dormant.png',
+            'bone_1_dormant': 'Assets/Ships/Bone/bone_1_dormant.png',
+            'bone_2_dormant': 'Assets/Ships/Bone/bone_2_dormant.png',
+            'bone_3_dormant': 'Assets/Ships/Bone/bone_3_dormant.png',
+            'bone_0_reanimate': 'Assets/Ships/Bone/bone_0_reanimate.gif',
+            'bone_1_reanimate': 'Assets/Ships/Bone/bone_1_reanimate.gif',
+            'bone_2_reanimate': 'Assets/Ships/Bone/bone_2_reanimate.gif',
+            'bone_3_reanimate': 'Assets/Ships/Bone/bone_3_reanimate.gif',
             'locust_0': 'Assets/Ships/Swarm/locust_0.png',
             'locust_1': 'Assets/Ships/Swarm/locust_1.png',
             'locust_2': 'Assets/Ships/Swarm/locust_2.png',
