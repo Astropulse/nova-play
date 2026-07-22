@@ -28,7 +28,14 @@ export class World {
         }
 
         this.layers = [];
-        
+
+        // Fraction of the ordinary stars hidden from the sky (0..1). The
+        // dragon's arrival sweeps a third of the stars away (Rev 12:4); the
+        // star lists are pre-shuffled so capping the drawn instance count
+        // removes a spatially-uniform random subset. Rare objects
+        // (nebulae/galaxies/black holes) are never culled.
+        this.starCull = 0;
+
         // Setup WebGL
         this._initWebGL();
         this._initLayers();
@@ -423,6 +430,17 @@ export class World {
                 }
             }
 
+            // Shuffle the ordinary stars so a runtime count-cap (starCull)
+            // hides a scattered random subset instead of a generation-ordered
+            // block. Additive blending makes draw order invisible, and the
+            // shuffle rng is independent of the placement rng so existing
+            // worlds keep their exact layouts.
+            const shuffleRng = mulberry32((this.seed ^ 0x9e3779b9) + idx);
+            for (let i = starsLighter.length - 1; i > 0; i--) {
+                const j = Math.floor(shuffleRng() * (i + 1));
+                [starsLighter[i], starsLighter[j]] = [starsLighter[j], starsLighter[i]];
+            }
+
             // Convert lists to TypedArrays
             const packBatch = (list, blendMode, isBh) => {
                 const buffer = new Float32Array(list.length * 10);
@@ -457,7 +475,11 @@ export class World {
 
             const batches = [];
             if (starsSourceOver.length) batches.push(packBatch(starsSourceOver, 'source-over', true));
-            if (starsLighter.length) batches.push(packBatch(starsLighter, 'lighter', false));
+            if (starsLighter.length) {
+                const b = packBatch(starsLighter, 'lighter', false);
+                b.cullable = true; // ordinary stars — subject to starCull
+                batches.push(b);
+            }
             if (starsScreen.length) batches.push(packBatch(starsScreen, 'screen', false));
 
             // Load into GPU buffers immediately
@@ -568,10 +590,15 @@ export class World {
                     gl.uniform1f(this.locs.u_globalAlpha, finalAlpha);
                     gl.uniform2f(this.locs.u_streakOffset, svx * offsetMult, svy * offsetMult);
 
+                    // starCull hides the tail of the (pre-shuffled) star list.
+                    const instCount = (batch.cullable && this.starCull > 0)
+                        ? Math.max(0, Math.round(batch.count * (1 - this.starCull)))
+                        : batch.count;
+                    if (instCount <= 0) continue;
                     for (let k = -rangeX; k <= rangeX; k++) {
                         for (let m = -rangeY; m <= rangeY; m++) {
                             gl.uniform2f(this.locs.u_wrapOffset, k, m);
-                            gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, batch.count);
+                            gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, instCount);
                         }
                     }
                 }

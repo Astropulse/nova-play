@@ -139,7 +139,14 @@ export class Seraph {
 
     // Live local pilots this fight can hurt. Multiplayer: the Seraph is a
     // locally-scripted event (LOCAL_SCRIPTED_EVENTS), so only the local pilot.
+    // ALLY MODE (the dragon fight): the resurrected Seraph fights FOR the
+    // player — its entire combat AI runs unchanged, but its target list is
+    // the dragon head it's dueling and its damage lands on that head.
     _bodies() {
+        if (this.allyMode) {
+            const t = this.allyTarget;
+            return t && t.alive && t.state === 'fight' ? [t] : [];
+        }
         const state = this.game.currentState;
         if (!state) return [];
         if (!state.netSync && state.localPlayers && state.localPlayers.length > 1) {
@@ -149,6 +156,10 @@ export class Seraph {
     }
 
     _hurt(body, dmg, x, y) {
+        if (this.allyMode) {
+            if (body && body.hit) body.hit(dmg);
+            return;
+        }
         const state = this.game.currentState;
         if (!state) return;
         if (!state.netSync && state.damagePlayerBody) state.damagePlayerBody(body, dmg, x, y);
@@ -452,7 +463,8 @@ export class Seraph {
         this.health = 4200 + 1000 * diff;
         this.maxHealth = this.health;
 
-        this.game.sounds.playSpecificMusic('Burning Seraph');
+        // Ally mode (dragon fight): the dragon's own song is already playing.
+        if (!this.allyMode) this.game.sounds.playSpecificMusic('Burning Seraph');
         this.game.sounds.play('shield_break', { volume: 0.7, x: this.worldX, y: this.worldY });
         this.game.camera.shake(2.0);
 

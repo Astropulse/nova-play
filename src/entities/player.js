@@ -96,6 +96,9 @@ export class Player {
         // Yellow One reward — permanent glow
         this.hasYellowGlow = false;
         this.yellowGlowTarget = { x: 0, y: 0 }; // Points toward next boss event
+        // Once the starfield of bones falls, the glow turns red — it points at
+        // the dragon. Derived from chain state on load (not serialized).
+        this.glowRed = false;
         this._yellowTrailHistory = [];
         this._yellowTrailTimer = 0;
         this._yellowTrailInterval = 0.005; // Match ancient curse speed
@@ -1133,8 +1136,9 @@ export class Player {
                 const w = (asset.width || tImg.width) * this.game.worldScale;
                 const h = (asset.height || tImg.height) * this.game.worldScale;
 
-                if (!this._yellowGhostCache) {
-                    this._yellowGhostCache = this._createYellowGhost(tImg);
+                if (!this._yellowGhostCache || this._yellowGhostRed !== this.glowRed) {
+                    this._yellowGhostCache = this._createYellowGhost(tImg, this.glowRed);
+                    this._yellowGhostRed = this.glowRed;
                 }
 
                 // Position each ghost further along the direction toward the target
@@ -1490,7 +1494,7 @@ export class Player {
         return ghostCanvas;
     }
 
-    _createYellowGhost(img) {
+    _createYellowGhost(img, red = false) {
         const canvas = img.canvas || img;
         const aw = img.width || canvas.width;
         const ah = img.height || canvas.height;
@@ -1504,14 +1508,14 @@ export class Player {
         tCtx.drawImage(canvas, 0, 0);
 
         tCtx.globalCompositeOperation = 'source-atop';
-        tCtx.fillStyle = 'rgba(255, 230, 80, 1)';
+        tCtx.fillStyle = red ? 'rgba(255, 60, 40, 1)' : 'rgba(255, 230, 80, 1)';
         tCtx.fillRect(0, 0, aw, ah);
 
         // Draw again without blur for a bright core
         tCtx.globalCompositeOperation = 'source-atop';
         tCtx.filter = 'none';
         tCtx.globalAlpha = 0.5;
-        tCtx.fillStyle = 'rgba(255, 255, 180, 1)';
+        tCtx.fillStyle = red ? 'rgba(255, 160, 120, 1)' : 'rgba(255, 255, 180, 1)';
         tCtx.fillRect(0, 0, aw, ah);
 
         return ghostCanvas;

@@ -59,6 +59,7 @@ const HITBOX_PREFIXES = [
     'Assets/Ships/Swarm/',
     'Assets/Ships/Bone/',
     'Assets/Events/yellow_one/',
+    'Assets/Ships/Dragon/',
     'Assets/Events/seraph/',
     'Assets/Events/wheels/',
     'Assets/Events/cthulhu',  // the Frozen God event (cthulhu.png + cthulhu_wake.gif)

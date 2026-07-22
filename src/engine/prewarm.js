@@ -23,6 +23,11 @@ export const FRACTURE_PREWARM_KEYS = (() => {
     for (const k of ['asteroid_small_0', 'asteroid_small_1']) keys.push([k, 22]);
     for (let i = 0; i <= 24; i++) keys.push([`asteroid_tiny_${String(i).padStart(2, '0')}`, 14]);
     for (let i = 0; i <= 4; i++) keys.push([`enemy_ship_${i}`, 13]);
+    // The dragon's seven heads shatter-and-reform constantly — their voronoi
+    // layouts must be warm before the fight (48 = dragon.js SHATTER_PIECES).
+    for (const k of ['dragon_deception', 'dragon_accusation', 'dragon_murder',
+        'dragon_blasphemy', 'dragon_economic_control', 'dragon_false_worship',
+        'dragon_persecution']) keys.push([k, 48]);
     return keys;
 })();
 

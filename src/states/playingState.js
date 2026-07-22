@@ -29,6 +29,7 @@ import { Seraph, SERAPH_STATE } from '../entities/seraph.js';
 import { Wheels, WHEELS_STATE } from '../entities/wheels.js';
 import { Hive, HIVE_STATE } from '../entities/swarm.js';
 import { Carcosa, CARCOSA_STATE } from '../entities/bones.js';
+import { Dragon, DRAGON_STATE } from '../entities/dragon.js';
 import { MenuState } from './menuState.js';
 import { AchievementsState } from './achievementsState.js';
 import { ACHIEVEMENTS } from '../data/achievements.js';
@@ -396,6 +397,13 @@ export class PlayingState {
         this.yellowOneDeathScreen = false;
         this.yellowOneEnraged = false;
 
+        // Dragon (final boss) — arrival cutscene: soft control lock (pilots
+        // drift on friction, all weapons held) + a wide cinematic FOV. The
+        // Dragon event drives both; see entities/dragon.js.
+        this.dragonCinematic = false;
+        this._dragonFovMult = 0;
+        this.dragonEvent = null;
+
         // Death state
         this.isDead = false;
         this.deathTimer = 0;
@@ -729,6 +737,36 @@ export class PlayingState {
                 : [this.player];
             for (const p of pilots) {
                 if (p.hasYellowGlow) p.yellowGlowTarget = { x: carcosa.worldX, y: carcosa.worldY };
+            }
+        }
+    }
+
+    // Called when Carcosa's tribute is claimed: seed the dragon's summoning
+    // ground ~30k out and turn the glow RED — the final hunt. Idempotent, like
+    // the rest of the chain; also invoked from deserialize for mid-chain saves.
+    // The glow only turns yellow again (and points home) when the dragon dies.
+    _spawnDragonAfterCarcosa() {
+        let dragon = this.events.find(ev => ev instanceof Dragon);
+        if (!dragon) {
+            const angle = Math.random() * Math.PI * 2;
+            const dist = 28000 + Math.random() * 4000;
+            dragon = new Dragon(this.game,
+                this.player.worldX + Math.cos(angle) * dist,
+                this.player.worldY + Math.sin(angle) * dist);
+            this.events.push(dragon);
+        }
+        this.dragonEvent = dragon;
+        const pilots = this.localPlayers.length > 1
+            ? this.localPlayers.map(s => s.player).filter(Boolean)
+            : [this.player];
+        for (const p of pilots) {
+            if (!p.hasYellowGlow) continue;
+            if (!dragon.isFinished) {
+                p.glowRed = true;
+                p.yellowGlowTarget = { x: dragon.worldX, y: dragon.worldY };
+            } else {
+                p.glowRed = false;
+                p.yellowGlowTarget = { x: 0, y: 0 };
             }
         }
     }
@@ -2101,7 +2139,21 @@ export class PlayingState {
         // pilot ticks toward respawn instead. this.isDead is the GLOBAL game-over
         // (all pilots down).
         this.perf.begin('player');
-        if (!this.yellowOneScriptActive && !this.isDead) {
+        if (this.dragonCinematic && !this.isDead) {
+            // Dragon arrival: a HARD lock — player.update is skipped entirely
+            // (no aim, no fire, no shield, no boost, nothing), the ships just
+            // coast dead-stick to rest on friction.
+            for (const lp of this.localPlayers) {
+                const p = lp.player;
+                if (!p || p.dead) continue;
+                p.vx *= Math.pow(0.95, dt * 60);
+                p.vy *= Math.pow(0.95, dt * 60);
+                p.worldX += p.vx * dt;
+                p.worldY += p.vy * dt;
+                p.shielding = false;
+                p.thrusting = false;
+            }
+        } else if (!this.yellowOneScriptActive && !this.isDead) {
             const coop = this.localPlayers.length > 1;
             for (const lp of this.localPlayers) {
                 const p = lp.player;
@@ -2229,7 +2281,7 @@ export class PlayingState {
         // own auto-weapons). Single view / MP = just the primary. Held entirely
         // during the Yellow One cutscene (the player is technically alive on
         // screen there — no rockets over the King's ceremony) and game over.
-        if (!this.yellowOneScriptActive && !this.isDead) {
+        if (!this.yellowOneScriptActive && !this.dragonCinematic && !this.isDead) {
             for (const _awlp of this.localPlayers) {
                 if (_awlp.player && !_awlp.player.dead) this._updateAutoWeapons(_awlp.player, dt);
             }
@@ -2250,7 +2302,13 @@ export class PlayingState {
         const speedFovMult = 1.0 + (speedFactor * 0.3);
         // Primary's OWN fov (item × level) — not the global, which another pilot's
         // inventory change would clobber (corrupting pane-0 zoom in co-op).
-        const targetFovMult = (this.player.itemFovMult || 1.0) * (this.player.lvlFovMult || 1.0) * speedFovMult;
+        let targetFovMult = (this.player.itemFovMult || 1.0) * (this.player.lvlFovMult || 1.0) * speedFovMult;
+
+        // Dragon arrival cinematic: pull the view out to ~400%. max() means a
+        // player whose own FOV is somehow already wider is left untouched.
+        if (this._dragonFovMult > 1.0) {
+            targetFovMult = Math.max(targetFovMult, this._dragonFovMult);
+        }
 
         // Smoothly interpolate FOV to avoid jitter
         const fovLerpSpeed = 5.0; // Adjust for snappiness
@@ -2605,7 +2663,8 @@ export class PlayingState {
             // 2. Post-wave exploration return
             // 10 seconds after wave start (1:50 on 2min timer), start checking for enemies
             // (Only if we are in the combat state and the countdown isn't active)
-            if (this.musicCombatTriggered && this.postWaveTimer >= 10 && this.waveTimer > 10 && !this.yellowOneScriptActive) {
+            if (this.musicCombatTriggered && this.postWaveTimer >= 10 && this.waveTimer > 10 && !this.yellowOneScriptActive && !this.dragonCinematic
+                && !(this.dragonEvent && this.dragonEvent.state === DRAGON_STATE.FIGHT)) {
                 if (this.enemies.length === 0) {
                     this.quietTimer += dt;
                     if (this.quietTimer >= 3.0) { // 3s of continuous silence
@@ -3458,6 +3517,8 @@ export class PlayingState {
                     if (dx * dx + dy * dy < cr * cr && pl.checkPixelCollision(proj.worldX, proj.worldY)) {
                         proj.alive = false;
                         this._damagePlayer(proj.damage, proj.worldX, proj.worldY, pl); // proj.damage is already scaled in Enemy.shoot
+                        // Special on-hit riders (e.g. the dragon's scrap toll).
+                        if (proj.onPlayerHit) proj.onPlayerHit(this, pl);
                         this._spawnSparks(proj.worldX, proj.worldY, 7 + Math.floor(Math.random() * 4), {
                             dir: Math.atan2(proj.worldY - pl.worldY, proj.worldX - pl.worldX),
                             spread: Math.PI * 0.9,
@@ -4892,7 +4953,9 @@ export class PlayingState {
                 quietTimer: this.quietTimer
             },
             player: this.player.serialize(),
-            events: this.events.map(ev => ({
+            // Dragon heads are orchestrated sub-entities — the Dragon shell
+            // alone is saved and a mid-fight load restarts the encounter fresh.
+            events: this.events.filter(ev => !ev.isDragonHead).map(ev => ({
                 type: ev.constructor.name,
                 worldX: ev.worldX,
                 worldY: ev.worldY,
@@ -4974,7 +5037,8 @@ export class PlayingState {
             'Seraph': Seraph,
             'Wheels': Wheels,
             'Hive': Hive,
-            'Carcosa': Carcosa
+            'Carcosa': Carcosa,
+            'Dragon': Dragon
         };
 
         for (const evData of data.events) {
@@ -5083,6 +5147,19 @@ export class PlayingState {
                             ev.musicStarted = false;
                         }
                     }
+                    if (evData.type === 'Dragon') {
+                        ev.isFinished = evData.isFinished || false;
+                        if (ev.isFinished || ev.state === DRAGON_STATE.FINISHED) {
+                            // The sigil scar persists forever as the "dragon
+                            // beaten" marker; alive stays true.
+                            ev.state = DRAGON_STATE.FINISHED;
+                            ev.isFinished = true;
+                        } else {
+                            // Mid-fight saves restart the whole encounter fresh
+                            // on approach (heads/cinematic aren't serialized).
+                            ev.state = DRAGON_STATE.DORMANT;
+                        }
+                    }
                 }
                 ev.revealed = evData.revealed;
                 ev.discovered = evData.discovered;
@@ -5121,6 +5198,12 @@ export class PlayingState {
                 this._spawnCarcosaAfterHive();
             }
             const carcosaEv = this.events.find(ev => ev instanceof Carcosa);
+            if (carcosaEv && carcosaEv.isFinished && !this.events.some(ev => ev instanceof Dragon)) {
+                this._spawnDragonAfterCarcosa();
+            }
+            const dragonEv = this.events.find(ev => ev instanceof Dragon);
+            if (dragonEv) this.dragonEvent = dragonEv;
+            this.player.glowRed = false;
             if (this.player.hasYellowGlow && seraphEv && !seraphEv.isFinished) {
                 this.player.yellowGlowTarget = { x: seraphEv.worldX, y: seraphEv.worldY };
             } else if (this.player.hasYellowGlow && wheelsEv && !wheelsEv.isFinished) {
@@ -5129,6 +5212,10 @@ export class PlayingState {
                 this.player.yellowGlowTarget = { x: hiveEv.worldX, y: hiveEv.worldY };
             } else if (this.player.hasYellowGlow && carcosaEv && !carcosaEv.isFinished) {
                 this.player.yellowGlowTarget = { x: carcosaEv.worldX, y: carcosaEv.worldY };
+            } else if (this.player.hasYellowGlow && dragonEv && !dragonEv.isFinished) {
+                // The last link burns red.
+                this.player.glowRed = true;
+                this.player.yellowGlowTarget = { x: dragonEv.worldX, y: dragonEv.worldY };
             }
         }
 
@@ -5935,8 +6022,9 @@ export class PlayingState {
     // fullscreen post-FX (flash, letterbox). Drawn once over the whole canvas
     // (not per split-screen pane). Reached only when the local player is alive.
     _drawScreenUI(ctx) {
-        // Hide HUD and all indicators during Yellow One cutscene
-        if (!this.yellowOneScriptActive) {
+        // Hide HUD and all indicators during the Yellow One cutscene and the
+        // dragon's arrival cinematic (the spectacle owns the frame).
+        if (!this.yellowOneScriptActive && !this.dragonCinematic) {
             // Streak vignette + counter and dread hush sit under the HUD. Co-op
             // draws them per pane (in the pane loop); single view = fullscreen.
             if (this.localPlayers.length <= 1) {
@@ -5947,6 +6035,12 @@ export class PlayingState {
             // pane) in the pane loop, so the single fullscreen HUD is skipped.
             if (this.localPlayers.length <= 1) {
                 this.hud.draw(ctx);
+            }
+
+            // The dragon fight is the ONE fight with boss bars: seven of them,
+            // side-by-side at the top — one per head.
+            if (this.dragonEvent && this.dragonEvent.barsAlpha > 0.01 && this.hud.drawDragonBars) {
+                this.hud.drawDragonBars(ctx, this.dragonEvent);
             }
 
             // --- Total Game Timer --- (co-op draws it per pane in the pane loop)
@@ -6327,6 +6421,12 @@ export class PlayingState {
             }
             return { crt: 0, warp: 0 };
         }
+        if (this.dragonCinematic && this.dragonEvent) {
+            // The arrival owns the pass: space itself flinches when the seven
+            // pulse and the stars begin to die.
+            const w = this.dragonEvent.getCinematicFx ? this.dragonEvent.getCinematicFx() : 0;
+            return { crt: 0, warp: w };
+        }
         if (this.isDead) return { crt: 0, warp: 0 };
         const d = this.dread ? this.dread.getFx() : null;
         const crt = this.killStreak ? this.killStreak.fxIntensity : 0;
@@ -6513,6 +6613,9 @@ export class PlayingState {
         const dt = this.game.lastDt || 0.016;
         for (const ev of this.events) {
             if (!ev.revealed || ev.isFinished) continue; // Keep marker until destroyed or finished (scrap spawned)
+            // Dragon heads have the boss bars — seven stacked SIGNAL arrows
+            // on top of that is pure clutter.
+            if (ev.isDragonHead) continue;
             const screenX = ev.worldX * ws + offX;
             const screenY = ev.worldY * ws + offY;
 
@@ -6879,7 +6982,9 @@ export class PlayingState {
         const seconds = Math.floor(this.trueTotalTime % 60);
         const timeStr = `${minutes}:${seconds.toString().padStart(2, '0')}`;
 
-        ctx.fillText(timeStr, cx, top + 10 * hudScale);
+        // The dragon's seven head bars own the top strip — sit below them.
+        const barsPad = (this.dragonEvent && this.dragonEvent.barsAlpha > 0.01) ? 14 * hudScale : 0;
+        ctx.fillText(timeStr, cx, top + 10 * hudScale + barsPad);
         ctx.restore();
     }
 
@@ -9388,7 +9493,8 @@ export class PlayingState {
             'Seraph': Seraph,
             'Wheels': Wheels,
             'Hive': Hive,
-            'Carcosa': Carcosa
+            'Carcosa': Carcosa,
+            'Dragon': Dragon
         };
         this.events = [];
         for (const evData of (snap.events || [])) {
@@ -9511,17 +9617,26 @@ export class PlayingState {
         }
 
         // Post-Yellow One glow: re-aim at the lobby's live chain boss — the
-        // Seraph first, then the Wheels, then the Hive.
+        // Seraph, then the Wheels, then the Hive, then Carcosa, then (in red)
+        // the Dragon.
         {
             const seraphEv = this.events.find(ev => ev instanceof Seraph);
             const wheelsEv = this.events.find(ev => ev instanceof Wheels);
             const hiveEv = this.events.find(ev => ev instanceof Hive);
+            const carcosaEv = this.events.find(ev => ev instanceof Carcosa);
+            const dragonEv = this.events.find(ev => ev instanceof Dragon);
+            this.player.glowRed = false;
             if (this.player.hasYellowGlow && seraphEv && !seraphEv.isFinished) {
                 this.player.yellowGlowTarget = { x: seraphEv.worldX, y: seraphEv.worldY };
             } else if (this.player.hasYellowGlow && wheelsEv && !wheelsEv.isFinished) {
                 this.player.yellowGlowTarget = { x: wheelsEv.worldX, y: wheelsEv.worldY };
             } else if (this.player.hasYellowGlow && hiveEv && !hiveEv.isFinished) {
                 this.player.yellowGlowTarget = { x: hiveEv.worldX, y: hiveEv.worldY };
+            } else if (this.player.hasYellowGlow && carcosaEv && !carcosaEv.isFinished) {
+                this.player.yellowGlowTarget = { x: carcosaEv.worldX, y: carcosaEv.worldY };
+            } else if (this.player.hasYellowGlow && dragonEv && !dragonEv.isFinished) {
+                this.player.glowRed = true;
+                this.player.yellowGlowTarget = { x: dragonEv.worldX, y: dragonEv.worldY };
             }
         }
 

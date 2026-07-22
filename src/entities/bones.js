@@ -1045,10 +1045,9 @@ export class Carcosa {
             // Hold the silence a beat longer so the trumpets ring alone —
             // _tickMusicRestore hands the music back when this runs out.
             this._musicRestoreDelay = 2.5;
-            // End of this hunt: the glow points home again.
-            for (const body of state.getPlayerBodies ? state.getPlayerBodies() : [state.player]) {
-                if (body && body.hasYellowGlow) body.yellowGlowTarget = { x: 0, y: 0 };
-            }
+            // The bones were not the end. The glow turns RED and swings onto
+            // the dragon's summoning ground — the final hunt.
+            if (state._spawnDragonAfterCarcosa) state._spawnDragonAfterCarcosa();
         }
         this.state = CARCOSA_STATE.FINISHED;
         this.isFinished = true;

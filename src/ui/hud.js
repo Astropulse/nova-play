@@ -24,6 +24,68 @@ export class HUD {
         this.expGlowCtx = this.expGlowCanvas.getContext('2d');
     }
 
+    // The dragon fight is the ONLY fight with boss health bars: seven slim
+    // flat bars side-by-side at the top of the screen, one per head, all the
+    // same red, each with its head's name above it. A shattered head's bar
+    // goes dark and refills as a grey reform-countdown sweep — the 15-second
+    // clock, readable at a glance. A dying head's bar strobes out. Flat
+    // pixel-art: solid fills, hard edges, no gradients.
+    drawDragonBars(ctx, dragon) {
+        const g = this.game;
+        const hs = g.hudScale;
+        const heads = dragon.heads;
+        if (!heads || !heads.length) return;
+
+        const gap = 2 * hs;
+        const barH = 5 * hs;
+        const totalW = Math.min(g.width * 0.8, heads.length * 52 * hs);
+        const barW = Math.floor((totalW - gap * (heads.length - 1)) / heads.length);
+        const x0 = Math.floor((g.width - (barW * heads.length + gap * (heads.length - 1))) / 2);
+        const labelH = 5 * hs;
+        const y = Math.floor(6 * hs) + labelH;
+
+        ctx.save();
+        ctx.globalAlpha = dragon.barsAlpha;
+        ctx.font = `${4 * hs}px Astro4x`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'alphabetic';
+        for (let i = 0; i < heads.length; i++) {
+            const h = heads[i];
+            const x = x0 + i * (barW + gap);
+            const down = h.state === 'shattered' || h.state === 'dead' || h.state === 'dying';
+
+            // Name label — dimmed while the head is down.
+            ctx.fillStyle = down ? '#5a4444' : '#c8b8b8';
+            ctx.fillText(h.displayName, x + barW / 2, y - 2 * hs, barW);
+
+            // Backing + border (flat, hard-edged)
+            ctx.fillStyle = '#000000';
+            ctx.fillRect(x - hs, y - hs, barW + hs * 2, barH + hs * 2);
+            ctx.fillStyle = '#26090b';
+            ctx.fillRect(x, y, barW, barH);
+
+            if (h.state === 'shattered') {
+                // Reform sweep: dark grey fill growing toward the revival.
+                const p = Math.max(0, Math.min(1, h.shatterTimer / 15.0));
+                ctx.fillStyle = '#3a3a3a';
+                ctx.fillRect(x, y, Math.floor(barW * p), barH);
+            } else if (h.state === 'dead') {
+                // Victory — the bar stays a dead socket.
+            } else if (h.state === 'dying') {
+                // Strobing out with the hull.
+                if (Math.floor((h.dyingT || 0) * 18) % 2 === 0) {
+                    ctx.fillStyle = '#ffffff';
+                    ctx.fillRect(x, y, barW, barH);
+                }
+            } else {
+                const pct = Math.max(0, Math.min(1, h.health / h.maxHealth));
+                ctx.fillStyle = h._hpFlash > 0 ? '#ffffff' : '#cc2222';
+                ctx.fillRect(x, y, Math.max(pct > 0 ? hs : 0, Math.floor(barW * pct)), barH);
+            }
+        }
+        ctx.restore();
+    }
+
     // vp (optional {x,y,w,h}) = a split-screen pane. The HUD then lays itself out
     // for the pane's ACTUAL size — corners anchored to the pane, scale derived
     // from the pane's height — i.e. as if the pane were the whole screen (NOT a

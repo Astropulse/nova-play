@@ -378,6 +378,7 @@ export class DevConsole {
             else if (type === 'wheels' && name.includes('wheels')) targetEvent = ev;
             else if (type === 'hive' && name.includes('hive')) targetEvent = ev;
             else if ((type === 'bones' || type === 'carcosa') && name.includes('carcosa')) targetEvent = ev;
+            else if (type === 'dragon' && name === 'dragon') targetEvent = ev;
         }
 
         if (targetEvent) {
@@ -489,6 +490,40 @@ export class DevConsole {
                     hive.revealed = true;
                     state.events.push(hive);
                     console.log(`Hive spawned at ${Math.floor(hive.worldX)}, ${Math.floor(hive.worldY)}`);
+                });
+            } else if (['deception', 'accusation', 'murder', 'blasphemy', 'economic', 'economic_control', 'worship', 'false_worship', 'persecution'].includes(bossId)) {
+                // Solo dragon head: one head as a standalone boss (per-head
+                // playtest harness — always on duty, no reform, shatter = kill).
+                const key = bossId === 'economic' ? 'economic_control'
+                    : bossId === 'worship' ? 'false_worship' : bossId;
+                import('../entities/dragon.js').then(({ Dragon }) => {
+                    const angle = Math.random() * Math.PI * 2;
+                    const dist = 1400;
+                    const d = Dragon.spawnSolo(this.game, state, key,
+                        state.player.worldX + Math.cos(angle) * dist,
+                        state.player.worldY + Math.sin(angle) * dist);
+                    if (d) console.log(`Solo head '${key}' spawned (standalone boss harness)`);
+                    else console.log(`Unknown head '${key}'`);
+                });
+            } else if (bossId === 'dragon') {
+                // Final boss: the summoning ground spawns close so the arrival
+                // cinematic triggers on a short flight toward the red signal.
+                import('../entities/dragon.js').then(({ Dragon }) => {
+                    const angle = Math.random() * Math.PI * 2;
+                    const dist = 2600;
+                    const dragon = new Dragon(
+                        this.game,
+                        state.player.worldX + Math.cos(angle) * dist,
+                        state.player.worldY + Math.sin(angle) * dist
+                    );
+                    dragon.revealed = true;
+                    state.events.push(dragon);
+                    state.dragonEvent = dragon;
+                    if (state.player.hasYellowGlow) {
+                        state.player.glowRed = true;
+                        state.player.yellowGlowTarget = { x: dragon.worldX, y: dragon.worldY };
+                    }
+                    console.log(`Dragon site at ${Math.floor(dragon.worldX)}, ${Math.floor(dragon.worldY)} — fly to it to begin the end`);
                 });
             } else if (bossId === 'bones' || bossId === 'carcosa') {
                 // Event-based boss: Carcosa + its whole bone belt. Spawned far

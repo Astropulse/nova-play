@@ -283,6 +283,7 @@ export class Game {
         this.sounds.registerBossMusic('Wheels Within Wheels', 'Assets/Sounds/Songs/Boss/Wheels Within Wheels.mp3');
         this.sounds.registerBossMusic('Pit of Locusts', 'Assets/Sounds/Songs/Boss/Pit of Locusts.mp3');
         this.sounds.registerBossMusic('Starfield of Bones', 'Assets/Sounds/Songs/Boss/Starfield of Bones.mp3');
+        this.sounds.registerBossMusic('Consuming Dragon', 'Assets/Sounds/Songs/Boss/Consuming Dragon.mp3');
 
         this.sounds.registerTitleMusic('Assets/Sounds/Songs/Title/NOVA.mp3');
         this.sounds.registerGameOverMusic('Assets/Sounds/Songs/Game Over/Sendoff.mp3');
@@ -949,6 +950,13 @@ export class Game {
             'bone_1_reanimate': 'Assets/Ships/Bone/bone_1_reanimate.gif',
             'bone_2_reanimate': 'Assets/Ships/Bone/bone_2_reanimate.gif',
             'bone_3_reanimate': 'Assets/Ships/Bone/bone_3_reanimate.gif',
+            'dragon_deception': 'Assets/Ships/Dragon/deception.png',
+            'dragon_accusation': 'Assets/Ships/Dragon/accusation.png',
+            'dragon_murder': 'Assets/Ships/Dragon/murder.png',
+            'dragon_blasphemy': 'Assets/Ships/Dragon/blasphemy.png',
+            'dragon_economic_control': 'Assets/Ships/Dragon/economic_control.png',
+            'dragon_false_worship': 'Assets/Ships/Dragon/false_worship.png',
+            'dragon_persecution': 'Assets/Ships/Dragon/persecution.png',
             'locust_0': 'Assets/Ships/Swarm/locust_0.png',
             'locust_1': 'Assets/Ships/Swarm/locust_1.png',
             'locust_2': 'Assets/Ships/Swarm/locust_2.png',
