@@ -147,7 +147,9 @@ export class Wheels {
 
     _hurt(body, dmg, x, y) {
         if (this.allyMode) {
-            if (body && body.hit) body.hit(dmg);
+            // Dueling a head, the Wheels grind at double weight — the angels
+            // are executioners, not decoration.
+            if (body && body.hit) body.hit(dmg * 2);
             return;
         }
         const state = this.game.currentState;
@@ -855,12 +857,16 @@ export class Wheels {
                     }
                 }
                 // The chain goes on: somewhere out in the dark, something is
-                // building a nest. The glow swings onto the Hive.
-                if (state._spawnHiveAfterWheels) {
-                    state._spawnHiveAfterWheels();
-                } else {
-                    for (const body of state.getPlayerBodies ? state.getPlayerBodies() : [state.player]) {
-                        if (body && body.hasYellowGlow) body.yellowGlowTarget = { x: 0, y: 0 };
+                // building a nest. The glow swings onto the Hive. (Post-dragon
+                // ECHO Wheels are relics, not chain links — their deaths touch
+                // neither the chain nor the glow.)
+                if (!this.isEcho) {
+                    if (state._spawnHiveAfterWheels) {
+                        state._spawnHiveAfterWheels();
+                    } else {
+                        for (const body of state.getPlayerBodies ? state.getPlayerBodies() : [state.player]) {
+                            if (body && body.hasYellowGlow) body.yellowGlowTarget = { x: 0, y: 0 };
+                        }
                     }
                 }
                 if (state._onEntityDestroyed) state._onEntityDestroyed(this);

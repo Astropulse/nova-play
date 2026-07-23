@@ -157,7 +157,9 @@ export class Seraph {
 
     _hurt(body, dmg, x, y) {
         if (this.allyMode) {
-            if (body && body.hit) body.hit(dmg);
+            // Angelic wrath bites: dueling a head, the Seraph's blows land
+            // at double weight — the angels are executioners, not decoration.
+            if (body && body.hit) body.hit(dmg * 2);
             return;
         }
         const state = this.game.currentState;
@@ -1239,12 +1241,16 @@ export class Seraph {
                     }
                 }
                 // The chain goes on: the Wheels start turning somewhere out in
-                // the dark, and the yellow glow swings onto them.
-                if (state._spawnWheelsAfterSeraph) {
-                    state._spawnWheelsAfterSeraph();
-                } else {
-                    for (const body of state.getPlayerBodies ? state.getPlayerBodies() : [state.player]) {
-                        if (body && body.hasYellowGlow) body.yellowGlowTarget = { x: 0, y: 0 };
+                // the dark, and the yellow glow swings onto them. (Post-dragon
+                // ECHO Seraphs are relics, not chain links — their deaths
+                // touch neither the chain nor the glow.)
+                if (!this.isEcho) {
+                    if (state._spawnWheelsAfterSeraph) {
+                        state._spawnWheelsAfterSeraph();
+                    } else {
+                        for (const body of state.getPlayerBodies ? state.getPlayerBodies() : [state.player]) {
+                            if (body && body.hasYellowGlow) body.yellowGlowTarget = { x: 0, y: 0 };
+                        }
                     }
                 }
                 if (state._onEntityDestroyed) state._onEntityDestroyed(this);

@@ -242,6 +242,7 @@ export class HUD {
         this._drawPlayerRoster(ctx, margin);
 
         this._drawExpBar(ctx, cw, ch);
+        this._drawSeizedUpgrades(ctx, cw, ch);
 
         ctx.restore();
 
@@ -578,6 +579,67 @@ export class HUD {
         ctx.drawImage(img.canvas || img, rx, ry, rw, rh);
     }
 
+    // Upgrades repossessed by Economic Control: each item's icon sits above
+    // the exp bar, red-tinted with a flashing red -$ brand — unmissable.
+    // Multiple seizures spread side by side from the center.
+    _drawSeizedUpgrades(ctx, cw, ch) {
+        const p = this.player;
+        const list = p && p.seizedUpgrades;
+        if (!list || !list.length) return;
+        const hs = this._hudScale;
+        const time = (this.game.currentState && this.game.currentState.trueTotalTime) || 0;
+        const drawH = 16 * hs;
+        const gap = 8 * hs;
+
+        // Measure first so the row stays centered as items come and go.
+        const entries = [];
+        let totalW = 0;
+        for (const s of list) {
+            const frameAsset = this.game.getAnimationFrame(s.item.assetKey);
+            const frame = frameAsset ? (frameAsset.canvas || frameAsset) : null;
+            const w = frame ? drawH * (frame.width / frame.height) : drawH;
+            entries.push({ s, frame, w });
+            totalW += w;
+        }
+        totalW += gap * (entries.length - 1);
+
+        let x = cw / 2 - totalW / 2;
+        const y = (this._expBarTop ?? (ch - 20 * hs)) - drawH - 12 * hs;
+        const flash = 0.7 + 0.3 * Math.sin(time * 10);
+        ctx.save();
+        ctx.font = `${8 * hs}px Astro4x`;
+        ctx.textAlign = 'center';
+        for (const e of entries) {
+            ctx.globalAlpha = flash;
+            if (e.frame) ctx.drawImage(this._seizedTint(e.frame, e.s.item.assetKey), x, y, e.w, drawH);
+            ctx.fillStyle = '#ff3333';
+            ctx.fillText('-$', x + e.w / 2, y - 3 * hs);
+            x += e.w + gap;
+        }
+        ctx.restore();
+        ctx.textAlign = 'left';
+    }
+
+    // Red-tinted copy of an item icon (redrawn into a cached canvas each call
+    // so animated icons stay live; no per-frame allocation).
+    _seizedTint(frame, key) {
+        this._seizedTintCache = this._seizedTintCache || new Map();
+        let c = this._seizedTintCache.get(key);
+        if (!c || c.width !== frame.width || c.height !== frame.height) {
+            c = document.createElement('canvas');
+            c.width = frame.width; c.height = frame.height;
+            this._seizedTintCache.set(key, c);
+        }
+        const tc = c.getContext('2d');
+        tc.clearRect(0, 0, c.width, c.height);
+        tc.drawImage(frame, 0, 0);
+        tc.globalCompositeOperation = 'source-atop';
+        tc.fillStyle = 'rgba(255, 40, 40, 0.55)';
+        tc.fillRect(0, 0, c.width, c.height);
+        tc.globalCompositeOperation = 'source-over';
+        return c;
+    }
+
     _drawExpBar(ctx, cw, ch) {
         const p = this.player;
         const hudScale = this._hudScale;
@@ -595,6 +657,7 @@ export class HUD {
         const barH = imgH * hudScale;
         const x = (cw - barW) / 2;
         const y = ch - barH - hudScale * 4;
+        this._expBarTop = y;   // seized-upgrade icons anchor above the bar
 
         // Draw empty background
         this.draw3Slice(ctx, emptyAsset, x, y, barW, barH);

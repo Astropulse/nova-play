@@ -62,7 +62,10 @@ const ST = { WINDUP: 1, RAM: 2, TARGETING: 4, DYING: 8, PHASE2: 16, INTRO: 32 };
 const LOCAL_SCRIPTED_EVENTS = new Set(['YellowOne', 'KnowledgeEvent', 'Seraph', 'Wheels', 'Hive', 'Carcosa',
     // The final boss: the controller and all seven heads run per-machine.
     'Dragon', 'HeadDeception', 'HeadAccusation', 'HeadMurder', 'HeadBlasphemy',
-    'HeadEconomicControl', 'HeadFalseWorship', 'HeadPersecution']);
+    'HeadEconomicControl', 'HeadFalseWorship', 'HeadPersecution',
+    // False Worship's graven images — head-owned event entities, locally
+    // simulated on every machine like the heads that raise them.
+    'GravenIdol']);
 
 // Some events expose worldX/worldY as getter-only computed properties
 // (FracturedStationEvent derives them from its station list). Position sync

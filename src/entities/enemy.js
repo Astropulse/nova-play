@@ -1384,6 +1384,23 @@ export class EnemySpawner {
     // plain Enemy. `chanceMult` boosts the special rate for wave spawns. Upgrade
     // rolls are gated to plain enemies (specials are already distinct).
     _makeEnemy(x, y, scale, rand, player, chanceMult = 1) {
+        // POST-DRAGON: once the seven-headed dragon has fallen, the world's
+        // gloves come off — ANY boss can walk in with the regular spawns at a
+        // low chance (wave bosses, the Swarm Mother, solo dragon heads, echo
+        // angels). PlayingState owns the menagerie; event-species bosses go
+        // into state.events there and we return null (call sites skip it).
+        const state = this.game.currentState;
+        if (state && state.dragonSlain && state.dragonSlain() && rand() < 0.015
+            && state.spawnPostDragonBoss) {
+            const boss = state.spawnPostDragonBoss(x, y, scale, rand);
+            if (boss === 'event') return null;
+            if (boss) {
+                const resolved = resolveSpawnOverlap(this.game, boss.worldX, boss.worldY, boss.radius);
+                boss.worldX = resolved.x;
+                boss.worldY = resolved.y;
+                return boss;
+            }
+        }
         const SpecialCls = this._rollSpecialClass(rand, chanceMult);
         if (SpecialCls) {
             const en = new SpecialCls(this.game, x, y, scale);
@@ -1456,6 +1473,7 @@ export class EnemySpawner {
                     const angle = rand() * Math.PI * 2;
                     const dist = (1800 + rand() * 640) * fov;
                     const en = this._makeEnemy(playerX + Math.cos(angle) * dist, playerY + Math.sin(angle) * dist, this.waveSpawnScale, rand, player, 1.3);
+                    if (!en) continue;   // post-dragon event-species boss — spawned via state.events
                     const resolved = resolveSpawnOverlap(this.game, en.worldX, en.worldY, en.radius);
                     en.worldX = resolved.x;
                     en.worldY = resolved.y;
@@ -1498,10 +1516,12 @@ export class EnemySpawner {
                 const fov = (this.game.currentState && this.game.currentState.currentFovMult) || 1.0;
                 const dist = (1400 + rand() * 600) * fov;
                 const en = this._makeEnemy(playerX + Math.cos(angle) * dist, playerY + Math.sin(angle) * dist, difficultyScale, rand, player);
-                const resolved = resolveSpawnOverlap(this.game, en.worldX, en.worldY, en.radius);
-                en.worldX = resolved.x;
-                en.worldY = resolved.y;
-                spawned.push(en);
+                if (en) {
+                    const resolved = resolveSpawnOverlap(this.game, en.worldX, en.worldY, en.radius);
+                    en.worldX = resolved.x;
+                    en.worldY = resolved.y;
+                    spawned.push(en);
+                }
             }
         }
 
@@ -1530,6 +1550,16 @@ export class EnemySpawner {
 
             // Seeded so boss waves (type + placement) are reproducible.
             const rand = () => this.game.rng ? this.game.rng.enemies.next() : Math.random();
+
+            // A FRAGMENT OF THE DRAGON: some boss waves, one of the seven
+            // heads hunts alone instead — a chance to learn its teeth long
+            // before the end. (PlayingState owns the spawn: heads are events,
+            // not enemies, and the state holds the guards.)
+            const state = this.game.currentState;
+            if (state && state.tryDragonFragment && state.tryDragonFragment(rand)) {
+                this.lastBossType = 'DragonFragment';
+                return [];
+            }
 
             // Spawn boss at a distance
             const angle = rand() * Math.PI * 2;

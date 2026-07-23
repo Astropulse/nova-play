@@ -357,6 +357,29 @@ export class Player {
     }
 
     update(dt) {
+        // Repossessed upgrades (Economic Control's charge) return on their own
+        // clocks — the items never leave the grid, their effects just lapse.
+        if (this.seizedUpgrades && this.seizedUpgrades.length) {
+            let returned = false;
+            for (let i = this.seizedUpgrades.length - 1; i >= 0; i--) {
+                const s = this.seizedUpgrades[i];
+                s.t -= dt;
+                if (s.t <= 0) {
+                    this.seizedUpgrades.splice(i, 1);
+                    returned = true;
+                    const st = this.game.currentState;
+                    if (st && st.spawnFloatingText) {
+                        st.spawnFloatingText(this.worldX, this.worldY - 30,
+                            'RETURNED: ' + (s.item.name || s.item.id).toUpperCase(), '#ffcc44');
+                    }
+                }
+            }
+            if (returned) {
+                const st = this.game.currentState;
+                if (st && st._onInventoryChanged) st._onInventoryChanged(this);
+            }
+        }
+
         // controlsEnabled === false → run physics/timers but ignore all input
         // (multiplayer: a menu/shop/trade overlay is open while the world runs).
         const controls = this.controlsEnabled !== false;

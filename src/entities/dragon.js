@@ -1,4 +1,4 @@
-import { Scrap, ExpOrb, ItemPickup, ProceduralDebris, Asteroid, getCachedShatter } from './asteroid.js';
+import { Scrap, ExpOrb, ItemPickup, ProceduralDebris, Asteroid, getCachedShatter, FractureModel, HullFracture, ejectChipDebris } from './asteroid.js';
 import { Seraph } from './seraph.js';
 import { Wheels } from './wheels.js';
 import { UPGRADES } from '../data/upgrades.js';
@@ -244,6 +244,13 @@ export class DragonHead {
         // grey 0s, no damage — find the window.
         if (mult <= 0) { this._immuneFeedback(); return false; }
         damage *= mult;
+        // Shield-style absorbers soak BEFORE the hull (Economic Control's
+        // scrap armor): the absorber does its own grey feedback; only the
+        // remainder wounds the ship.
+        if (this._shieldAbsorb) {
+            damage = this._shieldAbsorb(damage);
+            if (damage <= 0) return false;
+        }
         this.health -= damage;
         this._hpFlash = 0.25;
         this._hitFlash = 0.08;
@@ -799,7 +806,11 @@ export class DragonHead {
                 // (_dashBonus: execution-tier moves hit even harder.)
                 const dmg = Math.min(110, (dashing ? 38 + 5 * diff + (this._dashBonus || 0) : 18 + 3 * diff));
                 this._hurt(body, dmg, this.worldX, this.worldY);
-                if (dashing) this.dashHitSet.add(body);
+                if (dashing) {
+                    this.dashHitSet.add(body);
+                    // Landed-dash hook (Economic Control's repossession).
+                    if (this._onDashContact) this._onDashContact(body);
+                }
                 this._touchCd.set(body, 0.9);
                 const state = this.game.currentState;
                 if (state && state._applyKnockback) {
@@ -2141,6 +2152,21 @@ export class HeadAccusation extends DragonHead {
         }
         const state = this.game.currentState;
 
+        // Withdrawn utility (group fight): the accuser still ACCUSES from
+        // the dark — a rare long-range MARK, the pack-wide homing debuff,
+        // while the player fights whoever's actually on sortie.
+        if (this.role === 'withdrawn' && this.state === 'fight' && !this.dragon.soloMode) {
+            this._farMarkT = (this._farMarkT ?? 12) - dt;
+            if (this._farMarkT <= 0) {
+                this._farMarkT = 16 + Math.random() * 6;
+                if (!this.dragon.markActive && state && state.player && !state.player.dead
+                    && Math.hypot(state.player.worldX - this.worldX, state.player.worldY - this.worldY) < 3200) {
+                    this.dragon.applyMark(state.player, this);
+                    this._ring({ color: this.accent, maxR: 300, dur: 0.6, width: 4 });
+                }
+            }
+        }
+
         // ── THE STONE CURTAIN — gathered cover that eats your shots ──────
         if (this.state === 'fight') {
             if (this.stones.length < 5) {
@@ -2830,34 +2856,178 @@ export class HeadMurder extends DragonHead {
 }
 
 // ── BLASPHEMY — a mouth speaking great things ────────────────────────────────
-// Counterfeits the holy: false trumpet blasts of dark gold, fake exp-orb
-// clusters that detonate, and a stolen imitation of the Seraph's fire beam.
+// THE PROFANER. It takes holy things and makes them profane: it wears a stolen
+// DESECRATED HALO as physical cover (blackened arc segments that block your
+// shots — shoot the gaps or break the arcs; the halo spreads open in mock
+// reverence while it performs its great rites, exposing it), calls BLACK
+// FANFARES (corrupted victory trumpets that swoop in like the blessing and
+// blast), sings the FALSE HYMN (a golden blessing-glow on YOUR ship that
+// collapses into converging darkness — when the light shines on you, MOVE),
+// scatters counterfeit exp-orb communion that lures and detonates, and fires
+// the Seraph's own beam, stolen. No immunity anywhere — its cover is a real
+// object with real hit points.
 export class HeadBlasphemy extends DragonHead {
     constructor(...a) {
         super(...a);
-        this.fakeOrbs = [];   // [{x,y,t,vx,vy}]
-        this.beam = null;     // {angle, t, aimDur, fired}
+        this.fakeOrbs = [];   // [{x,y,t}] counterfeit communion
+        this.halo = [
+            { off: 0, hp: 1, regrowT: 0 },
+            { off: (Math.PI * 2) / 3, hp: 1, regrowT: 0 },
+            { off: (Math.PI * 4) / 3, hp: 1, regrowT: 0 },
+        ];
+        this._haloAng = Math.random() * Math.PI * 2;
+        this._haloDir = Math.random() < 0.5 ? 1 : -1;
+        this._haloFlipT = 4 + Math.random() * 3;
+        this._haloR = 165;
+        this._haloInit = false;
+        this.shrines = [];            // [{x,y,t,life,triggered,tetherT,body,boltT}]
+        this._tetherGrace = new Map(); // body → seconds of immunity after a bind
     }
 
-    // Identity: THE FALSE PROPHET IS ARMORED — ×0.4 while its mouth is shut,
-    // ×1.6 while the core is lit (casting or charging the beam). You hit it
-    // mid-blasphemy or you barely hit it at all.
-    _damageMult() {
-        return (this.isChargingBeam || this.attack) ? 1.6 : 0.4;
+    _frantic() { return this.health < this.maxHealth * 0.5; }
+    _arcMaxHp() { return 90 + 25 * this._diff(); }
+    // The halo spreads open in mock reverence during the great rites — the
+    // window is tied to its own aggression, not a timer.
+    _haloSpread() { return this.isChargingBeam || (this.attack && this.attack.type !== 'volley'); }
+    _arcHalf() { return this._haloSpread() ? 0.38 : 0.63; }   // radians half-width
+
+    // ── the desecrated halo: physical cover, not immunity ───────────────
+    _updateHalo(dt) {
+        if (!this._haloInit) {
+            this._haloInit = true;
+            for (const arc of this.halo) arc.hp = this._arcMaxHp();
+        }
+        const tR = this._haloSpread() ? 260 : 165;
+        this._haloR += (tR - this._haloR) * Math.min(1, dt * 6);
+        this._haloAng += dt * 0.85 * this._haloDir;
+        this._haloFlipT -= dt;
+        if (this._haloFlipT <= 0) {
+            this._haloFlipT = 4 + Math.random() * 3;
+            this._haloDir *= -1;
+            this._ring({ color: '#8a6a1a', maxR: this._haloR + 40, dur: 0.35, width: 3 });
+        }
+        for (const arc of this.halo) {
+            if (arc.regrowT > 0) {
+                arc.regrowT -= dt;
+                if (arc.regrowT <= 0) {
+                    arc.hp = this._arcMaxHp();
+                    // The re-forging rite: dark flash where the arc returns.
+                    this._ring({ color: '#2a1a08', maxR: 200, dur: 0.5, width: 6 });
+                    this._ring({ color: '#c9a032', maxR: 140, dur: 0.4, width: 3 });
+                    this._sfx('shield', 0.5);
+                }
+            }
+        }
+        // Block friendly shots that cross a living arc.
+        const state = this.game.currentState;
+        if (!state || this.state !== 'fight') return;
+        const half = this._arcHalf();
+        for (const proj of state.projectiles) {
+            if (!proj.alive || !proj.friendly) continue;
+            const dx = proj.worldX - this.worldX, dy = proj.worldY - this.worldY;
+            const d = Math.hypot(dx, dy);
+            if (Math.abs(d - this._haloR) > 42) continue;
+            const pAng = Math.atan2(dy, dx);
+            for (const arc of this.halo) {
+                if (arc.regrowT > 0) continue;
+                let adiff = pAng - (this._haloAng + arc.off);
+                while (adiff > Math.PI) adiff -= Math.PI * 2;
+                while (adiff < -Math.PI) adiff += Math.PI * 2;
+                if (Math.abs(adiff) > half) continue;
+                proj.alive = false;
+                arc.hp -= proj.damage || 10;
+                const px = this.worldX + Math.cos(pAng) * this._haloR;
+                const py = this.worldY + Math.sin(pAng) * this._haloR;
+                this._sparks(px, py, 4, { color: '#c9a032', speedMin: 60, speedMax: 220 });
+                if (arc.hp <= 0) {
+                    arc.regrowT = 7.0;
+                    this._sparks(px, py, 16, { spread: Math.PI * 2, color: '#8a6a1a', speedMin: 100, speedMax: 380 });
+                    this.game.sounds.play('shield_break', { volume: 0.5, x: px, y: py });
+                } else {
+                    this.game.sounds.play('hit', { volume: 0.25, x: px, y: py });
+                }
+                break;
+            }
+        }
     }
 
-    // The counterfeiter's clocks, all running while it holds its broadside
-    // (the Starcore combat loop): the charged NOSE BEAM (charge 1.4s with a
-    // live targeting line, then a tracked mega-beam — the ship must point at
-    // you), the false trumpet (a committed stop-and-blast), and counterfeit
-    // gifts scattered on the move.
+    // ── consecrated ground: trespass on holy ground = BOUND to the altar ─
+    _updateShrines(dt) {
+        for (const [body, cd] of this._tetherGrace) {
+            if (cd > 0) this._tetherGrace.set(body, cd - dt);
+        }
+        if (!this.shrines.length) return;
+        const diff = this._diff();
+        let write = 0;
+        for (const s of this.shrines) {
+            s.t += dt;
+            if (s.triggered) {
+                // THE BINDING: hauled toward the altar, restrained but not
+                // frozen — and the profaner unloads on the captive.
+                s.tetherT -= dt;
+                const body = s.body;
+                if (body && !body.dead && s.tetherT > 0) {
+                    const dx = s.x - body.worldX, dy = s.y - body.worldY;
+                    const d = Math.hypot(dx, dy) || 1;
+                    body.vx = (body.vx || 0) * Math.pow(0.90, dt * 60) + (dx / d) * 900 * dt;
+                    body.vy = (body.vy || 0) * Math.pow(0.90, dt * 60) + (dy / d) * 900 * dt;
+                    s.boltT -= dt;
+                    if (s.boltT <= 0 && s.bolts > 0) {
+                        s.boltT = 0.18;
+                        s.bolts--;
+                        this._bolt(this.worldX, this.worldY,
+                            Math.atan2(body.worldY - this.worldY, body.worldX - this.worldX) + (Math.random() - 0.5) * 0.06,
+                            860, 11 + 2 * diff, 'yellow_laser_ball', 2.2);
+                    }
+                }
+                if (s.tetherT <= 0) {
+                    if (body) this._tetherGrace.set(body, 1.5);
+                    continue;   // the altar is spent
+                }
+                this.shrines[write++] = s;
+                continue;
+            }
+            if (s.t >= s.life) continue;   // unclaimed ground lapses
+            // Armed after a short fade-in — it can never trap you at cast.
+            if (s.t > 0.5) {
+                for (const body of this._bodies()) {
+                    if ((this._tetherGrace.get(body) || 0) > 0) continue;
+                    if (Math.hypot(body.worldX - s.x, body.worldY - s.y) < 240) {
+                        s.triggered = true;
+                        s.tetherT = 1.3;
+                        s.body = body;
+                        s.bolts = 6;
+                        s.boltT = 0.1;
+                        this._hurt(body, 10 + 2 * diff, s.x, s.y);
+                        const state = this.game.currentState;
+                        if (state && state.spawnFloatingText) {
+                            state.spawnFloatingText(body.worldX, body.worldY - 36, 'BOUND', '#c9a032');
+                        }
+                        if (state && state.cinematics) {
+                            state.cinematics.spawnRing(s.x, s.y, { color: '#2a1a08', maxR: 280, dur: 0.5, width: 7 });
+                            state.cinematics.spawnRing(s.x, s.y, { color: GOLD, maxR: 200, dur: 0.4, width: 4 });
+                        }
+                        this.game.sounds.play('shield_break', { volume: 0.6, x: s.x, y: s.y });
+                        break;
+                    }
+                }
+            }
+            this.shrines[write++] = s;
+        }
+        this.shrines.length = write;
+    }
+
+    // The profaner's clocks, run from a nose-first standoff orbit: the
+    // stolen beam, the black fanfare, the false hymn, communion — and
+    // profane volleys so it is never, ever quiet.
     _updateWeapons(dt, tgt, dist, angleToTarget) {
         const rate = this._weaponRate();
         if (rate <= 0) return;
         const diff = this._diff();
         const inRange = this._inWeaponRange(dist);
+        const frantic = this._frantic() ? 1.3 : 1;
 
-        // Beam charge (Starcore _startBeamCharge/_updateBeamCharge shape).
+        // THE STOLEN BEAM (Starcore _startBeamCharge/_updateBeamCharge shape).
         if (this.isChargingBeam) {
             this.chargeTimer -= dt;
             this.targetAngle = angleToTarget;   // track hard while charging
@@ -2875,27 +3045,65 @@ export class HeadBlasphemy extends DragonHead {
         }
         if (this.attack) return;
 
-        this.beamTimer = (this.beamTimer ?? 4.5) - dt * rate;
+        this.beamTimer = (this.beamTimer ?? 4.0) - dt * rate * frantic;
         if (inRange && this.beamTimer <= 0) {
-            this.beamTimer = 6.5;
+            this.beamTimer = 5.5;
             this.isChargingBeam = true;
             this.chargeTimer = 1.4 * this._teleMult();
             this.game.sounds.play('railgun_target', { volume: 0.8, x: this.worldX, y: this.worldY });
             return;
         }
 
-        this.trumpetTimer = (this.trumpetTimer ?? 6.0) - dt * rate;
-        if (inRange && this.trumpetTimer <= 0) {
-            this.trumpetTimer = 12 + Math.random() * 5;   // a rare, marked event — not a jingle
-            this.attack = { type: 'falseTrumpet', timer: 0, dur: 0.7, ownsMove: true };
+        // BLACK FANFARE: the victory trumpets, corrupted and weaponized.
+        this.fanfareTimer = (this.fanfareTimer ?? 5.0) - dt * rate * frantic;
+        if (inRange && this.fanfareTimer <= 0) {
+            this.fanfareTimer = 8 + Math.random() * 3;
+            const n = this._frantic() ? 3 : 2;
+            const horns = [];
+            const base = Math.random() * Math.PI * 2;
+            for (let i = 0; i < n; i++) {
+                const ang = base + (i / n) * Math.PI * 2;
+                horns.push({
+                    x: tgt.worldX + Math.cos(ang) * 520,
+                    y: tgt.worldY + Math.sin(ang) * 520,
+                    ang, blasted: false
+                });
+            }
+            this.attack = { type: 'fanfare', timer: 0, dur: 0.85 * this._teleMult(), horns, ownsMove: true };
+            // It arrives sounding like the blessing — that's the lie.
+            const key = 'trumpet_' + (2 + Math.floor(Math.random() * 2));
+            this.game.sounds.play(key, { volume: 0.4, pitch: 0.78, x: tgt.worldX, y: tgt.worldY });
+            this.game.sounds.play(key, { volume: 0.28, pitch: 0.73, x: tgt.worldX, y: tgt.worldY });
             return;
         }
 
-        this.giftsTimer = (this.giftsTimer ?? 5.0) - dt * rate;
-        if (this.giftsTimer <= 0 && this.fakeOrbs.length < 6) {
-            this.giftsTimer = 7.0 + Math.random() * 2.5;
-            // Scattered on the move — no stop needed to seed a lie.
-            const n = 5;
+        // FALSE HYMN: the blessing-light lands on YOU — then inverts.
+        this.hymnTimer = (this.hymnTimer ?? 6.5) - dt * rate * frantic;
+        if (inRange && this.hymnTimer <= 0) {
+            this.hymnTimer = 7 + Math.random() * 3;
+            this.attack = {
+                type: 'hymn', timer: 0, dur: 0.6 * this._teleMult(),
+                cx: tgt.worldX, cy: tgt.worldY, locked: false, ownsMove: true
+            };
+            this._sfx('shield', 0.6);
+            return;
+        }
+
+        // CONSECRATED GROUND: it sanctifies patches of space — clearly
+        // marked. Fly into one and the altar takes you.
+        this.sanctifyTimer = (this.sanctifyTimer ?? 5.5) - dt * rate * frantic;
+        if (inRange && this.sanctifyTimer <= 0 && this.shrines.length < 3) {
+            this.sanctifyTimer = 6.5 + Math.random() * 2.5;
+            this.attack = { type: 'sanctify', timer: 0, dur: 0.5 * this._teleMult(), tgt, ownsMove: true };
+            this._sfx('click', 0.5);
+            return;
+        }
+
+        // PROFANE COMMUNION: counterfeit gifts, seeded on the move.
+        this.giftsTimer = (this.giftsTimer ?? 4.0) - dt * rate;
+        if (this.giftsTimer <= 0 && this.fakeOrbs.length < 8) {
+            this.giftsTimer = 5.5 + Math.random() * 2;
+            const n = this._frantic() ? 7 : 5;
             for (let i = 0; i < n; i++) {
                 const ang = Math.random() * Math.PI * 2;
                 const d = 200 + Math.random() * 380;
@@ -2907,49 +3115,133 @@ export class HeadBlasphemy extends DragonHead {
             }
             this._sfx('click', 0.4);
         }
+
+        // Profane volleys — constant pressure between the great rites.
+        this.volleyTimer = (this.volleyTimer ?? 1.0) - dt * rate;
+        if (inRange && this.volleyTimer <= 0) {
+            this.volleyTimer = 1.1 + Math.random() * 0.5;
+            for (let i = 0; i < 3; i++) {
+                this._bolt(this.worldX, this.worldY, angleToTarget + (i - 1) * 0.09 + (Math.random() - 0.5) * 0.04,
+                    720, 10 + 2 * diff, 'yellow_laser_ball', 2.8);
+            }
+            this._sfx('laser', 0.35);
+        }
     }
 
     _updateAttack(dt, player) {
         const a = this.attack;
         a.timer += dt;
         const diff = this._diff();
-        if (a.type === 'falseTrumpet') {
-            // A committed stop: the horned hulk brakes, swells, and blasts.
+
+        if (a.type === 'fanfare') {
+            // The horns hold their pose like the real blessing — then darken,
+            // shiver, and blast.
             this._telegraphTick(dt);
-            this.vx *= Math.pow(0.92, dt * 60); this.vy *= Math.pow(0.92, dt * 60);
-            this.worldX += this.vx * dt; this.worldY += this.vy * dt;
+            this._shipDrift(dt, player.worldX, player.worldY);
             if (a.timer >= a.dur) {
-                const n = 14 + Math.floor(diff * 2);
-                for (let i = 0; i < n; i++) {
-                    const ang = (i / n) * Math.PI * 2;
-                    this._bolt(this.worldX, this.worldY, ang, 300 + Math.random() * 120,
-                        13 + 3 * diff, 'yellow_laser_ball_big', 3.4);
+                for (const h of a.horns) {
+                    if (h.blasted) continue;
+                    h.blasted = true;
+                    const toP = Math.atan2(player.worldY - h.y, player.worldX - h.x);
+                    for (let i = 0; i < 5; i++) {
+                        this._bolt(h.x, h.y, toP + (i - 2) * 0.14, 500, 11 + 2 * diff, 'yellow_laser_ball_big', 3.0);
+                    }
+                    const state = this.game.currentState;
+                    if (state && state.cinematics) {
+                        state.cinematics.spawnRing(h.x, h.y, { color: '#a8842a', maxR: 200, dur: 0.5, width: 5 });
+                    }
                 }
-                // A horn gone WRONG: two detuned layers of the same blast,
-                // pitched flat against each other — corrupted brass.
-                const key = 'trumpet_' + (2 + Math.floor(Math.random() * 2)); // single blasts only
-                this.game.sounds.play(key, { volume: 0.45, pitch: 0.78, x: this.worldX, y: this.worldY });
-                this.game.sounds.play(key, { volume: 0.3, pitch: 0.73, x: this.worldX, y: this.worldY });
-                this._ring({ color: '#a8842a', maxR: 320, dur: 0.7, width: 6 });
-                this._ring({ color: '#2a1a08', maxR: 220, dur: 0.5, width: 8 });
-                this.game.camera.shake(1.4);
+                const key = 'trumpet_' + (2 + Math.floor(Math.random() * 2));
+                this.game.sounds.play(key, { volume: 0.5, pitch: 0.7, x: player.worldX, y: player.worldY });
+                this.game.camera.shake(1.5);
                 this.attack = null;
             }
+            return;
+        }
+
+        if (a.type === 'sanctify') {
+            // A short rite — then two patches of space near your path are
+            // declared holy ground. Marked plainly. Stay out.
+            this._telegraphTick(dt);
+            this._shipDrift(dt, player.worldX, player.worldY);
+            if (a.timer >= a.dur) {
+                const n = this._frantic() ? 3 - this.shrines.length : 2;
+                for (let i = 0; i < Math.max(1, n); i++) {
+                    const lead = 0.9 + i * 0.5;
+                    const ang = Math.random() * Math.PI * 2;
+                    this.shrines.push({
+                        x: player.worldX + (player.vx || 0) * lead + Math.cos(ang) * 260,
+                        y: player.worldY + (player.vy || 0) * lead + Math.sin(ang) * 260,
+                        t: 0, life: 7.0, triggered: false, tetherT: 0, body: null, boltT: 0
+                    });
+                }
+                this._sfx('shield', 0.6);
+                this.game.camera.shake(0.7);
+                this.attack = null;
+            }
+            return;
+        }
+
+        if (a.type === 'hymn') {
+            // The light tracks you briefly, then LOCKS — after that, the spot
+            // is consecrated in reverse. Get out of the glow.
+            this._telegraphTick(dt);
+            this._shipDrift(dt, player.worldX, player.worldY);
+            if (!a.locked) {
+                a.cx = player.worldX; a.cy = player.worldY;
+                if (a.timer >= a.dur * 0.5) a.locked = true;
+            }
+            if (a.timer >= a.dur) {
+                const n = 10 + Math.floor(diff) * 2;
+                for (let i = 0; i < n; i++) {
+                    const ang = (i / n) * Math.PI * 2;
+                    const px = a.cx + Math.cos(ang) * 430;
+                    const py = a.cy + Math.sin(ang) * 430;
+                    // Converging: blessed light collapsing inward.
+                    this._bolt(px, py, ang + Math.PI, 540, 12 + 3 * diff, 'yellow_laser_ball_big', 1.15);
+                }
+                const state = this.game.currentState;
+                if (state && state.cinematics) {
+                    state.cinematics.spawnRing(a.cx, a.cy, { color: '#2a1a08', maxR: 430, dur: 0.5, width: 8 });
+                    state.cinematics.spawnRing(a.cx, a.cy, { color: GOLD, maxR: 300, dur: 0.4, width: 4 });
+                }
+                this.game.sounds.play('ship_explode', { volume: 0.5, x: a.cx, y: a.cy });
+                this.game.camera.shake(1.3);
+                this.attack = null;
+            }
+            return;
         }
     }
 
     update(dt, player) {
         super.update(dt, player);
-        // Counterfeit gifts: pulse wrong, then detonate (or pop early if touched).
+        if (this.state === 'shattered' || this.state === 'dead') {
+            this.fakeOrbs.length = 0; this.shrines.length = 0;
+            return;
+        }
+        this._updateHalo(dt);
+        this._updateShrines(dt);
+        // Counterfeit communion: the gifts LURE — they drift toward you like
+        // real loot begging to be collected. Pulse wrong, then detonate.
         if (!this.fakeOrbs.length) return;
         const diff = this._diff();
         let write = 0;
         for (const o of this.fakeOrbs) {
             o.t += dt;
-            let boom = o.t > 2.6;
+            // The lure: a gentle magnet-drift toward the nearest pilot,
+            // mimicking real pickup behavior.
+            let near = null, nd = Infinity;
             for (const body of this._bodies()) {
-                if (Math.hypot(body.worldX - o.x, body.worldY - o.y) < 70) { boom = true; break; }
+                const d = Math.hypot(body.worldX - o.x, body.worldY - o.y);
+                if (d < nd) { nd = d; near = body; }
             }
+            if (near && nd < 700 && nd > 1) {
+                const pull = 60 + 40 * (1 - nd / 700);
+                o.x += ((near.worldX - o.x) / nd) * pull * dt;
+                o.y += ((near.worldY - o.y) / nd) * pull * dt;
+            }
+            let boom = o.t > 2.6;
+            if (near && nd < 70) boom = true;
             if (boom) {
                 for (let i = 0; i < 8; i++) {
                     this._bolt(o.x, o.y, (i / 8) * Math.PI * 2, 260, 11 + 2 * diff, 'yellow_laser_ball_big', 1.6);
@@ -2964,21 +3256,165 @@ export class HeadBlasphemy extends DragonHead {
         this.fakeOrbs.length = write;
     }
 
-    _drawExtras(ctx, camera) {
-        // (The stolen beam's targeting line + fired strip draw in the base —
-        // the same red_laser_beam art the Starcore uses.)
-        // Fake orbs — gold, but the pulse flickers dark. That's the tell.
+    _drawExtras(ctx, camera, screen, ws) {
+        const scale = ws || this.game.worldScale;
+
+        // THE DESECRATED HALO — blackened arcs of a stolen crown. Cover you
+        // can see, shoot, and shoot THROUGH.
+        if (this.state === 'fight' || this.state === 'scripted') {
+            const sx = this.worldX * camera.wtsScale + camera.wtsOffX;
+            const sy = this.worldY * camera.wtsScale + camera.wtsOffY;
+            const half = this._arcHalf();
+            ctx.save();
+            for (const arc of this.halo) {
+                if (arc.regrowT > 0) continue;
+                const a0 = this._haloAng + arc.off - half;
+                const a1 = this._haloAng + arc.off + half;
+                const frac = arc.hp / this._arcMaxHp();
+                const cracked = frac < 0.4 && Math.floor(this._animClock * 16) % 2 === 0;
+                // Dark under-stroke, blackened gold over.
+                ctx.strokeStyle = '#2a1a08';
+                ctx.globalAlpha = 0.9;
+                ctx.lineWidth = 9 * scale;
+                ctx.beginPath();
+                ctx.arc(sx, sy, this._haloR * camera.wtsScale, a0, a1);
+                ctx.stroke();
+                ctx.strokeStyle = cracked ? '#5a4210' : '#8a6a1a';
+                ctx.globalAlpha = 0.6 + 0.4 * frac;
+                ctx.lineWidth = 4.5 * scale;
+                ctx.beginPath();
+                ctx.arc(sx, sy, this._haloR * camera.wtsScale, a0, a1);
+                ctx.stroke();
+            }
+            ctx.restore();
+        }
+
+        // The black fanfare's horns — the herald's own trumpet art, profaned.
+        if (this.attack && this.attack.type === 'fanfare') {
+            const a = this.attack;
+            const asset = this.game.assets.get('vfx_trumpet_down');
+            const p = Math.min(1, a.timer / a.dur);
+            for (const h of a.horns) {
+                const hx = h.x * camera.wtsScale + camera.wtsOffX;
+                const hy = h.y * camera.wtsScale + camera.wtsOffY;
+                ctx.save();
+                if (asset) {
+                    const dark = tintedSprite(asset, 'vfx_trumpet_down|blas', 'rgba(30,16,50,1)', 0);
+                    const w = dark.width * scale, hgt = dark.height * scale;
+                    ctx.translate(hx, hy + Math.sin(this._animClock * 3 + h.ang) * 5 * scale);
+                    // Darkening as the blast approaches — holy gold draining out.
+                    ctx.globalAlpha = 0.95;
+                    const img = asset.canvas || asset;
+                    ctx.drawImage(img, -w / 2, -hgt / 2, w, hgt);
+                    ctx.globalAlpha = 0.35 + 0.6 * p + (p > 0.75 ? 0.1 * Math.sin(this._animClock * 40) : 0);
+                    ctx.drawImage(dark.canvas, -w / 2, -hgt / 2, w, hgt);
+                } else {
+                    ctx.fillStyle = '#a8842a';
+                    ctx.globalAlpha = 0.8;
+                    ctx.beginPath();
+                    ctx.arc(hx, hy, 14 * scale, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+                ctx.restore();
+            }
+        }
+
+        // The false hymn's blessing-glow: a golden ring gathering on YOUR
+        // ship, rising motes — everything the holy language promises. Lie.
+        if (this.attack && this.attack.type === 'hymn') {
+            const a = this.attack;
+            const cx = a.cx * camera.wtsScale + camera.wtsOffX;
+            const cy = a.cy * camera.wtsScale + camera.wtsOffY;
+            const p = Math.min(1, a.timer / a.dur);
+            ctx.save();
+            ctx.globalCompositeOperation = 'lighter';
+            ctx.strokeStyle = GOLD;
+            ctx.globalAlpha = 0.35 + 0.45 * p;
+            ctx.lineWidth = 3 + 2 * p;
+            ctx.beginPath();
+            ctx.arc(cx, cy, (430 - 330 * p) * camera.wtsScale, 0, Math.PI * 2);
+            ctx.stroke();
+            // Rising motes.
+            for (let i = 0; i < 7; i++) {
+                const ma = i * 0.9 + this._animClock * 0.6;
+                const mr = 60 + ((this._animClock * 40 + i * 31) % 90);
+                ctx.fillStyle = i % 3 === 0 && p > 0.6 ? '#5a3a10' : GOLD;  // the dark flecks creep in late
+                ctx.globalAlpha = 0.5;
+                ctx.beginPath();
+                ctx.arc(cx + Math.cos(ma) * mr * camera.wtsScale * 0.4,
+                    cy - (this._animClock * 30 + i * 17) % 80 * camera.wtsScale * 0.4,
+                    2.2 * scale, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            ctx.restore();
+        }
+
+        // Consecrated ground — the profane glyph: a broken double ring with
+        // a dark heart, plainly marked. Trespass and the tether takes you.
+        for (const s of this.shrines) {
+            const sx = s.x * camera.wtsScale + camera.wtsOffX;
+            const sy = s.y * camera.wtsScale + camera.wtsOffY;
+            const R = 240 * camera.wtsScale;
+            const arm = Math.min(1, s.t / 0.5);
+            ctx.save();
+            if (!s.triggered) {
+                const spin = this._animClock * 0.5;
+                ctx.globalAlpha = (0.25 + 0.2 * Math.sin(this._animClock * 4)) * arm;
+                ctx.strokeStyle = '#c9a032';
+                ctx.lineWidth = 3;
+                // Broken outer ring — four arcs with deliberate gaps.
+                for (let k = 0; k < 4; k++) {
+                    const a0 = spin + k * Math.PI / 2 + 0.18;
+                    ctx.beginPath();
+                    ctx.arc(sx, sy, R, a0, a0 + Math.PI / 2 - 0.36);
+                    ctx.stroke();
+                }
+                ctx.strokeStyle = '#2a1a08';
+                ctx.globalAlpha = 0.5 * arm;
+                ctx.lineWidth = 5;
+                ctx.beginPath();
+                ctx.arc(sx, sy, R * 0.45, -spin, -spin + Math.PI * 1.5);
+                ctx.stroke();
+                // The dark heart.
+                ctx.fillStyle = '#1a1006';
+                ctx.globalAlpha = 0.35 * arm;
+                ctx.beginPath();
+                ctx.arc(sx, sy, R * 0.12, 0, Math.PI * 2);
+                ctx.fill();
+            } else if (s.body) {
+                // THE TETHER — a taut cord of profaned light, altar to hull.
+                const bx = s.body.worldX * camera.wtsScale + camera.wtsOffX;
+                const by = s.body.worldY * camera.wtsScale + camera.wtsOffY;
+                ctx.globalCompositeOperation = 'lighter';
+                ctx.strokeStyle = '#c9a032';
+                ctx.globalAlpha = 0.6 + 0.3 * Math.sin(this._animClock * 26);
+                ctx.lineWidth = 3.5;
+                ctx.beginPath();
+                ctx.moveTo(sx, sy);
+                const mx = (sx + bx) / 2 + Math.sin(this._animClock * 18) * 8;
+                const my = (sy + by) / 2 + Math.cos(this._animClock * 15) * 8;
+                ctx.quadraticCurveTo(mx, my, bx, by);
+                ctx.stroke();
+                ctx.fillStyle = GOLD;
+                ctx.globalAlpha = 0.8;
+                ctx.beginPath();
+                ctx.arc(sx, sy, 6 * scale, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            ctx.restore();
+        }
+
+        // Counterfeit communion — gold, but the pulse flickers dark. The tell.
         for (const o of this.fakeOrbs) {
             const sx = o.x * camera.wtsScale + camera.wtsOffX;
             const sy = o.y * camera.wtsScale + camera.wtsOffY;
-            const ws = this.game.worldScale;
             const wrong = Math.sin(o.t * 9) < -0.55;   // the dark flicker
             ctx.save();
             ctx.globalCompositeOperation = 'lighter';
             ctx.globalAlpha = wrong ? 0.25 : 0.85;
             ctx.fillStyle = wrong ? '#5a3a10' : GOLD;
             ctx.beginPath();
-            ctx.arc(sx, sy, (6 + Math.sin(o.t * 5) * 1.5) * ws, 0, Math.PI * 2);
+            ctx.arc(sx, sy, (6 + Math.sin(o.t * 5) * 1.5) * scale, 0, Math.PI * 2);
             ctx.fill();
             ctx.restore();
         }
@@ -2986,56 +3422,110 @@ export class HeadBlasphemy extends DragonHead {
 }
 
 // ── ECONOMIC CONTROL — no one may buy or sell ────────────────────────────────
-// The horned hulk. Vacuums loose loot into its holds (released +30% when it
-// shatters), crashes the market back out as shrapnel storms, and its shots
-// levy a toll — knocking recoverable scrap off the player's hull.
+// The horned hulk. Its held wealth IS its armor: a rich vault plates the hull
+// (grey numbers), and every hit knocks real, stealable scrap off it — bankrupt
+// it and it's naked. It fights to stay rich: strip-mines the asteroid field,
+// vacuums loose loot, levies tolls off your hull, crashes the market back out
+// as shrapnel storms scaled to its holdings, and REPOSSESSES — a massive
+// telegraphed charge that seizes one of your upgrades (tier-weighted: it takes
+// your most valuable assets) for 5 seconds on contact.
 export class HeadEconomicControl extends DragonHead {
     constructor(...a) {
         super(...a);
         this.heavyHull = true;    // its bulk hurts on contact even off-dash
         this.radius = 120;
-        this.scrapHeld = 0;
+        this.scrapHeld = 20;      // opening capital — it arrives already plated
         this.tollTaken = 0;       // fight-lifetime cap so it can't bankrupt
         this.tractorT = 0;
+        this._flakeAcc = 0;       // absorbed damage → flaked-scrap accumulator
+        this._mineTimer = 1.0;
+        this._mineZaps = [];      // [{x1,y1,x2,y2,t}] mining-beam flashes
+        this._cloud = [];         // [{ang,r,spin,phase,key}] the scrap armor cloud
     }
 
-    // Identity: THE VAULT — plated ×0.5 sealed, ×2.0 while the market crash
-    // holds its vault doors open. Bait the crash, then burn it down.
-    _damageMult() {
-        return this._animClock < (this._vaultOpenUntil || 0) ? 2.0 : 0.5;
+    // Identity: THE WAR CHEST — its wealth literally shields it. Every scrap
+    // held is armor plating (a visible cloud of scrap orbiting the hull,
+    // non-interactable); damage flakes the cloud away first as grey numbers,
+    // and only a BROKE vault takes hull damage. No immunity: bankrupt it by
+    // shooting the armor off, starving its income, or letting its own
+    // spending (crashes) drain the vault.
+    _shieldAbsorb(dmg) {
+        if (this.state !== 'fight' || this.scrapHeld <= 0) return dmg;
+        const PER = 36 + 12 * this._diff();   // shield per scrap — the vault is THICK
+        const capacity = Math.max(0, this.scrapHeld * PER - this._flakeAcc);
+        const soak = Math.min(dmg, capacity);
+        if (soak <= 0) return dmg;
+        this._flakeAcc += soak;
+        while (this._flakeAcc >= PER && this.scrapHeld > 0) {
+            this._flakeAcc -= PER;
+            this.scrapHeld--;
+            this._flakeBurst();
+        }
+        if (this.scrapHeld <= 0) this._flakeAcc = 0;
+        const state = this.game.currentState;
+        if (state && state.spawnFloatingText) {
+            state.spawnFloatingText(this.worldX, this.worldY, `-${Math.ceil(soak)}`, '#9a9aa0');
+        }
+        this._sfx('hit', 0.25);
+        return dmg - soak;
     }
 
-    // The tank's loop (Asteroid Crusher's tempo): ponderous cruise, heavy
-    // facing-gated toll shots on a slow clock, and the market crash as a
-    // committed stop — it drops anchor, gathers, and detonates its holdings.
+    // A plate shears off the armor cloud — pure spectacle, nothing to grab.
+    _flakeBurst() {
+        const c = this._cloud[this._cloud.length - 1];
+        const t = this._animClock;
+        const px = c ? this.worldX + Math.cos(c.ang + t * c.spin) * c.r : this.worldX;
+        const py = c ? this.worldY + Math.sin(c.ang + t * c.spin) * c.r : this.worldY;
+        this._sparks(px, py, 7, { spread: Math.PI * 2, color: Math.random() < 0.5 ? '#9a9aa0' : '#ffcc44', speedMin: 90, speedMax: 320 });
+    }
+
+    // The magnate's loop: advancing juggernaut, heavy toll slugs, the
+    // repossession charge, and the market crash — spending scaled to wealth.
     _updateWeapons(dt, tgt, dist, angleToTarget) {
         const rate = this._weaponRate();
         if (rate <= 0 || this.attack) return;
         const diff = this._diff();
         const inRange = this._inWeaponRange(dist);
 
-        this.crashTimer = (this.crashTimer ?? 5.0) - dt * rate;
-        if (inRange && this.crashTimer <= 0 && this.scrapHeld >= 12) {
-            this.crashTimer = 7.0 + Math.random() * 2.5;
-            this.attack = { type: 'crash', phase: 'gather', timer: 0, dur: 0.8, wave: 0, ownsMove: true };
-            this._vaultOpenUntil = this._animClock + 4.0;  // doors open — punish window
+        // THE REPOSSESSION: rear back, mark the debtor, then a massive charge —
+        // contact seizes one upgrade (tier-weighted) for 5 seconds.
+        this.repoTimer = (this.repoTimer ?? 5.0) - dt * rate;
+        if (inRange && this.repoTimer <= 0 && dist < 1600) {
+            this.repoTimer = 8.5 + Math.random() * 3.0;
+            this.attack = { type: 'repo', phase: 'rear', timer: 0, dur: 0.6 * this._teleMult(), ownsMove: true };
+            this.vx -= Math.cos(this.angle) * 300;
+            this.vy -= Math.sin(this.angle) * 300;
+            this.game.sounds.play('railgun_target', { volume: 0.8, x: this.worldX, y: this.worldY });
             return;
         }
 
-        // Toll cannon: one heavy facing-gated slug at a time.
-        this.tollTimer = (this.tollTimer ?? 1.4) - dt * rate;
+        // MARKET CRASH: cheap trigger, spends real holdings — waves scale
+        // with wealth. A rich vault detonates a storm; a poor one coughs.
+        this.crashTimer = (this.crashTimer ?? 4.0) - dt * rate;
+        if (inRange && this.crashTimer <= 0 && this.scrapHeld >= 8) {
+            this.crashTimer = 5.0 + Math.random() * 2.0;
+            const waves = Math.min(5, 2 + Math.floor(this.scrapHeld / 8));
+            this.attack = { type: 'crash', phase: 'gather', timer: 0, dur: 0.7 * this._teleMult(), wave: 0, waves, ownsMove: true };
+            return;
+        }
+
+        // Toll cannon: heavy facing-gated slugs — double taxation when rich.
+        this.tollTimer = (this.tollTimer ?? 1.2) - dt * rate;
         if (inRange && this.tollTimer <= 0) {
             let angleDiff = angleToTarget - this.angle;
             while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
             while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
             if (Math.abs(angleDiff) > 0.45) return; // hold fire until the bow bears
-            this.tollTimer = 1.1 + Math.random() * 0.6;
-            const p = this._bolt(
-                this.worldX + Math.cos(this.angle) * 90, this.worldY + Math.sin(this.angle) * 90,
-                this.angle + (Math.random() - 0.5) * 0.06,
-                460, 22 + 4 * diff, 'red_laser_ball_big', 3.6);
+            this.tollTimer = 0.85 + Math.random() * 0.5;
+            const shots = this.scrapHeld >= 25 ? 2 : 1;
+            for (let i = 0; i < shots; i++) {
+                const p = this._bolt(
+                    this.worldX + Math.cos(this.angle) * 90, this.worldY + Math.sin(this.angle) * 90,
+                    this.angle + (i - (shots - 1) / 2) * 0.14 + (Math.random() - 0.5) * 0.05,
+                    500, 22 + 4 * diff, 'red_laser_ball_big', 3.6);
+                if (p) this._armTollShot(p);
+            }
             this._sfx('railgun_shoot', 0.4);
-            if (p) this._armTollShot(p);
         }
     }
 
@@ -3044,23 +3534,85 @@ export class HeadEconomicControl extends DragonHead {
         a.timer += dt;
         const diff = this._diff();
 
+        if (a.type === 'repo') {
+            if (a.phase === 'rear') {
+                // The debtor is named: heavy shiver, hard brake, aim line.
+                this._telegraphTick(dt);
+                this.vx *= Math.pow(0.88, dt * 60); this.vy *= Math.pow(0.88, dt * 60);
+                this.worldX += this.vx * dt; this.worldY += this.vy * dt;
+                this.angle = Math.atan2(player.worldY - this.worldY, player.worldX - this.worldX);
+                if (a.timer >= a.dur) {
+                    a.phase = 'charge'; a.timer = 0; a.dur = 0.7;
+                    const lead = 0.18;
+                    const ang = Math.atan2(
+                        player.worldY + (player.vy || 0) * lead - this.worldY,
+                        player.worldX + (player.vx || 0) * lead - this.worldX);
+                    this.angle = ang;
+                    this.vx = Math.cos(ang) * 3000; this.vy = Math.sin(ang) * 3000;
+                    this.dashHitSet = new Set();
+                    this._dashBonus = 8;
+                    this._sfx('boost', 0.9);
+                    this.game.camera.shake(1.2);
+                }
+            } else {
+                this._dashWake(dt);
+                this.vx *= Math.pow(0.978, dt * 60); this.vy *= Math.pow(0.978, dt * 60);
+                this.worldX += this.vx * dt; this.worldY += this.vy * dt;
+                // The seizure fires on ANY hull contact — a shield blocks the
+                // damage, not the repossession. Independent of the damage
+                // branch's i-frames on purpose; ONE seizure per pilot per
+                // charge (the scan runs every frame of the dash).
+                for (const body of this._bodies()) {
+                    if (a.seizedBodies && a.seizedBodies.has(body)) continue;
+                    const dx = body.worldX - this.worldX, dy = body.worldY - this.worldY;
+                    const cr = body.radius + this.radius * 0.8;
+                    if (dx * dx + dy * dy < cr * cr) {
+                        (a.seizedBodies = a.seizedBodies || new Set()).add(body);
+                        this._seize(body);
+                        // The mugging: ripped scrap goes STRAIGHT into the
+                        // vault — your money becomes its armor.
+                        const take = Math.min(15, Math.floor(body.scrap || 0),
+                            Math.max(0, 120 - this.tollTaken));
+                        if (take > 0) {
+                            body.scrap -= take;
+                            this.tollTaken += take;
+                            this.scrapHeld += take;
+                            const state = this.game.currentState;
+                            if (state && state.spawnFloatingText) {
+                                state.spawnFloatingText(body.worldX, body.worldY - 30, `-${take} SCRAP`, '#ffcc44');
+                            }
+                            this._sparks(body.worldX, body.worldY, 10, { color: '#ffcc44', spread: Math.PI * 2, speedMin: 120, speedMax: 380 });
+                        }
+                    }
+                }
+                if (a.timer >= a.dur) {
+                    this.dashHitSet = null;
+                    this._dashBonus = 0;
+                    this.vx *= 0.25; this.vy *= 0.25;
+                    this.attack = null;
+                }
+            }
+            return;
+        }
+
         if (a.type === 'crash') {
+            // No anchored stop, no punish window handed out for free — it
+            // keeps drifting while the storm detonates around it.
             if (a.phase === 'gather') this._telegraphTick(dt);
-            this.vx *= Math.pow(0.92, dt * 60); this.vy *= Math.pow(0.92, dt * 60);
-            this.worldX += this.vx * dt; this.worldY += this.vy * dt;
+            this._shipDrift(dt, player.worldX, player.worldY);
             if (a.phase === 'gather' && a.timer >= a.dur) {
-                a.phase = 'storm'; a.timer = 0; a.dur = 1.5; a.wave = 0;
+                a.phase = 'storm'; a.timer = 0; a.dur = a.waves * 0.5 + 0.4;
             } else if (a.phase === 'storm') {
                 const wavesDue = Math.floor(a.timer / 0.5) + 1;
-                while (a.wave < Math.min(3, wavesDue)) {
+                while (a.wave < Math.min(a.waves, wavesDue)) {
                     a.wave++;
                     const n = 12 + Math.floor(diff * 2);
                     const off = a.wave * 0.13;
                     for (let i = 0; i < n; i++) {
                         this._bolt(this.worldX, this.worldY, (i / n) * Math.PI * 2 + off,
-                            210 + a.wave * 45, 14 + 3 * diff, 'red_laser_ball_big', 4.2);
+                            230 + a.wave * 50, 14 + 3 * diff, 'red_laser_ball_big', 4.2);
                     }
-                    this.scrapHeld = Math.max(0, this.scrapHeld - 6);
+                    this.scrapHeld = Math.max(0, this.scrapHeld - 4);  // spending the vault
                     this._sfx('railgun_shoot', 0.5);
                     this._ring({ color: this.accent, maxR: 220, dur: 0.5, width: 5 });
                 }
@@ -3069,10 +3621,47 @@ export class HeadEconomicControl extends DragonHead {
         }
     }
 
+    // Repossession contact: seize one upgrade for 5 seconds. Weighted by the
+    // item's BASE rarity (never the combined tier), peaked mid-range —
+    // uncommon/rare carry the bulk, legendary still stings, commons are
+    // barely worth taking. Player.update returns it.
+    static SEIZE_WEIGHTS = { common: 0.6, uncommon: 3, rare: 3, epic: 1, legendary: 2, unique: 1 };
+    _seize(body) {
+        const inv = body.inventory;
+        if (!inv || !inv.items || !inv.items.length) return;
+        body.seizedUpgrades = body.seizedUpgrades || [];
+        if (body.seizedUpgrades.length >= 3) return;   // repossession backlog cap
+        const taken = new Set(body.seizedUpgrades.map(s => s.item));
+        // Cargo expansions are off the table — collapsing the grid mid-fight
+        // is a death sentence, not a mechanic.
+        const eligible = inv.items.filter(e => !taken.has(e.item) && e.item.id !== 'cargo_expansion');
+        if (!eligible.length) return;
+        const w = (it) => HeadEconomicControl.SEIZE_WEIGHTS[it.rarity] ?? 1;
+        let total = 0;
+        for (const e of eligible) total += w(e.item);
+        let roll = Math.random() * total;
+        let pick = eligible[0].item;
+        for (const e of eligible) {
+            roll -= w(e.item);
+            if (roll <= 0) { pick = e.item; break; }
+        }
+        body.seizedUpgrades.push({ item: pick, t: 5.0 });
+        const state = this.game.currentState;
+        if (state) {
+            if (state._onInventoryChanged) state._onInventoryChanged(body);
+            if (state.spawnFloatingText) {
+                state.spawnFloatingText(body.worldX, body.worldY - 46,
+                    'REPOSSESSED: ' + (pick.name || pick.id).toUpperCase(), '#ffcc44');
+            }
+        }
+        this._ring({ color: '#ffcc44', maxR: 280, dur: 0.5, width: 5 });
+        this.game.sounds.play('shield_break', { volume: 0.7, x: body.worldX, y: body.worldY });
+    }
+
     _armTollShot(p) {
         const head = this;
         p.onPlayerHit = (state, body) => {
-            if (head.tollTaken >= 80) return;
+            if (head.tollTaken >= 120) return;   // lifetime ledger, shared with the dash mugging
             const take = Math.min(8, Math.floor(body.scrap || 0));
             if (take <= 0) return;
             body.scrap -= take;
@@ -3093,10 +3682,30 @@ export class HeadEconomicControl extends DragonHead {
 
     update(dt, player) {
         super.update(dt, player);
+        for (let i = this._mineZaps.length - 1; i >= 0; i--) {
+            this._mineZaps[i].t -= dt;
+            if (this._mineZaps[i].t <= 0) this._mineZaps.splice(i, 1);
+        }
+        // The armor cloud tracks the vault: one floating scrap piece per
+        // scrap held (capped) — pieces materialize as it hoards, shear off
+        // as the armor flakes. Pure visual; nothing to collect.
+        const want = this.state === 'fight' ? Math.min(16, this.scrapHeld) : 0;
+        while (this._cloud.length < want) {
+            this._cloud.push({
+                ang: Math.random() * Math.PI * 2,
+                r: 125 + Math.random() * 75,
+                spin: (Math.random() < 0.5 ? -1 : 1) * (0.5 + Math.random() * 0.8),
+                phase: Math.random() * Math.PI * 2,
+                key: `scrap_${String(Math.floor(Math.random() * 29)).padStart(2, '0')}`
+            });
+        }
+        while (this._cloud.length > want) this._cloud.pop();
         if (this.state !== 'fight' || this.stunTimer > 0) return;
-        // The tariff: a slow, wide vacuum on the world's loose wealth.
         const state = this.game.currentState;
         if (!state) return;
+
+        // The tariff: a fast, wide vacuum on the world's loose wealth — it is
+        // RACING you for every drop of income.
         this.tractorT += dt;
         const pullLists = [state.scrapEntities, state.expOrbs];
         for (const list of pullLists) {
@@ -3105,17 +3714,107 @@ export class HeadEconomicControl extends DragonHead {
                 if (!it.alive) continue;
                 const dx = this.worldX - it.worldX, dy = this.worldY - it.worldY;
                 const d2 = dx * dx + dy * dy;
-                if (d2 > 900 * 900) continue;
+                if (d2 > 1150 * 1150) continue;
                 const d = Math.sqrt(d2) || 1;
-                const pull = 320 * (1 - d / 900);
+                const pull = 560 * (1 - d / 1150);
                 it.vx = (it.vx || 0) + (dx / d) * pull * dt;
                 it.vy = (it.vy || 0) + (dy / d) * pull * dt;
                 if (d < this.radius) {
                     it.alive = false;
-                    this.scrapHeld += (it.value || 1);
+                    // Institutional rates: every unit it swallows is worth
+                    // triple what the player would have gotten out of it.
+                    this.scrapHeld += (it.value || 1) * 3;
                     this._sparks(this.worldX, this.worldY, 2, { color: '#ffcc44', speedMin: 40, speedMax: 120 });
                 }
             }
+        }
+
+        // STRIP-MINING: it cracks the asteroid field for income — gold zap,
+        // real destruction (the loot sprays, then the vacuum claims it).
+        this._mineTimer -= dt;
+        if (this._mineTimer <= 0 && state.asteroids) {
+            this._mineTimer = 0.65 + Math.random() * 0.3;
+            let best = null, bestD2 = 1000 * 1000;
+            for (const ast of state.asteroids) {
+                if (!ast.alive) continue;
+                const dx = ast.worldX - this.worldX, dy = ast.worldY - this.worldY;
+                const d2 = dx * dx + dy * dy;
+                if (d2 < bestD2) { best = ast; bestD2 = d2; }
+            }
+            if (best) {
+                this._mineZaps.push({ x1: this.worldX, y1: this.worldY, x2: best.worldX, y2: best.worldY, t: 0.18 });
+                this._sparks(best.worldX, best.worldY, 6, { color: '#ffcc44', spread: Math.PI * 2, speedMin: 60, speedMax: 240 });
+                this._sfx('laser', 0.35);
+                if (best.hit(40 + 8 * this._diff())) {
+                    this.scrapHeld += 4;   // skimmed off the top before the loot even drops
+                    state._onEntityDestroyed(best);
+                }
+            }
+        }
+    }
+
+    _drawExtras(ctx, camera, screen, ws) {
+        const scale = ws || this.game.worldScale;
+
+        // Mining zaps — the gold flash of the drill hitting rock.
+        if (this._mineZaps.length) {
+            ctx.save();
+            ctx.globalCompositeOperation = 'lighter';
+            for (const z of this._mineZaps) {
+                const p = z.t / 0.18;
+                ctx.strokeStyle = '#ffcc44';
+                ctx.globalAlpha = 0.8 * p;
+                ctx.lineWidth = 3 * p + 1;
+                ctx.beginPath();
+                ctx.moveTo(z.x1 * camera.wtsScale + camera.wtsOffX, z.y1 * camera.wtsScale + camera.wtsOffY);
+                ctx.lineTo(z.x2 * camera.wtsScale + camera.wtsOffX, z.y2 * camera.wtsScale + camera.wtsOffY);
+                ctx.stroke();
+            }
+            ctx.restore();
+        }
+
+        // Repossession aim line — the debtor is named before the charge.
+        if (this.attack && this.attack.type === 'repo' && this.attack.phase === 'rear') {
+            const sx = this.worldX * camera.wtsScale + camera.wtsOffX;
+            const sy = this.worldY * camera.wtsScale + camera.wtsOffY;
+            const L = 1700 * scale;
+            ctx.save();
+            ctx.globalCompositeOperation = 'lighter';
+            ctx.strokeStyle = '#ffcc44';
+            ctx.globalAlpha = 0.35 + 0.3 * Math.sin(this._animClock * 24);
+            ctx.lineWidth = 2;
+            ctx.setLineDash([10, 8]);
+            ctx.beginPath();
+            ctx.moveTo(sx, sy);
+            ctx.lineTo(sx + Math.cos(this.angle) * L, sy + Math.sin(this.angle) * L);
+            ctx.stroke();
+            ctx.restore();
+        }
+
+        // The armor cloud: real scrap sprites floating around the hull —
+        // cloud present = shielded, cloud gone = BROKE and killable.
+        if (this._cloud.length) {
+            const t = this._animClock;
+            ctx.save();
+            for (const c of this._cloud) {
+                const asset = this.game.assets.get(c.key);
+                if (!asset) continue;
+                const img = asset.canvas || asset;
+                const bob = Math.sin(t * 1.7 + c.phase) * 12;
+                const px = this.worldX + Math.cos(c.ang + t * c.spin) * (c.r + bob);
+                const py = this.worldY + Math.sin(c.ang + t * c.spin) * (c.r + bob);
+                const sx = px * camera.wtsScale + camera.wtsOffX;
+                const sy = py * camera.wtsScale + camera.wtsOffY;
+                const w = (asset.width || img.width) * scale;
+                const h = (asset.height || img.height) * scale;
+                ctx.translate(sx, sy);
+                ctx.rotate(c.phase + t * c.spin * 2);
+                ctx.globalAlpha = 0.92;
+                ctx.drawImage(img, -w / 2, -h / 2, w, h);
+                ctx.rotate(-(c.phase + t * c.spin * 2));
+                ctx.translate(-sx, -sy);
+            }
+            ctx.restore();
         }
     }
 
@@ -3138,59 +3837,484 @@ export class HeadEconomicControl extends DragonHead {
     }
 }
 
+// ── GRAVEN IDOL — a real event entity, destructible like anything else ───────
+// False Worship's statues. They SIT THERE like asteroids: every standing one
+// halves the damage the head takes, and each runs its bad effect (smite /
+// lure / tithe) until the player destroys it. Registered in state.events so
+// the ENGINE's projectile/ram/explosion pipeline hits them — lasers, railgun
+// AoE, rockets, everything — no hand-rolled collision.
+export class GravenIdol {
+    constructor(game, head, type, x, y) {
+        this.game = game;
+        this.head = head;
+        this.type = type;
+        this.worldX = x;
+        this.worldY = y;
+        this.vx = 0; this.vy = 0;
+        this.rotation = 0;          // statues never rotate — chip mapping stays 1:1
+        this.angle = 0;
+        this.hitRotAbs = 0;         // upright fitted ellipse (the YellowOne rule)
+        this.alive = true;
+        this.revealed = true;
+        this.isFinished = false;
+        this.isDragonHead = true;   // save/join-snapshot skip (same rule as heads)
+        this.isIdol = true;         // …but not a red head marker
+        this.displayName = type.toUpperCase() + ' IDOL';
+        this.state = 'fight';
+        // Per-type counterfeit: a golden Seraph (wrath), a golden image of
+        // the Lamb (lure), a golden cache (tithe). The sprite key drives the
+        // fitted-ellipse hitbox where one exists; otherwise the circular
+        // radius below covers it.
+        this.spriteKey = HeadFalseWorship.IDOL_ART[type] || 'cache';
+        this.t = 0;
+        this.life = 16;
+        this.warpT = 0.45;
+        this.streamT = 0;
+        this.fromX = undefined; this.fromY = undefined;
+        this.stolen = 0;
+        this.fireT = 0.8; this.burnT = 0; this.stealT = 0.8;
+        this.maxHealth = head._idolMaxHp();
+        this.health = this.maxHealth;
+        this._hitFlash = 0;
+        this._fx = undefined;       // HullFracture — lazy, like asteroids
+        const art = head._idolArt(type);
+        this.radius = art ? Math.max(24, Math.max(art.width || 0, art.height || 0) * 0.45) : 60;
+    }
+
+    // Legacy accessors — the head's links/indicators read idol.x/y.
+    get x() { return this.worldX; }
+    get y() { return this.worldY; }
+
+    // Event contract.
+    get isActive() { return false; }
+    get isAttackable() { return true; }
+    freeze() { }
+    popSpawns() { return []; }
+
+    _gold() { return this.head ? this.head._idolGeom(this.type) : null; }
+
+    // Lazy persistent fracture layout — the asteroid/Hive mechanism verbatim.
+    _ensureFracture() {
+        if (this._fx !== undefined) return this._fx;
+        const gold = this._gold();
+        const model = gold ? FractureModel.get(gold, 'idol_gold_' + this.type) : null;
+        this._fx = model ? new HullFracture(model) : null;
+        return this._fx;
+    }
+
+    // Called by PlayingState with the projectile impact point — the same
+    // per-pixel chip system asteroids and the Hive use. Cosmetic; the
+    // hitbox is unaffected.
+    chipHit(hitWorldX, hitWorldY) {
+        const fx = this._ensureFracture();
+        if (!fx) return [];
+        const lx = hitWorldX - this.worldX;
+        const ly = hitWorldY - this.worldY;
+        const count = 1 + (Math.random() < 0.5 ? 1 : 0);
+        const cells = fx.chipNear(lx, ly, count);
+        const debris = [];
+        for (const c of cells) {
+            debris.push(ejectChipDebris(this.game, this.worldX, this.worldY, 0, 0, 0, c));
+        }
+        if (!cells.length) {
+            const c = fx.nearestOuterCell(lx, ly);
+            if (c) debris.push(ejectChipDebris(this.game, this.worldX, this.worldY, 0, 0, 0, c, true));
+        }
+        return debris;
+    }
+
+    hit(damage) {
+        if (!this.alive) return false;
+        this.health -= damage;
+        this._hitFlash = 0.12;
+        const state = this.game.currentState;
+        if (state && state.spawnFloatingText) {
+            state.spawnFloatingText(this.worldX, this.worldY - 24, `-${Math.ceil(damage)}`, GOLD);
+        }
+        this.game.sounds.play('asteroid_break', { volume: 0.3, x: this.worldX, y: this.worldY });
+        if (this.health <= 0) {
+            this.health = 0;
+            this.alive = false;
+            if (this.head) this.head._onIdolBroken(this, true);
+            return true;   // the engine delivers the shatter via getSpawnOnDeath
+        }
+        return false;
+    }
+
+    // The statue's death shatter — gold voronoi fragments through the normal
+    // engine path (the Hive pattern verbatim).
+    getSpawnOnDeath() {
+        const gold = this._gold();
+        const spawns = [];
+        if (gold) {
+            const fragments = getCachedShatter(gold, 'idol_gold_' + this.type + '|shatter', 26);
+            for (const frag of fragments) {
+                const wx = this.worldX + frag.lx;
+                const wy = this.worldY + frag.ly;
+                const outAngle = Math.atan2(frag.ly, frag.lx);
+                const spread = 50 + Math.random() * 160;
+                spawns.push(new ProceduralDebris(
+                    this.game, wx, wy, frag,
+                    Math.cos(outAngle) * spread, Math.sin(outAngle) * spread,
+                    0, (Math.random() - 0.5) * 5,
+                    2.0 + Math.random() * 1.5
+                ));
+            }
+        }
+        return spawns;
+    }
+
+    // A lapsed (un-shot) idol crumbles through the same engine path.
+    _lapse() {
+        if (!this.alive) return;
+        this.alive = false;
+        const state = this.game.currentState;
+        if (this.head) this.head._onIdolBroken(this, false);
+        if (state && state._onEntityDestroyed) state._onEntityDestroyed(this);
+    }
+
+    update(dt) {
+        if (!this.alive) return;
+        this.t += dt;
+        if (this.warpT > 0) this.warpT -= dt;
+        if (this._hitFlash > 0) this._hitFlash -= dt;
+        if (this.streamT > 0) this.streamT -= dt;
+        const head = this.head;
+        // The covenant dies with its god: head gone → statues crumble.
+        if (!head || !head.alive || head.state === 'shattered' || head.state === 'dead') {
+            this._lapse();
+            return;
+        }
+        if (this.t >= this.life) { this._lapse(); return; }
+        if (this.warpT > 0) return;
+        const state = this.game.currentState;
+        if (!state) return;
+        const diff = head._diff();
+
+        if (this.type === 'wrath') {
+            // The smiting idol: aimed gold volleys until silenced.
+            this.fireT -= dt;
+            if (this.fireT <= 0) {
+                this.fireT = 1.7 + Math.random() * 0.6;
+                let near = null, nd = Infinity;
+                for (const body of head._bodies()) {
+                    const d = Math.hypot(body.worldX - this.worldX, body.worldY - this.worldY);
+                    if (d < nd) { nd = d; near = body; }
+                }
+                if (near && nd < 1100) {
+                    const toB = Math.atan2(near.worldY - this.worldY, near.worldX - this.worldX);
+                    const off = this.radius + 30;
+                    for (let i = 0; i < 3; i++) {
+                        head._bolt(this.worldX + Math.cos(toB) * off, this.worldY + Math.sin(toB) * off,
+                            toB + (i - 1) * 0.12, 520, 10 + 2 * diff, 'yellow_laser_ball', 2.8);
+                    }
+                    this.game.sounds.play('laser', { volume: 0.35, x: this.worldX, y: this.worldY });
+                }
+            }
+        } else if (this.type === 'lure') {
+            // Adoration as gravity — it DRAWS you in, and burns at its foot.
+            for (const body of head._bodies()) {
+                const dx = this.worldX - body.worldX, dy = this.worldY - body.worldY;
+                const d = Math.hypot(dx, dy) || 1;
+                if (d < 650) {
+                    const pull = 560 * (1 - d / 650);
+                    body.vx = (body.vx || 0) + (dx / d) * pull * dt;
+                    body.vy = (body.vy || 0) + (dy / d) * pull * dt;
+                }
+            }
+            this.burnT -= dt;
+            if (this.burnT <= 0) {
+                for (const body of head._bodies()) {
+                    if (Math.hypot(body.worldX - this.worldX, body.worldY - this.worldY) < this.radius + 30) {
+                        this.burnT = 0.8;
+                        head._hurt(body, 7 + 1.5 * diff, this.worldX, this.worldY);
+                        if (state._spawnSparks) {
+                            state._spawnSparks(body.worldX, body.worldY, 6, { color: GOLD, speedMin: 80, speedMax: 240 });
+                        }
+                        break;
+                    }
+                }
+            }
+        } else if (this.type === 'tithe') {
+            // The tithe: it collects. Smash it before it's satisfied.
+            this.stealT -= dt;
+            if (this.stealT <= 0 && this.stolen < 24) {
+                this.stealT = 1.2;
+                for (const body of head._bodies()) {
+                    if (Math.hypot(body.worldX - this.worldX, body.worldY - this.worldY) < 520 && (body.scrap || 0) > 0) {
+                        const take = Math.min(2, Math.floor(body.scrap));
+                        body.scrap -= take;
+                        this.stolen += take;
+                        this.streamT = 0.6;
+                        this.fromX = body.worldX; this.fromY = body.worldY;
+                        if (state.spawnFloatingText) {
+                            state.spawnFloatingText(body.worldX, body.worldY - 26, `-${take} TITHE`, GOLD);
+                        }
+                        if (state._spawnSparks) {
+                            state._spawnSparks(this.worldX, this.worldY, 3, { color: GOLD, speedMin: 40, speedMax: 140 });
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    draw(ctx, camera) {
+        if (!this.alive) return;
+        const head = this.head;
+        const gold = this._gold();
+        if (!head || !gold) return;
+        const sx = this.worldX * camera.wtsScale + camera.wtsOffX;
+        const sy = this.worldY * camera.wtsScale + camera.wtsOffY;
+        const ws = this.game.worldScale;
+        const w = gold.width * ws;
+        const h = gold.height * ws;
+        if (sx + w < -150 || sx - w > this.game.width + 150 ||
+            sy + h < -150 || sy - h > this.game.height + 150) return;
+        const t = this.t;
+        const grow = Math.min(1, (0.45 - Math.max(0, this.warpT)) / 0.45);
+
+        // The covenant link back to the false god — the armor made visible.
+        if (head.state === 'fight') {
+            const hx = head.worldX * camera.wtsScale + camera.wtsOffX;
+            const hy = head.worldY * camera.wtsScale + camera.wtsOffY;
+            ctx.save();
+            ctx.globalCompositeOperation = 'lighter';
+            ctx.strokeStyle = GOLD;
+            ctx.globalAlpha = (0.16 + 0.08 * Math.sin(t * 3)) * grow;
+            ctx.lineWidth = 2.5;
+            ctx.beginPath();
+            ctx.moveTo(sx, sy);
+            ctx.lineTo(hx, hy);
+            ctx.stroke();
+            ctx.fillStyle = GOLD;
+            for (let k = 0; k < 3; k++) {
+                const p = (t * 0.5 + k / 3) % 1;
+                ctx.globalAlpha = 0.45 * (1 - p * 0.4) * grow;
+                ctx.beginPath();
+                ctx.arc(sx + (hx - sx) * p, sy + (hy - sy) * p, 2.5 * ws, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            ctx.restore();
+        }
+
+        // Effect telegraphs under the statue.
+        if (this.type === 'lure' && this.warpT <= 0) {
+            for (const body of head._bodies()) {
+                if (Math.hypot(body.worldX - this.worldX, body.worldY - this.worldY) > 650) continue;
+                const bx = body.worldX * camera.wtsScale + camera.wtsOffX;
+                const by = body.worldY * camera.wtsScale + camera.wtsOffY;
+                ctx.save();
+                ctx.globalCompositeOperation = 'lighter';
+                ctx.fillStyle = GOLD;
+                for (let k = 0; k < 5; k++) {
+                    const p = (t * 0.7 + k / 5) % 1;
+                    ctx.globalAlpha = 0.5 * (1 - p);
+                    ctx.beginPath();
+                    ctx.arc(bx + (sx - bx) * p, by + (sy - by) * p, 2.5 * ws, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+                ctx.restore();
+            }
+        }
+        if (this.type === 'tithe' && this.streamT > 0 && this.fromX !== undefined) {
+            const fx = this.fromX * camera.wtsScale + camera.wtsOffX;
+            const fy = this.fromY * camera.wtsScale + camera.wtsOffY;
+            const sp = 1 - this.streamT / 0.6;
+            ctx.save();
+            ctx.globalCompositeOperation = 'lighter';
+            ctx.fillStyle = GOLD;
+            for (let k = 0; k < 3; k++) {
+                const p = Math.min(1, sp + k * 0.15);
+                ctx.globalAlpha = 0.8 * (1 - p * 0.5);
+                ctx.beginPath();
+                ctx.arc(fx + (sx - fx) * p, fy + (sy - fy) * p, 3 * ws, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            ctx.restore();
+        }
+        if (this.type === 'wrath' && this.fireT < 0.35 && this.warpT <= 0) {
+            let near = null, nd = Infinity;
+            for (const body of head._bodies()) {
+                const d = Math.hypot(body.worldX - this.worldX, body.worldY - this.worldY);
+                if (d < nd) { nd = d; near = body; }
+            }
+            if (near && nd < 1100) {
+                ctx.save();
+                ctx.globalCompositeOperation = 'lighter';
+                ctx.strokeStyle = GOLD;
+                ctx.globalAlpha = 0.3 + 0.3 * Math.sin(t * 30);
+                ctx.lineWidth = 2;
+                ctx.setLineDash([6, 6]);
+                ctx.beginPath();
+                ctx.moveTo(sx, sy);
+                ctx.lineTo(near.worldX * camera.wtsScale + camera.wtsOffX,
+                    near.worldY * camera.wtsScale + camera.wtsOffY);
+                ctx.stroke();
+                ctx.restore();
+            }
+        }
+
+        // THE STATUE — the Hive draw pattern: pixel scale, chipped composite,
+        // hit flash as a shadow bloom.
+        ctx.save();
+        ctx.translate(sx, sy);
+        ctx.globalAlpha = 0.35 + 0.65 * grow;
+        if (this._hitFlash > 0) {
+            ctx.shadowBlur = 16 * ws;
+            ctx.shadowColor = GOLD;
+        }
+        const src = (this._fx && this._fx.count > 0) ? this._fx.composite(gold) : gold.canvas;
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(src, -w / 2, -h / 2, w, h);
+        ctx.shadowBlur = 0;
+
+        // Tithe: coins orbiting as it fattens on your scrap.
+        if (this.type === 'tithe' && this.stolen > 0) {
+            const coins = Math.min(6, Math.floor(this.stolen / 4) + 1);
+            ctx.globalAlpha = 0.9 * grow;
+            ctx.fillStyle = GOLD;
+            for (let k = 0; k < coins; k++) {
+                const ca = t * 2 + k * (Math.PI * 2 / coins);
+                ctx.beginPath();
+                ctx.arc(Math.cos(ca) * (w / 2 + 10 * ws), Math.sin(ca) * (w / 2 + 10 * ws), 2.5 * ws, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        // The label — big, gold, no guessing.
+        ctx.globalAlpha = 0.95 * grow;
+        ctx.fillStyle = GOLD;
+        ctx.font = `${9 * ws}px Astro4x`;
+        ctx.textAlign = 'center';
+        ctx.fillText(this.type.toUpperCase(), 0, h / 2 + 12 * ws);
+        ctx.textAlign = 'left';
+        ctx.restore();
+    }
+}
+
 // ── FALSE WORSHIP — the image that demands adoration ─────────────────────────
-// Projects a radiant golden idol near the player: SHOOTING IT HEALS THE HEAD.
-// Ignored, it shatters harmlessly. Splits into a mirror procession — two
-// counterfeit selves that pop when shot while the true head flinches.
+// THE FALSE GOD. It impersonates divinity and draws the faithful away: it
+// CONVERTS — summoning apostles that wear the PLAYER'S OWN HULL (real hostile
+// ships in your ship's skin, haloed in gold), raises GRAVEN IMAGES near the
+// player — the WRATHFUL idol (smites), the LURE idol (drags you bodily toward
+// its altar — adoration as gravity), the TITHE idol (steals your scrap; kill
+// it before it expires or the tithe is CONSUMED) — and when wounded it
+// INTERPOSES: swapping places with an apostle in a flash of gold, so the thing
+// you were killing turns out to be wearing your face. No damage mults — its
+// defense is its congregation.
 export class HeadFalseWorship extends DragonHead {
     constructor(...a) {
         super(...a);
-        this.idol = null;      // {x,y,t,healed}
-        this.mirrors = null;   // [{ang, popped}] — offsets around the true body
-        this.idolCooldown = 10;
+        this.idols = [];       // GravenIdol event refs — the covenant count
+        this.apostles = [];    // [{x,y,orbA,orbDir,hp,fireT,asset,body,warpT}]
+        this.soulStreams = []; // [{x,y,t,dur}] — broken idols' power returning home
+        this._swapCd = 0;
+        this._recentDmg = 0;
     }
 
-    // Identity: THE SHELL GAME — the true body is harder to wound while its
-    // procession stands; pop the counterfeits first.
+    _frantic() { return this.health < this.maxHealth * 0.5; }
+    // Real objective-grade pools — an idol is the covenant's armor, not a
+    // popcorn target.
+    _idolMaxHp() { return 450 + 140 * this._diff(); }
+
+    // The statue art, per type — counterfeits of the game's own holy icons:
+    // the Seraph (wrath), the Yellow One — the LAMB, Christus Victor,
+    // counterfeited per Rev 13:11 (lure), and the supply cache (tithe).
+    // Gif assets contribute frame 0 (frames share the static-asset shape).
+    static IDOL_ART = { wrath: 'seraph_idle_closed', lure: 'yellow_one_idle', tithe: 'cache' };
+    _idolArt(type) {
+        let a = this.game.assets.get(HeadFalseWorship.IDOL_ART[type] || 'cache');
+        if (Array.isArray(a)) a = a[0];
+        return a || null;
+    }
+    // One gold-tinted wrapper per type (logical-res canvas + dims), shared by
+    // the statue draw, the FractureModel chips, and the voronoi shatter.
+    _idolGeom(type) {
+        // Partial-alpha gilding: gold wash over the art, not a solid stamp —
+        // the original detail reads through.
+        const art = this._idolArt(type);
+        return art ? tintedSprite(art, 'idol_gold_' + type, 'rgba(224,178,64,0.55)', 0) : null;
+    }
+
+    // THE COVENANT OF IMAGES (user-specified): every standing idol halves
+    // the damage the head takes — ×0.5 each, multiplicative. Three idols out
+    // = effectively untouchable. Break the images; their stolen power
+    // streams home, and the false god stands naked.
     _damageMult() {
-        return this.mirrors ? 0.6 : 1;
+        return Math.pow(0.5, Math.min(4, this.idols.length));
     }
 
-    // The idol's clocks, run from a stately broadside cruise: the golden
-    // idol and the mirror procession cast on the move; the halo is a
-    // committed stop — the ship becomes the still center of its own shrine.
+    // INTERPOSITION: wounded, it hides behind its congregation — a golden
+    // flash and it has swapped places with an apostle. You were shooting
+    // your own reflection.
+    _onDamaged(dmg) {
+        this._recentDmg += dmg;
+        if (this._recentDmg > 70 && this._swapCd <= 0 && this.apostles.length && this.state === 'fight') {
+            this._recentDmg = 0;
+            this._swapCd = 4.5;
+            const ap = this.apostles[Math.floor(Math.random() * this.apostles.length)];
+            const hx = this.worldX, hy = this.worldY;
+            const state = this.game.currentState;
+            if (state) {
+                state._blinkWarp = { x: hx, y: hy, t: 0.35, dur: 0.35, depart: true };
+            }
+            this.worldX = ap.x; this.worldY = ap.y;
+            ap.x = hx; ap.y = hy;
+            this.vx *= 0.3; this.vy *= 0.3;
+            this._ring({ color: GOLD, maxR: 220, dur: 0.4, width: 5 });
+            if (state && state.cinematics) {
+                state.cinematics.spawnRing(ap.x, ap.y, { color: GOLD, maxR: 220, dur: 0.4, width: 5 });
+            }
+            if (state && state.spawnFloatingText) {
+                state.spawnFloatingText(this.worldX, this.worldY - 50, 'BEHOLD', GOLD);
+            }
+            this.game.sounds.play('teleport', { volume: 0.6, x: hx, y: hy });
+        }
+    }
+
+    // The false god's clocks, run from a stately broadside cruise: the
+    // revelation (graven images), the conversion (apostles), gapped halo
+    // rings, and gold seekers — a liturgy that never pauses.
     _updateWeapons(dt, tgt, dist, angleToTarget) {
         const rate = this._weaponRate();
         if (rate <= 0 || this.attack) return;
+        const diff = this._diff();
         const inRange = this._inWeaponRange(dist);
+        const frantic = this._frantic() ? 1.3 : 1;
 
-        this.idolCooldown -= dt * rate;
-        if (inRange && this.idolCooldown <= 0 && !this.idol && this.role !== 'flank') {
-            this.idolCooldown = 13 + Math.random() * 5;
-            const ang = Math.random() * Math.PI * 2;
-            this.idol = {
-                x: tgt.worldX + Math.cos(ang) * 320,
-                y: tgt.worldY + Math.sin(ang) * 320,
-                t: 0, healed: 0
-            };
-            this._ring({ color: GOLD, maxR: 200, dur: 0.6, width: 4 });
-            this._sfx('click', 0.6);
+        // THE REVELATION: graven images materialize around the player.
+        this.revelationTimer = (this.revelationTimer ?? 4.5) - dt * rate * frantic;
+        if (inRange && this.revelationTimer <= 0 && this.idols.length < 4) {
+            this.revelationTimer = 6.5 + Math.random() * 2.5;
+            this.attack = { type: 'revelation', timer: 0, dur: 0.6 * this._teleMult(), tgt, ownsMove: true };
+            this._sfx('shield', 0.5);
+            return;
         }
 
-        this.processionTimer = (this.processionTimer ?? 7.0) - dt * rate;
-        if (inRange && this.processionTimer <= 0 && !this.mirrors) {
-            this.processionTimer = 12 + Math.random() * 4;
-            this.mirrors = [{ ang: Math.PI * 2 / 3, popped: false }, { ang: -Math.PI * 2 / 3, popped: false }];
-            this.mirrorsLife = 7.0;
-            this.mirrorsVolleyed = false;
-            this._ring({ color: GOLD, maxR: 260, dur: 0.5, width: 4 });
-            this._sfx('shield', 0.6);
+        // THE CONVERSION: it raises apostles in the player's own image.
+        this.conversionTimer = (this.conversionTimer ?? 6.0) - dt * rate * frantic;
+        if (inRange && this.conversionTimer <= 0 && this.apostles.length < 2) {
+            this.conversionTimer = 9 + Math.random() * 3;
+            this.attack = { type: 'conversion', timer: 0, dur: 0.7 * this._teleMult(), ownsMove: true };
+            this.game.sounds.play('railgun_target', { volume: 0.6, x: this.worldX, y: this.worldY });
+            return;
         }
 
         this.haloTimer = (this.haloTimer ?? 2.5) - dt * rate;
         if (inRange && this.haloTimer <= 0) {
             this.haloTimer = 3.0 + Math.random() * 1.4;
             this.attack = { type: 'halo', timer: 0, dur: 1.2, pulses: 0, ownsMove: true };
+            return;
+        }
+
+        // Gold seekers between rites.
+        this.seekerTimer = (this.seekerTimer ?? 2.0) - dt * rate;
+        if (inRange && this.seekerTimer <= 0) {
+            this.seekerTimer = 2.6 + Math.random() * 0.8;
+            this._fireSideMissiles(tgt, 2, 14 + 3 * diff);
+            this._sfx('laser', 0.4);
         }
     }
 
@@ -3198,6 +4322,74 @@ export class HeadFalseWorship extends DragonHead {
         const a = this.attack;
         a.timer += dt;
         const diff = this._diff();
+
+        if (a.type === 'revelation') {
+            // The rite: it holds its pose while gold light gathers — then
+            // the graven images stand where there was nothing.
+            this._telegraphTick(dt);
+            this._shipDrift(dt, player.worldX, player.worldY);
+            if (a.timer >= a.dur) {
+                const types = ['wrath', 'lure', 'tithe'].sort(() => Math.random() - 0.5);
+                const n = this._frantic() ? 3 : 2;
+                for (let i = 0; i < n && this.idols.length < 4; i++) {
+                    const type = types[i % types.length];
+                    const ang = Math.random() * Math.PI * 2;
+                    const d = 380 + Math.random() * 200;
+                    const ix = player.worldX + Math.cos(ang) * d;
+                    const iy = player.worldY + Math.sin(ang) * d;
+                    const state = this.game.currentState;
+                    // A REAL event entity — the engine's own collision pipeline
+                    // makes it destructible by every weapon, like an asteroid.
+                    const idol = new GravenIdol(this.game, this, type, ix, iy);
+                    this.idols.push(idol);
+                    if (state && state.events) state.events.push(idol);
+                    if (state && state.cinematics) {
+                        state.cinematics.spawnRing(ix, iy, { color: GOLD, maxR: 160, dur: 0.5, width: 4 });
+                    }
+                    if (state && state.spawnFloatingText) {
+                        state.spawnFloatingText(ix, iy - 50, type.toUpperCase(), GOLD);
+                    }
+                }
+                this._sfx('shield', 0.7);
+                this.game.camera.shake(0.8);
+                this.attack = null;
+            }
+            return;
+        }
+
+        if (a.type === 'conversion') {
+            this._telegraphTick(dt);
+            this._shipDrift(dt, player.worldX, player.worldY);
+            if (a.timer >= a.dur) {
+                const bodies = this._bodies();
+                const want = 3;
+                let i = 0;
+                while (this.apostles.length < want && bodies.length) {
+                    const body = bodies[i % bodies.length];
+                    const ang = Math.random() * Math.PI * 2;
+                    const ax = body.worldX + Math.cos(ang) * (520 + Math.random() * 140);
+                    const ay = body.worldY + Math.sin(ang) * (520 + Math.random() * 140);
+                    this.apostles.push({
+                        x: ax, y: ay, orbA: ang, orbDir: Math.random() < 0.5 ? 1 : -1,
+                        hp: 120 + 30 * this._diff(), fireT: 1.2 + Math.random(),
+                        asset: body.stillImg || null, body, warpT: 0.4
+                    });
+                    const state = this.game.currentState;
+                    if (state && state.cinematics) {
+                        state.cinematics.spawnRing(ax, ay, { color: GOLD, maxR: 180, dur: 0.5, width: 4 });
+                    }
+                    if (state && state.spawnFloatingText) {
+                        state.spawnFloatingText(ax, ay - 40, 'CONVERTED', GOLD);
+                    }
+                    this.game.sounds.play('teleport', { volume: 0.4, x: ax, y: ay });
+                    i++;
+                }
+                this.game.camera.shake(0.9);
+                this.attack = null;
+            }
+            return;
+        }
+
         if (a.type !== 'halo') { this.attack = null; return; }
         // Committed stop: brake, radiate two gapped rings, resume the cruise.
         if (a.pulses === 0) this._telegraphTick(dt);
@@ -3220,125 +4412,226 @@ export class HeadFalseWorship extends DragonHead {
         if (a.timer >= a.dur) this.attack = null;
     }
 
-    _boltFrom(x, y, ang, speed, dmg) {
+    // An idol broke (shot down or lapsed): the engine delivers the voronoi
+    // shatter (GravenIdol.getSpawnOnDeath); here the covenant side happens —
+    // its power streams home, and the last one strips the god naked.
+    _onIdolBroken(idol, destroyed) {
+        const i = this.idols.indexOf(idol);
+        if (i >= 0) this.idols.splice(i, 1);
         const state = this.game.currentState;
-        if (!state || !state.projectiles) return;
-        state.projectiles.push(new Projectile(this.game, x, y, ang, speed, 'red_laser_ball', this, dmg, 3.4));
-    }
-
-    _mirrorPositions() {
-        const out = [{ x: this.worldX, y: this.worldY, ang: 0 }];
-        if (!this.mirrors) return out;
-        for (const m of this.mirrors) {
-            if (m.popped) continue;
-            const a = this._animClock * 0.9 + m.ang;
-            out.push({ x: this.worldX + Math.cos(a) * 240, y: this.worldY + Math.sin(a) * 240, ang: m.ang, m });
+        const fighting = this.alive && this.state === 'fight';
+        if (fighting) {
+            // A SHOT-DOWN image recoils on its god: the returning stream
+            // carries a quarter of the idol's pool as raw hull damage
+            // (bypasses the covenant — this IS the counterplay's reward).
+            this.soulStreams.push({
+                x: idol.x, y: idol.y, t: 0, dur: 0.9,
+                dmg: destroyed ? Math.round(idol.maxHealth * 0.25) : 0
+            });
         }
-        return out;
+        this._sparks(idol.x, idol.y, destroyed ? 18 : 12, { spread: Math.PI * 2, color: GOLD, speedMin: 80, speedMax: 300 });
+        if (state && state.cinematics) {
+            state.cinematics.spawnRing(idol.x, idol.y, { color: GOLD, maxR: 150, dur: 0.45, width: 4 });
+        }
+        if (idol.type === 'tithe' && idol.stolen > 0) {
+            if (destroyed) {
+                // The tithe returns, with interest.
+                const refund = Math.ceil(idol.stolen * 1.25);
+                if (state && state.scrapEntities) {
+                    for (let i2 = 0; i2 < refund && state.scrapEntities.length < 240; i2++) {
+                        const sa = Math.random() * Math.PI * 2;
+                        const s = new Scrap(this.game, idol.x, idol.y, 'small');
+                        s.vx = Math.cos(sa) * (140 + Math.random() * 220);
+                        s.vy = Math.sin(sa) * (140 + Math.random() * 220);
+                        state.scrapEntities.push(s);
+                    }
+                }
+            } else if (state && state.spawnFloatingText) {
+                // Expired un-smashed: the false god keeps the offering.
+                state.spawnFloatingText(idol.x, idol.y - 30, `${idol.stolen} SCRAP CONSUMED`, RED);
+            }
+        }
+        this.game.sounds.play(destroyed ? 'shield_break' : 'shield', { volume: 0.45, x: idol.x, y: idol.y });
+        if (fighting && this.idols.length === 0) {
+            if (state && state.spawnFloatingText) {
+                state.spawnFloatingText(this.worldX, this.worldY - 56, 'EXPOSED', '#ffffff');
+            }
+            this._ring({ color: '#ffffff', maxR: 240, dur: 0.5, width: 5 });
+            this.game.sounds.play('shield_break', { volume: 0.6, x: this.worldX, y: this.worldY });
+        }
     }
 
     update(dt, player) {
         super.update(dt, player);
-        if (this.state !== 'fight') { this.idol = null; return; }
+        if (this.state === 'shattered' || this.state === 'dead') {
+            this.apostles.length = 0;
+            this.soulStreams.length = 0;
+            // The idol events crumble themselves when the head goes down.
+            return;
+        }
         const state = this.game.currentState;
-        if (!state) return;
+        if (!state || this.state !== 'fight') return;
+        const diff = this._diff();
+        this._swapCd -= dt;
+        this._recentDmg = Math.max(0, this._recentDmg - dt * 40);
 
-        // The idol: intercepts worship (bullets). Every shot heals the head.
-        if (this.idol) {
-            const idol = this.idol;
-            idol.t += dt;
-            for (const proj of state.projectiles) {
-                if (!proj.alive || !proj.friendly) continue;
-                if (Math.hypot(proj.worldX - idol.x, proj.worldY - idol.y) < 60) {
-                    proj.alive = false;
-                    const heal = Math.min(this.maxHealth - this.health, proj.damage * 2);
-                    this.health += heal;
-                    idol.healed += heal;
-                    if (state.spawnFloatingText && heal > 0) {
-                        state.spawnFloatingText(this.worldX, this.worldY - 40, `+${Math.ceil(heal)}`, '#9a9a9a');
+        // Broken idols' power streaming home — a flash as each arrives, and
+        // a shot-down image's recoil bites the god's own hull on impact.
+        for (let i = this.soulStreams.length - 1; i >= 0; i--) {
+            const s = this.soulStreams[i];
+            s.t += dt;
+            if (s.t >= s.dur) {
+                this.soulStreams.splice(i, 1);
+                this._sparks(this.worldX, this.worldY, 8, { spread: Math.PI * 2, color: GOLD, speedMin: 60, speedMax: 220 });
+                if (s.dmg > 0 && this.state === 'fight') {
+                    this.health -= s.dmg;
+                    this._hpFlash = 0.25;
+                    this._hitFlash = 0.08;
+                    if (state.spawnFloatingText) {
+                        state.spawnFloatingText(this.worldX, this.worldY, `-${s.dmg}`, '#ffee66');
                     }
-                    this._sparks(idol.x, idol.y, 6, { color: GOLD, speedMin: 80, speedMax: 260 });
-                    this.game.sounds.play('shield', { volume: 0.3, x: idol.x, y: idol.y });
+                    this._ring({ color: '#ffffff', maxR: 160, dur: 0.35, width: 4 });
+                    this.game.sounds.play('ship_explode', { volume: 0.4, x: this.worldX, y: this.worldY });
+                    if (this.health <= 0) {
+                        this.health = 0;
+                        this._startDying();
+                    }
                 }
-            }
-            if (idol.t > 6) {
-                // Ignored — the idol crumbles, powerless.
-                this._sparks(idol.x, idol.y, 20, { color: GOLD, speedMin: 60, speedMax: 220 });
-                if (state.cinematics) state.cinematics.spawnRing(idol.x, idol.y, { color: GOLD, maxR: 140, dur: 0.5, width: 3 });
-                this.idol = null;
             }
         }
 
-        // Mirrors: local shots pop the counterfeits harmlessly.
-        if (this.mirrors) {
-            for (const pos of this._mirrorPositions()) {
-                if (!pos.m) continue;
+        // (The graven images are REAL events now — they update, collide, and
+        // draw themselves through the engine like any other entity. The head
+        // only tracks them for the covenant: see GravenIdol/_onIdolBroken.)
+
+        // ── the apostles — hostiles wearing the player's own hull ────────
+        if (this.apostles.length) {
+            let aw = 0;
+            for (const ap of this.apostles) {
+                if (ap.warpT > 0) ap.warpT -= dt;
+                const body = (ap.body && !ap.body.dead) ? ap.body : (this._bodies()[0] || null);
+                if (body) {
+                    // Orbit the pilot they imitate — a mockery of escort.
+                    ap.orbA += ap.orbDir * 0.55 * dt;
+                    const wx = body.worldX + Math.cos(ap.orbA) * 560;
+                    const wy = body.worldY + Math.sin(ap.orbA) * 560;
+                    const d = Math.hypot(wx - ap.x, wy - ap.y) || 1;
+                    const step = Math.min(d, 460 * dt);
+                    ap.x += ((wx - ap.x) / d) * step;
+                    ap.y += ((wy - ap.y) / d) * step;
+                    // Gold snapshots, loosely homing.
+                    ap.fireT -= dt;
+                    if (ap.fireT <= 0 && ap.warpT <= 0) {
+                        ap.fireT = 1.7 + Math.random() * 0.8;
+                        const toB = Math.atan2(body.worldY - ap.y, body.worldX - ap.x);
+                        const p = this._bolt(ap.x, ap.y, toB, 640, 10 + 2 * diff, 'yellow_laser_ball', 3.0);
+                        if (p) { p.target = body; p.turnRate = 0.6; }
+                    }
+                }
+                // Shots kill the counterfeit.
+                let dead = false;
                 for (const proj of state.projectiles) {
                     if (!proj.alive || !proj.friendly) continue;
-                    if (Math.hypot(proj.worldX - pos.x, proj.worldY - pos.y) < 80) {
+                    if (Math.hypot(proj.worldX - ap.x, proj.worldY - ap.y) < 48) {
                         proj.alive = false;
-                        pos.m.popped = true;
-                        this._sparks(pos.x, pos.y, 14, { color: GOLD, speedMin: 100, speedMax: 320 });
-                        this.game.sounds.play('shield_break', { volume: 0.4, x: pos.x, y: pos.y });
-                        break;
+                        ap.hp -= proj.damage || 10;
+                        this._sparks(ap.x, ap.y, 4, { color: GOLD, speedMin: 60, speedMax: 220 });
+                        if (ap.hp <= 0) { dead = true; break; }
+                        this.game.sounds.play('hit', { volume: 0.25, x: ap.x, y: ap.y });
                     }
                 }
-            }
-            // Procession lifecycle: one volley from every surviving image
-            // mid-parade, then the counterfeits dissolve.
-            this.mirrorsLife -= dt;
-            if (!this.mirrorsVolleyed && this.mirrorsLife < 4.8) {
-                this.mirrorsVolleyed = true;
-                const diff = this._diff();
-                for (const pos of this._mirrorPositions()) {
-                    const n = 10;
-                    for (let i = 0; i < n; i++) {
-                        this._boltFrom(pos.x, pos.y, (i / n) * Math.PI * 2 + pos.ang, 270, 11 + 2 * diff);
-                    }
+                if (dead) {
+                    this._sparks(ap.x, ap.y, 16, { spread: Math.PI * 2, color: GOLD, speedMin: 100, speedMax: 360 });
+                    if (state.cinematics) state.cinematics.spawnRing(ap.x, ap.y, { color: GOLD, maxR: 140, dur: 0.4, width: 4 });
+                    if (state.spawnFloatingText) state.spawnFloatingText(ap.x, ap.y - 30, 'FAITHLESS', GOLD);
+                    this.game.sounds.play('shield_break', { volume: 0.45, x: ap.x, y: ap.y });
+                    continue;
                 }
-                this._sfx('railgun_shoot', 0.5);
+                this.apostles[aw++] = ap;
             }
-            if (this.mirrorsLife <= 0 || this.mirrors.every(m => m.popped)) this.mirrors = null;
+            this.apostles.length = aw;
         }
     }
 
     _drawExtras(ctx, camera, screen, ws) {
-        // The idol — a golden mirror of the head, pulsing a siren glow.
-        if (this.idol) {
-            const asset = this.game.assets.get(this.spriteKey);
-            if (asset) {
-                const gold = tintedSprite(asset, this.spriteKey, 'rgba(255,208,80,1)', 4);
-                const sx = this.idol.x * camera.wtsScale + camera.wtsOffX;
-                const sy = this.idol.y * camera.wtsScale + camera.wtsOffY;
-                const s = 0.55 + 0.04 * Math.sin(this.idol.t * 3);
-                const w = gold.width * ws * s, h = gold.height * ws * s;
+        const scale = ws || this.game.worldScale;
+        const t = this._animClock;
+        const hx = this.worldX * camera.wtsScale + camera.wtsOffX;
+        const hy = this.worldY * camera.wtsScale + camera.wtsOffY;
+
+        // THE COVENANT GLOW — the ship gilded one layer more yellow per
+        // standing idol. (The idols themselves are events: they draw their
+        // own statues, links, and effect streams.)
+        if (this.idols.length && this.state === 'fight') {
+            const hull = this.game.assets.get(this.spriteKey);
+            if (hull) {
                 ctx.save();
-                ctx.translate(sx, sy);
-                ctx.rotate(Math.sin(this.idol.t * 0.8) * 0.15);
                 ctx.globalCompositeOperation = 'lighter';
-                ctx.globalAlpha = 0.5 + 0.25 * Math.sin(this.idol.t * 4);
-                ctx.drawImage(gold.canvas, -w / 2, -h / 2, w, h);
+                const glow = tintedSprite(hull, this.spriteKey + '|covenant', 'rgba(255,214,90,1)', 4);
+                const gw = glow.width * scale * 1.08, gh = glow.height * scale * 1.08;
+                ctx.translate(hx, hy);
+                ctx.rotate(this.angle + Math.PI / 2);
+                ctx.globalAlpha = Math.min(0.66, 0.17 * this.idols.length) + 0.05 * Math.sin(t * 4);
+                ctx.drawImage(glow.canvas, -gw / 2, -gh / 2, gw, gh);
                 ctx.restore();
             }
         }
-        // Mirror images — same hull, hollow shimmer.
-        if (this.mirrors) {
-            const asset = this.game.assets.get(this.spriteKey);
-            if (asset) {
-                const img = asset.canvas || asset;
-                const w = (asset.width || img.width) * ws, h = (asset.height || img.height) * ws;
-                for (const pos of this._mirrorPositions()) {
-                    if (!pos.m) continue;
-                    const sx = pos.x * camera.wtsScale + camera.wtsOffX;
-                    const sy = pos.y * camera.wtsScale + camera.wtsOffY;
-                    ctx.save();
-                    ctx.translate(sx, sy);
-                    ctx.rotate(this.angle + Math.PI / 2);
-                    ctx.globalAlpha = 0.55 + 0.15 * Math.sin(this._animClock * 6 + pos.ang);
-                    ctx.drawImage(img, -w / 2, -h / 2, w, h);
-                    ctx.restore();
+
+        // Broken idols' power streaming home to the false god — the visible
+        // proof that killing the images weakens the ship.
+        if (this.soulStreams.length) {
+            ctx.save();
+            ctx.globalCompositeOperation = 'lighter';
+            ctx.fillStyle = GOLD;
+            for (const s of this.soulStreams) {
+                const fx = s.x * camera.wtsScale + camera.wtsOffX;
+                const fy = s.y * camera.wtsScale + camera.wtsOffY;
+                const base = Math.min(1, s.t / s.dur);
+                for (let k = 0; k < 6; k++) {
+                    const p = Math.max(0, Math.min(1, base - k * 0.07));
+                    const e = easeIn(p);
+                    ctx.globalAlpha = 0.85 * (1 - k * 0.13);
+                    ctx.beginPath();
+                    ctx.arc(fx + (hx - fx) * e, fy + (hy - fy) * e, (3.5 - k * 0.35) * scale, 0, Math.PI * 2);
+                    ctx.fill();
                 }
             }
+            ctx.restore();
+        }
+
+        // The apostles — the player's own hull, haloed. The wrongness IS the
+        // halo: no real pilot flies under a golden crown.
+        for (const ap of this.apostles) {
+            const asset = ap.asset;
+            const sx = ap.x * camera.wtsScale + camera.wtsOffX;
+            const sy = ap.y * camera.wtsScale + camera.wtsOffY;
+            const body = ap.body;
+            const face = body ? Math.atan2(body.worldY - ap.y, body.worldX - ap.x) : 0;
+            ctx.save();
+            ctx.translate(sx, sy);
+            if (ap.warpT > 0) ctx.globalAlpha = 1 - ap.warpT / 0.4;
+            if (asset) {
+                const img = asset.canvas || asset;
+                const w = (asset.width || img.width) * scale;
+                const h = (asset.height || img.height) * scale;
+                ctx.rotate(face + Math.PI / 2);
+                ctx.drawImage(img, -w / 2, -h / 2, w, h);
+                ctx.rotate(-(face + Math.PI / 2));
+            } else {
+                ctx.fillStyle = '#c9a032';
+                ctx.beginPath();
+                ctx.arc(0, 0, 14 * scale, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            // The golden crown — hovering halo, the tell.
+            ctx.globalCompositeOperation = 'lighter';
+            ctx.strokeStyle = GOLD;
+            ctx.globalAlpha = 0.6 + 0.25 * Math.sin(t * 5 + ap.orbA);
+            ctx.lineWidth = 2.5;
+            ctx.beginPath();
+            ctx.ellipse(0, -26 * scale, 13 * scale, 4.5 * scale, 0, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.restore();
         }
     }
 }
@@ -3350,23 +4643,123 @@ export class HeadPersecution extends DragonHead {
     constructor(...a) {
         super(...a);
         this.cryCooldown = 14;
+        this.victim = null;     // {x,y,vx,vy,spriteKey,warpT} — the doomed innocent
+        this.flungShards = [];  // [{canvas,x,y,vx,vy,rot,spin,life,dmg}] wreckage weapons
+        this._fireT = 0;        // stern-burst spacing during dashes/sweeps
+        this._emberT = 2.0;     // free-flight stern-burst clock
+        this._sidestepCd = 0;
     }
 
-    // Identity: SPEED IS ARMOR — ×0.7 at full burn, ×1.6 in the overextension
-    // stall at the end of a charge chain. Make it miss, then make it pay.
-    _damageMult() {
-        if (this.attack && this.attack.type === 'stall') return 1.6;
-        return Math.hypot(this.vx, this.vy) > 500 ? 0.7 : 1;
+    // Fire shed from the stern in bursts — fireballs that curve after the
+    // player on a loose leash (the Seraph nova recipe, aimed by neglect).
+    _sternFire(n) {
+        const diff = this._diff();
+        const bodies = this._bodies();
+        const back = this.angle + Math.PI;
+        for (let i = 0; i < n; i++) {
+            const px = this.worldX + Math.cos(back) * 80;
+            const py = this.worldY + Math.sin(back) * 80;
+            const ang = back + (Math.random() - 0.5) * 1.0;
+            const p = this._bolt(px, py, ang, 240 + Math.random() * 160, 12 + 2 * diff, 'fireball', 3.8);
+            if (p) {
+                p.spriteRotOffset = 0;   // fireball art faces right
+                p.target = bodies.length ? bodies[i % bodies.length] : null;
+                p.turnRate = 0.55 + Math.random() * 0.35;   // loose — they curve, not lock
+            }
+        }
+        this._sfx('laser', 0.3);
     }
 
-    // The interceptor's loop (Event Horizon's tempo): dragnet fans fired ON
-    // THE MOVE from its strafing runs, the chained charge as a committed
-    // dash, the hunter's cry as a brief stop-and-howl.
+    _frantic() { return this.health < this.maxHealth * 0.5; }
+
+    // No armor at all — the hunter's defense is that it's genuinely hard to
+    // hit: full speed, and it JUKES incoming fire. The windows are physical:
+    // the overextension stall after a chain, and the gloat over a fresh kill.
+    _preHit() { /* hits that land, land — see _updateSidestep for the dodge */ }
+
+    _updateSidestep(dt) {
+        this._sidestepCd -= dt;
+        if (this._sidestepCd > 0 || this.state !== 'fight') return;
+        if (this.attack && this.attack.type !== 'charge') return;   // committed poses don't juke
+        const state = this.game.currentState;
+        if (!state) return;
+        for (const proj of state.projectiles) {
+            if (!proj.alive || !proj.friendly) continue;
+            const dx = proj.worldX - this.worldX, dy = proj.worldY - this.worldY;
+            if (dx * dx + dy * dy > 200 * 200) continue;
+            if (Math.random() > 0.4) { this._sidestepCd = 0.35; return; }  // sometimes it just eats it
+            this._sidestepCd = 0.85;
+            const away = Math.atan2(dy, dx) + Math.PI / 2 * (Math.random() < 0.5 ? 1 : -1);
+            this.vx += Math.cos(away) * 1400;
+            this.vy += Math.sin(away) * 1400;
+            this._sparks(this.worldX, this.worldY, 6, { color: this.accent, speedMin: 100, speedMax: 300 });
+            this._sfx('boost', 0.3);
+            return;
+        }
+    }
+
+    // The hunter's loop: dragnet fans on the move, chained charges that SET
+    // FIRES, the firebrand herding sweep, the POGROM (it drags an innocent
+    // out of the void, kills it in front of you, and makes the wreck a
+    // weapon), and the cry that whips the pack.
     _updateWeapons(dt, tgt, dist, angleToTarget) {
         const rate = this._weaponRate();
         if (rate <= 0 || this.attack) return;
         const diff = this._diff();
         const inRange = this._inWeaponRange(dist);
+        const frantic = this._frantic() ? 1.25 : 1;
+
+        // THE POGROM — the signature. Someone else pays first. A CIVILIAN
+        // hull, and it happens where the player can't help but watch: the
+        // victim warps in inside their view, crying mayday.
+        this.pogromTimer = (this.pogromTimer ?? 5.0) - dt * rate * frantic;
+        if (inRange && this.pogromTimer <= 0 && !this.victim) {
+            this.pogromTimer = 6.5 + Math.random() * 2.5;
+            const keys = ENCOUNTER_ASSETS.civilian;
+            const ang = Math.random() * Math.PI * 2;
+            const vx0 = tgt.worldX + Math.cos(ang) * (420 + Math.random() * 160);
+            const vy0 = tgt.worldY + Math.sin(ang) * (420 + Math.random() * 160);
+            const flee = Math.atan2(vy0 - this.worldY, vx0 - this.worldX);
+            this.victim = {
+                x: vx0, y: vy0,
+                vx: Math.cos(flee) * 260, vy: Math.sin(flee) * 260,
+                spriteKey: keys[Math.floor(Math.random() * keys.length)],
+                warpT: 0.4, jink: Math.random() * Math.PI * 2
+            };
+            const state = this.game.currentState;
+            if (state) state._blinkWarp = { x: vx0, y: vy0, t: 0.4, dur: 0.4, depart: false };
+            if (state && state.spawnFloatingText) {
+                state.spawnFloatingText(vx0, vy0 - 44, 'MAYDAY, MAYDAY', '#ffffff');
+            }
+            if (state && state.cinematics) {
+                state.cinematics.spawnRing(vx0, vy0, { color: '#ffffff', maxR: 160, dur: 0.5, width: 3 });
+            }
+            this.game.sounds.play('teleport', { volume: 0.6, x: vx0, y: vy0 });
+            this.game.sounds.playKlaxon && this.game.sounds.playKlaxon(0.18);
+            this.attack = { type: 'pogrom', phase: 'mark', timer: 0, dur: 0.7 * this._teleMult(), ownsMove: true };
+            // The mark is announced like an execution order.
+            this.game.sounds.play('railgun_target', { volume: 0.7, x: this.worldX, y: this.worldY });
+            return;
+        }
+
+        // FIREBRAND: a herding sweep across your flank, pouring a curtain of
+        // loose-tracking fireballs off the stern. The hunt narrows the world.
+        this.firebrandTimer = (this.firebrandTimer ?? 4.5) - dt * rate * frantic;
+        if (inRange && this.firebrandTimer <= 0) {
+            this.firebrandTimer = 6 + Math.random() * 2.5;
+            const side = Math.random() < 0.5 ? 1 : -1;
+            const perp = angleToTarget + Math.PI / 2 * side;
+            this.attack = {
+                type: 'firebrand', phase: 'windup', timer: 0, dur: 0.4 * this._teleMult(),
+                // Sweep endpoint: past the player, offset to their flank.
+                tx: tgt.worldX + (tgt.vx || 0) * 0.4 + Math.cos(perp) * 420,
+                ty: tgt.worldY + (tgt.vy || 0) * 0.4 + Math.sin(perp) * 420,
+                ownsMove: true
+            };
+            this.vx -= Math.cos(this.angle) * 180;
+            this.vy -= Math.sin(this.angle) * 180;
+            return;
+        }
 
         // Dragnet: no stop — the fan sprays mid-flight, denser on the escape
         // side. Herding fire from a ship that never slows down.
@@ -3389,7 +4782,7 @@ export class HeadPersecution extends DragonHead {
         this.chargeTimer2 = (this.chargeTimer2 ?? 2.8) - dt * rate;
         if (inRange && this.chargeTimer2 <= 0) {
             this.chargeTimer2 = 3.2 + Math.random() * 1.6;
-            this.attack = { type: 'charge', phase: 'windup', timer: 0, dur: 0.45 * this._teleMult(), chain: 1 + Math.floor(Math.random() * 3), ownsMove: true };
+            this.attack = { type: 'charge', phase: 'windup', timer: 0, dur: 0.45 * this._teleMult(), chain: 1 + Math.floor(Math.random() * 3) + (this._frantic() ? 1 : 0), ownsMove: true };
             this.vx -= Math.cos(this.angle) * 200;
             this.vy -= Math.sin(this.angle) * 200;
             return;
@@ -3399,6 +4792,14 @@ export class HeadPersecution extends DragonHead {
         if (this.cryCooldown <= 0) {
             this.cryCooldown = 16 + Math.random() * 6;
             this.attack = { type: 'cry', timer: 0, dur: 0.6, ownsMove: true };
+            return;
+        }
+
+        // Even cruising, fire sheds off the stern in short bursts.
+        this._emberT -= dt * rate;
+        if (inRange && this._emberT <= 0) {
+            this._emberT = 2.2 + Math.random() * 0.8;
+            this._sternFire(this._frantic() ? 4 : 3);
         }
     }
 
@@ -3406,6 +4807,76 @@ export class HeadPersecution extends DragonHead {
         const a = this.attack;
         a.timer += dt;
         const diff = this._diff();
+
+        if (a.type === 'pogrom') {
+            const v = this.victim;
+            if (!v) { this.attack = null; return; }
+            if (a.phase === 'mark') {
+                // The mark: it turns on the innocent, targeting line burning.
+                this._telegraphTick(dt);
+                this.vx *= Math.pow(0.9, dt * 60); this.vy *= Math.pow(0.9, dt * 60);
+                this.worldX += this.vx * dt; this.worldY += this.vy * dt;
+                this.angle = Math.atan2(v.y - this.worldY, v.x - this.worldX);
+                if (a.timer >= a.dur) {
+                    a.phase = 'run'; a.timer = 0; a.dur = 1.7;
+                    this.dashHitSet = new Set();   // the run-down hurts anything in the way
+                    this._sfx('boost', 0.8);
+                    this.game.camera.shake(0.8);
+                }
+            } else if (a.phase === 'run') {
+                // The run-down: a homing dash — the victim cannot outrun it.
+                const ang = Math.atan2(v.y - this.worldY, v.x - this.worldX);
+                this.angle = ang;
+                this.vx = Math.cos(ang) * 2600; this.vy = Math.sin(ang) * 2600;
+                this.worldX += this.vx * dt; this.worldY += this.vy * dt;
+                this._dashWake(dt);
+                const d = Math.hypot(v.x - this.worldX, v.y - this.worldY);
+                if (d < 110 || a.timer >= a.dur) {
+                    // THE KILL — the wreck becomes the weapon.
+                    this._executeVictim(player);
+                    this.dashHitSet = null;
+                    a.phase = 'gloat'; a.timer = 0; a.dur = 0.8;
+                    this.vx *= 0.2; this.vy *= 0.2;
+                }
+            } else {
+                // The gloat over the kill — still, savoring it. The window.
+                this._telegraphTick(dt);
+                this.vx *= Math.pow(0.9, dt * 60); this.vy *= Math.pow(0.9, dt * 60);
+                this.worldX += this.vx * dt; this.worldY += this.vy * dt;
+                if (a.timer >= a.dur) this.attack = null;
+            }
+            return;
+        }
+
+        if (a.type === 'firebrand') {
+            if (a.phase === 'windup') {
+                this._telegraphTick(dt);
+                this.vx *= Math.pow(0.88, dt * 60); this.vy *= Math.pow(0.88, dt * 60);
+                this.worldX += this.vx * dt; this.worldY += this.vy * dt;
+                this.angle = Math.atan2(a.ty - this.worldY, a.tx - this.worldX);
+                if (a.timer >= a.dur) {
+                    a.phase = 'sweep'; a.timer = 0; a.dur = 0.55;
+                    const ang = Math.atan2(a.ty - this.worldY, a.tx - this.worldX);
+                    this.angle = ang;
+                    this.vx = Math.cos(ang) * 2700; this.vy = Math.sin(ang) * 2700;
+                    this.dashHitSet = new Set();
+                    this._sfx('boost', 0.7);
+                }
+            } else {
+                this._dashWake(dt);
+                this.vx *= Math.pow(0.98, dt * 60); this.vy *= Math.pow(0.98, dt * 60);
+                this.worldX += this.vx * dt; this.worldY += this.vy * dt;
+                // The sweep pours fire off the stern — a curtain of fireballs
+                // that peels off and hunts.
+                this._fireT -= dt;
+                if (this._fireT <= 0) { this._fireT = 0.11; this._sternFire(2); }
+                if (a.timer >= a.dur) {
+                    this.dashHitSet = null;
+                    this.attack = null;
+                }
+            }
+            return;
+        }
 
         if (a.type === 'cry') {
             this._telegraphTick(dt);
@@ -3441,6 +4912,9 @@ export class HeadPersecution extends DragonHead {
                 }
             } else {
                 this._dashWake(dt);
+                // The chase burns — fireball bursts shed off the stern.
+                this._fireT -= dt;
+                if (this._fireT <= 0) { this._fireT = 0.22; this._sternFire(2); }
                 this.vx *= Math.pow(0.983, dt * 60); this.vy *= Math.pow(0.983, dt * 60);
                 this.worldX += this.vx * dt; this.worldY += this.vy * dt;
                 if (a.timer >= a.dur) {
@@ -3464,6 +4938,192 @@ export class HeadPersecution extends DragonHead {
             if (a.timer >= a.dur) this.attack = null;
         }
     }
+
+    // The kill: the victim's hull shatters and the pieces BLAST at the player.
+    _executeVictim(player) {
+        const v = this.victim;
+        if (!v) return;
+        this.victim = null;
+        const diff = this._diff();
+        const asset = this.game.assets.get(v.spriteKey);
+        const state = this.game.currentState;
+        const toP = Math.atan2(player.worldY - v.y, player.worldX - v.x);
+        let pieces = null;
+        if (asset) {
+            pieces = getCachedShatter(asset, v.spriteKey + '|pogrom', 12);
+        }
+        const n = pieces ? pieces.length : 12;
+        for (let i = 0; i < n; i++) {
+            const aimed = i < Math.ceil(n * 0.65);
+            const ang = aimed ? toP + (Math.random() - 0.5) * 0.5 : Math.random() * Math.PI * 2;
+            const speed = aimed ? 640 + Math.random() * 220 : 180 + Math.random() * 200;
+            this.flungShards.push({
+                canvas: pieces ? pieces[i].canvas : null,
+                lx: pieces ? pieces[i].lx : 0, ly: pieces ? pieces[i].ly : 0,
+                x: v.x, y: v.y,
+                vx: Math.cos(ang) * speed, vy: Math.sin(ang) * speed,
+                rot: Math.random() * Math.PI * 2, spin: (Math.random() - 0.5) * 9,
+                life: 1.7, dmg: aimed ? 10 + 2 * diff : 0
+            });
+        }
+        if (state) {
+            if (state._spawnSparks) {
+                state._spawnSparks(v.x, v.y, 26, { spread: Math.PI * 2, color: '#ff9a5a', speedMin: 120, speedMax: 460 });
+                state._spawnSparks(v.x, v.y, 12, { spread: Math.PI * 2, color: '#ffffff', speedMin: 200, speedMax: 520 });
+            }
+            if (state.cinematics) {
+                state.cinematics.spawnRing(v.x, v.y, { color: '#ffffff', maxR: 260, dur: 0.45, width: 6 });
+                state.cinematics.spawnRing(v.x, v.y, { color: RED, maxR: 380, dur: 0.6, width: 7 });
+            }
+            if (state.spawnFloatingText) {
+                state.spawnFloatingText(v.x, v.y - 40, 'NO WITNESSES', RED);
+            }
+        }
+        this.game.sounds.play('ship_explode', { volume: 0.9, x: v.x, y: v.y });
+        this.game.sounds.play('ship_explode', { volume: 0.5, pitch: 0.8, x: v.x, y: v.y });
+        this.game.camera.shake(2.0);
+    }
+
+    update(dt, player) {
+        super.update(dt, player);
+        if (this.state === 'shattered' || this.state === 'dead') {
+            this.victim = null; this.flungShards.length = 0;
+            return;
+        }
+        this._updateSidestep(dt);
+
+        // Withdrawn utility (group fight): the hunter's cry carries from the
+        // dark — the whole pack quickens even while it prowls out of reach.
+        if (this.role === 'withdrawn' && this.state === 'fight' && !this.dragon.soloMode) {
+            this._farCryT = (this._farCryT ?? 18) - dt;
+            if (this._farCryT <= 0) {
+                this._farCryT = 20 + Math.random() * 8;
+                this.dragon.hunterCry(3.5);
+                this._ring({ color: RED, maxR: 420, dur: 0.8, width: 6 });
+                this.game.sounds.playKlaxon && this.game.sounds.playKlaxon(0.18);
+            }
+        }
+
+        // The doomed innocent flees — panicked, serpentine, never fast enough.
+        if (this.victim) {
+            const v = this.victim;
+            if (v.warpT > 0) v.warpT -= dt;
+            const away = Math.atan2(v.y - this.worldY, v.x - this.worldX);
+            v.jink = (v.jink || 0) + dt * 7;
+            const panic = away + Math.sin(v.jink) * 0.7;
+            v.vx += Math.cos(panic) * 340 * dt;
+            v.vy += Math.sin(panic) * 340 * dt;
+            v.x += v.vx * dt; v.y += v.vy * dt;
+            // Panic engine sputter — the flight reads as terror, not transit.
+            if (Math.random() < dt * 20) {
+                this._sparks(v.x - Math.cos(panic) * 20, v.y - Math.sin(panic) * 20, 1,
+                    { color: '#9ad4ff', speedMin: 30, speedMax: 90 });
+            }
+            // Orphaned victim (attack interrupted by stun etc): it escapes.
+            if (!this.attack || this.attack.type !== 'pogrom') {
+                if (Math.hypot(v.x - this.worldX, v.y - this.worldY) > 1600) this.victim = null;
+            }
+        }
+
+        // Flung wreckage: spinning hull shards that HURT.
+        if (this.flungShards.length) {
+            let write = 0;
+            for (const s of this.flungShards) {
+                s.life -= dt;
+                if (s.life <= 0) continue;
+                s.x += s.vx * dt; s.y += s.vy * dt;
+                s.rot += s.spin * dt;
+                if (s.dmg > 0) {
+                    let hit = false;
+                    for (const body of this._bodies()) {
+                        if (Math.hypot(body.worldX - s.x, body.worldY - s.y) < body.radius + 22) {
+                            this._hurt(body, s.dmg, s.x, s.y);
+                            this._sparks(s.x, s.y, 8, { spread: Math.PI * 2, color: '#ff9a5a', speedMin: 100, speedMax: 300 });
+                            hit = true;
+                            break;
+                        }
+                    }
+                    if (hit) continue;
+                }
+                this.flungShards[write++] = s;
+            }
+            this.flungShards.length = write;
+        }
+
+    }
+
+    _drawExtras(ctx, camera, screen, ws) {
+        const scale = ws || this.game.worldScale;
+
+        // The doomed innocent — a real NPC hull, running for its life.
+        if (this.victim) {
+            const v = this.victim;
+            const asset = this.game.assets.get(v.spriteKey);
+            if (asset) {
+                const img = asset.canvas || asset;
+                const w = (asset.width || img.width) * scale;
+                const h = (asset.height || img.height) * scale;
+                const sx = v.x * camera.wtsScale + camera.wtsOffX;
+                const sy = v.y * camera.wtsScale + camera.wtsOffY;
+                ctx.save();
+                ctx.translate(sx, sy);
+                ctx.rotate(Math.atan2(v.vy, v.vx) + Math.PI / 2);
+                if (v.warpT > 0) ctx.globalAlpha = 1 - v.warpT / 0.4;
+                ctx.drawImage(img, -w / 2, -h / 2, w, h);
+                ctx.restore();
+                // Distress flare — so the mark reads instantly.
+                ctx.save();
+                ctx.globalCompositeOperation = 'lighter';
+                ctx.strokeStyle = '#ffffff';
+                ctx.globalAlpha = 0.4 + 0.3 * Math.sin(this._animClock * 14);
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(sx, sy, 30 * scale + Math.sin(this._animClock * 7) * 4, 0, Math.PI * 2);
+                ctx.stroke();
+                ctx.restore();
+            }
+            // The mark's targeting line during the turn.
+            if (this.attack && this.attack.type === 'pogrom' && this.attack.phase === 'mark') {
+                const hx = this.worldX * camera.wtsScale + camera.wtsOffX;
+                const hy = this.worldY * camera.wtsScale + camera.wtsOffY;
+                const vx2 = v.x * camera.wtsScale + camera.wtsOffX;
+                const vy2 = v.y * camera.wtsScale + camera.wtsOffY;
+                ctx.save();
+                ctx.globalCompositeOperation = 'lighter';
+                ctx.strokeStyle = RED;
+                ctx.globalAlpha = 0.35 + 0.3 * Math.sin(this._animClock * 22);
+                ctx.lineWidth = 2;
+                ctx.setLineDash([8, 6]);
+                ctx.beginPath();
+                ctx.moveTo(hx, hy);
+                ctx.lineTo(vx2, vy2);
+                ctx.stroke();
+                ctx.restore();
+            }
+        }
+
+        // The flung wreckage — spinning shards of the innocent's hull.
+        if (this.flungShards.length) {
+            ctx.save();
+            for (const s of this.flungShards) {
+                const sx = s.x * camera.wtsScale + camera.wtsOffX;
+                const sy = s.y * camera.wtsScale + camera.wtsOffY;
+                ctx.globalAlpha = Math.min(1, s.life * 2.5);
+                ctx.translate(sx, sy);
+                ctx.rotate(s.rot);
+                if (s.canvas) {
+                    const w = s.canvas.width * scale, h = s.canvas.height * scale;
+                    ctx.drawImage(s.canvas, -w / 2, -h / 2, w, h);
+                } else {
+                    ctx.fillStyle = '#8a8a92';
+                    ctx.fillRect(-4 * scale, -4 * scale, 8 * scale, 8 * scale);
+                }
+                ctx.rotate(-s.rot);
+                ctx.translate(-sx, -sy);
+            }
+            ctx.restore();
+        }
+    }
 }
 
 // Murder gets called in when the prey is bleeding; the coordinator uses this.
@@ -3480,10 +5140,12 @@ const HEAD_DEFS = [
     { key: 'deception', cls: HeadDeception, sprite: 'dragon_deception', name: 'DECEPTION', accent: '#ff5a4a', idx: 0, baseSpeed: 700, turnSpeed: 7.0, attackRange: 1100, avoidDist: 340, style: 'striker', hpMult: 1.3 },
     { key: 'accusation', cls: HeadAccusation, sprite: 'dragon_accusation', name: 'ACCUSATION', accent: '#e03838', idx: 1, baseSpeed: 500, turnSpeed: 5.5, attackRange: 1250, avoidDist: 480, style: 'caster' },
     { key: 'murder', cls: HeadMurder, sprite: 'dragon_murder', name: 'MURDER', accent: '#ff2a10', idx: 2, baseSpeed: 800, turnSpeed: 8.0, attackRange: 1000, avoidDist: 300, style: 'striker' },
-    { key: 'blasphemy', cls: HeadBlasphemy, sprite: 'dragon_blasphemy', name: 'BLASPHEMY', accent: '#e0a030', idx: 3, baseSpeed: 550, turnSpeed: 6.0, attackRange: 1300, avoidDist: 500, style: 'caster' },
-    { key: 'economic_control', cls: HeadEconomicControl, sprite: 'dragon_economic_control', name: 'ECONOMIC CONTROL', accent: '#c04828', idx: 4, baseSpeed: 380, turnSpeed: 6.5, attackRange: 1000, avoidDist: 520, style: 'caster' },
-    { key: 'false_worship', cls: HeadFalseWorship, sprite: 'dragon_false_worship', name: 'FALSE WORSHIP', accent: '#e06060', idx: 5, baseSpeed: 520, turnSpeed: 5.5, attackRange: 1200, avoidDist: 470, style: 'caster' },
-    { key: 'persecution', cls: HeadPersecution, sprite: 'dragon_persecution', name: 'PERSECUTION', accent: '#d02020', idx: 6, baseSpeed: 780, turnSpeed: 8.0, attackRange: 1050, avoidDist: 320, style: 'striker' },
+    { key: 'blasphemy', cls: HeadBlasphemy, sprite: 'dragon_blasphemy', name: 'BLASPHEMY', accent: '#e0a030', idx: 3, baseSpeed: 550, turnSpeed: 6.0, attackRange: 1300, avoidDist: 500, style: 'caster', hpMult: 1.1 },
+    { key: 'economic_control', cls: HeadEconomicControl, sprite: 'dragon_economic_control', name: 'ECONOMIC CONTROL', accent: '#c04828', idx: 4, baseSpeed: 560, turnSpeed: 7.0, attackRange: 1000, avoidDist: 380, style: 'caster', hpMult: 1.15 },
+    // False Worship's endurance lives in the covenant (idol DR), not the raw
+    // pool — the hull itself is the smallest of the seven.
+    { key: 'false_worship', cls: HeadFalseWorship, sprite: 'dragon_false_worship', name: 'FALSE WORSHIP', accent: '#e06060', idx: 5, baseSpeed: 520, turnSpeed: 5.5, attackRange: 1200, avoidDist: 470, style: 'caster', hpMult: 0.8 },
+    { key: 'persecution', cls: HeadPersecution, sprite: 'dragon_persecution', name: 'PERSECUTION', accent: '#d02020', idx: 6, baseSpeed: 780, turnSpeed: 8.0, attackRange: 1050, avoidDist: 320, style: 'striker', hpMult: 1.15 },
 ];
 
 // The five that cut the star, the two that draw the circle.
@@ -3958,12 +5620,16 @@ export class Dragon {
             h.script = null;
             h.state = 'fight';
             h.invulnerable = false;
-            // Wheels-class pools (4200 + 1000×diff, linear): each head is a
-            // FULL chain boss — the reform halving + the angels are what keep
-            // seven of them winnable. (hpMult: heads that spend most of the
-            // fight uncatchable — Deception — carry smaller pools.)
-            h.maxHealth = Math.round((4200 + 1000 * diff) * (h.def.hpMult || 1));
+            // Solo-boss pools ×1/2 in the group fight: each head is still a
+            // real chain boss, but SEVEN of them at full solo weight would be
+            // a slog — the covenant of the pack is numbers, not bulk.
+            // (hpMult: heads whose endurance lives in mechanics — Deception's
+            // mirrors, False Worship's covenant — adjust from there.)
+            h.maxHealth = Math.round((4200 + 1000 * diff) * (h.def.hpMult || 1) * 0.5);
             h.health = h.maxHealth;
+            h._aggroDmg = 0;
+            h._recovering = false;
+            h._regenPause = 0;
         }
         this._assignRoles(true);
         this.cin = null;
@@ -3992,6 +5658,58 @@ export class Dragon {
     _updateCoordinator(dt, player) {
         this.cadenceMult = (1 + Math.min(0.6, this.totalReforms * 0.1)) * (this.cryTimer > 0 ? 1.25 : 1);
         if (this.cryTimer > 0) this.cryTimer -= dt;
+
+        // Recent-damage accumulators fade — the aggro pull reads INTENT
+        // (sustained focus), not stray shots from minutes ago.
+        for (const h of this.heads) {
+            if (h._aggroDmg > 0) h._aggroDmg = Math.max(0, h._aggroDmg - dt * 120);
+            if (h._regenPause > 0) h._regenPause -= dt;
+        }
+
+        // ── triage: the pack protects its wounded ───────────────────────
+        // An engaged head that falls well below the pack's average peels
+        // off to mend — and any head resting in the dark knits back VERY
+        // slowly (denied for a few seconds by any hit, so hunting the
+        // wounded one down is real counterplay via the aggro pull).
+        const fighting = this.aliveHeads().filter(h => h.state === 'fight');
+        if (fighting.length) {
+            let avg = 0;
+            for (const h of fighting) avg += h.health / h.maxHealth;
+            avg /= fighting.length;
+            for (const h of fighting) {
+                const frac = h.health / h.maxHealth;
+                if (h.role === 'engage' && !h.duelAlly && fighting.length > 2
+                    && frac < avg - 0.15 && !h._recovering) {
+                    h._recovering = true;
+                    h.role = 'withdrawn';
+                    if (this._team) {
+                        const i = this._team.indexOf(h);
+                        if (i >= 0) this._team.splice(i, 1);
+                    }
+                    const state = this.game.currentState;
+                    if (state && state.spawnFloatingText) {
+                        state.spawnFloatingText(h.worldX, h.worldY - 50, 'IT BREAKS OFF', h.accent);
+                    }
+                    // Backfill so the pressure never drops below the pair.
+                    const team = fighting.filter(x => x.role === 'engage' && !x.duelAlly);
+                    if (team.length < 2) {
+                        let fresh = null, best = -1;
+                        for (const x of fighting) {
+                            if (x.role !== 'withdrawn' || x.duelAlly || x._recovering || x === h) continue;
+                            const xf = x.health / x.maxHealth;
+                            if (xf > best) { best = xf; fresh = x; }
+                        }
+                        if (fresh) this._dispatch(fresh);
+                    }
+                }
+                // Recovered enough to fight again (hysteresis band).
+                if (h._recovering && frac >= avg - 0.05) h._recovering = false;
+                // The slow mend: out of combat only, ~0.4%/s, denied by hits.
+                if (h.role === 'withdrawn' && h.health < h.maxHealth && (h._regenPause || 0) <= 0) {
+                    h.health = Math.min(h.maxHealth, h.health + h.maxHealth * 0.004 * dt);
+                }
+            }
+        }
 
         this.roleTimer -= dt;
         if (this.roleTimer <= 0) this._planSortie();
@@ -4031,7 +5749,11 @@ export class Dragon {
             ? Math.atan2(pv.vy, pv.vx)
             : Math.random() * Math.PI * 2;
 
-        const avail = this.aliveHeads().filter(h => !h.duelAlly && h.state === 'fight');
+        // Recovering wounded sit sorties out — unless there's no one else.
+        let avail = this.aliveHeads().filter(h => !h.duelAlly && h.state === 'fight' && !h._recovering);
+        if (!avail.length) {
+            avail = this.aliveHeads().filter(h => !h.duelAlly && h.state === 'fight');
+        }
         if (!avail.length) { this._retiring = null; return; }
 
         // When the pack is thin, everyone left fights.
@@ -4061,7 +5783,7 @@ export class Dragon {
             // FALSE FANFARE: the liar arrives DISGUISED (it starts far away —
             // the whole approach is the infiltration) under a corrupted horn.
             this._dispatch(dec, () => { dec._cycleTimer = 0; });
-            this._dispatch(blas, () => { blas.trumpetTimer = 1.0; });
+            this._dispatch(blas, () => { blas.fanfareTimer = 1.0; });
         });
         if (acc && econ) plays.push(() => {
             // MARKET JUDGMENT: the mark lands as the market crashes.
@@ -4072,8 +5794,8 @@ export class Dragon {
             });
         });
         if (fw && blas) plays.push(() => {
-            // GOLDEN HOUR: the idol rises under counterfeit gifts.
-            this._dispatch(fw, () => { fw.idolCooldown = 0.5; });
+            // GOLDEN HOUR: the graven images rise under counterfeit gifts.
+            this._dispatch(fw, () => { fw.revelationTimer = 0.5; });
             this._dispatch(blas, () => { blas.giftsTimer = 1.0; });
         });
         if (acc && pers) plays.push(() => {
@@ -4101,10 +5823,11 @@ export class Dragon {
         }
 
         // Relief-in-place: outgoing attackers not on the new team hold the
-        // line for the handoff window.
+        // line for the handoff window — kept SHORT so the two-at-once
+        // doctrine reads true (the overlap only covers the burn-in gap).
         this._retiring = prevTeam.filter(h => h.state === 'fight' && !this._team.includes(h));
         for (const h of this._retiring) h.role = 'engage';
-        this._retireTimer = 1.5;
+        this._retireTimer = 0.8;
     }
 
     // Send a head on its attack run: role flips to engage (the super-boost
@@ -4117,6 +5840,39 @@ export class Dragon {
         head.sortieBearing = this._sortieAxis + (this._team.length === 0 ? 0 : Math.PI);
         this._team.push(head);
         if (prime) prime();
+    }
+
+    // The provoked head answers: it joins the sortie, and the quietest
+    // current attacker peels off so the player never faces more than two.
+    _pullAggro(head, team) {
+        head._aggroDmg = 0;
+        head._recovering = false;   // dragged back into the fight — no mending
+        if (team.length >= 2) {
+            let out = team[0];
+            for (const h of team) if ((h._aggroDmg || 0) < (out._aggroDmg || 0)) out = h;
+            out.role = 'withdrawn';
+            if (this._team) {
+                const i = this._team.indexOf(out);
+                if (i >= 0) this._team.splice(i, 1);
+            }
+            if (this._retiring) {
+                const i = this._retiring.indexOf(out);
+                if (i >= 0) this._retiring.splice(i, 1);
+            }
+        }
+        if (!this._team) this._team = [];
+        this._dispatch(head);
+        // The chosen fight sticks for a while — don't let the next rotation
+        // instantly overrule the player's pick.
+        this.roleTimer = Math.max(this.roleTimer, 6.5);
+        const state = this.game.currentState;
+        if (state && state.spawnFloatingText) {
+            state.spawnFloatingText(head.worldX, head.worldY - 50, 'PROVOKED', RED);
+        }
+        if (state && state.cinematics) {
+            state.cinematics.spawnRing(head.worldX, head.worldY, { color: RED, maxR: 260, dur: 0.5, width: 5 });
+        }
+        this.game.sounds.playKlaxon && this.game.sounds.playKlaxon(0.2);
     }
 
     hunterCry(dur) { this.cryTimer = Math.max(this.cryTimer, dur); }
@@ -4136,6 +5892,24 @@ export class Dragon {
     }
 
     onHeadDamaged(head, damage) {
+        // ── the player picks their fight ────────────────────────────────
+        // Recent damage per head (decays in the coordinator). Pour enough
+        // fire into a WITHDRAWN head — 2× what the current attackers are
+        // taking — and it turns aggressive, swapping in for the quietest
+        // engaged head. The two-at-once doctrine holds; the roster obeys
+        // the player's guns.
+        head._aggroDmg = (head._aggroDmg || 0) + damage;
+        head._regenPause = 3.0;   // any hit denies the out-of-combat mend
+        if (!this.soloMode && head.role === 'withdrawn' && head.state === 'fight' && !head.duelAlly) {
+            const team = this.aliveHeads().filter(h =>
+                h.role === 'engage' && !h.duelAlly && h.state === 'fight');
+            let maxEng = 0;
+            for (const h of team) maxEng = Math.max(maxEng, h._aggroDmg || 0);
+            if (head._aggroDmg >= Math.max(320, maxEng * 2)) {
+                this._pullAggro(head, team);
+            }
+        }
+
         if (this.markActive && head === this.markOwner) {
             this.markAppeal += damage;
             // Marked shots land at ×0.6 vs the accuser, so the bar sits lower.
@@ -4255,7 +6029,8 @@ export class Dragon {
                     const cr = h.radius + (proj.radius || 8);
                     if (dx * dx + dy * dy < cr * cr) {
                         proj.alive = false;
-                        h.hit(proj.damage);
+                        // Angelic fire lands at double weight vs the heads.
+                        h.hit(proj.damage * 2);
                         break;
                     }
                 }
@@ -4467,7 +6242,9 @@ export class Dragon {
                 }
             }
         }
-        if (this.game.achievements) {
+        // Solo kills (dev harness, wave fragments) don't grant the final-boss
+        // achievement — only the true seven-headed fight does.
+        if (this.game.achievements && !this.soloMode) {
             this.game.achievements.notify('boss_defeated', { bossId: 'Dragon' });
         }
         // Let the trumpets ring alone, then the music comes home.

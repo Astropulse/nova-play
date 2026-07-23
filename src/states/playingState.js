@@ -27,9 +27,9 @@ import { EventHorizon } from '../entities/eventHorizon.js';
 import { YellowOne, YO_STATE } from '../entities/yellowOne.js';
 import { Seraph, SERAPH_STATE } from '../entities/seraph.js';
 import { Wheels, WHEELS_STATE } from '../entities/wheels.js';
-import { Hive, HIVE_STATE } from '../entities/swarm.js';
+import { Hive, HIVE_STATE, SwarmMother } from '../entities/swarm.js';
 import { Carcosa, CARCOSA_STATE } from '../entities/bones.js';
-import { Dragon, DRAGON_STATE } from '../entities/dragon.js';
+import { Dragon, DRAGON_STATE, HEAD_DEFS } from '../entities/dragon.js';
 import { MenuState } from './menuState.js';
 import { AchievementsState } from './achievementsState.js';
 import { ACHIEVEMENTS } from '../data/achievements.js';
@@ -3981,6 +3981,100 @@ export class PlayingState {
     // message is what actually destroys things.
     // `attacker` (co-op): the local pilot dealing this damage — recorded so the
     // kill's XP can be attributed to whoever lands it.
+    // A FRAGMENT OF THE DRAGON — 10% of boss waves spawn one random head as
+    // a solo boss (full kit, solo pool, 'Consuming Dragon') so the player
+    // meets the seven early and learns their attacks. Guards: single-player
+    // only (heads are local-scripted events — a host-side spawn would be
+    // invisible to MP clients), and never while a dragon (fight or fragment)
+    // is already live. Seeded via the wave RNG so runs reproduce.
+    // Has the TRUE seven-headed dragon been defeated (this run)? Derived from
+    // the finished real controller — it stays alive forever as the sigil
+    // marker and serializes, so this survives save/load with no schema
+    // change. Fragments never count. Cached once true.
+    dragonSlain() {
+        if (this._dragonSlainCache) return true;
+        const ok = this.events.some(ev =>
+            ev.isDragon && !ev.isFragment && ev.state === DRAGON_STATE.FINISHED);
+        if (ok) this._dragonSlainCache = true;
+        return ok;
+    }
+
+    // POST-DRAGON MENAGERIE — once the true dragon is slain, regular spawn
+    // slots can produce ANY of the game's bosses: wave bosses, the Swarm
+    // Mother, solo dragon heads, even echo Seraphs and Wheels. Returns an
+    // Enemy instance (routed through the normal enemy pipeline), the string
+    // 'event' (the boss went into state.events directly), or null.
+    spawnPostDragonBoss(x, y, scale, rand) {
+        const r = rand || Math.random;
+        const mp = !!this.netSync;
+        // Event-species bosses (heads, Seraph, Wheels) are local-scripted —
+        // host-side spawns would be invisible to MP clients, so multiplayer
+        // keeps the enemy-species pool only.
+        const pool = [
+            { k: 'wave', w: 3 },
+            { k: 'mother', w: 1 },
+        ];
+        if (!mp) {
+            pool.push({ k: 'head', w: 1.5 });
+            pool.push({ k: 'seraph', w: 0.7 });
+            pool.push({ k: 'wheels', w: 0.7 });
+        }
+        let total = 0;
+        for (const p of pool) total += p.w;
+        let roll = r() * total;
+        let kind = 'wave';
+        for (const p of pool) { roll -= p.w; if (roll <= 0) { kind = p.k; break; } }
+
+        if (kind === 'wave') {
+            const bosses = [Starcore, AsteroidCrusher, EventHorizon];
+            return new bosses[Math.floor(r() * bosses.length)](this.game, x, y, scale);
+        }
+        if (kind === 'mother') {
+            return new SwarmMother(this.game, x, y, scale);
+        }
+        if (kind === 'head') {
+            // Same rules as wave fragments: never while a dragon fight or
+            // another fragment is live.
+            if (this.dragonEvent && this.dragonEvent.state !== DRAGON_STATE.FINISHED) return null;
+            const key = HEAD_DEFS[Math.floor(r() * HEAD_DEFS.length)].key;
+            const dragon = Dragon.spawnSolo(this.game, this, key, x, y);
+            if (!dragon) return null;
+            dragon.isDragonHead = true;
+            dragon.isFragment = true;
+            return 'event';
+        }
+        // Echo angels turned hostile relics: real Seraph/Wheels events, but
+        // flagged so their deaths never re-fire the chain (no Wheels spawn,
+        // no glow retarget) and they never serialize as chain links.
+        const Echo = kind === 'seraph' ? Seraph : Wheels;
+        const echo = new Echo(this.game, x, y);
+        echo.isEcho = true;
+        echo.revealed = true;
+        this.events.push(echo);
+        return 'event';
+    }
+
+    tryDragonFragment(rand) {
+        if (this.netSync) return false;
+        if (this.dragonEvent && this.dragonEvent.state !== DRAGON_STATE.FINISHED) return false;
+        const roll = rand ? rand() : Math.random();
+        if (roll >= 0.10) return false;
+        const key = HEAD_DEFS[Math.floor((rand ? rand() : Math.random()) * HEAD_DEFS.length)].key;
+        const fov = this.currentFovMult || 1.0;
+        const ang = (rand ? rand() : Math.random()) * Math.PI * 2;
+        const dist = 1600 * fov;
+        const dragon = Dragon.spawnSolo(this.game, this, key,
+            this.player.worldX + Math.cos(ang) * dist,
+            this.player.worldY + Math.sin(ang) * dist);
+        if (dragon) {
+            // Fragments never persist as the real chain: the serialize/join
+            // filters drop isDragonHead entities wholesale.
+            dragon.isDragonHead = true;
+            dragon.isFragment = true;
+        }
+        return !!dragon;
+    }
+
     _routeDamage(ent, amount, hitX, hitY, attacker) {
         if (attacker) ent._lastDamageByPilot = attacker;
         if (this.netSync) return this.netSync.damageEntity(ent, amount, hitX, hitY);
@@ -4955,7 +5049,7 @@ export class PlayingState {
             player: this.player.serialize(),
             // Dragon heads are orchestrated sub-entities — the Dragon shell
             // alone is saved and a mid-fight load restarts the encounter fresh.
-            events: this.events.filter(ev => !ev.isDragonHead).map(ev => ({
+            events: this.events.filter(ev => !ev.isDragonHead && !ev.isEcho).map(ev => ({
                 type: ev.constructor.name,
                 worldX: ev.worldX,
                 worldY: ev.worldY,
@@ -6613,9 +6707,13 @@ export class PlayingState {
         const dt = this.game.lastDt || 0.016;
         for (const ev of this.events) {
             if (!ev.revealed || ev.isFinished) continue; // Keep marker until destroyed or finished (scrap spawned)
-            // Dragon heads have the boss bars — seven stacked SIGNAL arrows
-            // on top of that is pure clutter.
-            if (ev.isDragonHead) continue;
+            // Once the heads are on the field they carry their own red name
+            // markers — the Dragon controller's SIGNAL on top is a duplicate.
+            if (ev.isDragon && ev.heads && ev.heads.length) continue;
+            // Graven idols get their own gold IDOL signals below.
+            if (ev.isIdol) continue;
+            // A shattered head is wreckage — no marker until it reforms.
+            if (ev.isDragonHead && ev.state !== 'fight' && ev.state !== 'scripted') continue;
             const screenX = ev.worldX * ws + offX;
             const screenY = ev.worldY * ws + offY;
 
@@ -6634,13 +6732,18 @@ export class PlayingState {
             const ix = cx + Math.cos(angle) * radius;
             const iy = cy + Math.sin(angle) * radius;
 
+            // Dragon heads announce THEMSELVES: red chevron, the head's name
+            // (split to two lines when it has one), red distance.
+            const isHead = !!ev.isDragonHead;
+            const color = isHead ? '#ff3030' : '#ffdd44';
+
             // Draw arrow (chevron style)
             ctx.save();
             ctx.globalAlpha = opacity;
             ctx.translate(ix, iy);
             ctx.rotate(angle);
 
-            ctx.fillStyle = '#ffdd44'; // Yellow marker for events
+            ctx.fillStyle = color;
             ctx.beginPath();
             ctx.moveTo(10 * this.game.uiScale, 0);
             ctx.lineTo(-6 * this.game.uiScale, -8 * this.game.uiScale);
@@ -6651,21 +6754,76 @@ export class PlayingState {
 
             ctx.restore();
 
-            // Label "SIGNAL" (Above)
+            // Label (Above): "SIGNAL", or the head's name in red.
             ctx.save();
             ctx.globalAlpha = opacity;
-            ctx.fillStyle = '#ffdd44';
+            ctx.fillStyle = color;
             ctx.font = `${5 * this.game.uiScale}px Astro4x`;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.fillText('SIGNAL', ix, iy - 16 * this.game.uiScale);
+            if (isHead) {
+                const words = String(ev.displayName || 'DRAGON').split(' ');
+                const lines = words.length > 1
+                    ? [words.slice(0, -1).join(' '), words[words.length - 1]]
+                    : words;
+                const lineH = 7 * this.game.uiScale;
+                const top = iy - 16 * this.game.uiScale - (lines.length - 1) * lineH;
+                for (let li = 0; li < lines.length; li++) {
+                    ctx.fillText(lines[li], ix, top + li * lineH);
+                }
+            } else {
+                ctx.fillText('SIGNAL', ix, iy - 16 * this.game.uiScale);
+            }
 
             // Distance (Below)
             ctx.font = `${5 * this.game.uiScale}px Astro4x`;
-            ctx.fillStyle = 'rgba(255, 221, 68, 0.7)';
+            ctx.fillStyle = isHead ? 'rgba(255, 48, 48, 0.7)' : 'rgba(255, 221, 68, 0.7)';
             const dist = Math.sqrt(dx * dx + dy * dy);
             ctx.fillText(`${Math.floor(dist)}`, ix, iy + 16 * this.game.uiScale);
             ctx.restore();
+        }
+
+        // False Worship's graven images: each standing idol is a gold signal —
+        // they're the head's armor, so the player must be able to find them.
+        for (const ev of this.events) {
+            if (!ev.isDragonHead || !ev.idols || !ev.idols.length) continue;
+            for (const idol of ev.idols) {
+                const screenX = idol.x * ws + offX;
+                const screenY = idol.y * ws + offY;
+                if (screenX >= ox && screenX <= ox + cw && screenY >= oy && screenY <= oy + ch) continue;
+                const dx = idol.x - this.player.worldX;
+                const dy = idol.y - this.player.worldY;
+                const angle = Math.atan2(dy, dx);
+                const cx = ox + cw / 2;
+                const cy = oy + ch / 2;
+                const radius = Math.min(cw, ch) * this.indicatorRadiusFactorArrow;
+                const ix = cx + Math.cos(angle) * radius;
+                const iy = cy + Math.sin(angle) * radius;
+                ctx.save();
+                ctx.globalAlpha = 0.9;
+                ctx.translate(ix, iy);
+                ctx.rotate(angle);
+                ctx.fillStyle = '#ffcc44';
+                ctx.beginPath();
+                ctx.moveTo(10 * this.game.uiScale, 0);
+                ctx.lineTo(-6 * this.game.uiScale, -8 * this.game.uiScale);
+                ctx.lineTo(-2 * this.game.uiScale, 0);
+                ctx.lineTo(-6 * this.game.uiScale, 8 * this.game.uiScale);
+                ctx.closePath();
+                ctx.fill();
+                ctx.restore();
+                ctx.save();
+                ctx.globalAlpha = 0.9;
+                ctx.fillStyle = '#ffcc44';
+                ctx.font = `${5 * this.game.uiScale}px Astro4x`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(idol.type.toUpperCase(), ix, iy - 22 * this.game.uiScale);
+                ctx.fillText('IDOL', ix, iy - 15 * this.game.uiScale);
+                ctx.fillStyle = 'rgba(255, 204, 68, 0.7)';
+                ctx.fillText(`${Math.floor(Math.sqrt(dx * dx + dy * dy))}`, ix, iy + 16 * this.game.uiScale);
+                ctx.restore();
+            }
         }
     }
 
@@ -7148,6 +7306,15 @@ export class PlayingState {
             unique: 'rgba(255, 255, 255, 0.3)'
         };
 
+        // Items repossessed by Economic Control render greyed out until the
+        // seizure timer returns them.
+        const seized = new Set();
+        const collect = (p) => {
+            if (p && p.seizedUpgrades) for (const s of p.seizedUpgrades) seized.add(s.item);
+        };
+        if (this.localPlayers) for (const lp of this.localPlayers) collect(lp.player);
+        collect(this.player);
+
         // Draw items
         for (const entry of inv.items) {
             if (this.draggedItem && this.draggedItem.entry === entry) continue;
@@ -7165,6 +7332,8 @@ export class PlayingState {
             // Simple cull
             if (ix + w < startX || ix > startX + visW || iy + h < startY || iy > startY + visH) continue;
 
+            const isSeized = seized.has(item);
+
             // Draw rarity overlay (combined items carry a blended tier color)
             const baseColor = item.color || RARITY_COLORS[item.rarity] || '#ffffff';
             const alphaMap = { common: 0.15, uncommon: 0.2, rare: 0.25, epic: 0.25, legendary: 0.3, unique: 0.3 };
@@ -7173,7 +7342,21 @@ export class PlayingState {
             ctx.fillRect(ix + 2, iy + 2, w - 4, h - 4); // Inset to keep grid lines clear
             ctx.globalAlpha = 1.0;
 
-            ctx.drawImage(frame, ix, iy, w, h);
+            if (isSeized) {
+                ctx.globalAlpha = 0.35;
+                ctx.drawImage(frame, ix, iy, w, h);
+                ctx.globalAlpha = 0.5;
+                ctx.fillStyle = '#20242c';
+                ctx.fillRect(ix + 2, iy + 2, w - 4, h - 4);
+                ctx.globalAlpha = 1.0;
+                ctx.font = `${Math.floor(slotSize * 0.45)}px Astro4x`;
+                ctx.fillStyle = '#ff3333';
+                ctx.textAlign = 'center';
+                ctx.fillText('-$', ix + w / 2, iy + h / 2 + slotSize * 0.16);
+                ctx.textAlign = 'left';
+            } else {
+                ctx.drawImage(frame, ix, iy, w, h);
+            }
         }
 
         // Draw overflow scroll indicators
@@ -8799,6 +8982,10 @@ export class PlayingState {
         let fovMult = 1.0; // Default base FOV
         for (const entry of p.inventory.items) {
             const item = entry.item;
+
+            // Repossessed by Economic Control: the item sits in the grid but
+            // its effects lapse until the seizure timer returns it.
+            if (p.seizedUpgrades && p.seizedUpgrades.some(s => s.item === item)) continue;
 
             if (item.id === 'blink_engine') blinkEngines++;
             if (item.id === 'firing_coordinator') {
