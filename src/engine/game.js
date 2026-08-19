@@ -1138,7 +1138,10 @@ export class Game {
             'wingman', 'fair_trade', 'shared_glory',
             'juggernaut', 'bulwark', 'ship_of_theseus', 'honor_student',
             'quantum_leap', 'living_dangerously', 'one_of_everything',
-            'busy_airspace'
+            'busy_airspace',
+            // Combine-tier gate ladder.
+            'combine_tier_uncommon', 'combine_tier_rare',
+            'combine_tier_epic', 'combine_tier_legendary'
         ];
         for (const id of achievementIcons) {
             manifest[`ach_${id}`] = `Assets/Achievements/ach_${id}.png`;

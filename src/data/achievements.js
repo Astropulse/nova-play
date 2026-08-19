@@ -16,11 +16,33 @@
 //                in the renderer rather than blanking it.
 //   unlock:      optional { type, id } granted on unlock. Consumers query
 //                game.achievements.hasUnlock(type, id).
+//   goal:        optional short imperative form of the objective (e.g.
+//                "Survive 20 min as Looper"). Shown where space is tight —
+//                the upgrade codex cards and the combine-lock tooltip. Gate
+//                achievements (unlock set) should always define one.
 //   check(mgr):  predicate run against AchievementManager state. Return true
 //                to unlock. Stat sources:
 //                  mgr.lifetime.*  totals across all runs (persisted)
 //                  mgr.run.*       counters reset every run
 //                Sets in run.* expose `.size` for "all-of" style checks.
+
+// ── Progression-gate helpers ─────────────────────────────────────────────
+// "Every boss" for the legendary combine gate. The Dragon counts either as
+// the full seven-headed fight ('Dragon') or by hunting all seven heads as
+// lone wave fragments ('Head:<key>', recorded by Dragon solo-mode kills).
+const ALL_BOSS_IDS = ['Starcore', 'AsteroidCrusher', 'EventHorizon', 'YellowOne',
+    'Seraph', 'Wheels', 'Swarm', 'Carcosa'];
+const DRAGON_HEAD_IDS = ['Head:deception', 'Head:accusation', 'Head:murder',
+    'Head:blasphemy', 'Head:economic_control', 'Head:false_worship', 'Head:persecution'];
+const dragonDone = (m) => !!m.lifetime.bossesDefeated['Dragon']
+    || DRAGON_HEAD_IDS.every(id => !!m.lifetime.bossesDefeated[id]);
+const allBossProgress = (m) => {
+    let n = 0;
+    for (const id of ALL_BOSS_IDS) if (m.lifetime.bossesDefeated[id]) n++;
+    if (dragonDone(m)) n++;
+    return n / (ALL_BOSS_IDS.length + 1);
+};
+const SHIP_IDS = ['fighter', 'cruiser', 'bruiser', 'looper'];
 
 export const ACHIEVEMENTS = [
     // ── Combat: lifetime milestones ─────────────────────────────────────────
@@ -811,12 +833,13 @@ export const ACHIEVEMENTS = [
     {
         id: 'bulwark',
         name: 'Bulwark',
-        description: 'Reach 150 max shield in a single run.',
+        description: 'Reach 3x max shield in a single run.',
         flavor: 'They can shoot as much as they like.',
         icon: 'ach_bulwark',
-        check: (m) => m.run.peakMaxShield >= 150,
+        check: (m) => m.run.peakShieldMult >= 3,
         progressScope: 'run',
-        progress: (m) => m.run.peakMaxShield / 150
+        // Baseline 1x — see ludicrous_speed.
+        progress: (m) => (m.run.peakShieldMult - 1) / 2
     },
     {
         id: 'ship_of_theseus',
@@ -1292,5 +1315,329 @@ export const ACHIEVEMENTS = [
             for (const k in m.lifetime.bossesDefeated) total += m.lifetime.bossesDefeated[k];
             return total / 25;
         }
+    },
+
+    // ── Unlocks: gated upgrades ─────────────────────────────────────────────
+    // Each of these grants an `unlock: { type: 'upgrade', id }` — until it's
+    // earned, that upgrade never rolls in shops, caches, loot, or encounters
+    // (AchievementManager.isUpgradeUnlocked). Objectives are themed to the
+    // upgrade they grant. Icons reuse the upgrade's own sprite so the card
+    // shows what you're working toward.
+    {
+        id: 'unlock_warning_system',
+        name: 'Collision Course',
+        description: 'Take 1000 total damage across all runs.',
+        goal: 'Take 1000 damage',
+        flavor: 'Maybe some advance notice would help.',
+        icon: 'warning_system_1x1',
+        unlock: { type: 'upgrade', id: 'warning_system' },
+        check: (m) => m.lifetime.damageTaken >= 1000,
+        progress: (m) => m.lifetime.damageTaken / 1000
+    },
+    {
+        id: 'unlock_auto_turret',
+        name: 'Trigger Discipline',
+        description: 'Destroy 500 enemy ships across all runs.',
+        goal: 'Destroy 500 ships',
+        flavor: 'You\'ve earned the right to stop aiming.',
+        icon: 'auto_turret_3x2',
+        unlock: { type: 'upgrade', id: 'auto_turret' },
+        check: (m) => m.lifetime.enemiesKilled >= 500,
+        progress: (m) => m.lifetime.enemiesKilled / 500
+    },
+    {
+        id: 'unlock_railgun',
+        name: 'Big Game',
+        description: 'Defeat any wave boss.',
+        goal: 'Defeat a wave boss',
+        flavor: 'Some targets deserve a bigger gun.',
+        icon: 'railgun_4x1',
+        unlock: { type: 'upgrade', id: 'railgun' },
+        check: (m) => !!m.lifetime.bossesDefeated['Starcore']
+            || !!m.lifetime.bossesDefeated['AsteroidCrusher']
+            || !!m.lifetime.bossesDefeated['EventHorizon']
+    },
+    {
+        id: 'unlock_energy_blaster',
+        name: 'Scattershot',
+        description: 'Destroy 8 enemies within 10 seconds.',
+        goal: '8 kills in 10 seconds',
+        flavor: 'Why aim at one thing when you can aim at everything?',
+        icon: 'energy_blaster_3x1',
+        unlock: { type: 'upgrade', id: 'energy_blaster' },
+        check: (m) => m.lifetime.maxKillStreak >= 8,
+        progress: (m) => m.lifetime.maxKillStreak / 8
+    },
+    {
+        id: 'unlock_repeater',
+        name: 'Rate of Fire',
+        description: 'Collect 10 Firing Coordinators across all runs.',
+        goal: 'Collect 10 Firing Coordinators',
+        flavor: 'Eventually the coordinators start coordinating each other.',
+        icon: 'repeater_4x1',
+        unlock: { type: 'upgrade', id: 'repeater' },
+        check: (m) => (m.lifetime.upgradesById['firing_coordinator'] || 0) >= 10,
+        progress: (m) => (m.lifetime.upgradesById['firing_coordinator'] || 0) / 10
+    },
+    {
+        id: 'unlock_laser_override',
+        name: 'Overcharged',
+        description: 'Collect 10 Laser Cartridges across all runs.',
+        goal: 'Collect 10 Laser Cartridges',
+        flavor: 'The safety sticker peeled right off.',
+        icon: 'laser_override_2x2',
+        unlock: { type: 'upgrade', id: 'laser_override' },
+        check: (m) => (m.lifetime.upgradesById['laser_cartridge'] || 0) >= 10,
+        progress: (m) => (m.lifetime.upgradesById['laser_cartridge'] || 0) / 10
+    },
+    {
+        id: 'unlock_mechanical_claw',
+        name: 'Cold Grip',
+        description: 'Destroy 25 Kamikaze ships across all runs.',
+        goal: 'Destroy 25 Kamikazes',
+        flavor: 'If they insist on coming to you, hold them still.',
+        icon: 'mechnaical_claw_2x1',
+        unlock: { type: 'upgrade', id: 'mechanical_claw' },
+        check: (m) => (m.lifetime.enemyKillsByClass['KamikazeEnemy'] || 0) >= 25,
+        progress: (m) => (m.lifetime.enemyKillsByClass['KamikazeEnemy'] || 0) / 25
+    },
+    {
+        id: 'unlock_targeting_module',
+        name: 'Sharpshooter',
+        description: 'Destroy 400 tiny asteroids across all runs.',
+        goal: 'Destroy 400 tiny asteroids',
+        flavor: 'Hit the small ones by hand, earn the machine that does it for you.',
+        icon: 'targeting_module_2x2',
+        unlock: { type: 'upgrade', id: 'targeting_module' },
+        check: (m) => (m.lifetime.asteroidsByType.tiny || 0) >= 400,
+        progress: (m) => (m.lifetime.asteroidsByType.tiny || 0) / 400
+    },
+    {
+        id: 'unlock_pulse_boosters',
+        name: 'Evasive Maneuvers',
+        description: 'Perform 100 boost dodges across all runs.',
+        goal: '100 boost dodges',
+        flavor: 'Not getting hit is a skill. Now it\'s hardware.',
+        icon: 'pulse_boosters_2x2',
+        unlock: { type: 'upgrade', id: 'pulse_boosters' },
+        check: (m) => m.lifetime.dodgesPerformed >= 100,
+        progress: (m) => m.lifetime.dodgesPerformed / 100
+    },
+    {
+        id: 'unlock_high_density_capacitor',
+        name: 'Long Haul',
+        description: 'Travel 2,000,000 units across all runs.',
+        goal: 'Travel 2,000,000 units',
+        flavor: 'The odometer rolled over. Twice.',
+        icon: 'high_density_capacitor_1x2',
+        unlock: { type: 'upgrade', id: 'high_density_capacitor' },
+        check: (m) => m.lifetime.distanceTraveled + m.run.distanceTraveled >= 2000000,
+        progress: (m) => (m.lifetime.distanceTraveled + m.run.distanceTraveled) / 2000000
+    },
+    {
+        id: 'unlock_explosives_unit',
+        name: 'Ordnance License',
+        description: 'Defeat all three wave bosses across your runs.',
+        goal: 'Defeat all 3 wave bosses',
+        flavor: 'Cleared for demolition.',
+        icon: 'explosives_unit_3x2',
+        unlock: { type: 'upgrade', id: 'explosives_unit' },
+        check: (m) => !!m.lifetime.bossesDefeated['Starcore']
+            && !!m.lifetime.bossesDefeated['AsteroidCrusher']
+            && !!m.lifetime.bossesDefeated['EventHorizon'],
+        progress: (m) => (
+            (m.lifetime.bossesDefeated['Starcore'] ? 1 : 0)
+            + (m.lifetime.bossesDefeated['AsteroidCrusher'] ? 1 : 0)
+            + (m.lifetime.bossesDefeated['EventHorizon'] ? 1 : 0)
+        ) / 3
+    },
+    {
+        id: 'unlock_rockets',
+        name: 'Fire and Forget',
+        description: 'Destroy 1000 asteroids across all runs.',
+        goal: 'Destroy 1000 asteroids',
+        flavor: 'The rocks stopped being a challenge, so here\'s a bigger boom.',
+        icon: 'rockets_2x1',
+        unlock: { type: 'upgrade', id: 'rockets' },
+        check: (m) => m.lifetime.asteroidsDestroyed >= 1000,
+        progress: (m) => m.lifetime.asteroidsDestroyed / 1000
+    },
+    {
+        id: 'unlock_asteroid_accumulator',
+        name: 'Never Enough Rocks',
+        description: 'Destroy 2500 asteroids across all runs.',
+        goal: 'Destroy 2500 asteroids',
+        flavor: 'You want MORE of them? Fine.',
+        icon: 'asteroid_accumulator_2x2',
+        unlock: { type: 'upgrade', id: 'asteroid_accumulator' },
+        check: (m) => m.lifetime.asteroidsDestroyed >= 2500,
+        progress: (m) => m.lifetime.asteroidsDestroyed / 2500
+    },
+    {
+        id: 'unlock_asteroid_drill',
+        name: 'Prospector',
+        description: 'Collect 5000 scrap across all runs.',
+        goal: 'Collect 5000 scrap',
+        flavor: 'Digging pays better with the right tools.',
+        icon: 'asteroid_drill_3x2',
+        unlock: { type: 'upgrade', id: 'asteroid_drill' },
+        check: (m) => m.lifetime.scrapCollected >= 5000,
+        progress: (m) => m.lifetime.scrapCollected / 5000
+    },
+    {
+        id: 'unlock_cargo_expansion',
+        name: 'Pack Rat',
+        description: 'Collect 100 upgrades across all runs.',
+        goal: 'Collect 100 upgrades',
+        flavor: 'Fine. We\'ll add a shelf.',
+        icon: 'cargo_expansion_3x1',
+        unlock: { type: 'upgrade', id: 'cargo_expansion' },
+        check: (m) => m.lifetime.upgradesCollected >= 100,
+        progress: (m) => m.lifetime.upgradesCollected / 100
+    },
+    {
+        id: 'unlock_shield_capacitor',
+        name: 'Battering Ram',
+        description: 'Destroy 50 asteroids by ramming them.',
+        goal: 'Ram 50 asteroids',
+        flavor: 'The shield generator filed a complaint.',
+        icon: 'shield_capacitor_1x2',
+        unlock: { type: 'upgrade', id: 'shield_capacitor' },
+        check: (m) => m.lifetime.asteroidsRammed >= 50,
+        progress: (m) => m.lifetime.asteroidsRammed / 50
+    },
+    {
+        id: 'unlock_blink_engine',
+        name: 'Out of Phase',
+        description: 'Survive 20 minutes in a single run as the Looper.',
+        goal: 'Survive 20 min as Looper',
+        flavor: 'Twenty minutes in that thing and you stop trusting doors.',
+        icon: 'blink_engine_3x2',
+        unlock: { type: 'upgrade', id: 'blink_engine' },
+        check: (m) => (m.lifetime.peakRunTimeByShip['looper'] || 0) >= 1200,
+        progress: (m) => (m.lifetime.peakRunTimeByShip['looper'] || 0) / 1200
+    },
+    {
+        id: 'unlock_momentum_module',
+        name: 'Coasting',
+        description: 'Survive 15 minutes in a single run as the Cruiser.',
+        goal: 'Survive 15 min as Cruiser',
+        flavor: 'Speed is easy. Not braking is a lifestyle.',
+        icon: 'momentum_module_1x1',
+        unlock: { type: 'upgrade', id: 'momentum_module' },
+        check: (m) => (m.lifetime.peakRunTimeByShip['cruiser'] || 0) >= 900,
+        progress: (m) => (m.lifetime.peakRunTimeByShip['cruiser'] || 0) / 900
+    },
+    {
+        id: 'unlock_nanite_tank',
+        name: 'Built to Last',
+        description: 'Survive 20 minutes in a single run as the Bruiser.',
+        goal: 'Survive 20 min as Bruiser',
+        flavor: 'The hull remembers every hit. Now it heals them.',
+        icon: 'nanite_tank_2x2',
+        unlock: { type: 'upgrade', id: 'nanite_tank' },
+        check: (m) => (m.lifetime.peakRunTimeByShip['bruiser'] || 0) >= 1200,
+        progress: (m) => (m.lifetime.peakRunTimeByShip['bruiser'] || 0) / 1200
+    },
+    {
+        id: 'unlock_multishot_guns',
+        name: 'Twin Barrels',
+        description: 'Survive 20 minutes in a single run as the Fighter.',
+        goal: 'Survive 20 min as Fighter',
+        flavor: 'One gun was never going to be enough.',
+        icon: 'multishot_guns_2x1',
+        unlock: { type: 'upgrade', id: 'multishot_guns' },
+        check: (m) => (m.lifetime.peakRunTimeByShip['fighter'] || 0) >= 1200,
+        progress: (m) => (m.lifetime.peakRunTimeByShip['fighter'] || 0) / 1200
+    },
+
+    // ── Unlocks: ships ──────────────────────────────────────────────────────
+    // Only the Fighter is flyable from the start. Each other ship unlocks via
+    // an objective themed to its fantasy — earnable within a few runs of
+    // normal play, faster if chased deliberately. `shipsUsed` grandfathers
+    // profiles that already completed a run with the ship before ship gating
+    // existed. Icons reuse the ship's own still sprite.
+    {
+        id: 'unlock_cruiser',
+        name: 'Outrunner',
+        description: 'Travel 150,000 units across all runs.',
+        goal: 'Travel 150,000 units',
+        flavor: 'You clearly want to be somewhere else. Faster.',
+        icon: 'cruiser_still',
+        unlock: { type: 'ship', id: 'cruiser' },
+        check: (m) => !!m.lifetime.shipsUsed['cruiser']
+            || m.lifetime.distanceTraveled + m.run.distanceTraveled >= 150000,
+        progress: (m) => m.lifetime.shipsUsed['cruiser'] ? 1
+            : (m.lifetime.distanceTraveled + m.run.distanceTraveled) / 150000
+    },
+    {
+        id: 'unlock_bruiser',
+        name: 'Glutton for Punishment',
+        description: 'Take 2500 total damage across all runs.',
+        goal: 'Take 2500 damage',
+        flavor: 'You keep getting hit. Here\'s a ship that doesn\'t mind.',
+        icon: 'bruiser_still',
+        unlock: { type: 'ship', id: 'bruiser' },
+        check: (m) => !!m.lifetime.shipsUsed['bruiser'] || m.lifetime.damageTaken >= 2500,
+        progress: (m) => m.lifetime.shipsUsed['bruiser'] ? 1 : m.lifetime.damageTaken / 2500
+    },
+    {
+        id: 'unlock_looper',
+        name: 'Untouchable',
+        description: 'Perform 50 boost dodges across all runs.',
+        goal: '50 boost dodges',
+        flavor: 'Dodging is already your lifestyle. This is its ship.',
+        icon: 'looper_still',
+        unlock: { type: 'ship', id: 'looper' },
+        check: (m) => !!m.lifetime.shipsUsed['looper'] || m.lifetime.dodgesPerformed >= 50,
+        progress: (m) => m.lifetime.shipsUsed['looper'] ? 1 : m.lifetime.dodgesPerformed / 50
+    },
+
+    // ── Unlocks: combine tiers ──────────────────────────────────────────────
+    // The fuse ladder is gated: with none of these earned the player can't
+    // combine at all. Each grant raises the result-tier cap
+    // (AchievementManager.combineTierCap): uncommon → rare → epic → legendary.
+    {
+        id: 'combine_tier_uncommon',
+        name: 'Field Fusion',
+        description: 'Reach level 10 in a single run. Unlocks combining upgrades up to Uncommon.',
+        goal: 'Reach level 10',
+        flavor: 'Two of the same part, one socket. It was only a matter of time.',
+        icon: 'ach_combine_tier_uncommon',
+        unlock: { type: 'combine', id: 'uncommon' },
+        check: (m) => m.lifetime.peakLevel >= 10,
+        progress: (m) => m.lifetime.peakLevel / 10
+    },
+    {
+        id: 'combine_tier_rare',
+        name: 'Cross-Platform',
+        description: 'Reach level 20 with every ship. Unlocks combining upgrades up to Rare.',
+        goal: 'Level 20 with every ship',
+        flavor: 'Every hull, same trick. The trick got better.',
+        icon: 'ach_combine_tier_rare',
+        unlock: { type: 'combine', id: 'rare' },
+        check: (m) => SHIP_IDS.every(s => (m.lifetime.peakLevelByShip[s] || 0) >= 20),
+        progress: (m) => SHIP_IDS.filter(s => (m.lifetime.peakLevelByShip[s] || 0) >= 20).length / SHIP_IDS.length
+    },
+    {
+        id: 'combine_tier_epic',
+        name: 'Forbidden Engineering',
+        description: 'Defeat The Yellow One. Unlocks combining upgrades up to Epic.',
+        goal: 'Defeat The Yellow One',
+        flavor: 'His crown melts down into something useful.',
+        icon: 'ach_combine_tier_epic',
+        unlock: { type: 'combine', id: 'epic' },
+        check: (m) => !!m.lifetime.bossesDefeated['YellowOne']
+    },
+    {
+        id: 'combine_tier_legendary',
+        name: 'Master of the Forge',
+        description: 'Defeat every boss at least once — the Dragon counts whole, or one head at a time. Unlocks combining upgrades up to Legendary.',
+        goal: 'Defeat every boss',
+        flavor: 'Nothing left to fight. Plenty left to build.',
+        icon: 'ach_combine_tier_legendary',
+        unlock: { type: 'combine', id: 'legendary' },
+        check: (m) => ALL_BOSS_IDS.every(id => !!m.lifetime.bossesDefeated[id]) && dragonDone(m),
+        progress: allBossProgress
     }
 ];

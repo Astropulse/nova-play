@@ -1,5 +1,5 @@
 import { Inventory } from '../engine/inventory.js';
-import { UPGRADES, RARITY_WEIGHTS } from '../data/upgrades.js';
+import { UPGRADES, RARITY_WEIGHTS, isUpgradeUnlocked } from '../data/upgrades.js';
 
 export class Shop {
     constructor(game, worldX, worldY) {
@@ -72,6 +72,7 @@ export class Shop {
             u.id !== 'shop_map' &&
             (signalsLeft || u.id !== 'advanced_locator') &&
             u.rarity !== 'unique' &&
+            isUpgradeUnlocked(this.game, u.id) &&
             (u.width <= this.inventory.cols && u.height <= this.inventory.rows)
         );
 

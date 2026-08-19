@@ -1,5 +1,5 @@
 import { Scrap, ItemPickup, ExpOrb, ProceduralDebris, Asteroid, getCachedShatter } from './asteroid.js';
-import { UPGRADES } from '../data/upgrades.js';
+import { UPGRADES, isUpgradeUnlocked } from '../data/upgrades.js';
 import { ellipseContains } from '../engine/collision.js';
 import { Projectile } from './projectile.js';
 import { pickFireExplosion, fireExplosionFrame, drawBeamStrip } from '../engine/vfx.js';
@@ -1317,7 +1317,8 @@ export class Seraph {
             }
         }
         if (rand() < 0.5) {
-            const pool = UPGRADES.filter(u => (u.rarity === 'rare' || u.rarity === 'uncommon') && !u.consumable);
+            const pool = UPGRADES.filter(u => (u.rarity === 'rare' || u.rarity === 'uncommon') && !u.consumable
+                && isUpgradeUnlocked(this.game, u.id));
             if (pool.length > 0) {
                 const pick = pool[Math.floor(rand() * pool.length)];
                 const ang = Math.random() * Math.PI * 2;

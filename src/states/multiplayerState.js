@@ -13,7 +13,7 @@
 // The lobby survives into the run: the same NetSession object moves onto
 // game.net and PlayingState picks it up from there.
 
-import { SHIPS } from '../data/ships.js';
+import { SHIPS, isShipUnlocked } from '../data/ships.js';
 import { PlayingState } from './playingState.js';
 import { MenuState } from './menuState.js';
 import { HostSession, ClientSession } from '../net/netSession.js';
@@ -293,10 +293,22 @@ export class MultiplayerState {
         this.localRoster = [];
     }
 
+    // Next selectable ship index from `start`, stepping `dir`, skipping ships
+    // this profile hasn't unlocked. The Fighter is ungated, so this always
+    // terminates on a valid index.
+    _nextUnlockedShip(start, dir) {
+        let idx = start;
+        for (let k = 0; k < SHIPS.length; k++) {
+            idx = (idx + dir + SHIPS.length) % SHIPS.length;
+            if (isShipUnlocked(this.game, SHIPS[idx].id)) return idx;
+        }
+        return start;
+    }
+
     _cycleSlotShip(i, dir) {
         const r = this.localRoster && this.localRoster[i];
         if (!r) return;
-        r.shipIndex = (r.shipIndex + dir + SHIPS.length) % SHIPS.length;
+        r.shipIndex = this._nextUnlockedShip(r.shipIndex, dir);
         this.game.sounds.play('select', 0.7);
     }
 
@@ -341,7 +353,12 @@ export class MultiplayerState {
         if (!roster || roster.length >= MAX_LOCAL) return;
         const free = this._availableDevices().find(d => !roster.some(s => this._sameDevice(s, d)));
         if (!free) return;
-        roster.push({ device: free.device, padIndex: free.padIndex, shipIndex: roster.length % SHIPS.length });
+        // Stagger default ships across slots, but land on an unlocked one.
+        let shipIndex = roster.length % SHIPS.length;
+        if (!isShipUnlocked(this.game, SHIPS[shipIndex].id)) {
+            shipIndex = this._nextUnlockedShip(shipIndex, 1);
+        }
+        roster.push({ device: free.device, padIndex: free.padIndex, shipIndex });
         this.game.sounds.play('select', 0.9);
     }
 
@@ -560,7 +577,7 @@ export class MultiplayerState {
             else if (id === 'home') { this.game.sounds.play('click', 0.6); this.mode = 'menu'; }
         } else if (this.mode === 'lobby' && this.session) {
             if (id === 'shipLeft' || id === 'shipRight') {
-                this.shipIndex = (this.shipIndex + (id === 'shipLeft' ? -1 : 1) + SHIPS.length) % SHIPS.length;
+                this.shipIndex = this._nextUnlockedShip(this.shipIndex, id === 'shipLeft' ? -1 : 1);
                 this.session.setMyShip(SHIPS[this.shipIndex].id);
                 this.game.sounds.play('select', 0.8);
             } else if (id === 'chat') { this.activeField = 'chat'; }

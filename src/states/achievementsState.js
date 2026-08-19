@@ -1,4 +1,6 @@
 import { ACHIEVEMENTS } from '../data/achievements.js';
+import { UPGRADES } from '../data/upgrades.js';
+import { SHIPS } from '../data/ships.js';
 import { MenuState } from './menuState.js';
 import { GP } from '../engine/inputManager.js';
 
@@ -714,7 +716,7 @@ export class AchievementsState {
             ctx.font = `${Math.floor(4 * uiScale)}px Astro4x`;
             ctx.fillStyle = '#ffcc44';
             ctx.textAlign = 'right';
-            const badgeText = this._truncatedTo(ctx, `+${ach.unlock.id}`, textMaxW);
+            const badgeText = this._truncatedTo(ctx, `+${this._unlockLabel(ach.unlock)}`, textMaxW);
             ctx.fillText(badgeText, textRightEdge, y + h - Math.floor(uiScale * 4));
         }
 
@@ -729,6 +731,22 @@ export class AchievementsState {
             // Occupies the top-right slot the track button uses on locked cards.
             this._drawNewBadge(ctx, textRightEdge, firstNameTop, nameLineH, uiScale);
         }
+    }
+
+    // Human-readable label for an unlock grant. Upgrade/ship grants resolve
+    // to their catalog display names; combine grants name the tier they cap;
+    // anything unrecognized falls back to the id with underscores cleaned.
+    _unlockLabel(unlock) {
+        if (unlock.type === 'upgrade' || unlock.type === 'starter_item') {
+            const def = UPGRADES.find(u => u.id === unlock.id);
+            if (def) return def.name;
+        } else if (unlock.type === 'ship') {
+            const ship = SHIPS.find(s => s.id === unlock.id);
+            if (ship) return ship.name;
+        } else if (unlock.type === 'combine') {
+            return `combine: ${unlock.id}`;
+        }
+        return String(unlock.id).replace(/_/g, ' ');
     }
 
     // Small "NEW" chip pinned to the top-right of a recently-unlocked card,

@@ -1,7 +1,7 @@
 import { Scrap, ExpOrb, ItemPickup, ProceduralDebris, Asteroid, getCachedShatter, FractureModel, HullFracture, ejectChipDebris } from './asteroid.js';
 import { Seraph } from './seraph.js';
 import { Wheels } from './wheels.js';
-import { UPGRADES } from '../data/upgrades.js';
+import { UPGRADES, isUpgradeUnlocked } from '../data/upgrades.js';
 import { Projectile } from './projectile.js';
 import { ENCOUNTER_ASSETS } from '../data/encounters.js';
 import { MUSIC_STATE } from '../engine/soundManager.js';
@@ -6135,7 +6135,8 @@ export class Dragon {
                 h._shatterX + Math.cos(a) * 90, h._shatterY + Math.sin(a) * 90, 1));
         }
         // One good upgrade per head, seeded.
-        const pool = UPGRADES.filter(u => !u.consumable && (u.rarity === 'rare' || u.rarity === 'uncommon'));
+        const pool = UPGRADES.filter(u => !u.consumable && (u.rarity === 'rare' || u.rarity === 'uncommon')
+            && isUpgradeUnlocked(this.game, u.id));
         if (pool.length) {
             const up = pool[Math.floor(rng.next() * pool.length)];
             this.pendingSpawns.push(new ItemPickup(this.game, h._shatterX, h._shatterY, up));
@@ -6249,9 +6250,16 @@ export class Dragon {
             }
         }
         // Solo kills (dev harness, wave fragments) don't grant the final-boss
-        // achievement — only the true seven-headed fight does.
-        if (this.game.achievements && !this.soloMode) {
-            this.game.achievements.notify('boss_defeated', { bossId: 'Dragon' });
+        // achievement — only the true seven-headed fight does. They DO record
+        // per-head ('Head:<key>') so hunting all seven as lone fragments can
+        // stand in for the full chain (see the legendary combine gate in
+        // data/achievements.js).
+        if (this.game.achievements) {
+            if (!this.soloMode) {
+                this.game.achievements.notify('boss_defeated', { bossId: 'Dragon' });
+            } else if (this.heads[0] && this.heads[0].def) {
+                this.game.achievements.notify('boss_defeated', { bossId: 'Head:' + this.heads[0].def.key });
+            }
         }
         // Let the trumpets ring alone, then the music comes home.
         this._musicRestoreDelay = 2.5;

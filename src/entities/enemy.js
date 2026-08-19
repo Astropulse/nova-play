@@ -1,7 +1,7 @@
 // Scaling is now dynamic via game properties
 import { Projectile } from './projectile.js';
 import { Scrap, Rubble, ItemPickup, ProceduralDebris, VoronoiSlicer, ExpOrb, resolveSpawnOverlap, getCachedShatter } from './asteroid.js';
-import { UPGRADES } from '../data/upgrades.js';
+import { UPGRADES, isUpgradeUnlocked } from '../data/upgrades.js';
 import { Starcore } from './starcore.js';
 import { AsteroidCrusher } from './asteroidCrusher.js';
 import { EventHorizon } from './eventHorizon.js';
@@ -1185,10 +1185,12 @@ export class Enemy {
             if (r < 0.40) {
                 item = UPGRADES.find(u => u.id === 'small_battery');
             } else if (r < 0.47) {
-                const pool = UPGRADES.filter(u => u.rarity === 'common' && !u.consumable);
+                const pool = UPGRADES.filter(u => u.rarity === 'common' && !u.consumable
+                    && isUpgradeUnlocked(this.game, u.id));
                 if (pool.length) item = pool[Math.floor(rand() * pool.length)];
             } else if (r < 0.50) {
-                const pool = UPGRADES.filter(u => u.rarity === 'uncommon' && !u.consumable);
+                const pool = UPGRADES.filter(u => u.rarity === 'uncommon' && !u.consumable
+                    && isUpgradeUnlocked(this.game, u.id));
                 if (pool.length) item = pool[Math.floor(rand() * pool.length)];
             }
             if (item) spawns.push(new ItemPickup(this.game, this.worldX, this.worldY, item));

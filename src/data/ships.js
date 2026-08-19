@@ -1,3 +1,14 @@
+/**
+ * Progression gate for ship selection. True when the ship may be flown.
+ * Delegates to the achievement manager (achievements with
+ * `unlock: { type: 'ship', id }` gate their ship — only the Fighter is
+ * ungated); with no manager (headless tests, early boot) everything is open.
+ */
+export function isShipUnlocked(game, id) {
+    const mgr = game && game.achievements;
+    return !mgr || mgr.isShipUnlocked(id);
+}
+
 // Ship definitions
 export const SHIPS = [
     {

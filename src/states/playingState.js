@@ -32,6 +32,7 @@ import { Carcosa, CARCOSA_STATE } from '../entities/bones.js';
 import { Dragon, DRAGON_STATE, HEAD_DEFS } from '../entities/dragon.js';
 import { MenuState } from './menuState.js';
 import { AchievementsState } from './achievementsState.js';
+import { UpgradesState } from './upgradesState.js';
 import { ACHIEVEMENTS } from '../data/achievements.js';
 import { FloatingText } from '../entities/floatingText.js';
 import { MUSIC_STATE } from '../engine/soundManager.js';
@@ -425,7 +426,8 @@ export class PlayingState {
             sfxInc: { x: 0, y: 0, w: 0, h: 0, hovered: false },
             shipSelection: { x: 0, y: 0, w: 0, h: 0, hovered: false },
             claimLevels: { x: 0, y: 0, w: 0, h: 0, hovered: false },
-            achievements: { x: 0, y: 0, w: 0, h: 0, hovered: false }
+            achievements: { x: 0, y: 0, w: 0, h: 0, hovered: false },
+            upgrades: { x: 0, y: 0, w: 0, h: 0, hovered: false }
         };
         this.confirmRestart = false;
         this.confirmRestartButtons = {
@@ -8029,7 +8031,54 @@ export class PlayingState {
                 this._drawTooltip(ctx, result, mouse, { previewLabel: 'COMBINE →' });
                 return;
             }
+            // The fuse would match but the result tier is above the unlocked
+            // combine cap — say so instead of silently falling back to a swap.
+            const gated = p.inv.combineTargetAt(dragged, col, row, true);
+            if (gated) {
+                const mgr = this.game.achievements;
+                const gate = mgr ? mgr.combineGateFor(itemTier(gated.item) + 1) : null;
+                if (gate) this._drawCombineLockedTip(ctx, mouse, gate);
+                return;
+            }
         }
+    }
+
+    // Small flat tooltip explaining which objective unlocks the blocked fuse.
+    // Gate achievements carry a short `goal` form for exactly this spot.
+    _drawCombineLockedTip(ctx, mouse, gate) {
+        const uiScale = this.game.uiScale;
+        const objective = (gate.goal || gate.description.split('. ')[0]).toUpperCase();
+        const title = 'COMBINE LOCKED';
+        ctx.save();
+        ctx.font = `${Math.floor(5 * uiScale)}px Astro4x`;
+        const bodyW = Math.ceil(ctx.measureText(objective).width);
+        ctx.font = `${Math.floor(6 * uiScale)}px Astro5x`;
+        const titleW = Math.ceil(ctx.measureText(title).width);
+        const padX = Math.floor(uiScale * 5);
+        const padY = Math.floor(uiScale * 4);
+        const lineH = Math.floor(uiScale * 8);
+        const w = Math.max(bodyW, titleW) + padX * 2;
+        const h = lineH * 2 + padY * 2;
+        let x = Math.floor(mouse.x + uiScale * 8);
+        let y = Math.floor(mouse.y + uiScale * 8);
+        if (x + w > this.game.width)  x = this.game.width - w;
+        if (y + h > this.game.height) y = this.game.height - h;
+
+        ctx.fillStyle = 'rgba(28, 10, 10, 0.92)';
+        ctx.fillRect(x, y, w, h);
+        ctx.strokeStyle = '#aa4444';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#ff8844';
+        ctx.font = `${Math.floor(6 * uiScale)}px Astro5x`;
+        ctx.fillText(title, x + padX, y + padY + Math.floor(lineH / 2));
+        ctx.fillStyle = '#ccddee';
+        ctx.font = `${Math.floor(5 * uiScale)}px Astro4x`;
+        ctx.fillText(objective, x + padX, y + padY + lineH + Math.floor(lineH / 2));
+        ctx.restore();
     }
 
     // Attempts to use a consumable item. Returns true if the item was handled.
@@ -8722,6 +8771,12 @@ export class PlayingState {
         this.pauseButtons.achievements.w = achW;
         this.pauseButtons.achievements.h = achH;
 
+        // Upgrades codex — stacked under achievements, same width.
+        this.pauseButtons.upgrades.x = cw - achMargin - achW;
+        this.pauseButtons.upgrades.y = achMargin + achH + Math.floor(uiScale * 4);
+        this.pauseButtons.upgrades.w = achW;
+        this.pauseButtons.upgrades.h = Math.floor(uiScale * 12);
+
         if (this.confirmRestart) {
             this.confirmRestartButtons.yes = {
                 x: Math.floor(cw / 2 - 40 * uiScale), y: ch / 2 + 20 * uiScale,
@@ -8773,6 +8828,10 @@ export class PlayingState {
             addBtn('achievements', this.pauseButtons.achievements, () => {
                 this.game.sounds.play('click', 1.0);
                 this.game.setState(new AchievementsState(this.game, this));
+            });
+            addBtn('upgrades', this.pauseButtons.upgrades, () => {
+                this.game.sounds.play('click', 1.0);
+                this.game.setState(new UpgradesState(this.game, this));
             });
             if (this.levelUpQueue.length > 0 && this.pauseButtons.claimLevels.w > 0) {
                 addBtn('claimLevels', this.pauseButtons.claimLevels, () => {
@@ -8836,6 +8895,12 @@ export class PlayingState {
                     this.game.input.consumeMouseButton(0);
                     this.game.sounds.play('click', 1.0);
                     this.game.setState(new AchievementsState(this.game, this));
+                    return;
+                }
+                if (pb.upgrades.hovered) {
+                    this.game.input.consumeMouseButton(0);
+                    this.game.sounds.play('click', 1.0);
+                    this.game.setState(new UpgradesState(this.game, this));
                     return;
                 }
             }
@@ -9399,6 +9464,16 @@ export class PlayingState {
         if (this.localPlayers.length > 1) return;
         const x = worldX !== undefined ? worldX : this.player.worldX;
         const y = worldY !== undefined ? worldY : this.player.worldY;
+        // Fanfare: the jackpot-ceremony language (celebratePickup) in the
+        // level-up yellow — screen-centered slot reel + jackpot chime so the
+        // reward reads even inside a boss-death explosion, plus a flat
+        // double ring + spark burst off the kill site itself.
+        this.cinematics.jackpotReel('+1 LEVEL-UP SKIP', '#ffff44', 1);
+        this.game.sounds.playJackpot(1);
+        this.cinematics.spawnRing(x, y, { color: '#ffff44', maxR: 210, dur: 1.1, width: 4 });
+        this.cinematics.spawnRing(x, y, { color: '#ffffff', maxR: 130, dur: 0.6, width: 3 });
+        this._spawnSparks(x, y, 18, { color: '#ffff44', speedMin: 120, speedMax: 420 });
+        this._spawnSparks(x, y, 8, { color: '#ffffff', speedMin: 160, speedMax: 480 });
         this.spawnFloatingText(x, y - 30, '+1 LEVEL-UP SKIP', '#ffff44');
     }
 
@@ -10192,6 +10267,12 @@ export class PlayingState {
                 ctx.fillStyle = '#667788';
                 ctx.fillText(`${mgr.unlocked.size} / ${ACHIEVEMENTS.length}`, ab.x + ab.w, ab.y + Math.floor(uiScale * 16));
             }
+
+            // Upgrades codex text button — stacked under achievements.
+            const ub = this.pauseButtons.upgrades;
+            ctx.font = `${8 * uiScale}px Astro5x`;
+            ctx.fillStyle = ub.hovered ? '#ffffff' : '#44ddff';
+            ctx.fillText('UPGRADES ►', ub.x + ub.w, ub.y + Math.floor(uiScale * 8));
         } else {
             ctx.fillStyle = 'rgba(0,0,0,0.85)';
             ctx.fillRect(0, 0, cw, ch);

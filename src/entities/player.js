@@ -118,18 +118,20 @@ export class Player {
         this.boostFlash = 0;
         this._boostWasOnCooldown = false;
 
-        // Dodge detection — blink-only.
-        // The instant the blink fires, draw the line segment from the
-        // pre-warp position (A) to the warp target (B). For each enemy
-        // projectile, sweep its trajectory forward DODGE_TRAJ_LOOKAHEAD
-        // seconds and check if that projectile sweep intersects the A→B
-        // segment (within a small thickness). Those are the candidates —
-        // the shots that would have hit the player at some point along
-        // the blink line had they not blinked.
+        // Dodge detection — blinks AND boosts.
+        // The instant the escape move fires, draw the segment A→B the player
+        // abandoned: for a blink that's pre-warp position → warp target; for
+        // a boost it's the current position → where the pre-boost drift
+        // velocity would have carried them over the lookahead. For each
+        // enemy projectile, sweep its trajectory forward
+        // DODGE_TRAJ_LOOKAHEAD seconds and check if that projectile sweep
+        // intersects the A→B segment (within a small thickness). Those are
+        // the candidates — the shots that would have hit the player had
+        // they not moved.
         // Then wait DODGE_GRACE seconds. If the player takes ANY damage
         // during the grace, the batch is voided (you didn't actually
         // dodge). Survivors score one dodge each.
-        this.DODGE_GRACE = 0.4;             // s — damage-veto window post-blink
+        this.DODGE_GRACE = 0.4;             // s — damage-veto window post-move
         this.DODGE_TRAJ_LOOKAHEAD = 0.2;    // s — projectile trajectory horizon
         this.dodgeWindowTimer = 0;
         this.dodgeCandidates = new Set();
@@ -680,6 +682,12 @@ export class Player {
                 if (!this.isBoosting) {
                     this.game.sounds.play('boost', { volume: 0.5, x: this.worldX, y: this.worldY });
                     this.game.camera.shake(1.2, 15.0);
+                    // Boost dodge (hold variant): arm once at the press, while
+                    // vx/vy are still the pre-boost drift (this frame's boost
+                    // power is applied below).
+                    this._armDodgeWindow(this.worldX, this.worldY,
+                        this.worldX + this.vx * this.DODGE_TRAJ_LOOKAHEAD,
+                        this.worldY + this.vy * this.DODGE_TRAJ_LOOKAHEAD);
                 }
 
                 this.isBoosting = true;
@@ -709,9 +717,16 @@ export class Player {
                 this.boostCooldownTimer = this.boostCooldown * this.boostCooldownMult;
                 this.boostIntensity = 1;
                 this._boostWasOnCooldown = true;
+                // Boost dodge: arm against the drift line we're abandoning —
+                // where we'd have been had we NOT boosted (pre-impulse
+                // velocity). Capture it before the impulse rewrites vx/vy.
+                const preVx = this.vx, preVy = this.vy;
                 const power = this.boostPower * this.boostRangeMult * this.boostSpeedMult * this.momentumBoostMult;
                 this.vx += Math.cos(this.angle) * power;
                 this.vy += Math.sin(this.angle) * power;
+                this._armDodgeWindow(this.worldX, this.worldY,
+                    this.worldX + preVx * this.DODGE_TRAJ_LOOKAHEAD,
+                    this.worldY + preVy * this.DODGE_TRAJ_LOOKAHEAD);
                 this.game.sounds.play('boost', { volume: 0.5, x: this.worldX, y: this.worldY });
                 this.game.camera.shake(1.5, 15.0);
             }
@@ -1564,12 +1579,13 @@ export class Player {
         return ghostCanvas;
     }
 
-    // Blink-only dodge candidate scan.
-    // (ax, ay) is the pre-warp position; (bx, by) is the warp target.
-    // For each enemy projectile, sweep its trajectory forward
-    // DODGE_TRAJ_LOOKAHEAD seconds and check if that swept segment passes
-    // within the player's body radius of the A→B blink segment. Those are
-    // the projectiles that "would have hit" the player along the line.
+    // Dodge candidate scan — armed by blinks and boosts.
+    // [A→B] is the path the player abandoned: blink departure → target, or
+    // the pre-boost drift line for a boost (degenerate/near-zero segments
+    // are fine — _segSegDistSq guards them). For each enemy projectile,
+    // sweep its trajectory forward DODGE_TRAJ_LOOKAHEAD seconds and check
+    // if that swept segment passes within the player's body radius of
+    // [A→B]. Those are the projectiles that "would have hit" the player.
     _armDodgeWindow(ax, ay, bx, by) {
         this.dodgeCandidates.clear();
         this.dodgeDamaged = false;

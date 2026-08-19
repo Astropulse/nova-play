@@ -18,7 +18,7 @@
  */
 
 import { Inventory } from '../engine/inventory.js';
-import { UPGRADES, RARITY_WEIGHTS, RARITY_COLORS, makeItem } from '../data/upgrades.js';
+import { UPGRADES, RARITY_WEIGHTS, RARITY_COLORS, makeItem, isUpgradeUnlocked } from '../data/upgrades.js';
 
 // ─── Tunable UI constants ────────────────────────────────────────────────────
 const UI = {
@@ -178,7 +178,8 @@ export class CacheUI {
         const maxH = this.cacheInventory.rows;
         const signalsLeft = this.game.currentState?.hasUndiscoveredSignals?.() ?? true;
         const fitting = UPGRADES.filter(u => u.width <= maxW && u.height <= maxH &&
-            (signalsLeft || u.id !== 'advanced_locator'));
+            (signalsLeft || u.id !== 'advanced_locator') &&
+            isUpgradeUnlocked(this.game, u.id));
         // Fall back to all upgrades if nothing fits (shouldn't happen)
         const pool = fitting.length > 0 ? fitting : [...UPGRADES];
         this.silhouettes = pool.sort(() => Math.random() - 0.5).slice(0, Math.min(16, pool.length));
@@ -195,6 +196,7 @@ export class CacheUI {
         const possible = UPGRADES.filter(u =>
             u.rarity !== 'unique' &&
             (signalsLeft || u.id !== 'advanced_locator') &&
+            isUpgradeUnlocked(this.game, u.id) &&
             !this.revealedItems.find(r => r.id === u.id) &&
             this._findSlotFor(u) !== null
         );

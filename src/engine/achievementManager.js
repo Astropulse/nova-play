@@ -1,7 +1,31 @@
 import { ACHIEVEMENTS } from '../data/achievements.js';
+import { MAX_COMBINE_TIER } from '../data/upgrades.js';
 
 // Sliding-window length used by "N kills in K seconds" checks.
 const KILL_WINDOW_SECONDS = 10;
+
+// Reverse lookups for gated content, built once from the ACHIEVEMENTS table:
+// upgrade/ship id -> the achievement whose unlock grants it, and combine
+// rarity -> its gate achievement. Anything absent from these maps is ungated.
+const UPGRADE_GATES = new Map();
+const COMBINE_GATES = new Map();
+const SHIP_GATES = new Map();
+for (const ach of ACHIEVEMENTS) {
+    if (!ach.unlock) continue;
+    if (ach.unlock.type === 'upgrade') UPGRADE_GATES.set(ach.unlock.id, ach);
+    else if (ach.unlock.type === 'combine') COMBINE_GATES.set(ach.unlock.id, ach);
+    else if (ach.unlock.type === 'ship') SHIP_GATES.set(ach.unlock.id, ach);
+}
+
+// Combine ladder caps in unlock order: each entry is the result-tier ceiling
+// granted by that combine unlock. With none unlocked the cap is 0 — no fusing
+// at all (every fuse produces tier >= 1).
+const COMBINE_CAP_LADDER = [
+    { id: 'uncommon', cap: 2 },
+    { id: 'rare', cap: 4 },
+    { id: 'epic', cap: 6 },
+    { id: 'legendary', cap: MAX_COMBINE_TIER }
+];
 
 export class AchievementManager {
     static STORAGE_KEY = 'nova_achievements';
@@ -36,6 +60,25 @@ export class AchievementManager {
         this.TOAST_DURATION = 4.5;
 
         this._load();
+
+        // Retroactive reconcile: achievements added after this profile's stats
+        // already satisfied them (e.g. the progression-gate batch landing on a
+        // veteran save) unlock silently at boot — no toast, no sound, no "NEW"
+        // marker. Without this they'd all fire as a fanfare burst on the first
+        // notify of the next run, and unlock-gated pools would read as locked
+        // until then.
+        let reconciled = false;
+        for (const ach of ACHIEVEMENTS) {
+            if (this.unlocked.has(ach.id)) continue;
+            try {
+                if (ach.check && ach.check(this)) {
+                    this.unlocked.add(ach.id);
+                    this.tracked.delete(ach.id);
+                    reconciled = true;
+                }
+            } catch (err) { /* stat shape from an older save — skip */ }
+        }
+        if (reconciled) this._save();
     }
 
     // Lifetime totals — persisted to localStorage. Survive deaths and new
@@ -77,6 +120,12 @@ export class AchievementManager {
             combines: 0,            // successful upgrade fuses
             maxTierCombines: 0,     // fuses that produced a max-tier item
             consumablesUsed: 0,
+            maxKillStreak: 0,           // best "kills within 10s" window ever
+            dodgesPerformed: 0,         // lifetime boost/teleport dodges
+            asteroidsRammed: 0,         // lifetime ram-kills on asteroids
+            distanceTraveled: 0,        // world-units flown, summed at run end
+            peakLevelByShip: {},        // {shipId: best level reached in a run}
+            peakRunTimeByShip: {},      // {shipId: longest single run, seconds}
             tradesCompleted: 0,          // multiplayer trades
             multiplayerRunsCompleted: 0, // runs finished with ≥1 other live pilot
             multiplayerBossKills: 0      // bosses recorded during such runs
@@ -104,6 +153,7 @@ export class AchievementManager {
             peakFovMult: 0,
             peakMaxHealth: 0,
             peakMaxShield: 0,
+            peakShieldMult: 0,           // maxShieldEnergy / stock (shipData.shield * 150)
             peakVacuumRangeMult: 0,
             peakExtraProjectiles: 0,
             peakLuck: 0,
@@ -175,9 +225,15 @@ export class AchievementManager {
                 if (runTime > this.lifetime.peakRunTime) {
                     this.lifetime.peakRunTime = runTime;
                 }
-                // Mark this run's ship as used (Hangar Tour).
+                // Distance only folds into the lifetime total when the run
+                // ends — run.distanceTraveled is a running max, not a delta.
+                this.lifetime.distanceTraveled += this.run.distanceTraveled;
+                // Mark this run's ship as used (Hangar Tour) and fold the
+                // per-ship longest-run record (upgrade unlock gates).
                 if (this.run.shipId) {
                     this.lifetime.shipsUsed[this.run.shipId] = true;
+                    const prev = this.lifetime.peakRunTimeByShip[this.run.shipId] || 0;
+                    if (runTime > prev) this.lifetime.peakRunTimeByShip[this.run.shipId] = runTime;
                 }
                 break;
             }
@@ -278,6 +334,7 @@ export class AchievementManager {
 
             case 'asteroid_rammed':
                 this.run.asteroidsRammed++;
+                this.lifetime.asteroidsRammed++;
                 break;
 
             case 'player_traveled':
@@ -376,6 +433,7 @@ export class AchievementManager {
 
             case 'dodge_performed':
                 this.run.dodgesPerformed++;
+                this.lifetime.dodgesPerformed++;
                 break;
 
             case 'blink_used': {
@@ -405,6 +463,7 @@ export class AchievementManager {
                 const lvl = payload && typeof payload.level === 'number' ? payload.level : 0;
                 if (lvl > this.run.peakLevel) this.run.peakLevel = lvl;
                 if (lvl > this.lifetime.peakLevel) this.lifetime.peakLevel = lvl;
+                this._recordShipLevel(lvl);
                 break;
             }
 
@@ -439,6 +498,14 @@ export class AchievementManager {
                     r.peakFovMult = Math.max(r.peakFovMult, fov);
                     r.peakMaxHealth = Math.max(r.peakMaxHealth, p.maxHealth || 0);
                     r.peakMaxShield = Math.max(r.peakMaxShield, p.maxShieldEnergy || 0);
+                    // Shield as a multiple of the hull's stock capacity
+                    // (Player scales shipData.shield by 150 into energy units),
+                    // so 3.0 means triple the printed shield — ship-fair the
+                    // way the speed/damage multiplier achievements are.
+                    const stockShield = (p.shipData && p.shipData.shield) ? p.shipData.shield * 150 : 0;
+                    if (stockShield > 0) {
+                        r.peakShieldMult = Math.max(r.peakShieldMult, (p.maxShieldEnergy || 0) / stockShield);
+                    }
                     // Vacuum range composes the inventory mult (scrapRangeMult,
                     // e.g. from scrap_drone) with the level-up mult, so track
                     // their product to match what the player actually feels.
@@ -452,12 +519,13 @@ export class AchievementManager {
                     // Exp gain composes the level-up mult with experience_condenser.
                     const expMult = (p.lvlExpGainMult || 0) * (p.experienceCondenserMult || 1);
                     r.peakExpGainMult = Math.max(r.peakExpGainMult, expMult);
+                    if (!r.shipId && p.shipData && p.shipData.id) {
+                        r.shipId = p.shipData.id;
+                    }
                     if (typeof p.level === 'number' && p.level > r.peakLevel) {
                         r.peakLevel = p.level;
                         if (p.level > this.lifetime.peakLevel) this.lifetime.peakLevel = p.level;
-                    }
-                    if (!r.shipId && p.shipData && p.shipData.id) {
-                        r.shipId = p.shipData.id;
+                        this._recordShipLevel(p.level);
                     }
                     if (p.inventory) {
                         const slots = (p.inventory.cols || 0) * (p.inventory.rows || 0);
@@ -489,6 +557,14 @@ export class AchievementManager {
         if (this.run.timeAlive > this.lifetime.peakRunTime) {
             this.lifetime.peakRunTime = this.run.timeAlive;
         }
+        // Per-ship longest run ticks live too, so "survive N minutes as X"
+        // unlock gates fire the moment the threshold is crossed.
+        if (this.run.shipId) {
+            const prev = this.lifetime.peakRunTimeByShip[this.run.shipId] || 0;
+            if (this.run.timeAlive > prev) {
+                this.lifetime.peakRunTimeByShip[this.run.shipId] = this.run.timeAlive;
+            }
+        }
         // Re-evaluate at most once per second: enough to catch a time milestone
         // promptly, cheap enough to avoid per-frame check + save churn.
         this._timeCheckAccum = (this._timeCheckAccum || 0) + dt;
@@ -516,6 +592,17 @@ export class AchievementManager {
         const cutoff = t - KILL_WINDOW_SECONDS;
         while (ks.length > 0 && ks[0] < cutoff) ks.shift();
         if (ks.length > this.run.maxKillStreak) this.run.maxKillStreak = ks.length;
+        if (ks.length > this.lifetime.maxKillStreak) this.lifetime.maxKillStreak = ks.length;
+    }
+
+    // Best level reached with the current run's ship, persisted per ship id.
+    // Feeds the combine-tier and upgrade unlock gates.
+    _recordShipLevel(lvl) {
+        const shipId = this.run.shipId;
+        if (!shipId || !lvl) return;
+        if (lvl > (this.lifetime.peakLevelByShip[shipId] || 0)) {
+            this.lifetime.peakLevelByShip[shipId] = lvl;
+        }
     }
 
     _checkAchievements() {
@@ -633,6 +720,63 @@ export class AchievementManager {
             if (ach.unlock.type === type && ach.unlock.id === id) return true;
         }
         return false;
+    }
+
+    // ── Progression gates ──────────────────────────────────────────────────
+    // Upgrades and combine tiers are gated behind achievements that carry an
+    // `unlock: { type: 'upgrade'|'combine', id }`. An upgrade with no gate
+    // achievement is available from the start.
+
+    /** True when the upgrade may appear in shops/caches/loot/encounters. */
+    isUpgradeUnlocked(id) {
+        const gate = UPGRADE_GATES.get(id);
+        return !gate || this.unlocked.has(gate.id);
+    }
+
+    /** The achievement gating an upgrade, or null when it's ungated. */
+    getUpgradeGate(id) {
+        return UPGRADE_GATES.get(id) || null;
+    }
+
+    /** True when the ship is selectable (ungated ships — the Fighter — always are). */
+    isShipUnlocked(id) {
+        const gate = SHIP_GATES.get(id);
+        return !gate || this.unlocked.has(gate.id);
+    }
+
+    /** The achievement gating a ship, or null when it's ungated. */
+    getShipGate(id) {
+        return SHIP_GATES.get(id) || null;
+    }
+
+    /** Highest combine-result tier the player has unlocked (0 = no combining). */
+    combineTierCap() {
+        let cap = 0;
+        for (const step of COMBINE_CAP_LADDER) {
+            const gate = COMBINE_GATES.get(step.id);
+            // A missing gate achievement means that rung isn't gated — treat
+            // it (and its cap) as granted so removing a gate can't brick fusing.
+            if (!gate || this.unlocked.has(gate.id)) cap = step.cap;
+            else break;
+        }
+        return cap;
+    }
+
+    /** Gate achievement blocking a fuse to `tier`, or null when the current
+     *  cap already allows it. Rungs unlock strictly in order, so the blocker
+     *  is always the first locked gate. Used by the combine-preview tooltip. */
+    combineGateFor(tier) {
+        if (tier <= this.combineTierCap()) return null;
+        return this.nextCombineGate();
+    }
+
+    /** The next locked combine-tier gate on the ladder (null when maxed). */
+    nextCombineGate() {
+        for (const step of COMBINE_CAP_LADDER) {
+            const gate = COMBINE_GATES.get(step.id);
+            if (gate && !this.unlocked.has(gate.id)) return gate;
+        }
+        return null;
     }
 
     // Aggregate getter used by achievement check() functions and the menu.

@@ -1,6 +1,6 @@
 import { Projectile } from './projectile.js';
 import { Scrap, VoronoiSlicer, ProceduralDebris, ItemPickup, Asteroid, ExpOrb, getCachedShatter } from './asteroid.js';
-import { UPGRADES } from '../data/upgrades.js';
+import { UPGRADES, isUpgradeUnlocked } from '../data/upgrades.js';
 import { pickFireExplosion, fireExplosionFrame, drawBeamStrip } from '../engine/vfx.js';
 
 export const BOSS_PHASE = {
@@ -486,7 +486,8 @@ export class Boss {
 
         // 3. Common Upgrade (10% chance)
         if (rand() < 0.10) {
-            const commonUpgrades = UPGRADES.filter(u => u.rarity === 'common' && !u.consumable);
+            const commonUpgrades = UPGRADES.filter(u => u.rarity === 'common' && !u.consumable
+                && isUpgradeUnlocked(this.game, u.id));
             if (commonUpgrades.length > 0) {
                 const randomUpgrade = commonUpgrades[Math.floor(rand() * commonUpgrades.length)];
                 const angle = Math.random() * Math.PI * 2;

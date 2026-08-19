@@ -3,7 +3,7 @@
  * Resolves conditions, vars, template strings, and actions at runtime.
  */
 
-import { UPGRADES, itemTier } from './upgrades.js';
+import { UPGRADES, itemTier, isUpgradeUnlocked } from './upgrades.js';
 import { DIALOG_SCENARIOS } from './encounterDialogs.js';
 
 // ── Ship asset mappings ──────────────────────────────────────────
@@ -131,7 +131,8 @@ function resolveVars(varDefs, player, state) {
                 const pool = UPGRADES.filter(u => {
                     const rarityMatch = !def.rarities || def.rarities.includes(u.rarity);
                     const idMatch = !def.ids || def.ids.includes(u.id);
-                    return rarityMatch && idMatch && !u.consumable;
+                    return rarityMatch && idMatch && !u.consumable
+                        && isUpgradeUnlocked(state && state.game, u.id);
                 });
                 if (pool.length === 0) return null;
                 resolved[key] = pick(pool);

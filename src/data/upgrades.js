@@ -604,6 +604,17 @@ export const UPGRADES = [
     }
 ];
 
+/**
+ * Progression gate for loot pools. True when the upgrade may roll in shops,
+ * caches, enemy/boss loot, and encounters. Delegates to the achievement
+ * manager (achievements with `unlock: { type: 'upgrade', id }` gate their
+ * upgrade); with no manager (headless tests, early boot) everything is open.
+ */
+export function isUpgradeUnlocked(game, id) {
+    const mgr = game && game.achievements;
+    return !mgr || mgr.isUpgradeUnlocked(id);
+}
+
 export const RARITY_WEIGHTS = {
     common: 100,
     uncommon: 50,

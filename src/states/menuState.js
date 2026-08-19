@@ -1,9 +1,11 @@
-import { SHIPS } from '../data/ships.js';
+import { SHIPS, isShipUnlocked } from '../data/ships.js';
 import { PlayingState } from './playingState.js';
 import { TutorialState } from './tutorialState.js';
 import { MultiplayerState } from './multiplayerState.js';
 import { AchievementsState } from './achievementsState.js';
+import { UpgradesState } from './upgradesState.js';
 import { ACHIEVEMENTS } from '../data/achievements.js';
+import { UPGRADES } from '../data/upgrades.js';
 import { GP } from '../engine/inputManager.js';
 import { World } from '../world/world.js';
 import { Camera } from '../world/camera.js';
@@ -42,6 +44,7 @@ export class MenuState {
         // frame in _computeLayout below.
         this.achievementsBtn = { x: 0, y: 0, w: 0, h: 0, hovered: false };
         this.multiplayerBtn = { x: 0, y: 0, w: 0, h: 0, hovered: false };
+        this.upgradesBtn = { x: 0, y: 0, w: 0, h: 0, hovered: false };
 
         // Track last hover state for click sound
         this.lastHovered = { left: false, right: false, start: false, tutorial: false, mDec: false, mInc: false, sDec: false, sInc: false };
@@ -108,7 +111,8 @@ export class MenuState {
             } else if (this._isInside(mouse, this.musicDecBtn) || this._isInside(mouse, this.musicIncBtn) ||
                 this._isInside(mouse, this.sfxDecBtn) || this._isInside(mouse, this.sfxIncBtn) ||
                 this._isInside(mouse, this.wordmarkBtn) ||
-                this._isInside(mouse, this.achievementsBtn)) {
+                this._isInside(mouse, this.achievementsBtn) ||
+                this._isInside(mouse, this.upgradesBtn)) {
                 this.game.sounds.play('click', 1.0);
             }
         };
@@ -170,6 +174,7 @@ export class MenuState {
             { id: 'musicInc',  rect: this.musicIncBtn },
             { id: 'achievements', rect: this.achievementsBtn },
             { id: 'multiplayer',  rect: this.multiplayerBtn },
+            { id: 'upgrades',     rect: this.upgradesBtn },
         ];
         if (this.focusIndex >= focusables.length) this.focusIndex = 0;
 
@@ -239,6 +244,7 @@ export class MenuState {
         this.wordmarkBtn.hovered = this._isInside(mouse, this.wordmarkBtn);
         this.achievementsBtn.hovered = this._isInside(mouse, this.achievementsBtn);
         this.multiplayerBtn.hovered = this._isInside(mouse, this.multiplayerBtn);
+        this.upgradesBtn.hovered = this._isInside(mouse, this.upgradesBtn);
 
         // Hover sounds - literal "play once on hover start" logic
         if (this.leftArrowBtn.hovered && !this.lastHovered.left) {
@@ -310,6 +316,11 @@ export class MenuState {
             if (this.multiplayerBtn.hovered) {
                 this.game.input.consumeMouseButton(0);
                 this.game.setState(new MultiplayerState(this.game));
+                return;
+            }
+            if (this.upgradesBtn.hovered) {
+                this.game.input.consumeMouseButton(0);
+                this.game.setState(new UpgradesState(this.game));
                 return;
             }
         }
@@ -389,6 +400,9 @@ export class MenuState {
                 case 'multiplayer':
                     this.game.setState(new MultiplayerState(this.game));
                     return 'transition';
+                case 'upgrades':
+                    this.game.setState(new UpgradesState(this.game));
+                    return 'transition';
                 case 'sfxDec':   this.game.sounds.setSfxVolume(this.game.sounds.sfxVolume - 0.1); break;
                 case 'sfxInc':   this.game.sounds.setSfxVolume(this.game.sounds.sfxVolume + 0.1); break;
                 case 'musicDec': this.game.sounds.setMusicVolume(this.game.sounds.musicVolume - 0.1); break;
@@ -454,6 +468,7 @@ export class MenuState {
             this.musicIncBtn.hovered   = id === 'musicInc';
             this.achievementsBtn.hovered = id === 'achievements';
             this.multiplayerBtn.hovered = id === 'multiplayer';
+            this.upgradesBtn.hovered = id === 'upgrades';
         }
     }
 
@@ -483,6 +498,13 @@ export class MenuState {
 
     _beginStartTransition() {
         if (this.transition) return;
+        // Locked ships can be browsed but not flown — every start path
+        // (click, Enter, gamepad A) funnels through here, so this is the
+        // single gate.
+        if (!isShipUnlocked(this.game, SHIPS[this.selectedShipIndex].id)) {
+            this.game.sounds.play('click', 0.4);
+            return;
+        }
         this._ensureWorld();
         if (!this.world) return; // full atlas still loading — ignore the click until ready
         const shipCenter = this._currentShipCenter();
@@ -608,9 +630,16 @@ export class MenuState {
         this.achievementsBtn.w = labelW;
         this.achievementsBtn.h = labelH;
 
-        // Multiplayer text button — stacked under achievements.
+        // Upgrades codex text button — stacked under achievements. Same tall
+        // rect as achievements: label plus the discovered-count hint under it.
+        this.upgradesBtn.x = cw - marginTR - labelW;
+        this.upgradesBtn.y = marginTR + labelH + Math.floor(game.uiScale * 4);
+        this.upgradesBtn.w = labelW;
+        this.upgradesBtn.h = labelH;
+
+        // Multiplayer text button — stacked under upgrades.
         this.multiplayerBtn.x = cw - marginTR - labelW;
-        this.multiplayerBtn.y = marginTR + labelH + Math.floor(game.uiScale * 4);
+        this.multiplayerBtn.y = this.upgradesBtn.y + this.upgradesBtn.h + Math.floor(game.uiScale * 4);
         this.multiplayerBtn.w = labelW;
         this.multiplayerBtn.h = Math.floor(game.uiScale * 12);
     }
@@ -677,10 +706,11 @@ export class MenuState {
 
         game.drawSpriteCentered(ctx, 'title', Math.round(cx), Math.round(titleY + titleSize.h / 2), game.uiScale);
 
-        ctx.fillStyle = '#ffffff';
+        const shipUnlocked = isShipUnlocked(game, ship.id);
+        ctx.fillStyle = shipUnlocked ? '#ffffff' : '#778899';
         ctx.font = `${8 * game.uiScale}px Astro5x`;
         ctx.textAlign = 'center';
-        ctx.fillText(ship.name.toUpperCase(), cx, nameY);
+        ctx.fillText(ship.name.toUpperCase() + (shipUnlocked ? '' : '  [LOCKED]'), cx, nameY);
 
         game.drawSprite(ctx, this.leftArrowBtn.hovered ? 'left_arrow_on' : 'left_arrow_off', this.leftArrowBtn.x, this.leftArrowBtn.y, game.uiScale);
         game.drawSprite(ctx, this.rightArrowBtn.hovered ? 'right_arrow_on' : 'right_arrow_off', this.rightArrowBtn.x, this.rightArrowBtn.y, game.uiScale);
@@ -692,21 +722,45 @@ export class MenuState {
         this._drawStats(ctx, ship, statsTopY, statsX, barWidth);
 
         const descY = Math.floor(shipY + shipSize.h + game.uiScale * 8);
-        ctx.fillStyle = '#8899aa';
         ctx.font = `${8 * game.uiScale}px Astro4x`;
         ctx.textAlign = 'center';
-        const descLines = ship.description.split('\n');
+        let descLines;
+        if (shipUnlocked) {
+            ctx.fillStyle = '#8899aa';
+            descLines = ship.description.split('\n');
+        } else {
+            // Locked ship: the description slot becomes the unlock objective
+            // (+ live progress) so the carousel doubles as the "why should I
+            // do things" advertisement.
+            ctx.fillStyle = '#ff8844';
+            const gate = game.achievements ? game.achievements.getShipGate(ship.id) : null;
+            descLines = ['UNLOCK: ' + (gate ? (gate.goal || gate.description) : '???')];
+            if (gate && typeof gate.progress === 'function' && game.achievements) {
+                let p = 0;
+                try { p = gate.progress(game.achievements) || 0; } catch (e) { p = 0; }
+                descLines.push(Math.floor(Math.max(0, Math.min(1, p)) * 100) + '% COMPLETE');
+            }
+        }
         for (let i = 0; i < descLines.length; i++) {
             ctx.fillText(descLines[i], cx, descY + i * Math.floor(game.uiScale * 10));
         }
 
         if (ship.special) {
-            ctx.fillStyle = '#44ddff';
+            ctx.fillStyle = shipUnlocked ? '#44ddff' : '#556677';
             const specialY = Math.floor(descY + descLines.length * game.uiScale * 10 + game.uiScale * 4);
             ctx.fillText(`[${ship.special.toUpperCase()}]`, cx, specialY);
         }
 
-        game.drawSprite(ctx, this.startBtn.hovered ? 'start_flight_on' : 'start_flight_off', this.startBtn.x, this.startBtn.y, game.uiScale);
+        // START FLIGHT dims for locked ships (the click/A path is refused in
+        // _beginStartTransition — this is just the visual cue).
+        if (shipUnlocked) {
+            game.drawSprite(ctx, this.startBtn.hovered ? 'start_flight_on' : 'start_flight_off', this.startBtn.x, this.startBtn.y, game.uiScale);
+        } else {
+            ctx.save();
+            ctx.globalAlpha *= 0.4;
+            game.drawSprite(ctx, 'start_flight_off', this.startBtn.x, this.startBtn.y, game.uiScale);
+            ctx.restore();
+        }
         game.drawSprite(ctx, this.tutorialBtn.hovered ? 'tutorial_on' : 'tutorial_off', this.tutorialBtn.x, this.tutorialBtn.y, game.uiScale);
 
         const marginTL = Math.floor(game.uiScale * 12);
@@ -733,7 +787,27 @@ export class MenuState {
             }
         }
 
-        // Multiplayer text button — stacked under achievements.
+        // Upgrades codex text button — stacked under achievements, with a
+        // discovered-count hint mirroring the achievements counter above.
+        {
+            const btn = this.upgradesBtn;
+            ctx.font = `${8 * game.uiScale}px Astro5x`;
+            ctx.textAlign = 'right';
+            ctx.fillStyle = btn.hovered ? '#ffffff' : '#44ddff';
+            ctx.fillText('UPGRADES ►', btn.x + btn.w, btn.y + Math.floor(game.uiScale * 8));
+            const mgr = game.achievements;
+            if (mgr) {
+                let discovered = 0;
+                for (const u of UPGRADES) {
+                    if ((mgr.lifetime.upgradesById[u.id] || 0) > 0) discovered++;
+                }
+                ctx.font = `${5 * game.uiScale}px Astro4x`;
+                ctx.fillStyle = '#667788';
+                ctx.fillText(`${discovered} / ${UPGRADES.length}`, btn.x + btn.w, btn.y + Math.floor(game.uiScale * 16));
+            }
+        }
+
+        // Multiplayer text button — stacked under upgrades.
         {
             const btn = this.multiplayerBtn;
             ctx.font = `${8 * game.uiScale}px Astro5x`;
@@ -762,7 +836,13 @@ export class MenuState {
             const img = stillAsset.canvas || stillAsset;
             const w = (stillAsset.width || img.width) * renderScale;
             const h = (stillAsset.height || img.height) * renderScale;
+            // Locked ships preview dimmed — the reward you're working toward.
+            // (A locked ship can never enter the start transition, so this
+            // never dims the zoom-out handoff.)
+            ctx.save();
+            if (!shipUnlocked) ctx.globalAlpha *= 0.35;
             ctx.drawImage(img, Math.round(sCenterX - w / 2), Math.round(sCenterY - h / 2), w, h);
+            ctx.restore();
         }
 
         // HUD layered inside the world's zoom. Because every HUD element is

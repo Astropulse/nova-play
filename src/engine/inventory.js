@@ -173,9 +173,12 @@ export class Inventory {
      * Non-mutating check: returns the entry the dragged item would combine into
      * at the drop position, or null if no valid combine. Combine requires the
      * footprint to overlap exactly one entry of the same id and tier, both
-     * combinable, below max tier.
+     * combinable, below max tier, and the result tier within the player's
+     * unlocked combine cap (progression gate — see AchievementManager.
+     * combineTierCap). Pass ignoreCap to probe for a would-be match anyway;
+     * the combine-preview tooltip uses that to explain WHY a fuse is locked.
      */
-    combineTargetAt(draggedItem, dropX, dropY) {
+    combineTargetAt(draggedItem, dropX, dropY, ignoreCap = false) {
         if (!draggedItem.combine) return null;
 
         const dw = draggedItem.width;
@@ -203,6 +206,13 @@ export class Inventory {
         const tier = itemTier(draggedItem);
         if (itemTier(other) !== tier) return null;
         if (tier >= MAX_COMBINE_TIER) return null;
+
+        // Progression gate: only player inventories carry a playingState ref,
+        // so shop/cache/trade grids (which never host combines) are untouched.
+        if (!ignoreCap && this.isPlayerInventory && this.playingState) {
+            const mgr = this.playingState.game && this.playingState.game.achievements;
+            if (mgr && tier + 1 > mgr.combineTierCap()) return null;
+        }
 
         return target;
     }

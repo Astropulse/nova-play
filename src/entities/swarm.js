@@ -4,7 +4,7 @@ import {
 } from './asteroid.js';
 import { Enemy, AI_STATE } from './enemy.js';
 import { Projectile } from './projectile.js';
-import { UPGRADES } from '../data/upgrades.js';
+import { UPGRADES, isUpgradeUnlocked } from '../data/upgrades.js';
 import { ellipseContains } from '../engine/collision.js';
 import { pickFireExplosion, fireExplosionFrame } from '../engine/vfx.js';
 import { MUSIC_STATE } from '../engine/soundManager.js';
@@ -783,7 +783,8 @@ export class SwarmMother extends Enemy {
             spawns.push(new ItemPickup(this.game, this.worldX, this.worldY, batteryData));
         }
         if (rand() < 0.5) {
-            const pool = UPGRADES.filter(u => (u.rarity === 'rare' || u.rarity === 'uncommon') && !u.consumable);
+            const pool = UPGRADES.filter(u => (u.rarity === 'rare' || u.rarity === 'uncommon') && !u.consumable
+                && isUpgradeUnlocked(this.game, u.id));
             if (pool.length > 0) {
                 const pick = pool[Math.floor(rand() * pool.length)];
                 spawns.push(new ItemPickup(this.game, this.worldX, this.worldY, pick));
@@ -1461,7 +1462,8 @@ export class Hive {
             }
         }
         if (rand() < 0.6) {
-            const pool = UPGRADES.filter(u => (u.rarity === 'rare' || u.rarity === 'uncommon') && !u.consumable);
+            const pool = UPGRADES.filter(u => (u.rarity === 'rare' || u.rarity === 'uncommon') && !u.consumable
+                && isUpgradeUnlocked(this.game, u.id));
             if (pool.length > 0) {
                 const pick = pool[Math.floor(rand() * pool.length)];
                 const ang = Math.random() * Math.PI * 2, d = 40 + Math.random() * 40;
