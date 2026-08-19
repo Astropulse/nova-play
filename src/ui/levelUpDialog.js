@@ -5,8 +5,9 @@
  * to bank a stacking bonus multiplier (LEVELUP_SKIP_MULT_STEP, default
  * 1.8x per skip) applied to the *next* roll's % and flat values. Picking
  * cashes in the banked multiplier. The skip budget (LEVELUP_MAX_SKIPS,
- * default 2) is a per-run pool — skips persist across level-ups and only
- * refill on new game.
+ * default 2) is a per-run pool — skips persist across level-ups and refill
+ * on new game, and every boss/event defeat pays +1 more into the pool
+ * (PlayingState.grantLevelUpSkip — the dragon pays per head shatter).
  *
  * Roll diversity:
  *   • Max 2 choices of the same TYPE (offense/defense/mobility/utility/

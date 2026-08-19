@@ -666,6 +666,10 @@ export class YellowOne {
             if (this.game.achievements) {
                 this.game.achievements.notify('boss_defeated', { bossId: 'YellowOne' });
             }
+            // The King's fall pays the boss bounty like any other defeat.
+            if (this.game.currentState && this.game.currentState.grantLevelUpSkip) {
+                this.game.currentState.grantLevelUpSkip(this.worldX, this.worldY);
+            }
 
             // Drop loot at yellow one's position
             this._dropLoot();

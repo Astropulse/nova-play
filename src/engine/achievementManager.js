@@ -73,7 +73,13 @@ export class AchievementManager {
             enemyKillsByClass: {},
             upgradesById: {},
             encounterTypes: {},     // 'cargo_trader' -> count of times the dialog was opened
-            optimalChoices: {}      // scenarioId -> count of times the optimal path was taken
+            optimalChoices: {},     // scenarioId -> count of times the optimal path was taken
+            combines: 0,            // successful upgrade fuses
+            maxTierCombines: 0,     // fuses that produced a max-tier item
+            consumablesUsed: 0,
+            tradesCompleted: 0,          // multiplayer trades
+            multiplayerRunsCompleted: 0, // runs finished with ≥1 other live pilot
+            multiplayerBossKills: 0      // bosses recorded during such runs
         };
     }
 
@@ -125,6 +131,7 @@ export class AchievementManager {
             scrapTimestamps: [],         // {t, amt} entries within the last 3s for burst detection
             scrapBurstPeak: 0,           // peak rolling 3-second sum
             hostilesConverted: 0,
+            multiplayer: false,          // true once ≥1 remote pilot shares the run
             eventsDiscovered: new Set(),
             bossesDefeated: new Set(),
             uniqueUpgradeIds: new Set(),
@@ -152,6 +159,7 @@ export class AchievementManager {
 
             case 'run_ended': {
                 this.lifetime.runsCompleted++;
+                if (this.run.multiplayer) this.lifetime.multiplayerRunsCompleted++;
                 // Snapshot this run's unlocks as the "last run" set so the
                 // title-screen menu can mark them after we leave the run.
                 this.lastRunUnlocked = new Set(this.runUnlocked);
@@ -223,6 +231,26 @@ export class AchievementManager {
             case 'encounter_converted_hostile':
                 this.lifetime.hostilesConverted++;
                 this.run.hostilesConverted++;
+                break;
+
+            case 'multiplayer_run':
+                // PlayingState fires this once a remote pilot is actually in
+                // the run (not merely a hosted-but-empty lobby).
+                this.run.multiplayer = true;
+                break;
+
+            case 'trade_completed':
+                this.lifetime.tradesCompleted++;
+                break;
+
+            case 'item_combined':
+                // Payload: { id, tier, isMaxTier } from the combine fanfare.
+                this.lifetime.combines++;
+                if (payload && payload.isMaxTier) this.lifetime.maxTierCombines++;
+                break;
+
+            case 'consumable_used':
+                this.lifetime.consumablesUsed++;
                 break;
 
             case 'encounter_optimal_choice': {
@@ -475,6 +503,8 @@ export class AchievementManager {
         if (!bossId) return;
         this.lifetime.bossesDefeated[bossId] = (this.lifetime.bossesDefeated[bossId] || 0) + 1;
         this.run.bossesDefeated.add(bossId);
+        // Shared Glory: any boss recorded while other pilots share the run.
+        if (this.run.multiplayer) this.lifetime.multiplayerBossKills++;
     }
 
     // Append a kill timestamp and prune anything older than the window. After

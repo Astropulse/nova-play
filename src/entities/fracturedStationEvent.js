@@ -174,6 +174,11 @@ export class FracturedStationEvent {
                     this.state = FRACTURED_STATION_STATE.FINISHED;
                     this.revealed = false; // Hide marker
                     this.game.sounds.restoreMusic();
+                    // Gauntlet complete — the event defeat pays a level-up
+                    // skip. (MP: every machine runs this state machine, and
+                    // netSync's EVENT_SYNC apply pays laggards exactly once.)
+                    const st = this.game.currentState;
+                    if (st && st.grantLevelUpSkip) st.grantLevelUpSkip();
                 }
                 break;
         }

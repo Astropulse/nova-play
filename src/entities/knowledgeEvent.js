@@ -542,6 +542,12 @@ export class KnowledgeEvent {
         if (this.game.achievements) {
             this.game.achievements.notify('knowledge_event_resolved', { method: 'combat' });
         }
+        // Beating the eye in open combat is an event defeat — it pays the
+        // level-up-skip bounty. The peaceful resolutions (sacrifice /
+        // obedience) are bargains, not defeats, and pay nothing.
+        if (this.game.currentState && this.game.currentState.grantLevelUpSkip) {
+            this.game.currentState.grantLevelUpSkip(this.worldX, this.worldY);
+        }
 
         // Spawn rewards immediately since we aren't calling PlayingState._onEntityDestroyed via alive=false
         const rewards = this.getSpawnOnDeath();

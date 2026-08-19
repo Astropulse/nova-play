@@ -401,6 +401,12 @@ export class DragonHead {
                 this.pendingSpawns.push(s);
             }
         }
+        // Every felled head pays a level-up skip — reform cycles and solo
+        // fragments included. Loot can't be farmed across reforms, but skips
+        // can: the endgame fight doubles as a skip mine by design.
+        if (state && state.grantLevelUpSkip) {
+            state.grantLevelUpSkip(this._shatterX, this._shatterY);
+        }
         this.dragon.onHeadShattered(this);
     }
 

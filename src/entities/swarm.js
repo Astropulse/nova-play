@@ -1517,6 +1517,11 @@ export class Hive {
         if (this.game.achievements) {
             this.game.achievements.notify('boss_defeated', { bossId: 'Swarm' });
         }
+        // The whole swarm — hive, Mother, and every locust — counts as ONE
+        // boss defeat for the level-up-skip bounty, settled here.
+        if (state && state.grantLevelUpSkip) {
+            state.grantLevelUpSkip(this.worldX, this.worldY);
+        }
     }
 
     // ─── DRAWING ───────────────────────────────────────────────────────

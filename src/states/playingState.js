@@ -223,7 +223,8 @@ export class PlayingState {
         // Skip-and-stack: skipping a level-up banks a multiplier for the next
         // roll. Picking cashes in the multiplier. The skip budget
         // (LEVELUP_MAX_SKIPS) is a per-run pool — it persists across picks
-        // and only refills on new game.
+        // and only refills on new game. Boss/event defeats pay bounty skips
+        // on top of the starting pool (grantLevelUpSkip) — no cap.
         this.LEVELUP_MAX_SKIPS       = 2;
         this.LEVELUP_SKIP_MULT_STEP  = 1.8;
         this.levelUpSkipsRemaining   = this.LEVELUP_MAX_SKIPS;
@@ -924,7 +925,18 @@ export class PlayingState {
         // Increment true total time only if not paused, not in shop, and not dead
         if ((mp || (coop && !allPaused) || (!this.paused && !this.isShopOpen && !this.isEncounterOpen && !this.isCacheOpen && !this.isLevelUpOpen && !this.isTradeOpen)) && !this.isDead) {
             this.trueTotalTime += dt;
-            if (this.game.achievements) this.game.achievements.tickRun(dt);
+            if (this.game.achievements) {
+                this.game.achievements.tickRun(dt);
+                // Multiplayer achievements only count runs shared with at
+                // least one other live pilot — a solo-hosted lobby doesn't
+                // qualify. Fires once per state instance; re-fires after a
+                // save/resume rebuild, which is what the run flag needs.
+                if (!this._mpRunNotified && this.netSync
+                    && this.netSync.remotePlayers.size > 0) {
+                    this._mpRunNotified = true;
+                    this.game.achievements.notify('multiplayer_run');
+                }
+            }
         }
 
         // --- Death sequence ---
@@ -2935,11 +2947,13 @@ export class PlayingState {
                 e.update(dt, enemyTarget(e), enemyAvoidAsteroids, this.projectiles, this.enemies);
                 collectEnemyProjectiles(e);
 
-                // Despawn if way too far — from EVERY pilot, not just us.
+                // Despawn if way too far — from EVERY pilot (networked bodies
+                // in MP, local pilots in co-op), not just us.
                 const despawnR = 3500 * this.currentFovMult;
                 let minDistSq = Infinity;
-                if (mp && bodies) {
-                    for (const b of bodies) {
+                const enCullBodies = (mp && bodies) ? bodies : coopBodies;
+                if (enCullBodies && enCullBodies.length) {
+                    for (const b of enCullBodies) {
                         const dx = e.worldX - b.worldX, dy = e.worldY - b.worldY;
                         minDistSq = Math.min(minDistSq, dx * dx + dy * dy);
                     }
@@ -2979,9 +2993,10 @@ export class PlayingState {
             a.update(dt);
             if (!isNetHost) continue; // clients: host broadcasts despawns
             let minDistSq;
-            if (mp && bodies && bodies.length) {
+            const astCullBodies = (mp && bodies && bodies.length) ? bodies : coopBodies;
+            if (astCullBodies && astCullBodies.length) {
                 minDistSq = Infinity;
-                for (const b of bodies) {
+                for (const b of astCullBodies) {
                     const dx = a.worldX - b.worldX, dy = a.worldY - b.worldY;
                     minDistSq = Math.min(minDistSq, dx * dx + dy * dy);
                 }
@@ -3843,6 +3858,16 @@ export class PlayingState {
                 this.caches.push(bossCache);
                 if (mp && this.netSync.isHost) this.netSync.registerCache(bossCache);
             }
+        }
+        // Boss/event bounty: every felled boss pays a level-up skip. isBoss
+        // covers the wave bosses plus Seraph/Wheels (echoes included); the
+        // Cthulhu leviathan is a defeatable event without the flag; a
+        // hive-less Swarm Mother is a post-dragon world boss (the encounter
+        // Mother doesn't pay — the swarm settles as ONE in _finishEncounter).
+        // MP clients mirror this in netSync._handleKill / EVENT_SYNC.
+        if (entity.isBoss || entity instanceof CthulhuEvent ||
+            (entity instanceof SwarmMother && !this._swarmEncounterActive())) {
+            this.grantLevelUpSkip(entity.worldX, entity.worldY);
         }
         // Track stats — in multiplayer these are personal: only the pilot who
         // landed the kill counts it (remote machines do the same via KILL).
@@ -6351,6 +6376,15 @@ export class PlayingState {
     // it animates even while the sim is paused.
     _celebrateCombine(draggedItem) {
         const resultTier = itemTier(draggedItem) + 1;
+        // Only ever called right after a successful tryCombine, so this is
+        // the single choke point for combine achievements.
+        if (this.game.achievements) {
+            this.game.achievements.notify('item_combined', {
+                id: draggedItem.id,
+                tier: resultTier,
+                isMaxTier: resultTier >= MAX_COMBINE_TIER
+            });
+        }
         const mouse = this.game.getMousePos();
         this._combineFx = {
             x: mouse.x, y: mouse.y,
@@ -8007,6 +8041,7 @@ export class PlayingState {
             playerInv.removeItemAt(entry.x, entry.y);
             this.game.sounds.play('select', 0.8);
             this._onInventoryChanged();
+            this._notifyConsumableUsed(id);
             return true;
         }
         if (id === 'shop_map') {
@@ -8014,6 +8049,7 @@ export class PlayingState {
                 playerInv.removeItemAt(entry.x, entry.y);
                 this.game.sounds.play('select', 0.8);
                 this._onInventoryChanged();
+                this._notifyConsumableUsed(id);
             }
             return true;
         }
@@ -8022,12 +8058,21 @@ export class PlayingState {
                 playerInv.removeItemAt(entry.x, entry.y);
                 this.game.sounds.play('select', 0.8);
                 this._onInventoryChanged();
+                this._notifyConsumableUsed(id);
             } else {
                 this.game.sounds.play('asteroid_break', 0.5);
             }
             return true;
         }
         return false;
+    }
+
+    // Fires only on the paths that actually consumed the item — a shop_map
+    // or locator that failed to find a target stays in cargo and doesn't count.
+    _notifyConsumableUsed(id) {
+        if (this.game.achievements) {
+            this.game.achievements.notify('consumable_used', { id });
+        }
     }
 
     // Handles right-click consumable use from the player inventory.
@@ -9339,6 +9384,30 @@ export class PlayingState {
             this.isCacheOpen = true;
             this.paused      = true;
         }
+    }
+
+    // Bounty: every defeated boss — and every defeated world event; an event
+    // with bosses inside counts as ONE — pays +1 level-up skip into the run's
+    // pool, on top of the LEVELUP_MAX_SKIPS starting budget. No cap: the
+    // dragon's reforming heads pay per shatter, so the endgame fight can be
+    // farmed for skips by design. Pass the defeat position so the reward
+    // reads at the kill site (defaults to the local player).
+    grantLevelUpSkip(worldX, worldY) {
+        this.levelUpSkipsRemaining = (this.levelUpSkipsRemaining || 0) + 1;
+        // Local co-op disables the skip card (shared-skip bleed), so don't
+        // advertise a reward those pilots can't spend.
+        if (this.localPlayers.length > 1) return;
+        const x = worldX !== undefined ? worldX : this.player.worldX;
+        const y = worldY !== undefined ? worldY : this.player.worldY;
+        this.spawnFloatingText(x, y - 30, '+1 LEVEL-UP SKIP', '#ffff44');
+    }
+
+    // True while the Hive encounter still owns its brood. The swarm counts as
+    // ONE defeat — paid at Hive._finishEncounter — so sub-boss kills (the
+    // Mother) only pay a skip when no unfinished Hive stands (i.e. the
+    // hive-less post-dragon Mother, a world boss in her own right).
+    _swarmEncounterActive() {
+        return this.events.some(ev => ev instanceof Hive && ev.alive && !ev.isFinished);
     }
 
     // Called from Player.addExp on the pilot that leveled. Queues onto THAT

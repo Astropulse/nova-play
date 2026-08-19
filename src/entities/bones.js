@@ -1009,6 +1009,11 @@ export class Carcosa {
         if (this.game.achievements) {
             this.game.achievements.notify('boss_defeated', { bossId: 'Carcosa' });
         }
+        // The whole starfield — every husk and risen ship — counts as ONE
+        // boss defeat for the level-up-skip bounty, settled here.
+        if (state && state.grantLevelUpSkip) {
+            state.grantLevelUpSkip(this.worldX, this.worldY);
+        }
     }
 
     // Three caches streak in and crash-land around the rebuilt city, heralded

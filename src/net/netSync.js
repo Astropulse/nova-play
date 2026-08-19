@@ -30,6 +30,8 @@ import { Asteroid, Scrap, ItemPickup, ExpOrb, Rubble } from '../entities/asteroi
 import { Enemy, KamikazeEnemy, CthulhuEnemy, HostileEncounter, NaniteEnemy, NaniteDrone, ShieldEnemy, MissileEnemy, BlinkEnemy, BerserkEnemy, ScavengerEnemy } from '../entities/enemy.js';
 import { LocustEnemy, SwarmMother } from '../entities/swarm.js';
 import { BoneEnemy } from '../entities/bones.js';
+import { CthulhuEvent } from '../entities/cthulhuEvent.js';
+import { FracturedStationEvent, FRACTURED_STATION_STATE } from '../entities/fracturedStationEvent.js';
 import { Starcore } from '../entities/starcore.js';
 import { AsteroidCrusher } from '../entities/asteroidCrusher.js';
 import { EventHorizon } from '../entities/eventHorizon.js';
@@ -1132,11 +1134,26 @@ export class ClientWorldSync extends BaseWorldSync {
                 const ev = this.findEventByNetId(netId);
                 if (!ev) continue;
                 const scripted = LOCAL_SCRIPTED_EVENTS.has(ev.constructor.name);
-                if (!scripted && evState !== null && evState !== undefined) ev.state = evState;
+                if (!scripted && evState !== null && evState !== undefined) {
+                    // Host-authoritative event completions pay the level-up
+                    // skip bounty on machines whose local sim missed the
+                    // transition (the local state machine and the KILL path
+                    // guard on the same before-state, so it pays only once).
+                    if (ev instanceof FracturedStationEvent && ev.state !== evState &&
+                        evState === FRACTURED_STATION_STATE.FINISHED) {
+                        this.state.grantLevelUpSkip();
+                    }
+                    ev.state = evState;
+                }
                 if (hp !== null && ev.health !== undefined) ev.health = hp;
                 if (wave !== null && ev.wave !== undefined) ev.wave = wave;
                 if (isFinished) ev.isFinished = true;
-                if (!alive) ev.alive = false;
+                if (!alive) {
+                    if (ev.alive && ev instanceof CthulhuEvent) {
+                        this.state.grantLevelUpSkip(ev.worldX, ev.worldY);
+                    }
+                    ev.alive = false;
+                }
                 if (!scripted && !ev._netPosLocked) {
                     // Position: blend hard if far off, gently otherwise.
                     const dx = x - ev.worldX, dy = y - ev.worldY;
@@ -1396,6 +1413,12 @@ export class ClientWorldSync extends BaseWorldSync {
         if (m.kind === KIND.EVENT) {
             const ev = this.findEventByNetId(m.nid);
             if (ev) {
+                // Defeatable-event bounty (the host pays in its own
+                // _onEntityDestroyed): pay exactly once, on the alive→dead
+                // transition — EVENT_SYNC guards on the same flag.
+                if (ev.alive && ev instanceof CthulhuEvent) {
+                    this.state.grantLevelUpSkip(ev.worldX, ev.worldY);
+                }
                 ev.alive = false;
                 this.state._triggerShakeAt(ev.worldX, ev.worldY, 1.8);
                 this.game.sounds.play('ship_explode', { volume: 0.6, x: ev.worldX, y: ev.worldY });
@@ -1415,6 +1438,13 @@ export class ClientWorldSync extends BaseWorldSync {
             this.state.bossWrecks.push(new BossWreck(ent.worldX, ent.worldY));
             const otherBosses = this.state.enemies.some(e => e.isBoss && e.alive && e !== ent);
             if (!otherBosses) this.game.sounds.restoreMusic();
+        }
+        // Boss bounty mirrors the host's _onEntityDestroyed: every machine
+        // banks the +1 level-up skip. A Mother with no unfinished Hive is the
+        // post-dragon world boss; the encounter Mother is settled as part of
+        // the swarm's single bounty by the locally-scripted Hive.
+        if (ent.isBoss || (ent instanceof SwarmMother && !this.state._swarmEncounterActive())) {
+            this.state.grantLevelUpSkip(ent.worldX, ent.worldY);
         }
 
         // Personal stats/achievements only for OUR kills.

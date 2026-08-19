@@ -176,6 +176,194 @@ export const ACHIEVEMENTS = [
         check: (m) => !!m.lifetime.bossesDefeated['YellowOne']
     },
 
+    // ── Bosses: the path the Yellow One opens ───────────────────────────────
+    {
+        id: 'seraph_slain',
+        name: 'Be Not Afraid',
+        description: 'Defeat the Burning Seraph.',
+        flavor: 'It kept saying that. You were, in fact, afraid.',
+        hidden: true,
+        icon: 'ach_seraph_slain',
+        check: (m) => !!m.lifetime.bossesDefeated['Seraph']
+    },
+    {
+        id: 'wheels_slain',
+        name: 'Wheel Within a Wheel',
+        description: 'Defeat the Wheels.',
+        flavor: 'Covered in eyes, and it still never saw this coming.',
+        hidden: true,
+        icon: 'ach_wheels_slain',
+        check: (m) => !!m.lifetime.bossesDefeated['Wheels']
+    },
+    {
+        id: 'swarm_mother_slain',
+        name: 'Regicide',
+        description: 'Kill the Swarm Mother.',
+        flavor: 'No queen, no eggs. The math is on your side now.',
+        hidden: true,
+        icon: 'ach_swarm_mother_slain',
+        check: (m) => !!m.lifetime.bossesDefeated['SwarmMother']
+    },
+    {
+        id: 'swarm_slain',
+        name: 'Exterminator',
+        description: 'Destroy the Hive and wipe out the Swarm.',
+        flavor: 'Should have called sooner. There was a whole nest in there.',
+        hidden: true,
+        icon: 'ach_swarm_slain',
+        check: (m) => !!m.lifetime.bossesDefeated['Swarm']
+    },
+    {
+        id: 'carcosa_slain',
+        name: 'Dim Carcosa',
+        description: 'Defeat Carcosa.',
+        flavor: 'The city was already dead. Now it can rest.',
+        hidden: true,
+        icon: 'ach_carcosa_slain',
+        check: (m) => !!m.lifetime.bossesDefeated['Carcosa']
+    },
+    {
+        id: 'dragon_slain',
+        name: 'Seven Heads, Seven Crowns',
+        description: 'Shatter all seven heads of the Dragon.',
+        flavor: 'The stars come back. All of them.',
+        hidden: true,
+        icon: 'ach_dragon_slain',
+        check: (m) => !!m.lifetime.bossesDefeated['Dragon']
+    },
+    {
+        id: 'the_tribulation',
+        name: 'The Tribulation',
+        description: 'Defeat every horror on the path the Yellow One opens, across all your runs.',
+        flavor: 'It was all written down. You just hadn\'t read that far.',
+        icon: 'ach_the_tribulation',
+        check: (m) => !!m.lifetime.bossesDefeated['Seraph']
+            && !!m.lifetime.bossesDefeated['Wheels']
+            && !!m.lifetime.bossesDefeated['Swarm']
+            && !!m.lifetime.bossesDefeated['Carcosa']
+            && !!m.lifetime.bossesDefeated['Dragon'],
+        progress: (m) => (
+            (m.lifetime.bossesDefeated['Seraph'] ? 1 : 0)
+            + (m.lifetime.bossesDefeated['Wheels'] ? 1 : 0)
+            + (m.lifetime.bossesDefeated['Swarm'] ? 1 : 0)
+            + (m.lifetime.bossesDefeated['Carcosa'] ? 1 : 0)
+            + (m.lifetime.bossesDefeated['Dragon'] ? 1 : 0)
+        ) / 5
+    },
+    {
+        id: 'revelation',
+        name: 'Revelation',
+        description: 'Defeat the Yellow One and everything that follows him in a single run.',
+        flavor: 'And it is finished.',
+        hidden: true,
+        icon: 'ach_revelation',
+        check: (m) => m.run.bossesDefeated.has('YellowOne')
+            && m.run.bossesDefeated.has('Seraph')
+            && m.run.bossesDefeated.has('Wheels')
+            && m.run.bossesDefeated.has('Swarm')
+            && m.run.bossesDefeated.has('Carcosa')
+            && m.run.bossesDefeated.has('Dragon')
+    },
+
+    // ── Special enemies ─────────────────────────────────────────────────────
+    {
+        id: 'pest_control',
+        name: 'Pest Control',
+        description: 'Destroy at least one of every special enemy type.',
+        flavor: 'Every problem out here has a specialist. So do you.',
+        icon: 'ach_pest_control',
+        check: (m) => {
+            const classes = ['NaniteEnemy', 'ShieldEnemy', 'MissileEnemy',
+                'BlinkEnemy', 'BerserkEnemy', 'ScavengerEnemy'];
+            for (const c of classes) {
+                if (!(m.lifetime.enemyKillsByClass[c] > 0)) return false;
+            }
+            return true;
+        },
+        progress: (m) => {
+            const classes = ['NaniteEnemy', 'ShieldEnemy', 'MissileEnemy',
+                'BlinkEnemy', 'BerserkEnemy', 'ScavengerEnemy'];
+            let n = 0;
+            for (const c of classes) if (m.lifetime.enemyKillsByClass[c] > 0) n++;
+            return n / classes.length;
+        }
+    },
+    {
+        id: 'grey_goo',
+        name: 'Grey Goo',
+        description: 'Destroy 500 nanite ships and drones across all runs.',
+        flavor: 'They multiply. You subtract.',
+        icon: 'ach_grey_goo',
+        check: (m) => ((m.lifetime.enemyKillsByClass['NaniteEnemy'] || 0)
+            + (m.lifetime.enemyKillsByClass['NaniteDrone'] || 0)) >= 500,
+        progress: (m) => ((m.lifetime.enemyKillsByClass['NaniteEnemy'] || 0)
+            + (m.lifetime.enemyKillsByClass['NaniteDrone'] || 0)) / 500
+    },
+    {
+        id: 'can_opener',
+        name: 'Can Opener',
+        description: 'Destroy 25 shielded ships across all runs.',
+        flavor: 'Shake well before opening.',
+        icon: 'ach_can_opener',
+        check: (m) => (m.lifetime.enemyKillsByClass['ShieldEnemy'] || 0) >= 25,
+        progress: (m) => (m.lifetime.enemyKillsByClass['ShieldEnemy'] || 0) / 25
+    },
+    {
+        id: 'return_to_sender',
+        name: 'Return to Sender',
+        description: 'Destroy 25 missile ships across all runs.',
+        flavor: 'Postage due.',
+        icon: 'ach_return_to_sender',
+        check: (m) => (m.lifetime.enemyKillsByClass['MissileEnemy'] || 0) >= 25,
+        progress: (m) => (m.lifetime.enemyKillsByClass['MissileEnemy'] || 0) / 25
+    },
+    {
+        id: 'whack_a_mole',
+        name: 'Whack-a-Mole',
+        description: 'Destroy 25 blink ships across all runs.',
+        flavor: 'Eventually they run out of places to be.',
+        icon: 'ach_whack_a_mole',
+        check: (m) => (m.lifetime.enemyKillsByClass['BlinkEnemy'] || 0) >= 25,
+        progress: (m) => (m.lifetime.enemyKillsByClass['BlinkEnemy'] || 0) / 25
+    },
+    {
+        id: 'anger_management',
+        name: 'Anger Management',
+        description: 'Destroy 25 berserkers across all runs.',
+        flavor: 'They had a lot of feelings. Now they have none.',
+        icon: 'ach_anger_management',
+        check: (m) => (m.lifetime.enemyKillsByClass['BerserkEnemy'] || 0) >= 25,
+        progress: (m) => (m.lifetime.enemyKillsByClass['BerserkEnemy'] || 0) / 25
+    },
+    {
+        id: 'claim_jumper',
+        name: 'Claim Jumper',
+        description: 'Destroy 25 scavengers across all runs.',
+        flavor: 'That scrap was yours. It\'s yours again.',
+        icon: 'ach_claim_jumper',
+        check: (m) => (m.lifetime.enemyKillsByClass['ScavengerEnemy'] || 0) >= 25,
+        progress: (m) => (m.lifetime.enemyKillsByClass['ScavengerEnemy'] || 0) / 25
+    },
+    {
+        id: 'bomb_squad',
+        name: 'Bomb Squad',
+        description: 'Destroy 15 kamikazes in a single run.',
+        flavor: 'The trick is to not be there when they arrive.',
+        icon: 'ach_bomb_squad',
+        check: (m) => m.run.kamikazesKilled >= 15,
+        progressScope: 'run',
+        progress: (m) => m.run.kamikazesKilled / 15
+    },
+    {
+        id: 'plague_doctor',
+        name: 'Plague Doctor',
+        description: 'Destroy 250 locusts across all runs.',
+        flavor: 'The sky itself darkened with them.',
+        hidden: true,
+        icon: 'ach_plague_doctor',
+        check: (m) => (m.lifetime.enemyKillsByClass['LocustEnemy'] || 0) >= 250
+    },
+
     // ── Asteroids ───────────────────────────────────────────────────────────
     {
         id: 'asteroid_taste',
@@ -232,6 +420,16 @@ export const ACHIEVEMENTS = [
         icon: 'ach_dust_devil',
         check: (m) => m.lifetime.asteroidsByType.tiny >= 10000,
         progress: (m) => m.lifetime.asteroidsByType.tiny / 10000
+    },
+    {
+        id: 'living_dangerously',
+        name: 'Living Dangerously',
+        description: 'Destroy 100 asteroids while your shield is broken, in a single run.',
+        flavor: 'No shield, no problem. Mostly no problem.',
+        icon: 'ach_living_dangerously',
+        check: (m) => m.run.asteroidsBrokenShield >= 100,
+        progressScope: 'run',
+        progress: (m) => m.run.asteroidsBrokenShield / 100
     },
 
     // ── Events / Encounters ─────────────────────────────────────────────────
@@ -418,6 +616,51 @@ export const ACHIEVEMENTS = [
             + m.run.upgradesByRarity.unique
         ) / 4
     },
+    {
+        id: 'one_of_everything',
+        name: 'One of Everything',
+        description: 'Install 15 different upgrade types in a single run.',
+        flavor: 'The ship is a museum of questionable decisions.',
+        icon: 'ach_one_of_everything',
+        check: (m) => m.run.uniqueUpgradeIds.size >= 15,
+        progressScope: 'run',
+        progress: (m) => m.run.uniqueUpgradeIds.size / 15
+    },
+
+    // ── Combining & consumables ─────────────────────────────────────────────
+    {
+        id: 'first_fusion',
+        name: 'Greater Than the Sum',
+        description: 'Combine two matching upgrades for the first time.',
+        flavor: 'Two wrongs don\'t make a right, but two rights make a bigger right.',
+        icon: 'ach_first_fusion',
+        check: (m) => m.lifetime.combines >= 1
+    },
+    {
+        id: 'perfect_alloy',
+        name: 'Perfect Alloy',
+        description: 'Forge an upgrade to its maximum tier.',
+        flavor: 'No seams. No flaws. No further.',
+        icon: 'ach_perfect_alloy',
+        check: (m) => m.lifetime.maxTierCombines >= 1
+    },
+    {
+        id: 'assembly_line',
+        name: 'Assembly Line',
+        description: 'Combine upgrades 50 times across all runs.',
+        flavor: 'Fuse, install, repeat.',
+        icon: 'ach_assembly_line',
+        check: (m) => m.lifetime.combines >= 50,
+        progress: (m) => m.lifetime.combines / 50
+    },
+    {
+        id: 'break_glass',
+        name: 'Break Glass',
+        description: 'Use your first consumable.',
+        flavor: 'In case of emergency. This counts.',
+        icon: 'ach_break_glass',
+        check: (m) => m.lifetime.consumablesUsed >= 1
+    },
 
     // ── Upgrades: specific finds (hidden lore) ──────────────────────────────
     {
@@ -554,6 +797,57 @@ export const ACHIEVEMENTS = [
         progressScope: 'run',
         // Baseline 1x — see ludicrous_speed.
         progress: (m) => (m.run.peakLuck - 1) / 0.5
+    },
+    {
+        id: 'juggernaut',
+        name: 'Juggernaut',
+        description: 'Reach 500 max hull in a single run.',
+        flavor: 'More hull than ship.',
+        icon: 'ach_juggernaut',
+        check: (m) => m.run.peakMaxHealth >= 500,
+        progressScope: 'run',
+        progress: (m) => m.run.peakMaxHealth / 500
+    },
+    {
+        id: 'bulwark',
+        name: 'Bulwark',
+        description: 'Reach 150 max shield in a single run.',
+        flavor: 'They can shoot as much as they like.',
+        icon: 'ach_bulwark',
+        check: (m) => m.run.peakMaxShield >= 150,
+        progressScope: 'run',
+        progress: (m) => m.run.peakMaxShield / 150
+    },
+    {
+        id: 'ship_of_theseus',
+        name: 'Ship of Theseus',
+        description: 'Reach 5 hull regeneration per second in a single run.',
+        flavor: 'Every part replaced twice. Still your ship. Probably.',
+        icon: 'ach_ship_of_theseus',
+        check: (m) => m.run.peakHpRegen >= 5,
+        progressScope: 'run',
+        progress: (m) => m.run.peakHpRegen / 5
+    },
+    {
+        id: 'honor_student',
+        name: 'Honor Student',
+        description: 'Reach 3x experience gain in a single run.',
+        flavor: 'Straight A\'s in applied violence.',
+        icon: 'ach_honor_student',
+        check: (m) => m.run.peakExpGainMult >= 3,
+        progressScope: 'run',
+        // Baseline 1x — see ludicrous_speed.
+        progress: (m) => (m.run.peakExpGainMult - 1) / 2
+    },
+    {
+        id: 'quantum_leap',
+        name: 'Quantum Leap',
+        description: 'Cover 2000 units in a single blink.',
+        flavor: 'Technically you were never in between.',
+        icon: 'ach_quantum_leap',
+        check: (m) => m.run.peakBlinkDistance >= 2000,
+        progressScope: 'run',
+        progress: (m) => m.run.peakBlinkDistance / 2000
     },
 
     // ── Levels / progression ────────────────────────────────────────────────
@@ -763,6 +1057,42 @@ export const ACHIEVEMENTS = [
         hidden: true,
         icon: 'ach_calibration_skeptic',
         check: (m) => (m.lifetime.optimalChoices['saboteur_tune'] || 0) >= 1
+    },
+    {
+        id: 'busy_airspace',
+        name: 'Busy Airspace',
+        description: 'Meet 5 different kinds of ship in a single run.',
+        flavor: 'Everyone out here wants a word with you.',
+        icon: 'ach_busy_airspace',
+        check: (m) => m.run.encounterTypesMet.size >= 5,
+        progressScope: 'run',
+        progress: (m) => m.run.encounterTypesMet.size / 5
+    },
+
+    // ── Multiplayer ─────────────────────────────────────────────────────────
+    {
+        id: 'wingman',
+        name: 'Wingman',
+        description: 'Complete a multiplayer run with at least one other pilot.',
+        flavor: 'Space is less empty with a friend in it.',
+        icon: 'ach_wingman',
+        check: (m) => m.lifetime.multiplayerRunsCompleted >= 1
+    },
+    {
+        id: 'fair_trade',
+        name: 'Fair Trade',
+        description: 'Complete a trade with another pilot.',
+        flavor: 'Both of you are sure you won.',
+        icon: 'ach_fair_trade',
+        check: (m) => m.lifetime.tradesCompleted >= 1
+    },
+    {
+        id: 'shared_glory',
+        name: 'Shared Glory',
+        description: 'Defeat a boss in a multiplayer run.',
+        flavor: 'You\'ll both claim the killing blow forever.',
+        icon: 'ach_shared_glory',
+        check: (m) => m.lifetime.multiplayerBossKills >= 1
     },
 
     // ── Ship-specific ───────────────────────────────────────────────────────

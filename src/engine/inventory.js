@@ -214,8 +214,11 @@ export class Inventory {
         const { x, y } = target;
         const tier = itemTier(target.item);
         this.removeItemAt(x, y);
-        this.addItem(makeItem(draggedItem.id, tier + 1), x, y);
-        return true;
+        const fused = makeItem(draggedItem.id, tier + 1);
+        this.addItem(fused, x, y);
+        // Truthy for the boolean call sites; the fused item for callers that
+        // want to inspect the result (achievement notifies need the new tier).
+        return fused;
     }
 
     /**

@@ -1126,7 +1126,19 @@ export class Game {
             'photo_finish', 'lightyears', 'battering_ram', 'frequent_flyer',
             'variety_pack', 'belly_flop',
             'veteran_pilot', 'tenured', 'career_pilot', 'clock_watcher',
-            'personal_best', 'hangar_tour', 'punching_bag', 'catalog', 'boss_hunter'
+            'personal_best', 'hangar_tour', 'punching_bag', 'catalog', 'boss_hunter',
+            // Batch 91-122: post-Yellow bosses, special enemies, combining,
+            // consumables, multiplayer, new stat extremes.
+            'seraph_slain', 'wheels_slain', 'swarm_mother_slain', 'swarm_slain',
+            'carcosa_slain', 'dragon_slain', 'the_tribulation', 'revelation',
+            'pest_control', 'grey_goo', 'can_opener', 'return_to_sender',
+            'whack_a_mole', 'anger_management', 'claim_jumper', 'bomb_squad',
+            'plague_doctor',
+            'first_fusion', 'perfect_alloy', 'assembly_line', 'break_glass',
+            'wingman', 'fair_trade', 'shared_glory',
+            'juggernaut', 'bulwark', 'ship_of_theseus', 'honor_student',
+            'quantum_leap', 'living_dangerously', 'one_of_everything',
+            'busy_airspace'
         ];
         for (const id of achievementIcons) {
             manifest[`ach_${id}`] = `Assets/Achievements/ach_${id}.png`;
