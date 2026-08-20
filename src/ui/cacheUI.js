@@ -103,8 +103,14 @@ export class CacheUI {
             // first two content-RNG draws are the grid size on every machine)
             // and place the items where they left them — no re-rolling.
             const r = () => cache.contentRng ? cache.contentRng.next() : Math.random();
-            const cols = UI.gridMin + Math.floor(r() * (UI.gridMax - UI.gridMin + 1));
-            const rows = UI.gridMin + Math.floor(r() * (UI.gridMax - UI.gridMin + 1));
+            let cols = UI.gridMin + Math.floor(r() * (UI.gridMax - UI.gridMin + 1));
+            let rows = UI.gridMin + Math.floor(r() * (UI.gridMax - UI.gridMin + 1));
+            // Mirror the fresh-roll branch's minRolls grid clamp (synced over
+            // the wire) so the rebuilt grid matches where the items were left.
+            if (cache.minRolls) {
+                cols = Math.max(cols, 3);
+                rows = Math.max(rows, 3);
+            }
             this.cacheInventory = new Inventory(cols, rows);
             for (const itData of cache.netItems) {
                 const item = makeItem(itData.id, itData.tier || 0);
@@ -125,8 +131,15 @@ export class CacheUI {
             // Grid size + loot rolls use the cache's spawn-time content RNG so a
             // given cache's contents are reproducible. Falls back outside a run.
             const r = () => cache.contentRng ? cache.contentRng.next() : Math.random();
-            const cols = UI.gridMin + Math.floor(r() * (UI.gridMax - UI.gridMin + 1));
-            const rows = UI.gridMin + Math.floor(r() * (UI.gridMax - UI.gridMin + 1));
+            let cols = UI.gridMin + Math.floor(r() * (UI.gridMax - UI.gridMin + 1));
+            let rows = UI.gridMin + Math.floor(r() * (UI.gridMax - UI.gridMin + 1));
+            // A minRolls cache (the first-flight welcome cache) must have room
+            // for its guaranteed pulls — clamp the grid up. The two size draws
+            // above are kept so the content stream stays aligned.
+            if (cache.minRolls) {
+                cols = Math.max(cols, 3);
+                rows = Math.max(rows, 3);
+            }
             this.cacheInventory   = new Inventory(cols, rows);
             this.revealedItems    = [];
             this._extraRollsGiven = 0;
@@ -411,6 +424,19 @@ export class CacheUI {
     }
 
     _checkExtraRoll() {
+        // Guaranteed pulls first: a minRolls cache (the first-flight welcome
+        // cache) comps extra rolls until it has revealed that many items —
+        // no chance gate, full bonus fanfare. They spend the same extra-roll
+        // budget as lucky pulls, so the cap below still holds.
+        const owed = (this.cache.minRolls || 0) - this.revealedItems.length;
+        if (owed > 0 && this._rollUpgrade()) {
+            this._extraRollsGiven++;
+            this.bonusBannerT = 1.4;
+            if (this.game.sounds.playJackpot) this.game.sounds.playJackpot(0);
+            this._startNextRoll();
+            return;
+        }
+
         if (this._extraRollsGiven >= 3) { this.uiState = CUI_STATE.IDLE; return; }
 
         // Must have room for another item

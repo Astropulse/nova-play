@@ -149,6 +149,14 @@ export class Enemy {
         this.speedMult = 1.0;
         this.damageMult = 1.0;
 
+        // Loot pacing knobs (set by PlayingState at spawn):
+        // lootDropMult scales scrap counts + battery odds (<1 for endless-swarm
+        // chaff, which starves the economy as the swarm ramps);
+        // guaranteedBatteryDrop marks the early-game welcome ships that always
+        // pay out a Small Battery.
+        this.lootDropMult = 1.0;
+        this.guaranteedBatteryDrop = false;
+
         this.pendingProjectiles = [];
         this.externalVx = 0;
         this.externalVy = 0;
@@ -1147,8 +1155,10 @@ export class Enemy {
 
         const spawns = this._generateProceduralDebris();
         // Multiplayer: drops grow with the lobby (netScrapMult is 1 in solo).
+        // lootDropMult starves the payout for endless-swarm chaff.
         const scrapMult = (this.game.currentState && this.game.currentState.netScrapMult) || 1.0;
-        const count = Math.round((3 + Math.floor(rand() * 3)) * scrapMult);
+        const lootMult = this.lootDropMult != null ? this.lootDropMult : 1.0;
+        const count = Math.round((3 + Math.floor(rand() * 3)) * scrapMult * lootMult);
         const difficultyScale = (this.game.currentState && this.game.currentState.difficultyScale) || 1.0;
         const expAmount = Math.floor((4 + 1 * difficultyScale) * (this.isUpgraded ? 1.5 : 1));
 
@@ -1160,8 +1170,11 @@ export class Enemy {
             spawns.push(new ExpOrb(this.game, this.worldX, this.worldY, 1));
         }
 
-        // 25% chance to drop a small battery
-        if (rand() < 0.25) {
+        // 25% chance to drop a small battery (scaled by lootDropMult; the
+        // early-game welcome ships always pay one out). The roll is consumed
+        // either way to keep the seeded stream aligned.
+        const batteryRoll = rand();
+        if (this.guaranteedBatteryDrop || batteryRoll < 0.25 * lootMult) {
             const battery = UPGRADES.find(u => u.id === 'small_battery');
             if (battery) {
                 spawns.push(new ItemPickup(this.game, this.worldX, this.worldY, battery));
@@ -1179,16 +1192,17 @@ export class Enemy {
 
         // Special enemies are a tougher fight → better loot:
         // 40% small battery, 7% common upgrade, 3% uncommon upgrade, 50% nothing.
+        // (Battery odds shrink with lootDropMult; the upgrade windows don't.)
         if (this.isSpecialEnemy) {
             const r = rand();
             let item = null;
-            if (r < 0.40) {
+            if (r < 0.40 * lootMult) {
                 item = UPGRADES.find(u => u.id === 'small_battery');
-            } else if (r < 0.47) {
+            } else if (r < 0.40 * lootMult + 0.07) {
                 const pool = UPGRADES.filter(u => u.rarity === 'common' && !u.consumable
                     && isUpgradeUnlocked(this.game, u.id));
                 if (pool.length) item = pool[Math.floor(rand() * pool.length)];
-            } else if (r < 0.50) {
+            } else if (r < 0.40 * lootMult + 0.10) {
                 const pool = UPGRADES.filter(u => u.rarity === 'uncommon' && !u.consumable
                     && isUpgradeUnlocked(this.game, u.id));
                 if (pool.length) item = pool[Math.floor(rand() * pool.length)];
@@ -1671,7 +1685,8 @@ export class KamikazeEnemy extends Enemy {
         for (let i = 0; i < expAmount; i++) spawns.push(new ExpOrb(this.game, this.worldX, this.worldY, 1));
 
         const scrapMult = (this.game.currentState && this.game.currentState.netScrapMult) || 1.0;
-        const count = Math.round((1 + Math.floor(Math.random() * 2)) * scrapMult);
+        const lootMult = this.lootDropMult != null ? this.lootDropMult : 1.0;
+        const count = Math.round((1 + Math.floor(Math.random() * 2)) * scrapMult * lootMult);
         for (let i = 0; i < count; i++) spawns.push(new Scrap(this.game, this.worldX, this.worldY));
         for (let i = 0; i < 4; i++) spawns.push(new Rubble(this.game, this.worldX, this.worldY));
 
@@ -1744,7 +1759,8 @@ export class CthulhuEnemy extends Enemy {
         for (let i = 0; i < expAmount; i++) spawns.push(new ExpOrb(this.game, this.worldX, this.worldY, 1));
 
         const scrapMult = (this.game.currentState && this.game.currentState.netScrapMult) || 1.0;
-        const count = Math.round((1 + Math.floor(Math.random() * 2)) * scrapMult);
+        const lootMult = this.lootDropMult != null ? this.lootDropMult : 1.0;
+        const count = Math.round((1 + Math.floor(Math.random() * 2)) * scrapMult * lootMult);
         for (let i = 0; i < count; i++) spawns.push(new Scrap(this.game, this.worldX, this.worldY));
         for (let i = 0; i < 4; i++) spawns.push(new Rubble(this.game, this.worldX, this.worldY));
 

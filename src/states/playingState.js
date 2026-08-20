@@ -9,10 +9,14 @@ import { SHIPS } from '../data/ships.js';
 // Local split-screen co-op caps at 4 pilots (the lobby + drop-in join). The
 // renderer/grid supports up to 8, but couch co-op is designed around 4.
 const MAX_LOCAL_PILOTS = 4;
+
+// Early-game hook: run-clock seconds at which the weak welcome ships arrive
+// (the first two carry a guaranteed Small Battery). See _updateEarlyHook.
+const EARLY_HOOK_TIMES = [25, 38, 51, 63, 75, 87];
 import { Player } from '../entities/player.js';
 import { HUD } from '../ui/hud.js';
-import { Asteroid, AsteroidSpawner, Rubble, Scrap, ItemPickup, ProceduralDebris, VoronoiSlicer, ExpOrb, FractureModel, getCachedShatter } from '../entities/asteroid.js';
-import { EnemySpawner, Enemy, HostileEncounter } from '../entities/enemy.js';
+import { Asteroid, AsteroidSpawner, Rubble, Scrap, ItemPickup, ProceduralDebris, VoronoiSlicer, ExpOrb, FractureModel, getCachedShatter, resolveSpawnOverlap } from '../entities/asteroid.js';
+import { EnemySpawner, Enemy, CthulhuEnemy, HostileEncounter } from '../entities/enemy.js';
 import { Shop } from '../entities/shop.js';
 import { Inventory } from '../engine/inventory.js';
 import { UPGRADES, RARITY_COLORS, itemTier, rarityToTier, MAX_COMBINE_TIER, makeItem, tierColor, tierLabel } from '../data/upgrades.js';
@@ -27,8 +31,8 @@ import { EventHorizon } from '../entities/eventHorizon.js';
 import { YellowOne, YO_STATE } from '../entities/yellowOne.js';
 import { Seraph, SERAPH_STATE } from '../entities/seraph.js';
 import { Wheels, WHEELS_STATE } from '../entities/wheels.js';
-import { Hive, HIVE_STATE, SwarmMother } from '../entities/swarm.js';
-import { Carcosa, CARCOSA_STATE } from '../entities/bones.js';
+import { Hive, HIVE_STATE, SwarmMother, LocustEnemy } from '../entities/swarm.js';
+import { Carcosa, CARCOSA_STATE, BoneEnemy } from '../entities/bones.js';
 import { Dragon, DRAGON_STATE, HEAD_DEFS } from '../entities/dragon.js';
 import { MenuState } from './menuState.js';
 import { AchievementsState } from './achievementsState.js';
@@ -334,6 +338,30 @@ export class PlayingState {
         this.difficultyGain = 0.000366; // Calculated for smooth transition at 4m
         this.difficultySteadyRate = 0.013; // Steady linear growth after ramp
 
+        // Early-game hook: a handful of deliberately feeble ships between 0:25
+        // and 1:30, the first two carrying a guaranteed Small Battery — free
+        // health/scrap/exp so the opening minutes bite (see _updateEarlyHook).
+        this._earlyHookIndex = 0;      // next EARLY_HOOK_TIMES slot to fire
+        this._earlyHookBatteries = 2;  // guaranteed-battery ships left to send
+
+        // First-flight welcome cache (engagement): flying a ship this profile
+        // has NEVER flown before lands a cache nearby 15–90s in, guaranteed to
+        // roll at least 3 items (cache.minRolls; see CacheUI._checkExtraRoll).
+        // shipsUsed is only marked at run_ended, so it still reads "new" for
+        // the whole first run with that hull.
+        const _ach = game.achievements;
+        this._firstFlightCacheDone =
+            !_ach || !this.shipData || !!_ach.lifetime.shipsUsed[this.shipData.id];
+        this._firstFlightCacheAt = this._firstFlightCacheDone
+            ? 0 : 15 + Math.random() * 45;
+
+        // Endless swarm pressure ("endless mode") — see _updateSwarmPressure.
+        // Latches on at 25:00 (Yellow One undefeated) / 50:00 (defeated) / the
+        // moment the dragon falls, whichever comes first, then never stops.
+        this.swarmPressureActive = false;
+        this.swarmPressureTime = 0;    // seconds since the pressure began
+        this._swarmBurstTimer = 0;     // countdown to the next swarm burst
+
         this.flashTimer = 0;
 
         // Cinematic overlay layer (boss telegraphs, shockwaves, letterbox).
@@ -580,8 +608,14 @@ export class PlayingState {
     }
 
     _spawnInitialShops() {
-        // First shop near spawn, always revealed
-        const s1 = new Shop(this.game, 400, 400);
+        // First shop near spawn, always revealed. ENGAGEMENT: if this profile
+        // has never opened a shop, it's the first shop they'll EVER see —
+        // stock it as a showroom (one big weapon + two rares guaranteed; see
+        // Shop._generateInventory). shopsVisited only ticks on open, so the
+        // treatment repeats each run until they actually walk into one.
+        const ach = this.game.achievements;
+        const firstEver = !!ach && (ach.lifetime.shopsVisited || 0) === 0;
+        const s1 = new Shop(this.game, 400, 400, { firstEverShop: firstEver });
         this.shops.push(s1);
         this._revealShop(s1);
     }
@@ -2817,6 +2851,28 @@ export class PlayingState {
             }
         }
 
+        // Run-pacing spawns that sit OUTSIDE the EnemySpawner state machine AND
+        // outside the event-active spawn freeze above — the early-game welcome
+        // ships and the endless swarm pressure stack on top of ambient bursts,
+        // waves, bosses AND event fights (only the scripted ceremonies hold
+        // them; see _updateSwarmPressure). Authority only.
+        if (isNetHost) {
+            let pressureAnchor = this.player;
+            let pressureQuantity = 1.0;
+            if (mp) {
+                pressureQuantity = mpQuantityMult(this.net.playerCount);
+                const liveBodies = this.netSync.playerBodies();
+                if (liveBodies.length) pressureAnchor = liveBodies[Math.floor(Math.random() * liveBodies.length)];
+            } else if (this.localPlayers.length > 1) {
+                pressureQuantity = mpQuantityMult(this.localPlayers.length);
+                const live = this.localPlayers.filter(s => s.player && !s.player.dead);
+                if (live.length) pressureAnchor = live[Math.floor(Math.random() * live.length)].player;
+            }
+            this._updateEarlyHook(pressureAnchor);
+            this._updateFirstFlightCache();
+            this._updateSwarmPressure(dt, pressureAnchor, pressureQuantity);
+        }
+
         // Boss death immunity: while any boss is dying, and for 2 seconds after
         // (runs on every machine — clients have boss replicas in DYING too)
         const isBossDying = this.enemies.some(e => e.isBoss && e.state === BOSS_STATE.DYING);
@@ -4194,6 +4250,211 @@ export class PlayingState {
         }
     }
 
+    // ── EARLY-GAME HOOK ──────────────────────────────────────────────────────
+    // Between 0:25 and 1:30 a few deliberately feeble ships wander in, one at a
+    // time, and the first two carry a guaranteed Small Battery — the opening
+    // minutes hand the player some health, scrap and exp instead of dead air.
+    // Runs on the authority only (called from the host/SP spawn block).
+    _updateEarlyHook(anchor) {
+        const times = EARLY_HOOK_TIMES;
+        while (this._earlyHookIndex < times.length && this.totalGameTime >= times[this._earlyHookIndex]) {
+            const due = times[this._earlyHookIndex++];
+            // A save-load or dev time-jump landing well past a slot skips it
+            // instead of dumping the whole backlog on one frame.
+            if (this.totalGameTime > due + 10) continue;
+
+            const rand = () => this.game.rng ? this.game.rng.enemies.next() : Math.random();
+            const fov = this.currentFovMult || 1.0;
+            const angle = rand() * Math.PI * 2;
+            const dist = (1150 + rand() * 300) * fov; // closer than ambient spawns — it should find the player fast
+            const en = new Enemy(this.game,
+                anchor.worldX + Math.cos(angle) * dist,
+                anchor.worldY + Math.sin(angle) * dist, 0.5);
+            // Really weak: a couple of shots kill it, and it barely stings.
+            en.health = 8;
+            en.maxHealth = 8;
+            en.baseSpeed *= 0.8;
+            en.damageMult = 0.6;
+            en.fireRateMult = 0.8;
+            if (this._earlyHookBatteries > 0) {
+                this._earlyHookBatteries--;
+                en.guaranteedBatteryDrop = true;
+            }
+            const resolved = resolveSpawnOverlap(this.game, en.worldX, en.worldY, en.radius);
+            en.worldX = resolved.x;
+            en.worldY = resolved.y;
+            this._addEnemies([en]);
+        }
+    }
+
+    // ── FIRST-FLIGHT WELCOME CACHE ───────────────────────────────────────────
+    // The first time a profile flies a ship it has never flown, a cache lands
+    // close by 15–60s into the run, guaranteed to roll at least 3 items
+    // (cache.minRolls — CacheUI clamps the grid to fit and comps the extra
+    // pulls). Host/SP only: the trigger is the LOCAL profile's hangar history.
+    _updateFirstFlightCache() {
+        if (this._firstFlightCacheDone || this.totalGameTime < this._firstFlightCacheAt) return;
+        this._firstFlightCacheDone = true;
+        // A load or dev time-jump landing far past the window skips the gift.
+        if (this.totalGameTime > 95) return;
+        if (this.caches.length >= CACHE_CONFIG.maxActiveCaches + 2) return;
+        const cache = this.cacheSpawner.spawnNear(this.player.worldX, this.player.worldY, 450, 750);
+        cache.minRolls = 3;
+        this.caches.push(cache);
+        if (this.netSync && this.netSync.isHost) this.netSync.registerCache(cache);
+    }
+
+    // ── ENDLESS SWARM PRESSURE ───────────────────────────────────────────────
+    // The de-facto endless mode. Once latched, escalating swarms of enemies
+    // arrive from a single bearing on their own clock — separate from ambient
+    // bursts, waves, bosses and event spawns, stacking on top of all of them —
+    // and ramp in volume and frequency forever until they overcome the player.
+    //
+    // - Trigger (whichever comes first): 25:00 with the Yellow One undefeated,
+    //   50:00 with him defeated, or the true dragon falling.
+    // - Swarm ships fight at 3/4 the LIVE difficulty (still difficulty-driven,
+    //   just softer than the regular spawns — quantity is the threat).
+    // - Their loot starves as the swarm ramps (lootDropMult → 15%), so more
+    //   ships ≠ more batteries/scrap.
+    // - Special classes join on the swarm clock, each ramping from a token
+    //   weight to parity with the basic ships: yellow armada at 2:00, cthulhu
+    //   rammers at 4:00, locusts at 7:00, bone ships at 10:00 (a bone roll
+    //   spawns 3). Swarm locusts/bones are unanchored strays: no hive/city,
+    //   normal distance culling.
+    // Runs on the authority only; MP clients receive the ships via netSync.
+    _updateSwarmPressure(dt, anchor, quantityMult) {
+        if (!this.swarmPressureActive) {
+            const yellowBeaten = !!(this.player && this.player.hasYellowGlow);
+            const deadline = yellowBeaten ? 3000 : 1500;
+            if (this.totalGameTime >= deadline || this.dragonSlain()) {
+                const rand = () => this.game.rng ? this.game.rng.enemies.next() : Math.random();
+                this.swarmPressureActive = true;
+                this.swarmPressureTime = 0;
+                this._swarmBurstTimer = 8 + rand() * 6; // first swarm closes in shortly
+            }
+            return;
+        }
+        this.swarmPressureTime += dt;
+
+        // Hold during scripted spectacle — nothing spawns over the ceremonies.
+        if (this.yellowOneScriptActive || this.dragonCinematic) return;
+
+        this._swarmBurstTimer -= dt;
+        if (this._swarmBurstTimer > 0) return;
+
+        const t = this.swarmPressureTime;
+        const rand = () => this.game.rng ? this.game.rng.enemies.next() : Math.random();
+
+        // Frequency ramps forever: ~24s between swarms at onset, halving every
+        // 7 minutes, floor 5s.
+        const interval = Math.max(5, 24 * Math.pow(0.5, t / 420));
+        this._swarmBurstTimer = interval * (0.75 + rand() * 0.5);
+
+        // Perf/readability valve: if the field is already drowning, skip this
+        // burst (the timer was consumed — pressure resumes next tick).
+        let alive = 0;
+        for (const e of this.enemies) if (e.alive) alive++;
+        if (alive > 70) return;
+
+        // Volume ramps too: 3 ships at onset, +1 per 2 minutes, capped per
+        // burst (frequency keeps climbing past the cap).
+        const size = Math.min(16, Math.max(1,
+            Math.round((3 + Math.floor(t / 120) + Math.floor(rand() * 2)) * quantityMult)));
+
+        // 3/4 of the live difficulty — per-ship stats still track the game's
+        // difficulty, the swarm is just individually softer.
+        const diff = Math.max(0.75, this.difficultyScale * 0.75);
+
+        // Loot starvation: full drops at onset → 15% after 15 minutes.
+        const lootMult = Math.max(0.15, 1 - t / 900);
+
+        // The whole burst pours in from one bearing — a wall, not a sprinkle.
+        const fov = this.currentFovMult || 1.0;
+        const bearing = rand() * Math.PI * 2;
+
+        const spawns = [];
+        for (let i = 0; i < size && spawns.length < 18; i++) {
+            const a = bearing + (rand() - 0.5) * 1.0;
+            const d = (1600 + rand() * 500) * fov;
+            const made = this._makeSwarmShips(
+                anchor.worldX + Math.cos(a) * d,
+                anchor.worldY + Math.sin(a) * d, diff, t, rand);
+            for (const en of made) {
+                en.isSwarmSpawn = true;
+                en.lootDropMult = lootMult;
+                const resolved = resolveSpawnOverlap(this.game, en.worldX, en.worldY, en.radius);
+                en.worldX = resolved.x;
+                en.worldY = resolved.y;
+                spawns.push(en);
+            }
+        }
+        this._addEnemies(spawns);
+    }
+
+    // One swarm slot → 1 ship (or 3 for a bone roll). Composition is weighted:
+    // basics carry the early swarms; each special class unlocks on the swarm
+    // clock at a token weight and ramps to parity with the basics over the
+    // ~8 minutes that follow its debut.
+    _makeSwarmShips(x, y, diff, t, rand) {
+        const ramp = (start) => t < start ? 0 : 0.12 + 0.88 * Math.min(1, (t - start) / 480);
+        const table = [
+            { type: 'basic',   w: 1.0 },
+            { type: 'armada',  w: ramp(120) },
+            { type: 'cthulhu', w: ramp(240) },
+            { type: 'locust',  w: ramp(420) },
+            { type: 'bone',    w: ramp(600) },
+        ];
+        let total = 0;
+        for (const e of table) total += e.w;
+        let r = rand() * total;
+        let pick = 'basic';
+        for (const e of table) {
+            r -= e.w;
+            if (r <= 0) { pick = e.type; break; }
+        }
+
+        switch (pick) {
+            case 'armada': {
+                // The Yellow One's summon recipe (yellowOne.js _finishSummon),
+                // minus the summon bookkeeping.
+                const en = new Enemy(this.game, x, y, diff);
+                en.yellowArmada = true;
+                en.spriteKey = `yellow_armada_${Math.floor(Math.random() * 4)}`;
+                en.img = this.game.assets.get(en.spriteKey);
+                en._yellowGlowSprite = null;
+                en.health = Math.ceil(en.health * 1.5);
+                en.maxHealth = en.health;
+                en.speedMult = 1.3;
+                en.fireRateMult = 1.3;
+                return [en];
+            }
+            case 'cthulhu':
+                return [new CthulhuEnemy(this.game, x, y, diff)];
+            case 'locust': {
+                const en = new LocustEnemy(this.game, x, y, diff, null);
+                en.noDespawn = false; // stray, not hive-anchored — cull normally
+                return [en];
+            }
+            case 'bone': {
+                // A bone roll raises a trio — they arrive mid-reanimation.
+                const bones = [];
+                for (let i = 0; i < 3; i++) {
+                    const en = new BoneEnemy(this.game,
+                        x + (Math.random() - 0.5) * 240,
+                        y + (Math.random() - 0.5) * 240, diff, null);
+                    en.noDespawn = false; // stray, not city-anchored — cull normally
+                    bones.push(en);
+                }
+                return bones;
+            }
+            default: {
+                const en = new Enemy(this.game, x, y, diff);
+                Enemy.rollUpgrade(en, this.player);
+                return [en];
+            }
+        }
+    }
+
     // Host: run one pilot's asteroid spawner, vetoing rocks that would pop
     // into existence inside another pilot's view bubble ("blob" spawning).
     // Spawns a per-pilot asteroid field, vetoing rocks that would pop inside
@@ -5123,6 +5384,12 @@ export class PlayingState {
             waveTimer: this.waveTimer,
             lastCrashWave: this._lastCrashWave,
             crashCacheTimer: this._crashCacheTimer,
+            earlyHookIndex: this._earlyHookIndex,
+            earlyHookBatteries: this._earlyHookBatteries,
+            firstFlightCacheDone: this._firstFlightCacheDone,
+            firstFlightCacheAt: this._firstFlightCacheAt,
+            swarmPressureActive: this.swarmPressureActive,
+            swarmPressureTime: this.swarmPressureTime,
             shipId: this.shipData.id,
             enemySpawner: this.enemySpawner.serialize(),
             musicState: {
@@ -5179,6 +5446,17 @@ export class PlayingState {
         this.waveTimer = data.waveTimer;
         this._lastCrashWave = data.lastCrashWave || 0;
         this._crashCacheTimer = data.crashCacheTimer || 0;
+        // Early hook + endless swarm pressure. Pre-feature saves default to
+        // "not yet" — _updateEarlyHook's grace window skips stale slots and
+        // _updateSwarmPressure re-latches from totalGameTime on its own.
+        this._earlyHookIndex = data.earlyHookIndex || 0;
+        this._earlyHookBatteries = data.earlyHookBatteries != null ? data.earlyHookBatteries : 2;
+        // Pre-feature saves: treat the welcome cache as already delivered.
+        this._firstFlightCacheDone = data.firstFlightCacheDone != null ? data.firstFlightCacheDone : true;
+        this._firstFlightCacheAt = data.firstFlightCacheAt || 0;
+        this.swarmPressureActive = !!data.swarmPressureActive;
+        this.swarmPressureTime = data.swarmPressureTime || 0;
+        this._swarmBurstTimer = this.swarmPressureActive ? 6 : 0;
 
         if (data.enemySpawner) {
             this.enemySpawner.deserialize(data.enemySpawner);

@@ -29,6 +29,7 @@ export class DevConsole {
             'cache': (args) => this._cmdCache(args),
             'seed': (args) => this._cmdSeed(args),
             'diff': (args) => this._cmdDiff(args),
+            'endless': (args) => this._cmdEndless(args),
             'dev': () => this._cmdDev(),
             'fps_uncap': () => this._cmdFPSUncap(),
             'perf': () => this._cmdPerf(),
@@ -147,6 +148,35 @@ export class DevConsole {
         const power = state._calculatePlayerPowerLevel ? state._calculatePlayerPowerLevel() : 0;
         console.log(`difficultyScale = ${d.toFixed(2)}  (gameTime ${Math.round(state.totalGameTime)}s, playerPower ${power.toFixed(2)})`);
         console.log(`  → Seraph/Wheels pool at this diff: ${Math.round(4200 + 1000 * d)}  |  YellowOne: ${Math.round(2000 + 400 * d)}  |  Hive: ${Math.round(5200 + 1200 * d)} (+Mother ${Math.round(2800 + 650 * d)})`);
+    }
+
+    // Endless swarm pressure ("endless mode"). No args: print status.
+    // `endless <minutes>`: force it on with the swarm clock at that many
+    // minutes (e.g. `endless 0` starts it fresh, `endless 12` deep in — bones
+    // and locusts already in the mix). `endless off` disarms it.
+    _cmdEndless(args) {
+        const state = this.game.currentState;
+        if (!state || state.swarmPressureActive === undefined) { console.log('Not in a run.'); return; }
+
+        if (args.length >= 1) {
+            if (args[0].toLowerCase() === 'off') {
+                state.swarmPressureActive = false;
+                state.swarmPressureTime = 0;
+                console.log('Endless swarm pressure OFF.');
+                return;
+            }
+            const mins = parseFloat(args[0]);
+            if (isNaN(mins) || mins < 0) { console.log('Usage: endless [minutes | off]'); return; }
+            state.swarmPressureActive = true;
+            state.swarmPressureTime = mins * 60;
+            state._swarmBurstTimer = 2; // first swarm almost immediately
+        }
+        if (state.swarmPressureActive) {
+            console.log(`Endless swarm pressure ACTIVE — swarm clock ${(state.swarmPressureTime / 60).toFixed(1)}min, next burst in ${Math.max(0, state._swarmBurstTimer).toFixed(1)}s, loot mult ${Math.max(0.15, 1 - state.swarmPressureTime / 900).toFixed(2)}`);
+        } else {
+            const yellowBeaten = !!(state.player && state.player.hasYellowGlow);
+            console.log(`Endless swarm pressure INACTIVE — latches at ${yellowBeaten ? '50:00 (Yellow One defeated)' : '25:00 (Yellow One undefeated)'} or on dragon kill.`);
+        }
     }
 
     _cmdTime(args) {
@@ -681,7 +711,7 @@ export class DevConsole {
     }
 
     _cmdHelp() {
-        console.log("Available commands: time, spawn, stat, wave, scrap, exp, locate, save, load, record, boss, hp, encounter, cache, seed, dev, perf, split, help");
+        console.log("Available commands: time, spawn, stat, wave, scrap, exp, locate, save, load, record, boss, hp, encounter, cache, seed, diff, endless, dev, perf, split, help");
     }
 
     draw(ctx) {

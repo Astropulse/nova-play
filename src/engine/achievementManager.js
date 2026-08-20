@@ -128,8 +128,20 @@ export class AchievementManager {
             peakRunTimeByShip: {},      // {shipId: longest single run, seconds}
             tradesCompleted: 0,          // multiplayer trades
             multiplayerRunsCompleted: 0, // runs finished with ≥1 other live pilot
-            multiplayerBossKills: 0      // bosses recorded during such runs
+            multiplayerBossKills: 0,     // bosses recorded during such runs
+            engagementGifts: {}          // one-shot onboarding gifts consumed (see consumeEngagementGift)
         };
+    }
+
+    // One-shot new-player onboarding gifts (e.g. the first-ever level-up's
+    // boosted roll). Returns true exactly once per key and persists the
+    // consumption immediately so it can never fire twice.
+    consumeEngagementGift(key) {
+        if (!this.lifetime.engagementGifts) this.lifetime.engagementGifts = {};
+        if (this.lifetime.engagementGifts[key]) return false;
+        this.lifetime.engagementGifts[key] = true;
+        this._save();
+        return true;
     }
 
     // Per-run state — discarded between runs. Resets on 'run_started'. Sets

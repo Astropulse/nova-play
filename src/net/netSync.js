@@ -661,6 +661,7 @@ export class HostWorldSync extends BaseWorldSync {
         this.session.broadcast(MSG.SPAWN_CACHE, {
             nid: cache.netId, x: q(cache.worldX), y: q(cache.worldY),
             seed: cache.contentSeed, isReward: !!cache.isReward,
+            minRolls: cache.minRolls || 0,
             crash: crashInfo,
         });
     }
@@ -842,7 +843,8 @@ export class HostWorldSync extends BaseWorldSync {
             })),
             caches: st.caches.filter(c => c.alive).map(c => ({
                 nid: c.netId, x: q(c.worldX), y: q(c.worldY), seed: c.contentSeed,
-                isReward: !!c.isReward, state: c.state, items: c.netItems || null,
+                isReward: !!c.isReward, minRolls: c.minRolls || 0,
+                state: c.state, items: c.netItems || null,
             })),
             pickups: this._pickupSnapshot(),
         };
@@ -1339,6 +1341,7 @@ export class ClientWorldSync extends BaseWorldSync {
             cache.contentRng = new RNG(d.seed);
         }
         cache.isReward = !!d.isReward;
+        if (d.minRolls) cache.minRolls = d.minRolls; // welcome cache: guaranteed pull count
         if (d.items) cache.netItems = d.items;
         if (d.state && d.state !== CACHE_STATE.INCOMING && d.state !== CACHE_STATE.SETTLING) {
             cache.state = d.state;

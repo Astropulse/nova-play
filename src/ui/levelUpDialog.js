@@ -174,7 +174,10 @@ function _luckyUnit(luck, rng = null) {
 // ─── Choice generation ────────────────────────────────────────────────────────
 // typePickCounts: { offense: n, defense: n, ... } — accumulated across the run.
 // bonusMult: scalar applied to the rolled %/flat (from the skip-stacking system).
-function rollChoices(luck, typePickCounts = {}, bonusMult = 1, rng = null) {
+// forcedTiers: optional array of bonus-tier names applied to the first slots
+// (e.g. ['legendary','rare'] — the first-ever-level-up gift). Forced slots are
+// never cursed and steer clear of flat/luck stats (which ignore bonus tiers).
+function rollChoices(luck, typePickCounts = {}, bonusMult = 1, rng = null, forcedTiers = null) {
     const lk = Math.max(0.1, luck);
 
     // Neither stat-category nor bonus-tier selection is influenced by luck —
@@ -215,30 +218,38 @@ function rollChoices(luck, typePickCounts = {}, bonusMult = 1, rng = null) {
     };
 
     for (let i = 0; i < 4; i++) {
-        let cat = _wrand(catW, rng);
-        const isCursed = cat === 'cursed';
+        const forcedTier = (forcedTiers && forcedTiers[i]) || null;
+        // Forced slots can't be cursed (a "gift" that reverses would be cruel)
+        // and skip the epic category — luck ignores the bonus tier.
+        let cat = forcedTier ? _wrand({ common: 60, uncommon: 25, rare: 15 }, rng)
+                             : _wrand(catW, rng);
+        const isCursed = !forcedTier && cat === 'cursed';
         if (isCursed) cat = _wrand({ common: 60, uncommon: 25, rare: 15, epic: 2 }, rng);
 
+        // Forced slots also avoid flat stats (extra_projectile / hp_regen have
+        // fixed magnitudes — a forced tier wouldn't show).
+        const _eligible = (s) => !used.has(s.id) && (!forcedTier || (!s.flat && s.id !== 'luck'));
+
         // Prefer pool that satisfies diversity cap; fall back to broader pools.
-        let pool = _filterByDiversity(STAT_DEFS[cat].filter(s => !used.has(s.id)));
+        let pool = _filterByDiversity(STAT_DEFS[cat].filter(_eligible));
         if (pool.length === 0) {
-            pool = _filterByDiversity(allDefs.filter(s => !used.has(s.id)));
+            pool = _filterByDiversity(allDefs.filter(_eligible));
         }
         if (pool.length === 0) {
             // Cap saturated — relax diversity so we can still fill slots.
-            pool = allDefs.filter(s => !used.has(s.id));
+            pool = allDefs.filter(_eligible);
         }
         if (pool.length === 0) break;
 
         const stat = _pickFromPool(pool);
         used.add(stat.id);
         rollTypeCounts[STAT_TYPE[stat.id]] = (rollTypeCounts[STAT_TYPE[stat.id]] || 0) + 1;
-        choices.push(_makeChoice(stat, isCursed, bonusW, bonusMult, lk, rng));
+        choices.push(_makeChoice(stat, isCursed, bonusW, bonusMult, lk, rng, forcedTier));
     }
     return choices;
 }
 
-function _makeChoice(stat, isCursed, bonusW, bonusMult = 1, luck = 1, rng = null) {
+function _makeChoice(stat, isCursed, bonusW, bonusMult = 1, luck = 1, rng = null, forcedTier = null) {
     if (stat.flat) {
         // Flat upgrades: scale the count by bonusMult.
         // extra_projectile is integer (round), hp_regen is float (0.1 * mult).
@@ -296,7 +307,7 @@ function _makeChoice(stat, isCursed, bonusW, bonusMult = 1, luck = 1, rng = null
         };
     }
 
-    const tierName   = _wrand(bonusW, rng);
+    const tierName   = forcedTier || _wrand(bonusW, rng);
     const tier       = BONUS_TIERS[tierName];
     // Luck biases the roll toward the top of the chosen tier's band (cursed
     // rolls stay uniform so luck doesn't make the penalty worse).
@@ -424,8 +435,17 @@ export class LevelUpDialog {
             this.choices   = savedRoll.choices;
         } else {
             this.bonusMult = playingState ? (playingState.pendingLevelUpMult || 1) : 1;
+            // ENGAGEMENT: the first level-up a player EVER earns rolls one
+            // guaranteed legendary-tier bonus and one rare-tier (slots 0/1) —
+            // the first taste of the ladder should hit hard. One-shot per
+            // profile (persisted); the levelUps gate keeps it off veteran
+            // saves that predate the flag.
+            const ach = game.achievements;
+            const firstEverGift = !!(ach && (ach.lifetime.levelUps || 0) <= 3
+                && ach.consumeEngagementGift && ach.consumeEngagementGift('first_level_up'));
             // Level-up choices use the seeded levelup stream (reproducible).
-            this.choices   = rollChoices(player.luck, player.upgradeTypeCounts || {}, this.bonusMult, game.rng ? game.rng.levelup : null);
+            this.choices   = rollChoices(player.luck, player.upgradeTypeCounts || {}, this.bonusMult,
+                game.rng ? game.rng.levelup : null, firstEverGift ? ['legendary', 'rare'] : null);
         }
         this.skipsRemaining = playingState ? (playingState.levelUpSkipsRemaining || 0) : 0;
         this.canSkip     = this.skipsRemaining > 0;
