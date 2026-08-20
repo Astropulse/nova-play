@@ -398,7 +398,10 @@ export class EncounterDialog {
         const vp = ps && ps._uiVp;
         const cw = vp ? ps._uiW : this.game.width;
         const ch = vp ? ps._uiH : this.game.height;
-        const uiScale = vp ? ps._uiS : this.game.uiScale;
+        // Touch: dialogs self-center and clamp to the screen, so they can take
+        // a +1 legibility bump without the layout blowups a global boost causes.
+        const uiScale = vp ? ps._uiS
+            : (this.game.touchMode ? this.game.uiScale + 1 : this.game.uiScale);
 
         ctx.save();
         ctx.translate(vp ? ps._uiX : 0, vp ? ps._uiY : 0);
@@ -760,7 +763,8 @@ export class EncounterDialog {
     _drawUpgradeTooltip(ctx, upg) {
         const ps = this.playingState;
         const vp = ps && ps._uiVp;
-        const uiScale = vp ? ps._uiS : this.game.uiScale;
+        const uiScale = vp ? ps._uiS
+            : (this.game.touchMode ? this.game.uiScale + 1 : this.game.uiScale);
         const gamepadActive = !this._coop && this.game.input.isGamepadActive();
 
         const pad = 8 * uiScale;

@@ -1,0 +1,12 @@
+{
+  "appId": "com.nova.game",
+  "appName": "NOVA",
+  "webDir": "www-mobile",
+  "server": {
+    "androidScheme": "https"
+  },
+  "android": {
+    "backgroundColor": "#000000",
+    "webContentsDebuggingEnabled": true
+  }
+}

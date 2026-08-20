@@ -100,6 +100,11 @@ export class HUD {
         const ch = this._ch;
         const margin = this._hudScale * 4;
 
+        // Touch devices: lift the bottom-corner clusters (health/shield bars,
+        // radar, coordinates) above the virtual-stick thumb zones. Single view
+        // only — split-screen co-op is not a touch layout.
+        this._touchInset = (g.touchMode && !vp) ? Math.round(ch * 0.26) : 0;
+
         // HUD Displacement — lag behind camera
         // Displacement is in world units, convert to pixels and scale for HUD
         const lagX = (this.game.currentState.camera.displacementX || 0) * this.game.worldScale * 0.075;
@@ -115,7 +120,7 @@ export class HUD {
         const hbW = (this.healthBarEmpty.width || hImg.width) * this._hudScale;
         const hbH = (this.healthBarEmpty.height || hImg.height) * this._hudScale;
         const hbX = margin;
-        const hbY = ch - hbH - margin;
+        const hbY = ch - hbH - margin - this._touchInset;
         ctx.drawImage(hImg, hbX, hbY, hbW, hbH);
 
         const healthPct = Math.max(0, Math.min(1, p.health / p.maxHealth));
@@ -207,7 +212,7 @@ export class HUD {
         const coordText = (dread && dread.glitchCoords > 0)
             ? '??, ??'
             : `${Math.floor(p.worldX)}, ${Math.floor(p.worldY)}`;
-        ctx.fillText(coordText, cw - margin, ch - margin);
+        ctx.fillText(coordText, cw - margin, ch - margin - this._touchInset);
         ctx.textAlign = 'left';
 
         // Radar
@@ -469,7 +474,7 @@ export class HUD {
 
         // Position: Bottom Right, snapped to HUD grid
         const rx = Math.floor((cw - rw - margin) / uiScale) * uiScale;
-        const ry = Math.floor((ch - rh - margin - (12 * uiScale)) / uiScale) * uiScale;
+        const ry = Math.floor((ch - rh - margin - (12 * uiScale) - (this._touchInset || 0)) / uiScale) * uiScale;
 
         // 1. Draw background to offscreen canvas for masking
         if (backImg) {

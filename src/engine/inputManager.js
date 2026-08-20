@@ -13,6 +13,8 @@
 //     existing mouse-driven drag-drop inventory code work with a controller
 //     without being rewritten.
 
+import { TouchControls } from './touchControls.js';
+
 // Gamepad button indices — standard mapping:
 //   0 A       1 B       2 X       3 Y
 //   4 LB      5 RB      6 LT      7 RT
@@ -81,6 +83,11 @@ export class InputManager {
         this._gpXPulseFrames = 0;
 
         this._bindEvents();
+
+        // Touch (virtual dual-stick + pointer synthesis). Inert until Game
+        // flips touch.enabled on coarse-pointer devices.
+        this.touch = new TouchControls(this);
+        this.touch.attach();
     }
 
     _bindEvents() {
@@ -143,6 +150,7 @@ export class InputManager {
     }
 
     destroy() {
+        this.touch.detach();
         window.removeEventListener('keydown', this._keydownListener);
         window.removeEventListener('keyup', this._keyupListener);
         this.canvas.removeEventListener('mousemove', this._mousemoveListener);
@@ -289,6 +297,12 @@ export class InputManager {
         return this.gamepadConnected && this.lastInputDevice === 'gamepad';
     }
 
+    // Touch-first device (phone/tablet). Committed per-device, not per-event —
+    // used by UI code to pick tap-oriented prompt wording.
+    isTouchActive() {
+        return this.touch.enabled;
+    }
+
     // Virtual-cursor driver. Called every frame while enabled; moves the
     // synthesised mouse position by the left stick / d-pad and turns A presses
     // into mouse-button toggles.
@@ -379,6 +393,10 @@ export class InputManager {
         // Virtual cursor is updated before the "just pressed" diffs so that
         // synthesised presses register this frame.
         this._updateGamepadVirtualCursor(dt);
+
+        // Touch writes into the primary-pad mirror + synthesized mouse in the
+        // same window (after the poll zeroed the mirror, before the diffs).
+        this.touch.update(dt);
 
         this.keysJustPressed.clear();
         for (const key of this.keysDown) {

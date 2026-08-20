@@ -16,6 +16,14 @@ export class Game {
         this.canvas = canvas;
         this.ctx = canvas.getContext('2d');
 
+        // Touch-first device (phone/tablet in a browser or the Android
+        // WebView wrapper). Committed once at boot: enables the virtual
+        // dual-stick overlay, tap-oriented prompts, and the DPR cap below.
+        // Touchscreen laptops (fine primary pointer) stay in desktop mode.
+        this.touchMode = (typeof navigator !== 'undefined' && navigator.maxTouchPoints > 0)
+            && typeof window.matchMedia === 'function'
+            && window.matchMedia('(pointer: coarse)').matches;
+
         // Dynamic scaling
         this.worldScale = 2; // In-game world
         this.worldScaleModifier = 1.0; // Base FOV scale
@@ -29,6 +37,7 @@ export class Game {
         // Subsystems
         this.assets = new AssetLoader();
         this.input = new InputManager(canvas);
+        this.input.touch.enabled = this.touchMode;
         this.sounds = new SoundManager();
         this.achievements = new AchievementManager(this);
         this.devConsole = new DevConsole(this);
@@ -81,6 +90,10 @@ export class Game {
         // displays (e.g. 2560x1600 @ 150%), window.innerWidth/Height report CSS
         // pixels (~1707x1067), which would otherwise shrink the UI and world.
         this.dpr = window.devicePixelRatio || 1;
+        // Phones ship 3x+ DPRs the GPU can't fill through Canvas 2D + the
+        // ScreenFX full-frame upload. Cap the backing store on touch devices;
+        // CSS upscaling keeps the pixel-art look. Desktop stays untouched.
+        if (this.touchMode) this.dpr = Math.min(this.dpr, 2);
         this.canvas.width = Math.round(window.innerWidth * this.dpr);
         this.canvas.height = Math.round(window.innerHeight * this.dpr);
         this.ctx.imageSmoothingEnabled = true;
@@ -100,9 +113,15 @@ export class Game {
         let rawWorldScale = 2 * meanRatio;
         this.worldScale = Math.max(0.1, rawWorldScale * this.worldScaleModifier);
 
-        // UI and HUD scales should be strictly integers based on height
+        // UI and HUD scales should be strictly integers based on height.
+        // Touch: the HUD alone gets a modest bump — its elements are
+        // corner-anchored and scale safely, and phone-distance legibility
+        // needs it. Menus/panels keep the base uiScale (a blanket boost blows
+        // up their layouts); in-run screens bump TEXT selectively instead
+        // (playingState._uiTextS, dialog-local scales).
         this.uiScale = Math.max(1, Math.round(3 * heightRatio));
-        this.hudScale = Math.max(1, Math.round(4 * heightRatio));
+        const hudRatio = this.touchMode ? heightRatio * 1.4 : heightRatio;
+        this.hudScale = Math.max(1, Math.round(4 * hudRatio));
     }
 
     // Logical screen dimensions == backing-store (physical) pixels. The whole
@@ -302,14 +321,18 @@ export class Game {
         this.currentState = state;
         if (state.enter) state.enter();
 
-        // One-time interaction to unlock audio for modern browsers
+        // One-time interaction to unlock audio for modern browsers. touchstart
+        // matters on mobile: the virtual-stick layer preventDefaults touches,
+        // which suppresses the compatibility mousedown a tap would synthesize.
         const unlock = () => {
             this.sounds.unlock();
             window.removeEventListener('mousedown', unlock);
             window.removeEventListener('keydown', unlock);
+            window.removeEventListener('touchstart', unlock);
         };
         window.addEventListener('mousedown', unlock);
         window.addEventListener('keydown', unlock);
+        window.addEventListener('touchstart', unlock);
     }
 
     loop() {
@@ -367,6 +390,7 @@ export class Game {
             }
             this.devConsole.draw(this.ctx);
             this._drawCrosshair(this.ctx);
+            if (this.touchMode) this.input.touch.draw(this.ctx, this);
 
             // Shader post-fx pass (kill-streak CRT + dread warps) —
             // zero-cost no-op while the state reports nothing active.

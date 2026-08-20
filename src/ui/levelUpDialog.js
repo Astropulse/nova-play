@@ -609,7 +609,9 @@ export class LevelUpDialog {
         const vp = ps && ps._uiVp;
         const cw      = vp ? ps._uiW : this.game.width;
         const ch      = vp ? ps._uiH : this.game.height;
-        const us      = vp ? ps._uiS : this.game.uiScale;
+        // Touch: self-centering dialog — takes a +1 legibility bump safely.
+        const us      = vp ? ps._uiS
+            : (this.game.touchMode ? this.game.uiScale + 1 : this.game.uiScale);
         const ox      = vp ? ps._uiX : 0;
         const oy      = vp ? ps._uiY : 0;
         const t       = this.appearTimer / this.appearDuration;

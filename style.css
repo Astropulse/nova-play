@@ -25,6 +25,7 @@ body {
     height: 100%;
     overflow: hidden;
     background: #000;
+    overscroll-behavior: none;
 }
 
 canvas {
@@ -34,6 +35,11 @@ canvas {
     image-rendering: pixelated;
     image-rendering: crisp-edges;
     cursor: default;
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
 }
 
 body.playing canvas {

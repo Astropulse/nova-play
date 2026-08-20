@@ -941,6 +941,57 @@ export class PlayingState {
             }
         }
 
+        // Touch devices: re-assert the virtual-gamepad context every frame.
+        // While a modal UI owns the screen (pause/shop/dialog/death) the touch
+        // layer goes stale and every touch becomes a synthesized mouse pointer
+        // instead of a stick.
+        if (this.game.touchMode) {
+            const p = this.player;
+            const modal = this.paused || this.isShopOpen || this.isEncounterOpen
+                || this.isCacheOpen || this.isLevelUpOpen || this.isTradeOpen
+                || this.isDead || (this.chatUI && this.chatUI.active);
+            let interactLabel = 'OPEN';
+            if (this.canInteractEncounter) interactLabel = 'HAIL SHIP';
+            else if (this.canInteractCache) interactLabel = 'OPEN CACHE';
+            else if (this.canInteractShop) interactLabel = 'OPEN SHOP';
+            else if (this.canInteractPlayer) interactLabel = 'TRADE';
+            let healCount = 0;
+            if (p.inventory) {
+                for (const e of p.inventory.items) {
+                    if (e.item.id === 'small_battery') healCount++;
+                }
+            }
+            this.game.input.touch.setGameplayContext({
+                active: !modal && this.localPlayers.length <= 1,
+                modal,
+                // Every modal UI closes on GP.B; the death screen doesn't.
+                closeButton: modal && !this.isDead && !(this.chatUI && this.chatUI.active),
+                boostToggle: !!p.hasBoostDrive && !p.hasTeleport,
+                shieldBroken: !!p.shieldBroken,
+                healCount,
+                interact: !modal && !!(this.canInteractShop || this.canInteractEncounter
+                    || this.canInteractCache || this.canInteractPlayer),
+                interactLabel,
+            });
+            // Sticks own the heading on touch; a stale synthesized cursor
+            // position must never reclaim aim.
+            if (this.localPlayers.length <= 1) p.useMouseAim = false;
+
+            // Heal button: consume the FIRST Small Battery in cargo, scanning
+            // left-to-right then top-to-bottom (grid order).
+            if (!modal && this.game.input.touch.consumeHealTap()) {
+                const inv = p.inventory;
+                let firstBattery = null;
+                for (let y = 0; y < inv.rows && !firstBattery; y++) {
+                    for (let x = 0; x < inv.cols; x++) {
+                        const e = inv.getItemAt(x, y);
+                        if (e && e.item.id === 'small_battery') { firstBattery = e; break; }
+                    }
+                }
+                if (firstBattery) this._tryUseConsumable(firstBattery, inv);
+            }
+        }
+
         // --- Death sequence ---
         if (this.isDead) {
             // Keep Yellow One updating during its scripted death sequence
@@ -1442,6 +1493,12 @@ export class PlayingState {
     get _uiS() {
         return this._uiVp ? Math.max(1, Math.round(this.game.uiScale * this._uiVp.h / this.game.height))
                           : this.game.uiScale;
+    }
+    // Touch: standalone screen text (titles, hints, buttons, tooltips) renders
+    // one step larger for phone legibility. Grid/panel GEOMETRY stays at _uiS —
+    // a blanket scale boost blows up layouts. Desktop/co-op: identical to _uiS.
+    get _uiTextS() {
+        return (this.game.touchMode && !this._uiVp) ? this._uiS + 1 : this._uiS;
     }
 
     // Level-up queue is PER-PILOT (stored on the Player). `this.levelUpQueue`
@@ -6942,10 +6999,10 @@ export class PlayingState {
         // ── Cache inventory panel ─────────────────────────────────────────────
         this._draw9Slice(ctx, this.inventoryImg, cacheLayout.panelX, cacheLayout.panelY, cacheLayout.totalW, cacheLayout.totalH);
         ctx.fillStyle = '#ffcc44';
-        ctx.font = `${8 * uiScale}px Astro5x`;
+        ctx.font = `${8 * this._uiTextS}px Astro5x`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'alphabetic';
-        ctx.fillText('SPACE CACHE', cw / 2, cacheLayout.panelY - uiScale * 10);
+        ctx.fillText('SPACE CACHE', cacheLayout.panelX + cacheLayout.totalW / 2, cacheLayout.panelY - uiScale * 10);
         this._drawInventoryGrid(ctx, cacheInv, cacheLayout, this.cacheScrollX, this.cacheScrollY);
         this._draw9Slice(ctx, this.inventoryBorderImg, cacheLayout.panelX, cacheLayout.panelY, cacheLayout.totalW, cacheLayout.totalH);
         this._drawScrollbars(ctx, cacheLayout, this.cacheScrollX, this.cacheScrollY);
@@ -6954,10 +7011,10 @@ export class PlayingState {
         // ── Player inventory panel ────────────────────────────────────────────
         this._draw9Slice(ctx, this.inventoryImg, playerLayout.panelX, playerLayout.panelY, playerLayout.totalW, playerLayout.totalH);
         ctx.fillStyle = '#88aabb';
-        ctx.font = `${8 * uiScale}px Astro4x`;
+        ctx.font = `${8 * this._uiTextS}px Astro4x`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'alphabetic';
-        ctx.fillText('YOUR SHIP CARGO', cw / 2, playerLayout.panelY - uiScale * 10);
+        ctx.fillText('YOUR SHIP CARGO', playerLayout.panelX + playerLayout.totalW / 2, playerLayout.panelY - uiScale * 10);
         this._drawInventoryGrid(ctx, playerInv, playerLayout, this.playerScrollX, this.playerScrollY);
         this._draw9Slice(ctx, this.inventoryBorderImg, playerLayout.panelX, playerLayout.panelY, playerLayout.totalW, playerLayout.totalH);
         this._drawScrollbars(ctx, playerLayout, this.playerScrollX, this.playerScrollY);
@@ -6965,17 +7022,19 @@ export class PlayingState {
         // ── Hint text ─────────────────────────────────────────────────────────
         if (ui.isAnimating) {
             ctx.fillStyle = 'rgba(255, 204, 68, 0.6)';
-            ctx.font = `${6 * uiScale}px Astro4x`;
+            ctx.font = `${6 * this._uiTextS}px Astro4x`;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            const skipHint = this.game.input.isGamepadActive() ? 'A TO SKIP' : 'CLICK TO SKIP';
+            const skipHint = this.game.input.isTouchActive() ? 'TAP TO SKIP'
+                : this.game.input.isGamepadActive() ? 'A TO SKIP' : 'CLICK TO SKIP';
             ctx.fillText(skipHint, cw / 2, cacheLayout.panelY + cacheLayout.totalH + uiScale * 12);
         }
         ctx.fillStyle = '#667788';
-        ctx.font = `${6 * uiScale}px Astro4x`;
+        ctx.font = `${6 * this._uiTextS}px Astro4x`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'alphabetic';
-        const cacheCloseHint = this.game.input.isGamepadActive() ? 'A to move  •  B to close' : 'Drag to move  •  E to close';
+        const cacheCloseHint = this.game.input.isTouchActive() ? 'Tap to take  •  drag to move  •  X to close'
+            : this.game.input.isGamepadActive() ? 'A to move  •  B to close' : 'Drag to move  •  E to close';
         ctx.fillText(cacheCloseHint, cw / 2, ch - uiScale * 10);
 
         if (!ui.isAnimating) {
@@ -6985,7 +7044,7 @@ export class PlayingState {
             ]);
         }
 
-        this._drawStatsPanel(ctx, cacheLayout.panelX);
+        if (!(this.game.touchMode && !this._uiVp)) this._drawStatsPanel(ctx, cacheLayout.panelX);
         this._drawClaimLevelsButton(ctx);
 
         // Gamepad selection corners draw over all static UI (including the
@@ -7024,16 +7083,16 @@ export class PlayingState {
         // ── Shop panel ────────────────────────────────────────────────────────
         this._draw9Slice(ctx, this.inventoryImg, shopLayout.panelX, shopLayout.panelY, shopLayout.totalW, shopLayout.totalH);
         ctx.fillStyle = '#44ddff';
-        ctx.font = `${8 * uiScale}px Astro5x`;
+        ctx.font = `${8 * this._uiTextS}px Astro5x`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'alphabetic';
-        ctx.fillText('SPACE STATION SHOP', cw / 2, shopLayout.panelY - uiScale * 10);
+        ctx.fillText('SPACE STATION SHOP', shopLayout.panelX + shopLayout.totalW / 2, shopLayout.panelY - uiScale * 10);
 
         // ── Player panel ──────────────────────────────────────────────────────
         this._draw9Slice(ctx, this.inventoryImg, playerLayout.panelX, playerLayout.panelY, playerLayout.totalW, playerLayout.totalH);
         ctx.fillStyle = '#88aabb';
-        ctx.font = `${8 * uiScale}px Astro4x`;
-        ctx.fillText('YOUR SHIP CARGO', cw / 2, playerLayout.panelY - uiScale * 10);
+        ctx.font = `${8 * this._uiTextS}px Astro4x`;
+        ctx.fillText('YOUR SHIP CARGO', playerLayout.panelX + playerLayout.totalW / 2, playerLayout.panelY - uiScale * 10);
 
         this._drawInventoryGrid(ctx, shopInv, shopLayout, this.shopScrollX, this.shopScrollY);
         this._drawInventoryGrid(ctx, playerInv, playerLayout, this.playerScrollX, this.playerScrollY);
@@ -7070,12 +7129,28 @@ export class PlayingState {
         this._drawScrollbars(ctx, playerLayout, this.playerScrollX, this.playerScrollY);
 
         // ── Permanent Upgrades ────────────────────────────────────────────────
-        const btnW = 60 * uiScale;
-        const btnH = 24 * uiScale;
+        // Touch: buttons are tap targets — size and label them at the text
+        // scale (one step up); desktop identical since _uiTextS === _uiS there.
+        const permS = this._uiTextS;
+        const btnW = 60 * permS;
+        const btnH = 24 * permS;
         const gap  = 8  * uiScale;
         const totalBtnsH = (btnH * 4) + (gap * 3);
-        const startX = shopLayout.panelX + shopLayout.totalW + 24 * uiScale;
-        const startY = shopLayout.panelY + (shopLayout.totalH - totalBtnsH) / 2;
+        // Touch (side-by-side panels): the vertical column would land on the
+        // player panel — lay the four buttons out as a centered row below.
+        const touchUi = this.game.touchMode && !this._uiVp;
+        let startX, startY, stepX, stepY;
+        if (touchUi) {
+            const rowW = btnW * 4 + gap * 3;
+            startX = Math.floor((cw - rowW) / 2);
+            startY = Math.min(ch - btnH - 14 * uiScale,
+                shopLayout.panelY + shopLayout.totalH + 8 * uiScale);
+            stepX = btnW + gap; stepY = 0;
+        } else {
+            startX = shopLayout.panelX + shopLayout.totalW + 24 * uiScale;
+            startY = shopLayout.panelY + (shopLayout.totalH - totalBtnsH) / 2;
+            stepX = 0; stepY = btnH + gap;
+        }
 
         this.healthCostMult = 0.125;
         this.shieldCostMult = 0.5;
@@ -7095,13 +7170,13 @@ export class PlayingState {
             { id: 'inventory', label: '+Cargo',   cost: permCosts.inventory, stock: this.activeShop.permUpgrades.inventory.stock }
         ];
 
-        ctx.font = `${6 * uiScale}px Astro4x`;
+        ctx.font = `${6 * permS}px Astro4x`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
 
         upgrades.forEach((up, i) => {
-            const bx = startX;
-            const by = startY + i * (btnH + gap);
+            const bx = startX + i * stepX;
+            const by = startY + i * stepY;
             const canAfford = this.player.scrap >= up.cost;
             const available = up.stock > 0 && !up.maxed;
 
@@ -7125,14 +7200,16 @@ export class PlayingState {
 
         // ── Scrap display ─────────────────────────────────────────────────────
         ctx.fillStyle = '#ffff44';
-        ctx.font = `${10 * uiScale}px Astro5x`;
-        ctx.fillText(`SCRAP: ${this.player.scrap}`, cw / 2, playerLayout.panelY - 30 * uiScale);
+        ctx.font = `${10 * this._uiTextS}px Astro5x`;
+        ctx.fillText(`SCRAP: ${this.player.scrap}`,
+            playerLayout.panelX + playerLayout.totalW / 2, playerLayout.panelY - 30 * uiScale);
 
         ctx.fillStyle = '#667788';
-        ctx.font = `${6 * uiScale}px Astro4x`;
+        ctx.font = `${6 * this._uiTextS}px Astro4x`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'alphabetic';
-        const shopCloseHint = this.game.input.isGamepadActive() ? 'A to buy/sell/move • B to close' : 'Drag to buy/sell/move • E to close';
+        const shopCloseHint = this.game.input.isTouchActive() ? 'Tap to buy • drag to sell/move • X to close'
+            : this.game.input.isGamepadActive() ? 'A to buy/sell/move • B to close' : 'Drag to buy/sell/move • E to close';
         ctx.fillText(shopCloseHint, cw / 2, ch - uiScale * 10);
 
         this._drawInventoryTooltip(ctx, [
@@ -7140,7 +7217,9 @@ export class PlayingState {
             { inv: playerInv, layout: playerLayout, scrollX: this.playerScrollX, scrollY: this.playerScrollY }
         ]);
 
-        this._drawStatsPanel(ctx, shopLayout.panelX);
+        // Touch: side-by-side panels leave no side column for the stats panel;
+        // it stays available on the pause screen.
+        if (!touchUi) this._drawStatsPanel(ctx, shopLayout.panelX);
         this._drawClaimLevelsButton(ctx);
 
         // Selection corners go above static UI so they frame the focused
@@ -7207,11 +7286,18 @@ export class PlayingState {
         const slotSize = 32 * uiScale;
         const borderSize = 48 * uiScale;
 
+        // Touch (single view): panels sit SIDE BY SIDE ('shop' left half,
+        // 'player' right half, both vertically centered) instead of stacked —
+        // a landscape phone is wide and short, and at the boosted touch
+        // uiScale stacked panels would overlap. maxH relaxes because each
+        // panel now owns a full half-screen column.
+        const touchUi = this.game.touchMode && !this._uiVp;
+
         const gridW = inv.cols * slotSize;
         const gridH = inv.rows * slotSize;
 
-        const maxW = Math.floor(this._uiW * 0.4);
-        const maxH = Math.floor(this._uiH * 0.4);
+        const maxW = Math.floor(this._uiW * (touchUi ? 0.44 : 0.4));
+        const maxH = Math.floor(this._uiH * (touchUi ? 0.62 : 0.4));
 
         let gridVisCols = inv.cols;
         let gridVisRows = inv.rows;
@@ -7232,11 +7318,19 @@ export class PlayingState {
         const scrollableX = inv.cols > gridVisCols;
         const scrollableY = inv.rows > gridVisRows;
 
-        const panelX = Math.floor((this._uiW - totalW) / 2);
+        let panelX = Math.floor((this._uiW - totalW) / 2);
 
         // yHint is 'shop', 'player', or 'pause'
         let panelY;
-        if (yHint === 'shop') panelY = uiScale * 20;
+        if (touchUi && (yHint === 'shop' || yHint === 'player')) {
+            const half = Math.floor(this._uiW / 2);
+            panelX = yHint === 'shop'
+                ? Math.floor((half - totalW) / 2)
+                : half + Math.floor((half - totalW) / 2);
+            // Slight lift leaves room for the shop's perm-upgrade row below.
+            panelY = Math.floor((this._uiH - totalH) / 2) - uiScale * 4;
+        }
+        else if (yHint === 'shop') panelY = uiScale * 20;
         else if (yHint === 'player') panelY = this._uiH - totalH - uiScale * 40;
         else if (yHint === 'pause') panelY = uiScale * 24;
 
@@ -7249,8 +7343,9 @@ export class PlayingState {
         const maxScrollX = Math.max(0, gridW - visW);
         const maxScrollY = Math.max(0, gridH - visH);
 
-        const trackMargin = 8 * uiScale;
-        const trackSize = 8 * uiScale;
+        const trackMargin = (touchUi ? 4 : 8) * uiScale;
+        // Fat scrollbars on touch — they're finger-drag targets there.
+        const trackSize = (touchUi ? 14 : 8) * uiScale;
 
         const trackYBounds = scrollableY ? { x: panelX + totalW + trackMargin, y: panelY, w: trackSize, h: totalH } : null;
         const trackXBounds = scrollableX ? { x: panelX, y: panelY + totalH + trackMargin, w: totalW, h: trackSize } : null;
@@ -7441,7 +7536,8 @@ export class PlayingState {
         const previewLabel = opts.previewLabel || null;
         const cw = this._uiW;
         const ch = this._uiH;
-        const uiScale = this._uiS;
+        // Tooltips are pure text + a self-positioned box — text scale is safe.
+        const uiScale = this._uiTextS;
 
         const pad = 8 * uiScale;
         const fontSize = Math.floor(5 * uiScale);
@@ -8247,13 +8343,23 @@ export class PlayingState {
     // Returns true if the dialog was opened (caller should return early).
     _updateClaimLevelsButton(mouse, origin) {
         const cl = this.pauseButtons.claimLevels;
-        if (this.levelUpQueue.length > 0 && this._statsPanelRect) {
-            const sp = this._statsPanelRect;
+        // Touch shop/cache screens skip the stats panel the button normally
+        // anchors to — give it a standalone top-center spot instead.
+        const touchFloat = this.game.touchMode && !this._uiVp && origin !== 'pause';
+        if (this.levelUpQueue.length > 0 && (this._statsPanelRect || touchFloat)) {
             const us = this._uiS;
-            cl.x = Math.floor(sp.x);
-            cl.y = Math.floor(sp.y + sp.h + us * 6);
-            cl.w = Math.floor(sp.w);
-            cl.h = Math.floor(us * 20);
+            if (touchFloat) {
+                cl.w = Math.floor(us * 110);
+                cl.h = Math.floor(us * 20);
+                cl.x = Math.floor((this._uiW - cl.w) / 2);
+                cl.y = Math.floor(us * 4);
+            } else {
+                const sp = this._statsPanelRect;
+                cl.x = Math.floor(sp.x);
+                cl.y = Math.floor(sp.y + sp.h + us * 6);
+                cl.w = Math.floor(sp.w);
+                cl.h = Math.floor(us * 20);
+            }
             // Hover is PER-PILOT (co-op draws every pane from the shared `cl`
             // geometry, so a shared hovered flag would light the button in every
             // pilot's pane). Store it on the active pilot — `this.player` is the
@@ -8425,6 +8531,26 @@ export class PlayingState {
                 if (!this._tryPickUpItem(mouse, cacheInv, cacheLayout, 'cacheScrollX', 'cacheScrollY')) {
                     this._tryPickUpItem(mouse, playerInv, playerLayout, 'playerScrollX', 'playerScrollY');
                 }
+            }
+
+            // Touch shortcut: a clean tap on a cache item takes it straight
+            // into the first free ship-cargo spot.
+            if (this.draggedItem && !this.game.input.isMouseDown(0)
+                && this.draggedItem.originInventory === cacheInv
+                && this.game.input.touch.consumePointerTap()) {
+                const it = this.draggedItem.item;
+                if (playerInv.autoAdd(it)) {
+                    this._onInventoryChanged();
+                    this.game.sounds.play('select', 0.8);
+                    if (this.game.achievements) {
+                        this.game.achievements.notify('upgrade_collected', { item: it });
+                    }
+                    if (cacheInv.items.length === 0 && this._activeCache) this._activeCache.markEmptied();
+                } else {
+                    cacheInv.addItem(it, this.draggedItem.x, this.draggedItem.y);
+                    this.game.sounds.play('click', 0.3);
+                }
+                this.draggedItem = null;
             }
 
             // Release drag
@@ -8607,6 +8733,27 @@ export class PlayingState {
         }
 
         this._handleRightClickConsumable(mouse, playerLayout, playerInv);
+
+        // Touch shortcut: a clean tap on a shop item (picked up + released with
+        // no drag) buys it straight into the first free ship-cargo spot.
+        if (this.draggedItem && !this.game.input.isMouseDown(0)
+            && this.draggedItem.originInventory === shopInv
+            && this.game.input.touch.consumePointerTap()) {
+            const it = this.draggedItem.item;
+            if (this.player.scrap >= it.cost && playerInv.autoAdd(it)) {
+                this.player.scrap -= it.cost;
+                this.game.sounds.play('select', 0.8);
+                this._onInventoryChanged();
+                if (this.game.achievements) {
+                    this.game.achievements.notify('upgrade_collected', { item: it });
+                }
+            } else {
+                // Can't afford / no room — put it back on the shelf.
+                shopInv.addItem(it, this.draggedItem.x, this.draggedItem.y);
+                this.game.sounds.play('asteroid_break', 0.5);
+            }
+            this.draggedItem = null;
+        }
 
         if (this.draggedItem && !this.game.input.isMouseDown(0)) {
             const { col: pCol, row: pRow } = this._getDropPosition(mouse, playerLayout, 'playerScrollX', 'playerScrollY');
@@ -8947,6 +9094,9 @@ export class PlayingState {
     }
 
     _drawInteractPrompt(ctx) {
+        // Touch: the tappable interact button (touch overlay, top center) is
+        // the prompt — no key glyph above the ship.
+        if (this.game.touchMode && this.localPlayers.length <= 1) return;
         const uiScale = this.game.uiScale;
         // Project above the pilot's ship via the active camera so it sits right
         // over them in their pane (co-op) or at screen center (single view).
@@ -10237,9 +10387,12 @@ export class PlayingState {
 
         ctx.textAlign = 'center';
         ctx.fillStyle = '#445566';
-        const pauseHint = this.game.input.isGamepadActive()
-            ? 'A to pick up/place | Y to use | B to resume'
-            : 'Drag to move | Right-click to use | ESC to resume';
+        ctx.font = `${6 * this._uiTextS}px Astro4x`;
+        const pauseHint = this.game.input.isTouchActive()
+            ? 'Drag to move | Hold to use | X to resume'
+            : this.game.input.isGamepadActive()
+                ? 'A to pick up/place | Y to use | B to resume'
+                : 'Drag to move | Right-click to use | ESC to resume';
         ctx.fillText(pauseHint, cw / 2, ch - uiScale * 8);
 
         this._drawInventoryTooltip(ctx, [
@@ -11276,3 +11429,4 @@ export class PlayingState {
         this.perf.draw(ctx, clampedGx, clampedGy, graphW, graphH, uiScale);
     }
 }
+
