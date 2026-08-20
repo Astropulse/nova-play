@@ -5,6 +5,8 @@ import { AchievementManager } from './achievementManager.js';
 import { MenuState } from '../states/menuState.js';
 import { DevConsole } from '../ui/devConsole.js';
 import { ScreenFX } from './screenFx.js';
+import { SETTINGS, loadSettings } from './settings.js';
+import { loadBindings } from './controlBindings.js';
 
 // Reused "no effect" descriptor — passed to ScreenFX.render when the post-fx is
 // disabled so it takes the idle early-out (hides the overlay, skips the upload)
@@ -24,6 +26,15 @@ export class Game {
             && typeof window.matchMedia === 'function'
             && window.matchMedia('(pointer: coarse)').matches;
 
+        // Persistent player settings (nova_settings) — loaded before any
+        // subsystem so boot-time consumers (resize smoothing, sound volumes)
+        // see the stored values. SettingsState is the UI over this bag.
+        loadSettings();
+        this.settings = SETTINGS;
+        // Rebindable controls (nova_controls) — keyboard/mouse bindings +
+        // touch-control layout, read live by player.js / touchControls.js.
+        loadBindings();
+
         // Dynamic scaling
         this.worldScale = 2; // In-game world
         this.worldScaleModifier = 1.0; // Base FOV scale
@@ -39,6 +50,10 @@ export class Game {
         this.input = new InputManager(canvas);
         this.input.touch.enabled = this.touchMode;
         this.sounds = new SoundManager();
+        // Startup audio defaults from settings. The title/pause quick-sliders
+        // adjust the session only; these are what the game boots with.
+        this.sounds.setMusicVolume(SETTINGS.musicVolume);
+        this.sounds.setSfxVolume(SETTINGS.sfxVolume);
         this.achievements = new AchievementManager(this);
         this.devConsole = new DevConsole(this);
 
@@ -96,7 +111,10 @@ export class Game {
         if (this.touchMode) this.dpr = Math.min(this.dpr, 2);
         this.canvas.width = Math.round(window.innerWidth * this.dpr);
         this.canvas.height = Math.round(window.innerHeight * this.dpr);
-        this.ctx.imageSmoothingEnabled = true;
+        // Base smoothing state for world rendering (menus flip it off locally
+        // under save/restore). The smooth-scaling setting turns it off wholesale
+        // for crunchier, cheaper nearest-neighbour sampling.
+        this.ctx.imageSmoothingEnabled = SETTINGS.smoothScaling;
 
         // Reference resolution 2560x1440 (16:9), in physical pixels
         const refW = 2560;
@@ -385,6 +403,10 @@ export class Game {
             this.ctx.fillText('SAVING CLIP (PLEASE WAIT)...', this.canvas.width / 2, this.canvas.height / 2);
             this.ctx.restore();
         } else {
+            // Re-assert the base smoothing state each frame (settings can flip
+            // mid-session; menu/UI code that wants nearest-neighbour sets it
+            // locally under save/restore).
+            this.ctx.imageSmoothingEnabled = SETTINGS.smoothScaling;
             if (this.currentState) {
                 this.currentState.draw(this.ctx);
             }
@@ -397,16 +419,20 @@ export class Game {
             if (!this.screenFx) this.screenFx = new ScreenFX(this);
             const fx = (this.currentState && this.currentState.getScreenFx)
                 ? this.currentState.getScreenFx() : { crt: 0, warp: 0 };
-            if (this.screenFxDisabled || this.lowPerfMode) {
-                // Weak hardware: keep the pass off. Rendering with zeroed fx
-                // takes the early-out path (hides the overlay, no GPU upload).
+            // User-facing distortion dial (settings): scales every ScreenFX
+            // knob; 0 takes the same early-out as the adaptive disable.
+            const fxIntensity = SETTINGS.visualDistortion;
+            if (this.screenFxDisabled || this.lowPerfMode || fxIntensity <= 0) {
+                // Weak hardware (or distortion dialed to zero): keep the pass
+                // off. Rendering with zeroed fx takes the early-out path
+                // (hides the overlay, no GPU upload).
                 this.screenFx.render(ZERO_FX, now / 1000);
             } else {
                 const sfxT0 = performance.now();
                 // Split-screen returns one descriptor per pane (each scissored to
                 // its rect); single view returns the flat descriptor.
-                if (fx.panes) this.screenFx.renderPanes(fx.panes, now / 1000);
-                else this.screenFx.render(fx, now / 1000);
+                if (fx.panes) this.screenFx.renderPanes(fx.panes, now / 1000, fxIntensity);
+                else this.screenFx.render(fx, now / 1000, fxIntensity);
                 // Only sample frames where the pass actually did work (an effect
                 // was active); the full-frame upload cost is hardware-bound, not
                 // scene-bound, so a clean average identifies weak hardware

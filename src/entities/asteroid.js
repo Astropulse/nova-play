@@ -1,5 +1,7 @@
 // Dynamic scaling is now handled via game.worldScale
 
+import { SETTINGS } from '../engine/settings.js';
+
 // Asteroid sizes — maps to asset keys, stats, and split behavior
 const ASTEROID_TYPES = {
     big: { keys: ['asteroid_big_0', 'asteroid_big_1', 'asteroid_big_2'], hp: 50, damage: 40, scrap: 3, splitInto: 'tiny', splitCount: 5, rubbleCount: 12 },
@@ -202,6 +204,26 @@ export function getCachedShatter(asset, key, numPieces) {
     return frags;
 }
 
+// Settings-aware shatter for PURE-COSMETIC debris (enemy death shards etc.).
+// Never use this where fragment count feeds loot (boss.js rolls scrap per
+// fragment — that must stay on getCachedShatter). The voronoi-fractures
+// toggle caps the cloud to a few chunks; reduced-particles halves it. Subsets
+// of the full cached layout are cached per effective count, so a toggle flip
+// costs one slice() ever and steady-state stays allocation-free.
+const LITE_SHATTER_PIECES = 6;
+export function debrisShatter(asset, key, numPieces) {
+    let n = numPieces;
+    if (!SETTINGS.voronoiFractures) n = Math.min(n, LITE_SHATTER_PIECES);
+    if (SETTINGS.reducedParticles) n = Math.max(3, n >> 1);
+    if (n >= numPieces) return getCachedShatter(asset, key, numPieces);
+    if (!asset) return [];
+    const subKey = key ? `${key}@${n}` : null;
+    if (subKey && _shatterCache.has(subKey)) return _shatterCache.get(subKey);
+    const sub = getCachedShatter(asset, key, numPieces).slice(0, n);
+    if (subKey) _shatterCache.set(subKey, sub);
+    return sub;
+}
+
 // Module cache of persistent fracture layouts, keyed by asset + piece count.
 // Every entity sharing a sprite shares one cell layout; each entity keeps its
 // own removed-set, so the slice only ever runs once per sprite.
@@ -221,6 +243,10 @@ const CHUNK_PX = 3.0;
 export class FractureModel {
     static get(asset, key) {
         if (!asset) return null;
+        // Settings kill-switch: no chip-damage layouts at all. Every caller
+        // already handles a null model (hits spark instead of chipping). The
+        // cache is left untouched so re-enabling builds lazily on next use.
+        if (!SETTINGS.voronoiFractures) return null;
         let model = _fractureModelCache.get(key);
         if (model === undefined) {
             model = new FractureModel(asset);
@@ -1125,7 +1151,9 @@ export class Asteroid {
         if (this.size === 'big') numPieces = 60;
         else if (this.size === 'small') numPieces = 22;
         else if (this.size === 'tiny') numPieces = 14;
-        const shards = getCachedShatter(this.img, this.assetKey, numPieces);
+        // Cosmetic-only shards (loot rolls separately below) — the settings-
+        // aware path so fracture/particle settings thin the cloud.
+        const shards = debrisShatter(this.img, this.assetKey, numPieces);
         const debris = [];
 
         for (const shard of shards) {
@@ -1162,10 +1190,13 @@ export class Asteroid {
 
         const spawns = this._generateProceduralDebris();
 
-        // Always spawn rubble spread across the asteroid's shape
+        // Always spawn rubble spread across the asteroid's shape (halved under
+        // the reduced-particles setting — rubble is pure decoration)
         const w = this.img ? this.img.width : 20;
         const h = this.img ? this.img.height : 20;
-        for (let i = 0; i < this.rubbleCount; i++) {
+        const rubbleN = SETTINGS.reducedParticles
+            ? Math.ceil(this.rubbleCount / 2) : this.rubbleCount;
+        for (let i = 0; i < rubbleN; i++) {
             // Spread rubble across the asteroid's area (elliptical)
             const angle = Math.random() * Math.PI * 2;
             const dist = Math.random() * Math.min(w, h) * 0.4;

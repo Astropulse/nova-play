@@ -1,6 +1,10 @@
 // Dynamic scaling is now handled via game properties
 import { Projectile } from './projectile.js';
 import { GP } from '../engine/inputManager.js';
+// Live rebindable key/mouse maps (SettingsState CONTROLS tab). Read per
+// frame so a rebind applies instantly. Hardcoded alternates (arrows,
+// right-shift) only stand while the action sits on its default binding.
+import { KEYS, MOUSE } from '../engine/controlBindings.js';
 
 // Inert input stub. In multiplayer the world never pauses, so when a UI
 // overlay is open the player's ship keeps simulating (drift, shields recharge,
@@ -407,8 +411,8 @@ export class Player {
         const dpRight = input.isGamepadDown(GP.DRIGHT);
 
         // Angle toward mouse (only if not using keyboard rotation)
-        const isRotatingCCW = input.isKeyDown('KeyJ');
-        const isRotatingCW = input.isKeyDown('KeyL');
+        const isRotatingCCW = input.isKeyDown(KEYS.rotateCCW);
+        const isRotatingCW = input.isKeyDown(KEYS.rotateCW);
 
         const currentRotationAccel = this.rotationAcceleration * this.mechanicalEngineTurnMult * this.lvlTurnSpeedMult;
 
@@ -499,20 +503,21 @@ export class Player {
         const currentAccel = this.acceleration * this.mechanicalEngineSpeedMult;
 
         if (this.hasAncientCurse) {
-            // Free WASD movement independent of ship angle
-            if (input.isKeyDown('KeyW') || input.isKeyDown('ArrowUp') || dpUp) {
+            // Free WASD movement independent of ship angle. Arrow-key
+            // alternates only apply while the action is on its default.
+            if (input.isKeyDown(KEYS.thrustFwd) || (KEYS.thrustFwd === 'KeyW' && input.isKeyDown('ArrowUp')) || dpUp) {
                 accelY -= currentAccel;
                 this.thrusting = true;
             }
-            if (input.isKeyDown('KeyS') || input.isKeyDown('ArrowDown') || dpDown) {
+            if (input.isKeyDown(KEYS.thrustBack) || (KEYS.thrustBack === 'KeyS' && input.isKeyDown('ArrowDown')) || dpDown) {
                 accelY += currentAccel;
                 this.thrusting = true;
             }
-            if (input.isKeyDown('KeyA') || input.isKeyDown('ArrowLeft') || dpLeft) {
+            if (input.isKeyDown(KEYS.moveLeft) || (KEYS.moveLeft === 'KeyA' && input.isKeyDown('ArrowLeft')) || dpLeft) {
                 accelX -= currentAccel;
                 this.thrusting = true;
             }
-            if (input.isKeyDown('KeyD') || input.isKeyDown('ArrowRight') || dpRight) {
+            if (input.isKeyDown(KEYS.moveRight) || (KEYS.moveRight === 'KeyD' && input.isKeyDown('ArrowRight')) || dpRight) {
                 accelX += currentAccel;
                 this.thrusting = true;
             }
@@ -525,12 +530,12 @@ export class Player {
             }
         } else {
             // Standard thrusting along the nose angle
-            if (input.isKeyDown('KeyW') || input.isKeyDown('ArrowUp') || dpUp) {
+            if (input.isKeyDown(KEYS.thrustFwd) || (KEYS.thrustFwd === 'KeyW' && input.isKeyDown('ArrowUp')) || dpUp) {
                 accelX = Math.cos(this.angle) * currentAccel;
                 accelY = Math.sin(this.angle) * currentAccel;
                 this.thrusting = true;
             }
-            if (input.isKeyDown('KeyS') || input.isKeyDown('ArrowDown') || dpDown) {
+            if (input.isKeyDown(KEYS.thrustBack) || (KEYS.thrustBack === 'KeyS' && input.isKeyDown('ArrowDown')) || dpDown) {
                 accelX = -Math.cos(this.angle) * currentAccel * 0.5;
                 accelY = -Math.sin(this.angle) * currentAccel * 0.5;
                 this.thrusting = true;
@@ -582,8 +587,8 @@ export class Player {
             }
         }
 
-        const boostJustPressed = input.isKeyJustPressed('Space') || input.isTriggerJustPressed('left');
-        const boostDown        = input.isKeyDown('Space')        || input.isTriggerDown('left');
+        const boostJustPressed = input.isKeyJustPressed(KEYS.boost) || input.isTriggerJustPressed('left');
+        const boostDown        = input.isKeyDown(KEYS.boost)        || input.isTriggerDown('left');
 
         if (this.hasTeleport) {
             if (boostJustPressed && this.boostCooldownTimer <= 0 && !this.isWarping) {
@@ -835,9 +840,12 @@ export class Player {
         }
 
         // --- Shield ---
-        const isShiftDown = input.isKeyDown('ShiftLeft') || input.isKeyDown('ShiftRight');
+        // Right-shift stays a free alternate only while the key binding sits
+        // on its L-shift default.
+        const isShieldKeyDown = input.isKeyDown(KEYS.shield)
+            || (KEYS.shield === 'ShiftLeft' && input.isKeyDown('ShiftRight'));
         const isBumperDown = input.isGamepadDown(GP.LB) || input.isGamepadDown(GP.RB);
-        const wantShield = (input.isMouseDown(2) || isShiftDown || isBumperDown) && !this.shieldBroken && this.shieldEnergy > 0;
+        const wantShield = (input.isMouseDown(MOUSE.shield) || isShieldKeyDown || isBumperDown) && !this.shieldBroken && this.shieldEnergy > 0;
 
         // Sound: Shield activation
         if (wantShield && !this.shielding) {
@@ -891,7 +899,7 @@ export class Player {
         // --- Shooting (left mouse) ---
         this.shootTimer = Math.max(0, this.shootTimer - dt);
 
-        const shootDown = input.isMouseDown(0) || input.isKeyDown('KeyI') || input.isTriggerDown('right');
+        const shootDown = input.isMouseDown(MOUSE.shoot) || input.isKeyDown(KEYS.shoot) || input.isTriggerDown('right');
 
         if (this.hasRailgun) {
             const isShooting = shootDown;

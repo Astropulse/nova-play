@@ -4,6 +4,8 @@ import { TutorialState } from './tutorialState.js';
 import { MultiplayerState } from './multiplayerState.js';
 import { AchievementsState } from './achievementsState.js';
 import { UpgradesState } from './upgradesState.js';
+import { SettingsState } from './settingsState.js';
+import { KEYS, MOUSE, keyLabel, mouseLabel } from '../engine/controlBindings.js';
 import { ACHIEVEMENTS } from '../data/achievements.js';
 import { UPGRADES } from '../data/upgrades.js';
 import { GP } from '../engine/inputManager.js';
@@ -45,6 +47,7 @@ export class MenuState {
         this.achievementsBtn = { x: 0, y: 0, w: 0, h: 0, hovered: false };
         this.multiplayerBtn = { x: 0, y: 0, w: 0, h: 0, hovered: false };
         this.upgradesBtn = { x: 0, y: 0, w: 0, h: 0, hovered: false };
+        this.settingsBtn = { x: 0, y: 0, w: 0, h: 0, hovered: false };
 
         // Track last hover state for click sound
         this.lastHovered = { left: false, right: false, start: false, tutorial: false, mDec: false, mInc: false, sDec: false, sInc: false };
@@ -112,7 +115,8 @@ export class MenuState {
                 this._isInside(mouse, this.sfxDecBtn) || this._isInside(mouse, this.sfxIncBtn) ||
                 this._isInside(mouse, this.wordmarkBtn) ||
                 this._isInside(mouse, this.achievementsBtn) ||
-                this._isInside(mouse, this.upgradesBtn)) {
+                this._isInside(mouse, this.upgradesBtn) ||
+                this._isInside(mouse, this.settingsBtn)) {
                 this.game.sounds.play('click', 1.0);
             }
         };
@@ -175,6 +179,7 @@ export class MenuState {
             { id: 'achievements', rect: this.achievementsBtn },
             { id: 'multiplayer',  rect: this.multiplayerBtn },
             { id: 'upgrades',     rect: this.upgradesBtn },
+            { id: 'settings',     rect: this.settingsBtn },
         ];
         if (this.focusIndex >= focusables.length) this.focusIndex = 0;
 
@@ -245,6 +250,7 @@ export class MenuState {
         this.achievementsBtn.hovered = this._isInside(mouse, this.achievementsBtn);
         this.multiplayerBtn.hovered = this._isInside(mouse, this.multiplayerBtn);
         this.upgradesBtn.hovered = this._isInside(mouse, this.upgradesBtn);
+        this.settingsBtn.hovered = this._isInside(mouse, this.settingsBtn);
 
         // Hover sounds - literal "play once on hover start" logic
         if (this.leftArrowBtn.hovered && !this.lastHovered.left) {
@@ -321,6 +327,11 @@ export class MenuState {
             if (this.upgradesBtn.hovered) {
                 this.game.input.consumeMouseButton(0);
                 this.game.setState(new UpgradesState(this.game));
+                return;
+            }
+            if (this.settingsBtn.hovered) {
+                this.game.input.consumeMouseButton(0);
+                this.game.setState(new SettingsState(this.game));
                 return;
             }
         }
@@ -403,6 +414,9 @@ export class MenuState {
                 case 'upgrades':
                     this.game.setState(new UpgradesState(this.game));
                     return 'transition';
+                case 'settings':
+                    this.game.setState(new SettingsState(this.game));
+                    return 'transition';
                 case 'sfxDec':   this.game.sounds.setSfxVolume(this.game.sounds.sfxVolume - 0.1); break;
                 case 'sfxInc':   this.game.sounds.setSfxVolume(this.game.sounds.sfxVolume + 0.1); break;
                 case 'musicDec': this.game.sounds.setMusicVolume(this.game.sounds.musicVolume - 0.1); break;
@@ -469,6 +483,7 @@ export class MenuState {
             this.achievementsBtn.hovered = id === 'achievements';
             this.multiplayerBtn.hovered = id === 'multiplayer';
             this.upgradesBtn.hovered = id === 'upgrades';
+            this.settingsBtn.hovered = id === 'settings';
         }
     }
 
@@ -642,6 +657,12 @@ export class MenuState {
         this.multiplayerBtn.y = this.upgradesBtn.y + this.upgradesBtn.h + Math.floor(game.uiScale * 4);
         this.multiplayerBtn.w = labelW;
         this.multiplayerBtn.h = Math.floor(game.uiScale * 12);
+
+        // Settings text button — stacked under multiplayer.
+        this.settingsBtn.x = cw - marginTR - labelW;
+        this.settingsBtn.y = this.multiplayerBtn.y + this.multiplayerBtn.h + Math.floor(game.uiScale * 4);
+        this.settingsBtn.w = labelW;
+        this.settingsBtn.h = Math.floor(game.uiScale * 12);
     }
 
     draw(ctx) {
@@ -816,6 +837,15 @@ export class MenuState {
             ctx.fillText('MULTIPLAYER ►', btn.x + btn.w, btn.y + Math.floor(game.uiScale * 8));
         }
 
+        // Settings text button — stacked under multiplayer.
+        {
+            const btn = this.settingsBtn;
+            ctx.font = `${8 * game.uiScale}px Astro5x`;
+            ctx.textAlign = 'right';
+            ctx.fillStyle = btn.hovered ? '#ffffff' : '#44ddff';
+            ctx.fillText('SETTINGS ►', btn.x + btn.w, btn.y + Math.floor(game.uiScale * 8));
+        }
+
         this._drawControls(ctx);
         this._drawVolumeControls(ctx);
 
@@ -916,6 +946,9 @@ export class MenuState {
 
     _drawControls(ctx) {
         const game = this.game;
+        // Touch devices play with the on-screen sticks/buttons — a keyboard/
+        // mouse (or pad) binding list on the title screen is just noise.
+        if (game.touchMode) return;
         const uiScale = game.uiScale;
         const margin = Math.floor(uiScale * 12);
         const x = margin;
@@ -931,12 +964,14 @@ export class MenuState {
             { key: 'Y',        desc: 'USE ITEM' },
             { key: 'START',    desc: 'PAUSE / INVENTORY' }
         ] : [
-            { key: 'W/S', desc: 'FORWARDS / BACK' },
-            { key: 'J/L', desc: 'ROTATE CCW / CW' },
-            { key: 'SPACE', desc: 'BOOST/TELEPORT' },
-            { key: 'L-MB/I', desc: 'SHOOT' },
-            { key: 'R-MB/SHIFT', desc: 'SHIELD' },
-            { key: 'E', desc: 'INTERACT' },
+            // Keyboard/mouse labels come from the live bindings so a rebind
+            // (settings → CONTROLS) shows here immediately.
+            { key: `${keyLabel(KEYS.thrustFwd)}/${keyLabel(KEYS.thrustBack)}`, desc: 'FORWARDS / BACK' },
+            { key: `${keyLabel(KEYS.rotateCCW)}/${keyLabel(KEYS.rotateCW)}`, desc: 'ROTATE CCW / CW' },
+            { key: keyLabel(KEYS.boost), desc: 'BOOST/TELEPORT' },
+            { key: `${mouseLabel(MOUSE.shoot)}/${keyLabel(KEYS.shoot)}`, desc: 'SHOOT' },
+            { key: `${mouseLabel(MOUSE.shield)}/${keyLabel(KEYS.shield)}`, desc: 'SHIELD' },
+            { key: keyLabel(KEYS.interact), desc: 'INTERACT' },
             { key: 'ESC', desc: 'PAUSE / INVENTORY' }
         ];
 

@@ -37,6 +37,9 @@ import { Dragon, DRAGON_STATE, HEAD_DEFS } from '../entities/dragon.js';
 import { MenuState } from './menuState.js';
 import { AchievementsState } from './achievementsState.js';
 import { UpgradesState } from './upgradesState.js';
+import { SettingsState } from './settingsState.js';
+import { SETTINGS } from '../engine/settings.js';
+import { KEYS, keyLabel } from '../engine/controlBindings.js';
 import { ACHIEVEMENTS } from '../data/achievements.js';
 import { FloatingText } from '../entities/floatingText.js';
 import { MUSIC_STATE } from '../engine/soundManager.js';
@@ -455,7 +458,8 @@ export class PlayingState {
             shipSelection: { x: 0, y: 0, w: 0, h: 0, hovered: false },
             claimLevels: { x: 0, y: 0, w: 0, h: 0, hovered: false },
             achievements: { x: 0, y: 0, w: 0, h: 0, hovered: false },
-            upgrades: { x: 0, y: 0, w: 0, h: 0, hovered: false }
+            upgrades: { x: 0, y: 0, w: 0, h: 0, hovered: false },
+            settings: { x: 0, y: 0, w: 0, h: 0, hovered: false }
         };
         this.confirmRestart = false;
         this.confirmRestartButtons = {
@@ -1014,15 +1018,7 @@ export class PlayingState {
             // Heal button: consume the FIRST Small Battery in cargo, scanning
             // left-to-right then top-to-bottom (grid order).
             if (!modal && this.game.input.touch.consumeHealTap()) {
-                const inv = p.inventory;
-                let firstBattery = null;
-                for (let y = 0; y < inv.rows && !firstBattery; y++) {
-                    for (let x = 0; x < inv.cols; x++) {
-                        const e = inv.getItemAt(x, y);
-                        if (e && e.item.id === 'small_battery') { firstBattery = e; break; }
-                    }
-                }
-                if (firstBattery) this._tryUseConsumable(firstBattery, inv);
+                this._useFirstBattery();
             }
         }
 
@@ -1243,7 +1239,7 @@ export class PlayingState {
             if (!p || p.dead || lp.paused) continue; // in-modal pilots handled elsewhere
             const interact = lp.padIndex != null
                 ? im.padButtonJustPressed(lp.padIndex, GP.X)
-                : im.isKeyJustPressed('KeyE');
+                : im.isKeyJustPressed(KEYS.interact);
             if (!interact) continue;
 
             const nearEncounter = this.encounters.find(enc => {
@@ -1831,7 +1827,7 @@ export class PlayingState {
             if (im.padButtonJustPressed(pad, GP.B)) close = true;
         } else {
             ui.cursorX = im.mouseScreenX; ui.cursorY = im.mouseScreenY;
-            if (im.isKeyJustPressed('KeyE') || im.isKeyJustPressed('Escape')) close = true;
+            if (im.isKeyJustPressed(KEYS.interact) || im.isKeyJustPressed('Escape')) close = true;
         }
         if (close) {
             if (lp.shop) this._closeCoopShop(lp);
@@ -2036,6 +2032,14 @@ export class PlayingState {
                            || gpInput.isGamepadJustPressed(GP.B);
         const gpInteract    = gpInput.isGamepadJustPressed(GP.X);
 
+        // Q (rebindable) / controller Y — use the first Small Battery, the
+        // same action as the touch heal button. Y is free in flight and
+        // already means "use item" in the inventory UIs.
+        if (!this.paused
+            && (gpInput.isKeyJustPressed(KEYS.heal) || gpInput.isGamepadJustPressed(GP.Y))) {
+            this._useFirstBattery();
+        }
+
         // The single global pause menu is single-player only. In local co-op each
         // pilot pauses independently (handled in _updateCoopPause).
         const coop = !mp && this.localPlayers.length > 1;
@@ -2089,7 +2093,7 @@ export class PlayingState {
             }
         }
 
-        const interactTriggered = this.game.input.isKeyJustPressed('KeyE') || gpInteract;
+        const interactTriggered = this.game.input.isKeyJustPressed(KEYS.interact) || gpInteract;
         if (interactTriggered && !(mp && this.chatUI.active)) {
             if (nearEncounter) {
                 // Prioritize encounter interaction
@@ -4751,7 +4755,7 @@ export class PlayingState {
         // Close keys — same set the shop uses.
         const input = this.game.input;
         const closePressed =
-            input.isKeyJustPressed('KeyE') ||
+            input.isKeyJustPressed(KEYS.interact) ||
             input.isKeyJustPressed('Escape') ||
             input.isGamepadJustPressed(GP.B) ||
             input.isGamepadJustPressed(GP.BACK) ||
@@ -5807,6 +5811,12 @@ export class PlayingState {
     _spawnSparks(x, y, count = 6, opts = {}) {
         const _spk = this.sparks.length;
         if (_spk > 350) return; // hard cap so spam fire can't pile up
+        // Reduced-particles setting: every burst spawns half as many streaks
+        // and the pile-up ceiling drops, so heavy combat stays cheap.
+        if (SETTINGS.reducedParticles) {
+            if (_spk > 150) return;
+            count = Math.max(1, count >> 1);
+        }
         // Particle LOD: thin auxiliary sparks once the field is already busy, so a
         // chaotic wave doesn't keep spawning hundreds of streaks per frame. Below
         // ~120 live sparks (normal play / light combat) this never triggers, so
@@ -7827,7 +7837,14 @@ export class PlayingState {
         const rarity = item.rarityLabel || (item.rarity || 'common').toUpperCase();
         let desc = item.description || '';
         if (this.game.input.isGamepadActive()) {
-            desc = desc.replace(/Right-click in cargo/gi, 'Press Y in cargo');
+            desc = desc.replace(/Right-click in cargo/gi, 'Press Y in cargo')
+                       .replace(/\bQ in flight/g, 'Y in flight');
+        } else if (this.game.input.isTouchActive()) {
+            desc = desc.replace(/Right-click in cargo/gi, 'Hold in cargo')
+                       .replace(/\bQ in flight/g, 'HEAL button in flight');
+        } else {
+            // Keep the hint accurate after a rebind of the heal key.
+            desc = desc.replace(/\bQ in flight/g, keyLabel(KEYS.heal) + ' in flight');
         }
 
         const maxWidth = 120 * uiScale;
@@ -8490,6 +8507,20 @@ export class PlayingState {
         return false;
     }
 
+    // Uses the first Small Battery in cargo, scanning left-to-right then
+    // top-to-bottom. Shared by the touch heal button and the Q / pad-Y hotkey.
+    _useFirstBattery() {
+        const inv = this.player.inventory;
+        if (!inv) return false;
+        for (let y = 0; y < inv.rows; y++) {
+            for (let x = 0; x < inv.cols; x++) {
+                const e = inv.getItemAt(x, y);
+                if (e && e.item.id === 'small_battery') return this._tryUseConsumable(e, inv);
+            }
+        }
+        return false;
+    }
+
     // Fires only on the paths that actually consumed the item — a shop_map
     // or locator that failed to find a target stays in cargo and doesn't count.
     _notifyConsumableUsed(id) {
@@ -8903,7 +8934,7 @@ export class PlayingState {
         // Co-op closes via the per-pilot driver (_updateCoopModal).
         const input = this.game.input;
         const closePressed = !this._coopInv && (
-            input.isKeyJustPressed('KeyE') ||
+            input.isKeyJustPressed(KEYS.interact) ||
             input.isKeyJustPressed('Escape') ||
             input.isGamepadJustPressed(GP.B) ||
             input.isGamepadJustPressed(GP.X) ||
@@ -9117,7 +9148,7 @@ export class PlayingState {
         // Co-op closes via the per-pilot driver (_updateCoopModal) so the right
         // pilot's pad/key closes the right pilot's shop.
         const closePressed = !this._coopInv && (
-            input.isKeyJustPressed('KeyE') ||
+            input.isKeyJustPressed(KEYS.interact) ||
             input.isKeyJustPressed('Escape') ||
             input.isGamepadJustPressed(GP.B) ||
             input.isGamepadJustPressed(GP.BACK) ||
@@ -9202,6 +9233,13 @@ export class PlayingState {
         this.pauseButtons.upgrades.w = achW;
         this.pauseButtons.upgrades.h = Math.floor(uiScale * 12);
 
+        // Settings — stacked under upgrades.
+        this.pauseButtons.settings.x = cw - achMargin - achW;
+        this.pauseButtons.settings.y = this.pauseButtons.upgrades.y
+            + this.pauseButtons.upgrades.h + Math.floor(uiScale * 4);
+        this.pauseButtons.settings.w = achW;
+        this.pauseButtons.settings.h = Math.floor(uiScale * 12);
+
         if (this.confirmRestart) {
             this.confirmRestartButtons.yes = {
                 x: Math.floor(cw / 2 - 40 * uiScale), y: ch / 2 + 20 * uiScale,
@@ -9257,6 +9295,10 @@ export class PlayingState {
             addBtn('upgrades', this.pauseButtons.upgrades, () => {
                 this.game.sounds.play('click', 1.0);
                 this.game.setState(new UpgradesState(this.game, this));
+            });
+            addBtn('settings', this.pauseButtons.settings, () => {
+                this.game.sounds.play('click', 1.0);
+                this.game.setState(new SettingsState(this.game, this));
             });
             if (this.levelUpQueue.length > 0 && this.pauseButtons.claimLevels.w > 0) {
                 addBtn('claimLevels', this.pauseButtons.claimLevels, () => {
@@ -9328,6 +9370,12 @@ export class PlayingState {
                     this.game.setState(new UpgradesState(this.game, this));
                     return;
                 }
+                if (pb.settings.hovered) {
+                    this.game.input.consumeMouseButton(0);
+                    this.game.sounds.play('click', 1.0);
+                    this.game.setState(new SettingsState(this.game, this));
+                    return;
+                }
             }
 
             if (pb.musicDec.hovered) this.game.sounds.setMusicVolume(this.game.sounds.musicVolume - 0.1);
@@ -9397,7 +9445,7 @@ export class PlayingState {
         ctx.font = `${10 * uiScale}px Astro5x`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'bottom';
-        ctx.fillText(isPad ? 'X' : 'E', sx, sy - 60 * ws);
+        ctx.fillText(isPad ? 'X' : keyLabel(KEYS.interact), sx, sy - 60 * ws);
         ctx.restore();
     }
 
@@ -10704,6 +10752,11 @@ export class PlayingState {
             ctx.font = `${8 * uiScale}px Astro5x`;
             ctx.fillStyle = ub.hovered ? '#ffffff' : '#44ddff';
             ctx.fillText('UPGRADES ►', ub.x + ub.w, ub.y + Math.floor(uiScale * 8));
+
+            // Settings text button — stacked under upgrades.
+            const sb = this.pauseButtons.settings;
+            ctx.fillStyle = sb.hovered ? '#ffffff' : '#44ddff';
+            ctx.fillText('SETTINGS ►', sb.x + sb.w, sb.y + Math.floor(uiScale * 8));
         } else {
             ctx.fillStyle = 'rgba(0,0,0,0.85)';
             ctx.fillRect(0, 0, cw, ch);

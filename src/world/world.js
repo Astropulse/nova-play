@@ -4,6 +4,12 @@
 // gameplay RNG infrastructure so the starfield and the run seed use one
 // implementation.
 import { mulberry32 } from '../engine/rng.js';
+import { SETTINGS } from '../engine/settings.js';
+
+// Baseline cull under the reduced-particles setting: hide half the ordinary
+// stars (pre-shuffled list, so it's a uniform random subset). Combined with
+// the dragon's story cull via max(), so neither undercuts the other.
+const REDUCED_PARTICLES_STAR_CULL = 0.5;
 
 export class World {
     constructor(game, seed = 42) {
@@ -550,6 +556,11 @@ export class World {
         gl.uniform1f(this.locs.u_time, worldTime);
         gl.uniform1f(this.locs.u_twinkle, 0.65);
 
+        // Effective ordinary-star cull: story cull (dragon) OR the settings
+        // baseline, whichever hides more. Rare objects are never culled.
+        const effStarCull = Math.max(this.starCull,
+            SETTINGS.reducedParticles ? REDUCED_PARTICLES_STAR_CULL : 0);
+
         for (const layer of this.layers) {
             const layerAlpha = layer.alpha * (0.95 + 0.05 * Math.sin(worldTime * (1 + layer.parallax * 2)));
             gl.uniform1f(this.locs.u_parallax, layer.parallax);
@@ -591,8 +602,8 @@ export class World {
                     gl.uniform2f(this.locs.u_streakOffset, svx * offsetMult, svy * offsetMult);
 
                     // starCull hides the tail of the (pre-shuffled) star list.
-                    const instCount = (batch.cullable && this.starCull > 0)
-                        ? Math.max(0, Math.round(batch.count * (1 - this.starCull)))
+                    const instCount = (batch.cullable && effStarCull > 0)
+                        ? Math.max(0, Math.round(batch.count * (1 - effStarCull)))
                         : batch.count;
                     if (instCount <= 0) continue;
                     for (let k = -rangeX; k <= rangeX; k++) {

@@ -8,6 +8,7 @@
 
 import { UPGRADES, RARITY_COLORS, makeItem } from '../data/upgrades.js';
 import { GP } from '../engine/inputManager.js';
+import { KEYS, keyLabel } from '../engine/controlBindings.js';
 
 const TAG_COLORS = {
     scrap: '#ffff44',
@@ -777,7 +778,13 @@ export class EncounterDialog {
         const rarity = (upg.rarityLabel || upg.rarity).toUpperCase();
         let desc = upg.description;
         if (gamepadActive) {
-            desc = desc.replace(/Right-click in cargo/gi, 'Press Y in cargo');
+            desc = desc.replace(/Right-click in cargo/gi, 'Press Y in cargo')
+                       .replace(/\bQ in flight/g, 'Y in flight');
+        } else if (this.game.input.isTouchActive()) {
+            desc = desc.replace(/Right-click in cargo/gi, 'Hold in cargo')
+                       .replace(/\bQ in flight/g, 'HEAL button in flight');
+        } else {
+            desc = desc.replace(/\bQ in flight/g, keyLabel(KEYS.heal) + ' in flight');
         }
 
         const maxWidth = 120 * uiScale;

@@ -29,6 +29,7 @@
 // hardware pad poll and before the just-pressed diffs — the same window the
 // gamepad virtual cursor uses — so synthesized edges register the same frame.
 import { GP } from './inputManager.js';
+import { touchAnchor } from './controlBindings.js';
 
 const TAP_MAX_SECONDS = 0.3;   // press shorter than this …
 const LONG_PRESS_SECONDS = 0.5;
@@ -158,28 +159,38 @@ export class TouchControls {
     }
 
     // ── Geometry (backing-store pixels, recomputed on demand) ──────────────
+    // Anchor positions come from controlBindings.touchAnchor() — the player's
+    // saved layout (SettingsState's touch editor) or the shipped defaults.
+    // Sizes stay fixed; only the anchors move.
     _layout() {
         const w = this.canvas.width, h = this.canvas.height;
         const u = Math.min(w, h);
+        const at = (id) => {
+            const p = touchAnchor(id);
+            return { x: w * p.x, y: h * p.y };
+        };
+        const shieldToggle = at('shieldToggle');
+        const pause = at('pause');
+        const heal = at('heal');
+        const shield = at('shield');
+        const interact = at('interact');
         return {
             w, h, u,
             stickMax: u * 0.13,          // full deflection radius
             tapDist: u * 0.035,          // movement below this can still be a tap
             // Shield TOGGLE button near the left stick (boost lives on the
             // left-zone tap; the right-side hold-to-shield is OR'd with this)
-            shieldToggle: { x: w * 0.27, y: h * 0.60, r: u * 0.085 },
-            pause: { x: w * 0.73, y: h * 0.60, r: u * 0.065 },
-            // Heal (use first Small Battery) — below/left of pause, clear of
-            // the right stick's resting arc. Shown only while a battery is held.
-            heal: { x: w * 0.64, y: h * 0.74, r: u * 0.065 },
-            // Hold-to-shield — above the right stick's resting arc (the left
-            // zone's tap-toggle stays; the two are OR'd)
-            shield: { x: w * 0.87, y: h * 0.48, r: u * 0.075 },
-            // Contextual interact button — right side, above the pause button
-            interact: { x: w * 0.76, y: h * 0.32, hw: u * 0.22, hh: u * 0.06 },
+            shieldToggle: { x: shieldToggle.x, y: shieldToggle.y, r: u * 0.085 },
+            pause: { x: pause.x, y: pause.y, r: u * 0.065 },
+            // Heal (use first Small Battery) — shown only while a battery is held.
+            heal: { x: heal.x, y: heal.y, r: u * 0.065 },
+            // Hold-to-shield (the left zone's tap-toggle stays; the two are OR'd)
+            shield: { x: shield.x, y: shield.y, r: u * 0.075 },
+            // Contextual interact button (center-anchored rect)
+            interact: { x: interact.x, y: interact.y, hw: u * 0.22, hh: u * 0.06 },
             // Resting-position hints for the floating sticks
-            lHome: { x: w * 0.14, y: h * 0.74 },
-            rHome: { x: w * 0.86, y: h * 0.74 },
+            lHome: at('lHome'),
+            rHome: at('rHome'),
         };
     }
 

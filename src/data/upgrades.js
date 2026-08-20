@@ -16,7 +16,7 @@ export const UPGRADES = [
     {
         id: 'small_battery',
         name: 'Small Battery',
-        description: 'Restores 20% health. Consumed on use (Right-click in cargo).',
+        description: 'Restores 20% health. Consumed on use (Right-click in cargo, Q in flight).',
         assetKey: 'small_battery_1x1',
         width: 1,
         height: 1,
@@ -27,7 +27,7 @@ export const UPGRADES = [
             stat: 'heal',
             base: 0.20,
             legendary: 8.00,
-            descTemplate: 'Restores {bonus} health. Consumed on use (Right-click in cargo).'
+            descTemplate: 'Restores {bonus} health. Consumed on use (Right-click in cargo, Q in flight).'
         }
     },
     {

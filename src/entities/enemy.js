@@ -1,6 +1,6 @@
 // Scaling is now dynamic via game properties
 import { Projectile } from './projectile.js';
-import { Scrap, Rubble, ItemPickup, ProceduralDebris, VoronoiSlicer, ExpOrb, resolveSpawnOverlap, getCachedShatter } from './asteroid.js';
+import { Scrap, Rubble, ItemPickup, ProceduralDebris, VoronoiSlicer, ExpOrb, resolveSpawnOverlap, debrisShatter } from './asteroid.js';
 import { UPGRADES, isUpgradeUnlocked } from '../data/upgrades.js';
 import { Starcore } from './starcore.js';
 import { AsteroidCrusher } from './asteroidCrusher.js';
@@ -1118,8 +1118,9 @@ export class Enemy {
         if (!this.img || !this.img.width) return [];
 
         // ~13 organic shards for enemies (layout cached per sprite so kills
-        // don't re-slice mid-combat; trajectories stay per-death random)
-        const shards = getCachedShatter(this.img, this.spriteKey, 13);
+        // don't re-slice mid-combat; trajectories stay per-death random).
+        // Cosmetic only — settings-aware so fracture/particle toggles thin it.
+        const shards = debrisShatter(this.img, this.spriteKey, 13);
         const debris = [];
 
         for (const shard of shards) {
@@ -2828,7 +2829,8 @@ export class HostileEncounter extends Enemy {
         const img = this.game.assets.get(this.spriteKey);
 
         if (img) {
-            const fragments = getCachedShatter(img, this.spriteKey, 100);
+            // Debris only (scrap rolls separately below) — settings-aware.
+            const fragments = debrisShatter(img, this.spriteKey, 100);
             for (const frag of fragments) {
                 const rotAngle = this.angle + Math.PI / 2;
                 const cosA = Math.cos(rotAngle);

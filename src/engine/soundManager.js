@@ -1,3 +1,5 @@
+import { SETTINGS } from './settings.js';
+
 export const MUSIC_STATE = {
     EXPLORATION: 'exploration',
     COMBAT: 'combat',
@@ -597,7 +599,10 @@ export class SoundManager {
     // early tiers are barely-there.
     setAudioCorruption(amount) {
         if (!this.ctx || !this._busDry) return;
-        const a = Math.min(1, Math.max(0, amount));
+        // Settings dial: 0 = the buses stay clean regardless of what the
+        // kill-streak/dread systems ask for. Callers fire every frame, so a
+        // mid-session settings change takes effect immediately.
+        const a = Math.min(1, Math.max(0, amount)) * SETTINGS.audioDistortion;
         if (Math.abs(a - this._corruption) < 0.01) return;
         this._corruption = a;
         const t = this.ctx.currentTime;
@@ -645,7 +650,9 @@ export class SoundManager {
     // dry, just... wrong.
     setDreadWarble(amount) {
         if (!this.ctx || !this._warbleDry) return;
-        const a = Math.min(1, Math.max(0, amount));
+        // Same settings dial as setAudioCorruption — dread warble is the other
+        // "the audio itself is wrong" effect.
+        const a = Math.min(1, Math.max(0, amount)) * SETTINGS.audioDistortion;
         if (Math.abs(a - this._warbleAmt) < 0.01) return;
         this._warbleAmt = a;
         const t = this.ctx.currentTime;

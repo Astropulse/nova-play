@@ -231,12 +231,15 @@ export class ScreenFX {
     //       flow?: {x, y, dirX, dirY, strength},          — boost space-bend
     //       collapse?: {x, y, r, strength} }              — teleport implosion
     // — the pass is skipped entirely when everything is (effectively) zero.
-    render(fx, time) {
+    // `intensity` (0..1, the settings distortion dial) scales every knob at
+    // uniform-upload time so caller descriptors are never mutated.
+    render(fx, time, intensity = 1) {
         if (this._failed) return;
-        const crt = fx.crt || 0, warp = fx.warp || 0;
-        const ripple = fx.ripple && fx.ripple.strength > 0.004 ? fx.ripple : null;
-        const flow = fx.flow && fx.flow.strength > 0.004 ? fx.flow : null;
-        const collapse = fx.collapse && fx.collapse.strength > 0.004 ? fx.collapse : null;
+        this._intensity = intensity;
+        const crt = (fx.crt || 0) * intensity, warp = (fx.warp || 0) * intensity;
+        const ripple = fx.ripple && fx.ripple.strength * intensity > 0.004 ? fx.ripple : null;
+        const flow = fx.flow && fx.flow.strength * intensity > 0.004 ? fx.flow : null;
+        const collapse = fx.collapse && fx.collapse.strength * intensity > 0.004 ? fx.collapse : null;
         if (crt <= 0.004 && warp <= 0.004 && !ripple && !flow && !collapse) {
             if (this._active) {
                 this.canvas.style.display = 'none';
@@ -275,10 +278,11 @@ export class ScreenFX {
 
         gl.uniform2f(this._uRes, src.width, src.height);
         gl.uniform1f(this._uTime, time);
-        // Whole canvas = one "pane".
+        // Whole canvas = one "pane". _setEffectUniforms applies the intensity
+        // scale itself, so hand it the raw descriptor.
         gl.uniform2f(this._uPaneOrigin, 0, 0);
         gl.uniform2f(this._uPaneSize, src.width, src.height);
-        this._setEffectUniforms({ crt, warp, ripple, flow, collapse }, src.height);
+        this._setEffectUniforms(fx, src.height);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
 
@@ -288,12 +292,13 @@ export class ScreenFX {
     // ripple/teleport are positioned by that pilot's own camera. All panes are
     // drawn whenever ANY effect is active so the overlay covers the whole screen.
     // panes: [{ rect:{x,y,w,h}(canvas px, top-down), crt, warp, ripple?, flow?, collapse? }]
-    renderPanes(panes, time) {
+    renderPanes(panes, time, intensity = 1) {
         if (this._failed) return;
-        const isOn = (p) => (p.crt || 0) > 0.004 || (p.warp || 0) > 0.004
-            || (p.ripple && p.ripple.strength > 0.004)
-            || (p.flow && p.flow.strength > 0.004)
-            || (p.collapse && p.collapse.strength > 0.004);
+        this._intensity = intensity;
+        const isOn = (p) => ((p.crt || 0) * intensity) > 0.004 || ((p.warp || 0) * intensity) > 0.004
+            || (p.ripple && p.ripple.strength * intensity > 0.004)
+            || (p.flow && p.flow.strength * intensity > 0.004)
+            || (p.collapse && p.collapse.strength * intensity > 0.004);
         const any = panes.some(isOn);
         if (!any) {
             if (this._active) { this.canvas.style.display = 'none'; this._active = false; }
@@ -338,15 +343,18 @@ export class ScreenFX {
 
     // Uploads the per-effect uniforms (crt/warp/ripple/flow/collapse). Positions
     // are flipped from top-down canvas coords to gl bottom-up using canvasH.
+    // Every strength is scaled by this._intensity (the settings distortion
+    // dial) here, so callers never mutate their fx descriptors.
     _setEffectUniforms(fx, canvasH) {
         const gl = this.gl;
-        const ripple = fx.ripple && fx.ripple.strength > 0.004 ? fx.ripple : null;
-        const flow = fx.flow && fx.flow.strength > 0.004 ? fx.flow : null;
-        const collapse = fx.collapse && fx.collapse.strength > 0.004 ? fx.collapse : null;
-        gl.uniform1f(this._uCrt, Math.min(1, fx.crt || 0));
-        gl.uniform1f(this._uWarp, Math.min(1, fx.warp || 0));
+        const k = this._intensity !== undefined ? this._intensity : 1;
+        const ripple = fx.ripple && fx.ripple.strength * k > 0.004 ? fx.ripple : null;
+        const flow = fx.flow && fx.flow.strength * k > 0.004 ? fx.flow : null;
+        const collapse = fx.collapse && fx.collapse.strength * k > 0.004 ? fx.collapse : null;
+        gl.uniform1f(this._uCrt, Math.min(1, (fx.crt || 0) * k));
+        gl.uniform1f(this._uWarp, Math.min(1, (fx.warp || 0) * k));
         if (ripple) {
-            gl.uniform4f(this._uRipple, ripple.x, canvasH - ripple.y, ripple.r, ripple.strength);
+            gl.uniform4f(this._uRipple, ripple.x, canvasH - ripple.y, ripple.r, ripple.strength * k);
             gl.uniform2f(this._uRippleCenter, ripple.cx, canvasH - ripple.cy);
             gl.uniform1f(this._uRippleT, ripple.t);
         } else {
@@ -354,13 +362,13 @@ export class ScreenFX {
         }
         if (flow) {
             gl.uniform4f(this._uFlow, flow.x, canvasH - flow.y,
-                flow.dirX * flow.strength, -flow.dirY * flow.strength);
+                flow.dirX * flow.strength * k, -flow.dirY * flow.strength * k);
         } else {
             gl.uniform4f(this._uFlow, 0, 0, 0, 0);
         }
         if (collapse) {
             gl.uniform4f(this._uCollapse, collapse.x, canvasH - collapse.y,
-                collapse.r, collapse.strength);
+                collapse.r, collapse.strength * k);
             gl.uniform1f(this._uCollapseAb, collapse.ab !== undefined ? collapse.ab : 1);
         } else {
             gl.uniform4f(this._uCollapse, 0, 0, 1, 0);
