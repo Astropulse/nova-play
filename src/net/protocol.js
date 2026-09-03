@@ -113,6 +113,7 @@ export const PF = {
     BOOSTING: 8,
     DEAD: 16,
     CURSED: 32,   // ancient curse trail
+    CLOAKED: 64,  // gravity-distortion cloak (drawn translucent)
 };
 
 // Enemy class ids for SPAWN_ENEMY

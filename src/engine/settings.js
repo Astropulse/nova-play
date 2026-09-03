@@ -22,6 +22,14 @@ export const SETTINGS_DEFAULTS = Object.freeze({
     // shield ripples, boost/teleport space-bending). 0 = pass never runs.
     visualDistortion: 1.0,
 
+    // Whether the ScreenFX post-pass runs at all:
+    //   'on'   — always (default). Ignores the adaptive self-disable latch
+    //            and low-perf mode, so effects never quietly stop mid-run.
+    //   'auto' — the adaptive behavior: weak hardware may latch it off
+    //            (nova_screenfx_off / nova_lowperf).
+    //   'off'  — never.
+    screenFx: 'on',
+
     // Voronoi fracture systems: chip-damage cell layouts (asteroids, hive,
     // idols) and full-count cosmetic death shatters. Off = no chip erosion,
     // deaths break into a few chunks instead of a full shard cloud.
@@ -36,6 +44,11 @@ export const SETTINGS_DEFAULTS = Object.freeze({
     reducedParticles: false,
 });
 
+// Allowed values for string-valued settings (validated on load/set).
+export const SETTINGS_OPTIONS = Object.freeze({
+    screenFx: ['on', 'auto', 'off'],
+});
+
 const STORAGE_KEY = 'nova_settings';
 
 // The live settings bag. Mutate only through setSetting/resetSettings so
@@ -45,6 +58,10 @@ export const SETTINGS = { ...SETTINGS_DEFAULTS };
 function _clamp(key, value) {
     if (typeof SETTINGS_DEFAULTS[key] === 'number') {
         return Math.min(1, Math.max(0, Math.round(value * 10) / 10));
+    }
+    if (typeof SETTINGS_DEFAULTS[key] === 'string') {
+        const opts = SETTINGS_OPTIONS[key];
+        return (opts && opts.includes(value)) ? value : SETTINGS_DEFAULTS[key];
     }
     return !!value;
 }
@@ -69,7 +86,8 @@ export function saveSettings() {
 }
 
 // Set one key (unknown keys are ignored; numbers clamp to 0..1 in 0.1 steps,
-// booleans coerce) and persist immediately. Returns the stored value.
+// booleans coerce, strings must be in SETTINGS_OPTIONS or fall back to the
+// default) and persist immediately. Returns the stored value.
 export function setSetting(key, value) {
     if (!(key in SETTINGS_DEFAULTS)) return undefined;
     SETTINGS[key] = _clamp(key, value);

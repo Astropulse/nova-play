@@ -42,7 +42,11 @@ const allBossProgress = (m) => {
     if (dragonDone(m)) n++;
     return n / (ALL_BOSS_IDS.length + 1);
 };
+// The core four — the combine-ladder gate (Cross-Platform) and Hangar Tour
+// stay pinned to these so adding ships never retroactively raises them.
 const SHIP_IDS = ['fighter', 'cruiser', 'bruiser', 'looper'];
+// Encounter dialogs opened across all runs (every type summed).
+const _encountersMet = (m) => Object.values(m.lifetime.encounterTypes || {}).reduce((a, b) => a + b, 0);
 
 export const ACHIEVEMENTS = [
     // ── Combat: lifetime milestones ─────────────────────────────────────────
@@ -1591,6 +1595,101 @@ export const ACHIEVEMENTS = [
         unlock: { type: 'ship', id: 'looper' },
         check: (m) => !!m.lifetime.shipsUsed['looper'] || m.lifetime.dodgesPerformed >= 50,
         progress: (m) => m.lifetime.shipsUsed['looper'] ? 1 : m.lifetime.dodgesPerformed / 50
+    },
+    {
+        id: 'unlock_vanisher',
+        name: 'Ghost',
+        description: 'Perform 200 boost dodges across all runs.',
+        goal: '200 boost dodges',
+        flavor: 'They keep missing. Time to stop being there at all.',
+        icon: 'vanisher_still',
+        unlock: { type: 'ship', id: 'vanisher' },
+        check: (m) => !!m.lifetime.shipsUsed['vanisher'] || m.lifetime.dodgesPerformed >= 200,
+        progress: (m) => m.lifetime.shipsUsed['vanisher'] ? 1 : m.lifetime.dodgesPerformed / 200
+    },
+    {
+        id: 'unlock_blaster',
+        name: 'Gun Platform',
+        description: 'Destroy 1500 enemy ships across all runs.',
+        goal: 'Destroy 1500 ships',
+        flavor: 'You have the aim. Here is something with more barrels.',
+        icon: 'blaster_still',
+        unlock: { type: 'ship', id: 'blaster' },
+        check: (m) => !!m.lifetime.shipsUsed['blaster'] || m.lifetime.enemiesKilled >= 1500,
+        progress: (m) => m.lifetime.shipsUsed['blaster'] ? 1 : m.lifetime.enemiesKilled / 1500
+    },
+
+    // ── Upgrade gates: the Vanisher/Blaster batch + the legendary trio ──────
+    // Same rules as the gates above: icon = the upgrade's own sprite, every
+    // entry defines `goal`, objective themed to the item.
+    {
+        id: 'unlock_gravity_distortion',
+        name: 'Now You See Me',
+        description: 'Survive 20 minutes in a single run as the Vanisher.',
+        goal: 'Survive 20 min as Vanisher',
+        flavor: 'Twenty minutes of not being there. The trick is portable now.',
+        icon: 'gravity_distortion_2x2',
+        unlock: { type: 'upgrade', id: 'gravity_distortion' },
+        check: (m) => (m.lifetime.peakRunTimeByShip['vanisher'] || 0) >= 1200,
+        progress: (m) => (m.lifetime.peakRunTimeByShip['vanisher'] || 0) / 1200
+    },
+    {
+        id: 'unlock_crossed_wiring',
+        name: 'Broadside',
+        description: 'Reach level 20 in a single run as the Blaster.',
+        goal: 'Level 20 as Blaster',
+        flavor: 'Sideways stopped feeling wrong. Bottle that.',
+        icon: 'crossed_wiring_2x2',
+        unlock: { type: 'upgrade', id: 'crossed_wiring' },
+        check: (m) => (m.lifetime.peakLevelByShip['blaster'] || 0) >= 20,
+        progress: (m) => (m.lifetime.peakLevelByShip['blaster'] || 0) / 20
+    },
+    {
+        id: 'unlock_bomb_fabricator',
+        name: 'Scorched Trail',
+        description: 'Travel 500,000 units across all runs.',
+        goal: 'Travel 500,000 units',
+        flavor: 'You cover a lot of ground. Start leaving something behind.',
+        icon: 'bomb_fabricator_2x2',
+        unlock: { type: 'upgrade', id: 'bomb_fabricator' },
+        check: (m) => m.lifetime.distanceTraveled + m.run.distanceTraveled >= 500000,
+        progress: (m) => (m.lifetime.distanceTraveled + m.run.distanceTraveled) / 500000
+    },
+    {
+        id: 'unlock_communications_array',
+        name: 'Open Channel',
+        description: 'Talk to 75 ships across all runs.',
+        goal: 'Talk to 75 ships',
+        flavor: 'Word gets around. Now they come looking for you.',
+        icon: 'communications_array_2x2',
+        unlock: { type: 'upgrade', id: 'communications_array' },
+        check: (m) => _encountersMet(m) >= 75,
+        progress: (m) => _encountersMet(m) / 75
+    },
+    {
+        id: 'unlock_probability_manipulator',
+        name: 'House Edge',
+        description: 'Open 100 space caches across all runs.',
+        goal: 'Open 100 caches',
+        flavor: 'A hundred pulls teaches you the odds. This one rewrites them.',
+        icon: 'probability_manipulator_2x1',
+        unlock: { type: 'upgrade', id: 'probability_manipulator' },
+        check: (m) => m.lifetime.cachesOpened >= 100,
+        progress: (m) => m.lifetime.cachesOpened / 100
+    },
+    {
+        // The Carcosa tribute always drops one regardless of this gate (the
+        // drop in bones.js is the intended first source); the gate governs
+        // shop / cache / encounter stock afterwards.
+        id: 'unlock_experience_reshaper',
+        name: 'Second Draft',
+        description: 'Rebuild the starfield of bones. Its tribute carries the first one.',
+        goal: 'Defeat Carcosa',
+        flavor: 'The city was rebuilt from nothing. So can you be.',
+        icon: 'experience_reshaper_2x2',
+        unlock: { type: 'upgrade', id: 'experience_reshaper' },
+        check: (m) => !!m.lifetime.bossesDefeated['Carcosa'],
+        progress: (m) => m.lifetime.bossesDefeated['Carcosa'] ? 1 : 0
     },
 
     // ── Unlocks: combine tiers ──────────────────────────────────────────────

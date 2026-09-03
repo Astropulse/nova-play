@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NOVA — trailer capture</title>
+    <!-- Same base-pinning trick as scripts/perf/stress.html: the game fetches
+         assets relative to the document base, so pin it to the repo root. -->
+    <base href="/">
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    <!-- Boot the real game exactly as index.html does, then the director. -->
+    <script type="module" src="/src/main.js"></script>
+    <script type="module" src="/scripts/trailer/director.js"></script>
+</body>
+</html>

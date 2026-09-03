@@ -31,6 +31,15 @@ export const GP = {
 
 const STICK_DEADZONE = 0.18;
 const TRIGGER_THRESHOLD = 0.35;
+// Trigger hold hysteresis: a trigger counts as held once it passes
+// TRIGGER_THRESHOLD and stays held until it drops below TRIGGER_RELEASE.
+// isTriggerDown / isTriggerJustPressed (and the per-pad variants) all read
+// this ONE tracked state, so a hold-to-use action can never see the edge fire
+// and the hold fail on the next frame. (The old just-pressed used the pad's
+// button boolean, which trips at a light ~0.12 pull on XInput while the hold
+// needed 0.35 — a slow squeeze started the cloak and dropped it a frame later.)
+const TRIGGER_RELEASE = 0.2;
+const _mkTrig = () => ({ held: false, prev: false, frame: -1 });
 
 export class InputManager {
     constructor(canvas) {
@@ -69,6 +78,13 @@ export class InputManager {
         this.rightTrigger = 0;
         this._gpButtons = new Array(16).fill(false);
         this._gpButtonsPrev = new Array(16).fill(false);
+        // Trigger hold/edge state for the mirrored "active pad" fields (see
+        // _trigState). Points at the primary pad's own state objects while a
+        // pad is connected, else at this pad-less pair (touch injects into the
+        // top-level trigger values with no pad present).
+        this._noPadTrig = { left: _mkTrig(), right: _mkTrig() };
+        this._trig = this._noPadTrig;
+        this._frame = 0;
         // Per-pad state: index → { connected, lx,ly,rx,ry, lt,rt, buttons[16], prev[16] }
         this._pads = [];
 
@@ -180,7 +196,8 @@ export class InputManager {
             let pad = this._pads[pi];
             if (!pad) {
                 pad = { connected: false, lx: 0, ly: 0, rx: 0, ry: 0, lt: 0, rt: 0,
-                        buttons: new Array(16).fill(false), prev: new Array(16).fill(false) };
+                        buttons: new Array(16).fill(false), prev: new Array(16).fill(false),
+                        trig: { left: _mkTrig(), right: _mkTrig() } };
                 this._pads[pi] = pad;
             }
             if (!p || !p.connected) {
@@ -217,11 +234,13 @@ export class InputManager {
             this.rightStickX = pad.rx; this.rightStickY = pad.ry;
             this.leftTrigger = pad.lt; this.rightTrigger = pad.rt;
             for (let i = 0; i < 16; i++) this._gpButtons[i] = pad.buttons[i];
+            this._trig = pad.trig;
         } else {
             this.leftStickX = 0; this.leftStickY = 0;
             this.rightStickX = 0; this.rightStickY = 0;
             this.leftTrigger = 0; this.rightTrigger = 0;
             for (let i = 0; i < 16; i++) this._gpButtons[i] = false;
+            this._trig = this._noPadTrig;
         }
 
         if (anyActivity) this.lastInputDevice = 'gamepad';
@@ -241,12 +260,14 @@ export class InputManager {
                 lx: this.leftStickX, ly: this.leftStickY, rx: this.rightStickX, ry: this.rightStickY,
                 lt: this.leftTrigger, rt: this.rightTrigger,
                 btns: this._gpButtons.slice(), prev: this._gpButtonsPrev.slice(),
+                trig: this._trig,
             };
         }
         this.leftStickX = pad.lx; this.leftStickY = pad.ly;
         this.rightStickX = pad.rx; this.rightStickY = pad.ry;
         this.leftTrigger = pad.lt; this.rightTrigger = pad.rt;
         for (let k = 0; k < 16; k++) { this._gpButtons[k] = pad.buttons[k]; this._gpButtonsPrev[k] = pad.prev[k]; }
+        this._trig = pad.trig; // that pad's own trigger hold/edge state
         return true;
     }
     restoreActivePad() {
@@ -255,6 +276,7 @@ export class InputManager {
         this.leftStickX = s.lx; this.leftStickY = s.ly; this.rightStickX = s.rx; this.rightStickY = s.ry;
         this.leftTrigger = s.lt; this.rightTrigger = s.rt;
         for (let k = 0; k < 16; k++) { this._gpButtons[k] = s.btns[k]; this._gpButtonsPrev[k] = s.prev[k]; }
+        this._trig = s.trig;
         this._savedActivePad = null;
     }
 
@@ -269,10 +291,15 @@ export class InputManager {
     padButtonDown(i, btn) { const p = this._pads[i]; return !!(p && p.buttons[btn]); }
     padButtonJustPressed(i, btn) { const p = this._pads[i]; return !!(p && p.buttons[btn] && !p.prev[btn]); }
     padTrigger(i, side) { const p = this._pads[i]; if (!p) return 0; return side === 'left' ? p.lt : p.rt; }
-    padTriggerDown(i, side) { return this.padTrigger(i, side) >= TRIGGER_THRESHOLD; }
+    padTriggerDown(i, side) {
+        const p = this._pads[i];
+        return !!(p && this._trigState(p.trig[side], side === 'left' ? p.lt : p.rt).held);
+    }
     padTriggerJustPressed(i, side) {
-        const idx = side === 'left' ? GP.LT : GP.RT;
-        return this.padButtonJustPressed(i, idx);
+        const p = this._pads[i];
+        if (!p) return false;
+        const t = this._trigState(p.trig[side], side === 'left' ? p.lt : p.rt);
+        return t.held && !t.prev;
     }
 
     // Called by UI consumers (inventory / pause / cache / shop) to let the
@@ -388,6 +415,7 @@ export class InputManager {
 
         // Poll hardware gamepad state so everything downstream sees the
         // latest values.
+        this._frame++;
         this._pollGamepad();
 
         // Virtual cursor is updated before the "just pressed" diffs so that
@@ -432,16 +460,25 @@ export class InputManager {
     // Gamepad accessors — consumers may also read the public fields directly.
     isGamepadDown(btn) { return !!this._gpButtons[btn]; }
     isGamepadJustPressed(btn) { return !!this._gpButtons[btn] && !this._gpButtonsPrev[btn]; }
+    // Advances a trigger's hold state once per frame (lazily, on first read —
+    // touch injects its trigger values AFTER _pollGamepad, so evaluating at
+    // read time sees the injected value) and returns it. Hysteresis: press at
+    // TRIGGER_THRESHOLD, release below TRIGGER_RELEASE. `held`/`prev` feed
+    // both the down and the just-pressed accessors from the same source.
+    _trigState(t, v) {
+        if (t.frame !== this._frame) {
+            t.frame = this._frame;
+            t.prev = t.held;
+            t.held = t.held ? v >= TRIGGER_RELEASE : v >= TRIGGER_THRESHOLD;
+        }
+        return t;
+    }
     isTriggerDown(side) {
-        const v = side === 'left' ? this.leftTrigger : this.rightTrigger;
-        return v >= TRIGGER_THRESHOLD;
+        return this._trigState(this._trig[side], side === 'left' ? this.leftTrigger : this.rightTrigger).held;
     }
     isTriggerJustPressed(side) {
-        const v = side === 'left' ? this.leftTrigger : this.rightTrigger;
-        // Edge: was-below → now-above. We approximate by using the button
-        // boolean which is what _gpButtons[GP.LT|RT] tracks.
-        const idx = side === 'left' ? GP.LT : GP.RT;
-        return !!this._gpButtons[idx] && !this._gpButtonsPrev[idx];
+        const t = this._trigState(this._trig[side], side === 'left' ? this.leftTrigger : this.rightTrigger);
+        return t.held && !t.prev;
     }
 
     consumeMouseButton(button) {

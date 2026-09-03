@@ -1,0 +1,184 @@
+{
+  "src": "2026-08-27_10-23-12.mp4",
+  "out": "nova-trailer-cut.mp4",
+  "cuts": [
+    {
+      "type": "black",
+      "dur": 1.6,
+      "note": "VO: Good morning, pilot. This is Dispatch."
+    },
+    {
+      "label": "station",
+      "in": 5.0,
+      "dur": 6.5,
+      "vfadeIn": 0.6,
+      "note": "calm glide past the domed station \u00c2\u00b7 VO: route is charted / dark is quiet / kind"
+    },
+    {
+      "label": "salvage",
+      "in": 32.5,
+      "dur": 3.7,
+      "note": "asteroids drift by \u00c2\u00b7 VO: Standard contract. Salvage."
+    },
+    {
+      "label": "survey",
+      "in": 480.5,
+      "dur": 3.5,
+      "note": "station flyby \u00c2\u00b7 VO: Survey."
+    },
+    {
+      "label": "selfdef",
+      "in": 1103.0,
+      "dur": 4.0,
+      "note": "small red skirmish \u00c2\u00b7 VO: Self-defense."
+    },
+    {
+      "label": "generous",
+      "in": 50.0,
+      "dur": 4.5,
+      "note": "gliding the rock field \u00c2\u00b7 VO: dead worlds are generous, take everything"
+    },
+    {
+      "label": "learn",
+      "in": 88.6,
+      "dur": 2.8,
+      "note": "LEVEL UP choice dialog \u00c2\u00b7 VO: Learn."
+    },
+    {
+      "label": "bargain",
+      "in": 102.5,
+      "dur": 2.8,
+      "note": "encounter portrait dialog \u00c2\u00b7 VO: Bargain."
+    },
+    {
+      "label": "arm1",
+      "in": 1526.0,
+      "dur": 3.0,
+      "note": "orange ship fight \u00c2\u00b7 VO: Arm yourself."
+    },
+    {
+      "label": "arm2",
+      "in": 1845.0,
+      "dur": 3.0,
+      "note": "red ships, more guns \u00c2\u00b7 VO: Past regulation."
+    },
+    {
+      "label": "arm3",
+      "in": 2400.0,
+      "dur": 3.5,
+      "note": "swarm-stream fight \u00c2\u00b7 VO: ...Past reason."
+    },
+    {
+      "label": "death",
+      "in": 4503.0,
+      "dur": 5.3,
+      "note": "final seconds -> death at +2.7 -> stats screen \u00c2\u00b7 VO: If you die out there- [CUT]"
+    },
+    {
+      "label": "comeback",
+      "in": 56.5,
+      "dur": 3.5,
+      "note": "flying again, nebula \u00c2\u00b7 VO: -come back. They always do."
+    },
+    {
+      "label": "omen",
+      "in": 1812.0,
+      "dur": 5.5,
+      "note": "the coiled sleeper orbit \u00c2\u00b7 VO: Do you hear it... I hear it every night"
+    },
+    {
+      "label": "wheels",
+      "in": 4462.5,
+      "dur": 3.2,
+      "note": "red fire-rings burst \u00c2\u00b7 VO: They'll send wheels of fire."
+    },
+    {
+      "label": "seraph",
+      "in": 3160.5,
+      "dur": 4.0,
+      "note": "the Seraph + golden beam \u00c2\u00b7 VO: They'll send an angel."
+    },
+    {
+      "label": "swarm",
+      "in": 4080.0,
+      "dur": 3.5,
+      "note": "locust mass \u00c2\u00b7 VO: They'll send the swarm. I've HEARD the swarm."
+    },
+    {
+      "label": "raised",
+      "in": 4322.0,
+      "dur": 3.5,
+      "note": "risen armada horde \u00c2\u00b7 VO: They'll raise the dead. ...They raised mine."
+    },
+    {
+      "label": "kingcomes",
+      "in": 3030.0,
+      "dur": 4.5,
+      "note": "the gold king hunts the player \u00c2\u00b7 VO: when NOTHING comes home... they'll send the King in Yellow-"
+    },
+    {
+      "label": "kingface",
+      "in": 2990.3,
+      "dur": 3.0,
+      "note": "the robed figure dialog, screen darkens \u00c2\u00b7 VO: -to ask the little spark its name."
+    },
+    {
+      "type": "black",
+      "dur": 1.0,
+      "note": "silence"
+    },
+    {
+      "label": "answer1",
+      "in": 4445.8,
+      "dur": 4.0,
+      "note": "orange beams + brawl \u00c2\u00b7 VO: Answer it."
+    },
+    {
+      "label": "answer2",
+      "in": 4453.2,
+      "dur": 3.0,
+      "note": "crossing beams + yellow flood \u00c2\u00b7 no VO"
+    },
+    {
+      "label": "answer3",
+      "in": 4493.4,
+      "dur": 4.0,
+      "note": "red spiral rings, max chaos \u00c2\u00b7 VO: ANSWER IT!"
+    },
+    {
+      "label": "seeshim",
+      "in": 3058.0,
+      "dur": 3.2,
+      "note": "the king floats silent in the dark \u00c2\u00b7 VO: Do you see him? He sees you. He's been on the line this whole time."
+    },
+    {
+      "label": "others",
+      "in": 1708.5,
+      "dur": 3.5,
+      "note": "drifting wreck field \u00c2\u00b7 VO: This is where the others went."
+    },
+    {
+      "label": "dontname",
+      "in": 3054.6,
+      "dur": 3.2,
+      "note": "reality tears: purple grid + beams around the king \u00c2\u00b7 VO: Don't. Don't give it your name."
+    },
+    {
+      "label": "whiteout",
+      "in": 3064.0,
+      "dur": 7.8,
+      "note": "stats fade up, world whites out, tableau revealed \u00c2\u00b7 breathing only"
+    },
+    {
+      "type": "black",
+      "dur": 1.4
+    },
+    {
+      "type": "card",
+      "image": "scripts/trailer/spot/title_t6_0.png",
+      "dur": 8.0,
+      "fadeIn": 1.2,
+      "note": "VO: advice / bring friends / seven heads / good luck, pilot"
+    }
+  ]
+}

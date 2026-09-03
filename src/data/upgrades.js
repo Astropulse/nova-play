@@ -593,6 +593,94 @@ export const UPGRADES = [
         }
     },
     {
+        id: 'gravity_distortion',
+        name: 'Gravity Distortion',
+        description: 'Boost becomes a 3 second cloak: untouchable while held. Stacks extend it.',
+        assetKey: 'gravity_distortion_2x2',
+        width: 2,
+        height: 2,
+        cost: 90,
+        rarity: 'rare',
+        combine: {
+            stat: 'cloakDuration',
+            base: 3.0,
+            legendary: 8.0,
+            format: 'number',
+            descTemplate: 'Boost becomes a {bonus} second cloak: untouchable while held. Stacks extend it.'
+        }
+    },
+    {
+        id: 'crossed_wiring',
+        name: 'Crossed Wiring',
+        description: 'Wing cannons fire 1 shot broadside from each side instead of forward. Stacks add shots.',
+        assetKey: 'crossed_wiring_2x2',
+        width: 2,
+        height: 2,
+        cost: 80,
+        rarity: 'rare',
+        combine: {
+            stat: 'crossShots',
+            base: 1,
+            legendary: 4,
+            format: 'int',
+            descTemplate: 'Wing cannons fire {bonus} shot(s) broadside from each side instead of forward. Stacks add shots.'
+        }
+    },
+    {
+        id: 'bomb_fabricator',
+        name: 'Bomb Fabricator',
+        description: 'Leaves a bomb behind every 500 units traveled. Bombs detonate on enemy or asteroid contact.',
+        assetKey: 'bomb_fabricator_2x2',
+        width: 2,
+        height: 2,
+        cost: 80,
+        rarity: 'rare',
+        combine: {
+            stat: 'bombInterval',
+            base: 500,
+            legendary: 150,
+            format: 'int',
+            descTemplate: 'Leaves a bomb behind every {bonus} units traveled. Bombs detonate on enemy or asteroid contact.'
+        }
+    },
+    {
+        id: 'communications_array',
+        name: 'Communications Array',
+        description: 'Encounters happen 30% more often.',
+        assetKey: 'communications_array_2x2',
+        width: 2,
+        height: 2,
+        cost: 70,
+        rarity: 'rare',
+        combine: {
+            stat: 'encounterFreq',
+            base: 0.30,
+            legendary: 1.00,
+            descTemplate: 'Encounters happen {bonus} more often.'
+        }
+    },
+    {
+        id: 'probability_manipulator',
+        name: 'Probability Manipulator',
+        description: 'Increases luck by 100%.',
+        assetKey: 'probability_manipulator_2x1',
+        width: 2,
+        height: 1,
+        cost: 200,
+        rarity: 'legendary'
+    },
+    {
+        id: 'experience_reshaper',
+        name: 'Experience Reshaper',
+        description: 'Resets every level-up choice and refunds all spent skips so you can pick them all again. Consumed on use (Right-click in cargo).',
+        assetKey: 'experience_reshaper_2x2',
+        width: 2,
+        height: 2,
+        cost: 250,
+        rarity: 'legendary',
+        consumable: true
+    },
+    {
         id: 'cosmos_engine',
         name: 'Cosmos Engine',
         description: 'A divine engine. Boosts HP, shield, speed, fire rate, and damage by 10%, and luck by 20%. Emits a guiding glow.',

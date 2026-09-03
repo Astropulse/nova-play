@@ -147,6 +147,7 @@ export class RemotePlayer {
         this.isBoosting = !!(flags & PF.BOOSTING);
         this.isDead = !!(flags & PF.DEAD);
         this.hasAncientCurse = !!(flags & PF.CURSED);
+        this.isCloaked = !!(flags & PF.CLOAKED);
         this.healthFrac = healthFrac;
         this.shieldFrac = shieldFrac;
         this.level = level;
@@ -250,6 +251,8 @@ export class RemotePlayer {
                 playerColor(this.pid), this.worldX, this.worldY, this.angle);
 
             ctx.save();
+            // Cloaked pilots read as a faint ghost, same as their own view.
+            if (this.isCloaked) ctx.globalAlpha = 0.2;
             ctx.translate(screen.x, screen.y);
             ctx.rotate(this.angle + Math.PI / 2);
             ctx.drawImage(img, -w / 2, -h / 2, w, h);

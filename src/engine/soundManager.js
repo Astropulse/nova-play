@@ -935,8 +935,121 @@ export class SoundManager {
         source.start(0);
     }
 
+    // ── Gravity Distortion phase hum ────────────────────────────────────────
+    // A held tone for the cloak: two detuned saws through a resonant lowpass
+    // plus a bandpassed noise bed, under one gain with a slow tremolo so a
+    // long hold never sits static. setPhaseHum(progress) opens both filters
+    // and lifts the pitch over the hold so the tension climbs; stopPhaseHum
+    // fades it out and fires the release sweep. Routed through the fx bus so
+    // it picks up the same corruption/duck shaping as every other effect.
+    startPhaseHum() {
+        if (!this.ctx) return;
+        this.stopPhaseHum(false);
+        if (this.ctx.state === 'suspended') this.ctx.resume();
+        const ctx = this.ctx;
+        const t = ctx.currentTime;
+        const dest = this._fxBus || ctx.destination;
+
+        const out = ctx.createGain();
+        out.gain.setValueAtTime(0, t);
+        out.gain.linearRampToValueAtTime(0.16 * this.sfxVolume, t + 0.12);
+
+        const lp = ctx.createBiquadFilter();
+        lp.type = 'lowpass';
+        lp.frequency.setValueAtTime(420, t);
+        lp.Q.value = 6;
+        const oscA = ctx.createOscillator();
+        oscA.type = 'sawtooth';
+        oscA.frequency.setValueAtTime(58, t);
+        const oscB = ctx.createOscillator();
+        oscB.type = 'sawtooth';
+        oscB.frequency.setValueAtTime(58 * 1.007, t);
+        const oscG = ctx.createGain();
+        oscG.gain.value = 0.5;
+        oscA.connect(oscG);
+        oscB.connect(oscG);
+        oscG.connect(lp);
+        lp.connect(out);
+
+        const sr = ctx.sampleRate;
+        const buf = ctx.createBuffer(1, sr, sr);
+        const d = buf.getChannelData(0);
+        for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+        const noise = ctx.createBufferSource();
+        noise.buffer = buf;
+        noise.loop = true;
+        const bp = ctx.createBiquadFilter();
+        bp.type = 'bandpass';
+        bp.frequency.setValueAtTime(900, t);
+        bp.Q.value = 1.2;
+        const nG = ctx.createGain();
+        nG.gain.value = 0.35;
+        noise.connect(bp);
+        bp.connect(nG);
+        nG.connect(out);
+
+        const lfo = ctx.createOscillator();
+        lfo.frequency.value = 7;
+        const lfoG = ctx.createGain();
+        lfoG.gain.value = 0.03 * this.sfxVolume;
+        lfo.connect(lfoG);
+        lfoG.connect(out.gain);
+
+        out.connect(dest);
+        oscA.start(t); oscB.start(t); noise.start(t); lfo.start(t);
+        this._phaseHum = { out, lp, bp, oscA, oscB, noise, lfo };
+    }
+
+    setPhaseHum(progress) {
+        const h = this._phaseHum;
+        if (!h || !this.ctx) return;
+        const p = Math.min(1, Math.max(0, progress));
+        const t = this.ctx.currentTime;
+        h.lp.frequency.setTargetAtTime(420 + 1900 * p, t, 0.05);
+        h.bp.frequency.setTargetAtTime(900 + 2200 * p, t, 0.05);
+        const f = 58 * (1 + 0.6 * p);
+        h.oscA.frequency.setTargetAtTime(f, t, 0.05);
+        h.oscB.frequency.setTargetAtTime(f * 1.007, t, 0.05);
+    }
+
+    stopPhaseHum(release = true) {
+        const h = this._phaseHum;
+        if (!h || !this.ctx) return;
+        this._phaseHum = null;
+        const t = this.ctx.currentTime;
+        h.out.gain.cancelScheduledValues(t);
+        h.out.gain.setValueAtTime(h.out.gain.value, t);
+        h.out.gain.linearRampToValueAtTime(0, t + 0.14);
+        const stopAt = t + 0.16;
+        for (const s of [h.oscA, h.oscB, h.noise, h.lfo]) {
+            try { s.stop(stopAt); } catch (e) { /* already stopped */ }
+        }
+        setTimeout(() => { try { h.out.disconnect(); } catch (e) { /* gone */ } }, 400);
+        if (release) this._playPhaseRelease();
+    }
+
+    // Release: a fast downward sweep — space snapping back into place.
+    _playPhaseRelease() {
+        if (!this.ctx) return;
+        const ctx = this.ctx;
+        const t = ctx.currentTime;
+        const osc = ctx.createOscillator();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(1100, t);
+        osc.frequency.exponentialRampToValueAtTime(90, t + 0.32);
+        const g = ctx.createGain();
+        g.gain.setValueAtTime(0.22 * this.sfxVolume, t);
+        g.gain.exponentialRampToValueAtTime(0.001, t + 0.34);
+        osc.connect(g);
+        g.connect(this._fxBus || ctx.destination);
+        osc.start(t);
+        osc.stop(t + 0.36);
+        osc.onended = () => { try { osc.disconnect(); g.disconnect(); } catch (e) { /* gone */ } };
+    }
+
     destroy() {
         this._destroyed = true;
+        this.stopPhaseHum(false);
         this.stopMusic();
         if (this.ctx) {
             this.ctx.close().catch(err => console.error('Failed to close AudioContext:', err));

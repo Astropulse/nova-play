@@ -23,6 +23,8 @@ const NULL_INPUT = {
 };
 
 export class Player {
+    static CLOAK_ATTACK = 0.12; // seconds for the phase to snap in
+
     constructor(game, shipData) {
         this.game = game;
         this.shipData = shipData;
@@ -159,9 +161,37 @@ export class Player {
         // Luck stat — affects Space Cache roll quality and extra-roll chance
         // 1.0 = baseline, >1 = luckier rolls, <1 = worse rolls
         this.luck = 1.0;
+        // Item-based encounter frequency multiplier (Communications Array).
+        // Rebuilt from cargo in PlayingState._onInventoryChanged; compounds
+        // with the level-up Encounter Rate stat (lvlEncounterFreqMult).
+        this.encounterFreqMult = 1.0;
 
         // Warp — smooth timed blink (replaces boost for looper/blink engine)
         this.hasTeleport = shipData.special === 'teleport';
+        // Gravity Distortion cloak (Vanisher base ability / item). Boost
+        // becomes hold-to-cloak: untouchable while held, for up to
+        // cloakDuration × lvlBoostDurationMult, then a cooldown. Rebuilt from
+        // cargo in PlayingState._onInventoryChanged; see _updateCloak.
+        this.hasCloak = shipData.special === 'cloak';
+        this.cloakDuration = this.hasCloak ? 3.0 : 0;
+        this.cloakCooldown = 4.0;
+        this.isCloaked = false;
+        this.cloakTimer = 0;      // seconds held this activation
+        this.cloakFade = 0;       // 1→0 after release: distortion/alpha ease-out
+        this._cloakReleaseStr = 0;   // distortion strength captured at release (fade starts here)
+        this._cloakReleaseAlpha = 1; // hull alpha captured at release (fade returns to 1 from here)
+        this._cloakEnvFrom = 0;      // attack envelope floor when re-engaging over a live fade
+        // Crossed Wiring broadside (Blaster base ability / item): the wing
+        // cannons fire perpendicular to the hull, crossShots per side.
+        this.hasCrossedWiring = shipData.special === 'crossfire';
+        this.crossShots = this.hasCrossedWiring ? 1 : 0;
+        // Bomb Fabricator: a bomb every bombInterval units of travel
+        // (PlayingState._updateAutoWeapons tracks the distance).
+        this.hasBombFabricator = false;
+        this.bombInterval = 500;
+        this._bombDist = 0;
+        this._bombPrevX = null;
+        this._bombPrevY = null;
         this.teleportDuration = 0.2; // s
         this.warpDuration = 0.2;
         this.teleportDistance = 700;
@@ -320,6 +350,104 @@ export class Player {
         // future rolls away from over-picked types (offense/defense/mobility/
         // utility/difficulty). Accumulates over the run.
         this.upgradeTypeCounts       = {};
+    }
+
+    // ── Gravity Distortion cloak ───────────────────────────────────────────
+    // Hold boost to vanish: no thrust, but nothing can hit the ship
+    // (PlayingState._damagePlayer bails on isCloaked) for up to cloakLimit()
+    // seconds. Releasing early or running out ends it and starts the
+    // cooldown. The space-collapse distortion (PlayingState._pilotFx) and the
+    // hull transparency (draw) both deepen the longer it's held.
+    _updateCloak(dt, boostJustPressed, boostDown) {
+        if (this.isCloaked) {
+            this.cloakTimer += dt;
+            // boostIntensity is what every other hull's boost drives: the
+            // ScreenFX space-bend (PlayingState._boostFlowLevel) and the
+            // starfield streaks (world.js). The cloak holds it open and
+            // deepens it over the hold, on top of the blink collapse.
+            this.boostIntensity = this.cloakStrength();
+            // Held tone climbs with the hold (soundManager phase hum).
+            if (this.game.sounds.setPhaseHum) this.game.sounds.setPhaseHum(this.cloakProgress());
+            if (!boostDown || this.cloakTimer >= this.cloakLimit()) this._endCloak();
+            return;
+        }
+        this.boostIntensity = this.cloakFade > 0 ? this.cloakStrength() : 0;
+        if (boostJustPressed && this.boostCooldownTimer <= 0 && !this.isWarping) {
+            // Re-engaging over a still-fading release: start the attack
+            // envelope from the strength that's still on screen (as a
+            // fraction of the 0.6 opening level) so nothing dips to zero.
+            const residual = this.cloakFade > 0 ? this.cloakFade * this._cloakReleaseStr : 0;
+            this._cloakEnvFrom = Math.min(1, residual / 0.6);
+            this.isCloaked = true;
+            this.cloakTimer = 0;
+            this.cloakFade = 0;
+            // Engage: the blink's warp crack, then the held phase hum
+            // (startPhaseHum) rides underneath until release.
+            this.game.sounds.play('teleport', { volume: 0.5, x: this.worldX, y: this.worldY });
+            if (this.game.sounds.startPhaseHum) this.game.sounds.startPhaseHum();
+            this.game.camera.shake(0.8, 20.0);
+            if (this.game.achievements) this.game.achievements.notify('cloak_used');
+        }
+    }
+
+    // Hold limit in seconds: item/ship base duration scaled by the level-up
+    // Boost Duration stat (the cloak is the boost, so it inherits it).
+    cloakLimit() {
+        return this.cloakDuration * this.lvlBoostDurationMult;
+    }
+
+    _endCloak() {
+        if (!this.isCloaked) return;
+        // Capture where the effect IS so the fade continues from there —
+        // an early release must not pulse up to a fixed level first.
+        this._cloakReleaseStr = this.cloakStrength();
+        this._cloakReleaseAlpha = this.cloakHullAlpha();
+        this.isCloaked = false;
+        this.cloakFade = 1;
+        // Disengage: the hum cuts and fires its release sweep (stopPhaseHum),
+        // under the boost thump as space snaps back.
+        if (this.game.sounds.stopPhaseHum) this.game.sounds.stopPhaseHum();
+        this.game.sounds.play('boost', { volume: 0.35, x: this.worldX, y: this.worldY });
+        this.game.camera.shake(0.5, 18.0);
+        this.boostCooldownTimer = this.cloakCooldown * this.boostCooldownMult;
+        this._boostWasOnCooldown = true;
+        if (this.game.achievements) {
+            this.game.achievements.notify('cloak_ended', { duration: this.cloakTimer });
+        }
+        this.cloakTimer = 0;
+    }
+
+    // 0..1 progress through the current hold.
+    cloakProgress() {
+        const lim = Math.max(0.01, this.cloakLimit());
+        return Math.min(1, this.cloakTimer / lim);
+    }
+
+    // Attack envelope: the phase snaps in over CLOAK_ATTACK seconds — very
+    // fast, but not a single-frame cut.
+    cloakEnv() {
+        if (!this.isCloaked) return 1;
+        const from = this._cloakEnvFrom || 0;
+        return from + (1 - from) * Math.min(1, this.cloakTimer / Player.CLOAK_ATTACK);
+    }
+
+    // Driver for the screen distortion (PlayingState._pilotFx feeds it to the
+    // same ScreenFX collapse the blink uses): ramps in over the attack, sits
+    // at blink strength and deepens over the hold, then eases out through
+    // cloakFade after release.
+    cloakStrength() {
+        if (this.isCloaked) return this.cloakEnv() * (0.6 + 0.4 * this.cloakProgress());
+        return this.cloakFade * this._cloakReleaseStr;
+    }
+
+    // Hull alpha: drops to half over the attack, down to a 10% floor at the
+    // end of the hold, then fades back in after release.
+    cloakHullAlpha() {
+        if (this.isCloaked) {
+            const target = Math.max(0.1, 0.5 - 0.4 * this.cloakProgress());
+            return 1 - this.cloakEnv() * (1 - target);
+        }
+        return 1 - (1 - this._cloakReleaseAlpha) * this.cloakFade;
     }
 
     /**
@@ -590,7 +718,16 @@ export class Player {
         const boostJustPressed = input.isKeyJustPressed(KEYS.boost) || input.isTriggerJustPressed('left');
         const boostDown        = input.isKeyDown(KEYS.boost)        || input.isTriggerDown('left');
 
-        if (this.hasTeleport) {
+        // Cloak takes the boost button over everything else (the item
+        // literally turns boost into a cloak) — teleport, boost drive and
+        // the plain impulse are all bypassed while hasCloak.
+        if (this.hasCloak) {
+            this._updateCloak(dt, boostJustPressed, boostDown);
+        } else if (this.isCloaked) {
+            this._endCloak(); // item dropped mid-cloak
+        }
+
+        if (this.hasTeleport && !this.hasCloak) {
             if (boostJustPressed && this.boostCooldownTimer <= 0 && !this.isWarping) {
                 // Record Ghost at start
                 this.teleportGhost = {
@@ -681,6 +818,8 @@ export class Player {
                     }
                 }
             }
+        } else if (this.hasCloak) {
+            // No thrust impulse — the cloak IS the boost (see _updateCloak).
         } else if (this.hasBoostDrive) {
             if (boostDown && this.boostCooldownTimer <= 0) {
                 // Play sound once when starting
@@ -745,6 +884,7 @@ export class Player {
             if (st && st._spawnReadyAbsorb) st._spawnReadyAbsorb(this);
         }
         this.boostFlash = Math.max(0, this.boostFlash - dt * 2);
+        if (this.cloakFade > 0) this.cloakFade = Math.max(0, this.cloakFade - dt * 3);
 
         if (this._teleportWasOnCooldown && this.boostCooldownTimer <= 0) {
             this.teleportFlash = 1;
@@ -951,7 +1091,34 @@ export class Player {
                 // Determine firing origins
                 const fireAngle = this.getTargetAngle(px, py);
                 const origins = [];
-                if (this.hasMultishotGuns) {
+                // Extra shots per origin: the level-up Multi-Shot stat, plus
+                // (broadside only) stacked Crossed Wiring and Multishot Guns.
+                let extraShots = this.lvlExtraProjectiles;
+                if (this.hasCrossedWiring) {
+                    // Crossed Wiring: the wing cannons each fire perpendicular
+                    // to the facing, one broadside left and one right, from
+                    // the Blaster's barrel tips. Ship sprites are 128 world
+                    // units across (source px = world units); the barrels run
+                    // out to x=16/112 on rows ~69-81, i.e. 48 units out and
+                    // 12 units aft of center. Targeting-module aim is ignored.
+                    const perpAngle = this.angle + Math.PI / 2;
+                    const offset = 48;
+                    const aft = 12;
+                    const cx = this.worldX - Math.cos(this.angle) * aft;
+                    const cy = this.worldY - Math.sin(this.angle) * aft;
+                    origins.push({
+                        px: cx + Math.cos(perpAngle) * offset,
+                        py: cy + Math.sin(perpAngle) * offset,
+                        angle: perpAngle
+                    });
+                    origins.push({
+                        px: cx - Math.cos(perpAngle) * offset,
+                        py: cy - Math.sin(perpAngle) * offset,
+                        angle: perpAngle + Math.PI
+                    });
+                    extraShots += Math.max(0, this.crossShots - 1) + (this.hasMultishotGuns ? 1 : 0);
+                    if (this.hasMultishotGuns) damageMult *= this.multishotDamageMult;
+                } else if (this.hasMultishotGuns) {
                     const perpAngle = this.angle + Math.PI / 2;
                     const offset = 15;
                     origins.push({
@@ -972,7 +1139,7 @@ export class Player {
                 if (this.hasEnergyBlaster) {
                     origins.forEach(origin => {
                         const extraCount = (this.energyBlasterCount - 1) * 2;
-                        const count = 3 + Math.floor(Math.random() * 3) + extraCount + this.lvlExtraProjectiles; // 3-5 + 2 per extra + Multi-Shot
+                        const count = 3 + Math.floor(Math.random() * 3) + extraCount + extraShots; // 3-5 + 2 per extra + Multi-Shot
                         const spreadBase = 0.5 + (this.energyBlasterCount - 1) * 0.1; // Wider with more blasters
                         const dmgReduc = Math.pow(0.85, this.energyBlasterCount - 1); // 15% reduction per extra
 
@@ -980,7 +1147,7 @@ export class Player {
                             const spread = (Math.random() - 0.5) * spreadBase;
                             const speedVar = baseProjSpeed * (0.8 + Math.random() * 0.4);
                             this.pendingProjectiles.push(
-                                new Projectile(this.game, origin.px, origin.py, fireAngle + spread, speedVar, spriteKey, this, currentBaseDamage * 0.3 * dmgReduc * damageMult)
+                                new Projectile(this.game, origin.px, origin.py, (origin.angle ?? fireAngle) + spread, speedVar, spriteKey, this, currentBaseDamage * 0.3 * dmgReduc * damageMult)
                             );
                         }
                     });
@@ -988,16 +1155,16 @@ export class Player {
                 } else {
                     origins.forEach(origin => {
                         this.pendingProjectiles.push(
-                            new Projectile(this.game, origin.px, origin.py, fireAngle, baseProjSpeed, spriteKey, this, currentBaseDamage * damageMult)
+                            new Projectile(this.game, origin.px, origin.py, origin.angle ?? fireAngle, baseProjSpeed, spriteKey, this, currentBaseDamage * damageMult)
                         );
                     });
                     // Extra projectiles from level-up — same origin, increasing spread per shot
-                    if (this.lvlExtraProjectiles > 0) {
-                        for (let ei = 0; ei < this.lvlExtraProjectiles; ei++) {
+                    if (extraShots > 0) {
+                        for (let ei = 0; ei < extraShots; ei++) {
                             const spread = (0.08 + ei * 0.06) * (Math.random() < 0.5 ? 1 : -1);
                             for (const origin of origins) {
                                 this.pendingProjectiles.push(
-                                    new Projectile(this.game, origin.px, origin.py, fireAngle + spread, baseProjSpeed, spriteKey, this, currentBaseDamage * damageMult * 0.7)
+                                    new Projectile(this.game, origin.px, origin.py, (origin.angle ?? fireAngle) + spread, baseProjSpeed, spriteKey, this, currentBaseDamage * damageMult * 0.7)
                                 );
                             }
                         }
@@ -1011,7 +1178,7 @@ export class Player {
                 // Muzzle glint at each firing origin
                 const st = this.game.currentState;
                 if (st && st._addMuzzleFlash) {
-                    for (const o of origins) st._addMuzzleFlash(o.px, o.py, fireAngle);
+                    for (const o of origins) st._addMuzzleFlash(o.px, o.py, o.angle ?? fireAngle);
                 }
             }
         }
@@ -1202,6 +1369,55 @@ export class Player {
             ctx.restore();
         }
 
+        // --- Phase ghost (Gravity Distortion cloak) ---
+        // Not a trail: a blue distortion-host riding ON the ship. Several
+        // tinted copies of the hull are drawn around the player every frame,
+        // each re-rolled per frame — random offset, size, and rotation
+        // wobble, some frames dropped — so it reads as an unstable, jittering
+        // echo of the hull rather than a smooth glow. Everything scales with
+        // cloakStrength(), so it snaps in over the attack and collapses
+        // back into the hull through the release fade. Cosmetic only (draw
+        // path), so Math.random here never touches the seeded sim.
+        if (this.isCloaked || this.cloakFade > 0.01) {
+            const str = this.cloakStrength();
+            const gAsset = this.stillImg;
+            const gSrc = gAsset.canvas || gAsset;
+            let ghostImg = this._blueGhostCache;
+            if (!ghostImg) {
+                // Pass the prescaled CANVAS (as the teleport ghost does): the
+                // tint helper sizes its canvas from what it's handed, and the
+                // wrapper's logical width would crop the hull to a corner.
+                ghostImg = this._createBlueGhost(gSrc);
+                this._blueGhostCache = ghostImg;
+            }
+            const gw = (gAsset.width || gSrc.width) * this.game.worldScale;
+            const gh = (gAsset.height || gSrc.height) * this.game.worldScale;
+            const ws = this.game.worldScale;
+            ctx.save();
+            ctx.globalCompositeOperation = 'screen';
+            const copies = 2;
+            for (let i = 0; i < copies; i++) {
+                // Flicker: each copy has a chance to simply not exist this frame.
+                if (Math.random() < 0.35) continue;
+                // Position: nudged off the hull a little further the deeper the phase.
+                const throwR = (2 + 8 * str) * ws * Math.random();
+                const throwA = Math.random() * Math.PI * 2;
+                const ox = Math.cos(throwA) * throwR;
+                const oy = Math.sin(throwA) * throwR;
+                // Size: a gentle breathe either side of true size.
+                const scale = 1 + (Math.random() - 0.5) * (0.12 + 0.18 * str);
+                // Rotation wobble: a degree or two.
+                const wob = (Math.random() - 0.5) * 0.08 * str;
+                ctx.globalAlpha = str * (0.08 + 0.18 * Math.random());
+                ctx.save();
+                ctx.translate(screen.x + ox, screen.y + oy);
+                ctx.rotate(this.angle + Math.PI / 2 + wob);
+                ctx.drawImage(ghostImg, -gw * scale / 2, -gh * scale / 2, gw * scale, gh * scale);
+                ctx.restore();
+            }
+            ctx.restore();
+        }
+
         // --- Teleport Ghost (Start point) ---
         if (this.teleportGhost) {
             const t = this.teleportGhost;
@@ -1243,6 +1459,8 @@ export class Player {
 
         // Hide ship while warping
         if (!this.isWarping) {
+            // Cloak: the hull thins out the longer it's held (10% floor).
+            if (this.isCloaked || this.cloakFade > 0) ctx.globalAlpha = this.cloakHullAlpha();
             // Blinking if invulnerable
             if (this.invulnTimer > 0) {
                 ctx.drawImage(img.canvas || img, -w / 2, -h / 2, w, h);

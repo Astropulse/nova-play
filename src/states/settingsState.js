@@ -1,6 +1,6 @@
 import { MenuState } from './menuState.js';
 import { GP } from '../engine/inputManager.js';
-import { SETTINGS, setSetting, resetSettings } from '../engine/settings.js';
+import { SETTINGS, SETTINGS_OPTIONS, setSetting, resetSettings } from '../engine/settings.js';
 import {
     KEY_ACTIONS, MOUSE_ACTIONS, TOUCH_ANCHORS,
     KEYS, MOUSE, touchAnchor,
@@ -63,6 +63,12 @@ export class SettingsState {
                 type: 'slider', key: 'visualDistortion', label: 'SCREEN DISTORTION',
                 hint: 'CRT warp, shield ripples, boost and teleport bending.',
                 dec: mkBtn(), inc: mkBtn(),
+            },
+            {
+                // Tri-state cycle button: ON / AUTO / OFF (see settings.js).
+                type: 'cycle', key: 'screenFx', label: 'SCREEN EFFECTS',
+                hint: 'ON always runs them. AUTO lets weak hardware switch them off.',
+                btn: mkBtn(),
             },
             { type: 'section', label: 'PERFORMANCE' },
             {
@@ -178,7 +184,7 @@ export class SettingsState {
                     row.dec.y = row.inc.y;
                     row.dec.w = volBtnSize.w;
                     row.dec.h = volBtnSize.h;
-                } else if (row.type === 'toggle') {
+                } else if (row.type === 'toggle' || row.type === 'cycle') {
                     const btnW = Math.floor(uiScale * 36);
                     const btnH = Math.floor(uiScale * 13);
                     row.btn.x = panelRight - btnW;
@@ -280,7 +286,7 @@ export class SettingsState {
                 if (row.type === 'slider') {
                     out.push({ id: `gen:${i}:dec`, rect: row.dec, activate: () => this._adjust(row, -1) });
                     out.push({ id: `gen:${i}:inc`, rect: row.inc, activate: () => this._adjust(row, 1) });
-                } else if (row.type === 'toggle') {
+                } else if (row.type === 'toggle' || row.type === 'cycle') {
                     out.push({ id: `gen:${i}:btn`, rect: row.btn, activate: () => this._toggle(row) });
                 }
             }
@@ -329,8 +335,15 @@ export class SettingsState {
         this.game.sounds.play('click', after === before ? 0.3 : 0.5);
     }
 
+    // Toggle rows flip; cycle rows step through their SETTINGS_OPTIONS list.
     _toggle(row) {
-        setSetting(row.key, !SETTINGS[row.key]);
+        if (row.type === 'cycle') {
+            const opts = SETTINGS_OPTIONS[row.key] || [];
+            const i = opts.indexOf(SETTINGS[row.key]);
+            if (opts.length) setSetting(row.key, opts[(i + 1) % opts.length]);
+        } else {
+            setSetting(row.key, !SETTINGS[row.key]);
+        }
         this.game.sounds.play('select', 0.6);
     }
 
@@ -678,6 +691,14 @@ export class SettingsState {
 
             if (row.type === 'slider') {
                 game.drawVolumeRow(ctx, '', SETTINGS[row.key], row.dec, row.inc);
+            } else if (row.type === 'cycle') {
+                const v = SETTINGS[row.key];
+                const b = row.btn;
+                const dim = v === 'off';
+                this._drawTextButton(ctx, b, String(v || '').toUpperCase(),
+                    b.hovered ? '#ffffff' : (dim ? '#667788' : '#44ddff'),
+                    b.hovered ? 'rgba(20, 40, 60, 0.92)' : 'rgba(10, 18, 28, 0.85)',
+                    uiScale);
             } else {
                 const on = !!SETTINGS[row.key];
                 const b = row.btn;

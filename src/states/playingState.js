@@ -237,6 +237,9 @@ export class PlayingState {
         this.LEVELUP_SKIP_MULT_STEP  = 1.8;
         this.levelUpSkipsRemaining   = this.LEVELUP_MAX_SKIPS;
         this.pendingLevelUpMult      = 1;
+        // Skips SPENT this run (bumped in LevelUpDialog._skipChoice). The
+        // Experience Reshaper refunds them; saved with the run.
+        this.levelUpSkipsUsed        = 0;
 
         // Space Caches
         this.caches = [];
@@ -1004,7 +1007,7 @@ export class PlayingState {
                 modal,
                 // Every modal UI closes on GP.B; the death screen doesn't.
                 closeButton: modal && !this.isDead && !(this.chatUI && this.chatUI.active),
-                boostToggle: !!p.hasBoostDrive && !p.hasTeleport,
+                boostToggle: !!p.hasBoostDrive && !p.hasTeleport && !p.hasCloak,
                 shieldBroken: !!p.shieldBroken,
                 healCount,
                 interact: !modal && !!(this.canInteractShop || this.canInteractEncounter
@@ -1155,6 +1158,9 @@ export class PlayingState {
             if (this.paused) {
                 this._updatePauseUI(dt);
                 uiBlocked = true;
+                // Pausing mid-phase: drop the cloak so its hum/ghosts don't
+                // hang frozen behind the menu (player.update won't run).
+                if (this.player && this.player.isCloaked) this.player._endCloak();
             }
             // The pause menu's SHIP SELECTION confirm calls setState(MenuState)
             // — in MP there's no early return below (the world keeps running
@@ -1379,10 +1385,86 @@ export class PlayingState {
         ctx.restore();
     }
 
-    // Auto-weapons (rockets / auto-turret / mechanical claw) for ONE pilot —
+    // ── Bomb Fabricator ─────────────────────────────────────────────────────
+    // A stationary Projectile (isBomb) dropped off the stern. Owner-simulated
+    // like any local shot: the projectile collision pass detonates it on
+    // asteroid / enemy / event contact (_detonateBomb), routing damage through
+    // _routeDamage so MP clients report hits to the host. Not replicated as a
+    // visual on other machines.
+    _dropBomb(p) {
+        const currentBaseDamage = (p.shipData.baseDamage * p.obedienceMult + p.permDamageBonus) * p.laserCartridgeMult;
+        const damage = currentBaseDamage * 4.0 * p.laserOverrideMult;
+        const bx = p.worldX - Math.cos(p.angle) * 22;
+        const by = p.worldY - Math.sin(p.angle) * 22;
+        const bomb = new Projectile(this.game, bx, by, p.angle, 0, 'blue_laser_ball_big', p, damage, 30.0);
+        bomb.isBomb = true;
+        bomb.friendly = true;
+        this.projectiles.push(bomb);
+        this.game.sounds.play('railgun_target', { volume: 0.3, x: bx, y: by });
+    }
+
+    // Contact detonation: area damage to everything hostile in the blast, on
+    // top of the direct hit the projectile path already dealt to whatever it
+    // touched. Once per bomb.
+    _detonateBomb(bomb) {
+        if (bomb._detonated) return;
+        bomb._detonated = true;
+        const x = bomb.worldX, y = bomb.worldY;
+        const R = 150;
+        const dmg = bomb.damage * 0.6;
+        const inBlast = (ent, r) => {
+            const dx = ent.worldX - x, dy = ent.worldY - y;
+            const reach = R + (r || 0);
+            return dx * dx + dy * dy <= reach * reach;
+        };
+        for (const en of this.enemies) {
+            if (!en.alive || !inBlast(en, en.radius)) continue;
+            if (this._routeDamage(en, dmg, en.worldX, en.worldY, bomb.owner)) {
+                this.cinematics.deathPop(en);
+                this._onEntityDestroyed(en);
+            }
+        }
+        for (const ast of this.asteroids) {
+            if (!ast.alive || !inBlast(ast, ast.radius)) continue;
+            if (this._routeDamage(ast, dmg, ast.worldX, ast.worldY, bomb.owner)) {
+                this._onEntityDestroyed(ast);
+            }
+        }
+        for (const ev of this.events) {
+            if (!ev.alive || ev.blocksProjectiles === false || !inBlast(ev, ev.radius)) continue;
+            if (this._routeDamage(ev, dmg, ev.worldX, ev.worldY, bomb.owner)) {
+                this._onEntityDestroyed(ev);
+            }
+        }
+        this._spawnExplosion(x, y, dmg);
+        this.cinematics.spawnRing(x, y, { color: '#ff8833', maxR: R, dur: 0.35, width: 4 });
+        this._spawnSparks(x, y, 22, { color: '#ffb347', speedMin: 160, speedMax: 520 });
+        this._spawnSparks(x, y, 8, { color: '#ffffff', speedMin: 200, speedMax: 600 });
+        this.game.sounds.play('ship_explode', { volume: 0.45, x, y });
+        this._triggerShakeAt(x, y, 2.5);
+    }
+
+    // Auto-weapons (rockets / auto-turret / mechanical claw / bombs) for ONE pilot —
     // fired from that pilot's position with their own per-pilot cooldown + flags.
     // Called per living pilot so every co-op pilot's items work (like MP clients).
     _updateAutoWeapons(p, dt) {
+        // Bomb Fabricator: every bombInterval units of travel drops a bomb.
+        if (p.hasBombFabricator) {
+            if (p._bombPrevX != null) {
+                const mdx = p.worldX - p._bombPrevX, mdy = p.worldY - p._bombPrevY;
+                p._bombDist += Math.sqrt(mdx * mdx + mdy * mdy);
+            }
+            p._bombPrevX = p.worldX; p._bombPrevY = p.worldY;
+            if (p._bombDist >= p.bombInterval) {
+                p._bombDist -= p.bombInterval;
+                let live = 0;
+                for (const pr of this.projectiles) if (pr.isBomb && pr.alive && pr.owner === p) live++;
+                if (live < 24) this._dropBomb(p);
+            }
+        } else {
+            p._bombPrevX = null; p._bombPrevY = null; p._bombDist = 0;
+        }
+
         // Rockets
         if (p.hasRockets) {
             p.rocketsTimer = (p.rocketsTimer || 0) - dt;
@@ -3502,6 +3584,7 @@ export class PlayingState {
                 const cr = proj.radius + ast.radius;
                 if (_projSweepHit(proj, ast.worldX, ast.worldY, cr)) {
                     proj.alive = false;
+                    if (proj.isBomb) this._detonateBomb(proj);
                     this.game.sounds.play('hit', { volume: 0.4, x: proj.worldX, y: proj.worldY });
                     this._spawnSparks(proj.worldX, proj.worldY, 5 + Math.floor(Math.random() * 4), {
                         // Fan out along the surface normal (center → impact point)
@@ -3554,6 +3637,7 @@ export class PlayingState {
                     // events without a fitted hitbox); grown by the shot radius.
                     if (ellipseSweep(ev, proj, proj.radius)) {
                         proj.alive = false;
+                        if (proj.isBomb) this._detonateBomb(proj);
                         if (this._routeDamage(ev, proj.damage, proj.worldX, proj.worldY, proj.owner)) {
                             this._onEntityDestroyed(ev);
                         } else {
@@ -3587,6 +3671,7 @@ export class PlayingState {
                     // Rotated-ellipse hull test, grown by the projectile radius.
                     if (ellipseSweep(en, proj, proj.radius)) {
                         proj.alive = false;
+                        if (proj.isBomb) this._detonateBomb(proj);
                         // Directional shield (shield enemy): absorb front-arc hits.
                         // Authoritative sim only, so clients don't mispredict the pool.
                         if ((!this.netSync || this.netSync.isHost) && en.tryBlock && en.tryBlock(proj)) {
@@ -3634,7 +3719,8 @@ export class PlayingState {
             else if (!proj.friendly && !this.isDead) {
                 for (const _lp of this.localPlayers) {
                     const pl = _lp.player;
-                    if (proj.owner === pl || pl.dead) continue;
+                    // Phased (cloak): no hitbox — shots pass straight through.
+                    if (proj.owner === pl || pl.dead || pl.isCloaked) continue;
                     const dx = proj.worldX - pl.worldX;
                     const dy = proj.worldY - pl.worldY;
                     const cr = proj.radius + pl.radius;
@@ -3678,7 +3764,8 @@ export class PlayingState {
         // Co-op: every live local pilot collides with the shared world.
         for (const _lp of this.localPlayers) {
             const pl = _lp.player;
-            if (pl.isWarping || pl.dead || this.isDead) continue;
+            // Phased (cloak): no hull to bump — rocks, rams and events pass through.
+            if (pl.isWarping || pl.dead || this.isDead || pl.isCloaked) continue;
             // Player vs Asteroids
             for (const ast of this.asteroids) {
                 if (!ast.alive) continue;
@@ -3937,7 +4024,9 @@ export class PlayingState {
                 const minWait = 45;   // 45 seconds minimum
                 const encR = this.game.rng ? this.game.rng.encounters.next() : Math.random();
                 const wait = Math.max(minWait, baseWait / explorationFactor + (encR - 0.5) * 40);
-                this.encounterSpawnTimer = wait / Math.max(0.1, this.player.lvlEncounterFreqMult);
+                // Level-up Encounter Rate stat × item multiplier (Communications Array).
+                this.encounterSpawnTimer = wait / Math.max(0.1,
+                    this.player.lvlEncounterFreqMult * (this.player.encounterFreqMult || 1));
             }
         }
     }
@@ -4116,6 +4205,7 @@ export class PlayingState {
 
     // Route damage from a host-side world check to whichever pilot it hit.
     damagePlayerBody(body, amount, x, y) {
+        if (body && body.isCloaked) return; // phased — no hitbox (local or replicated)
         if (this.netSync) this.netSync.damagePlayerBody(body, amount, x, y);
         else this._damagePlayer(amount, x, y, body); // co-op: hit the right pilot, not always primary
     }
@@ -5159,6 +5249,7 @@ export class PlayingState {
         this.activeLevelUpDialog = null;
         this._levelUpRolls = {};
         this.levelUpSkipsRemaining = this.LEVELUP_MAX_SKIPS;
+        this.levelUpSkipsUsed = 0;
         this.pendingLevelUpMult = 1;
         this.fovUpgradeMult = 1.0;
         this.stats = {
@@ -5281,7 +5372,9 @@ export class PlayingState {
 
     _damagePlayer(amount, hitX, hitY, player) {
         const p = player || this.player;
-        if (p.invulnTimer > 0 || p.dead || this.isDead || this.bossDeathImmunityTimer > 0) return;
+        // isCloaked: Gravity Distortion — the hull is phased out (the collision
+        // loops skip it entirely); this is the backstop for entity-side beams.
+        if (p.invulnTimer > 0 || p.isCloaked || p.dead || this.isDead || this.bossDeathImmunityTimer > 0) return;
 
         // Cap damage at 1/5th of max health per instance
         const finalAmount = Math.min(amount, p.maxHealth / 5);
@@ -5430,6 +5523,7 @@ export class PlayingState {
             shops: this.shops.map(s => s.serialize()),
             encounterBonuses: { ...this.encounterBonuses },
             levelUpSkipsRemaining: this.levelUpSkipsRemaining,
+            levelUpSkipsUsed: this.levelUpSkipsUsed || 0,
             pendingLevelUpMult: this.pendingLevelUpMult,
             playerDistanceTraveled: this.playerDistanceTraveled,
             expOrbs: this.expOrbs.map(orb => orb.serialize())
@@ -5775,6 +5869,7 @@ export class PlayingState {
         this.pendingLevelUpMult = data.pendingLevelUpMult != null
             ? data.pendingLevelUpMult
             : 1;
+        this.levelUpSkipsUsed = data.levelUpSkipsUsed || 0;
 
         // Restore encounter bonuses
         if (data.encounterBonuses) this.encounterBonuses = { ...data.encounterBonuses };
@@ -6844,26 +6939,45 @@ export class PlayingState {
 
         // Boost: space bends around the hull along the line of travel.
         if (boostFlow > 0.01) {
-            const spd = Math.hypot(player.vx, player.vy);
-            if (spd > 1) {
+            if (player.isCloaked || player.cloakFade > 0.01) {
+                // Cloak holds the bend open for SECONDS, not a 0.4s impulse:
+                // anchor it to the facing. Following velocity here would make
+                // the bend swing with every drift change and drop out whenever
+                // speed nears zero, so the effect wobbles and stutters mid-hold.
                 flow = {
                     x: cx, y: cy,
-                    dirX: player.vx / spd, dirY: player.vy / spd,
+                    dirX: Math.cos(player.angle), dirY: Math.sin(player.angle),
                     strength: Math.min(1, boostFlow)
                 };
+            } else {
+                const spd = Math.hypot(player.vx, player.vy);
+                if (spd > 1) {
+                    flow = {
+                        x: cx, y: cy,
+                        dirX: player.vx / spd, dirY: player.vy / spd,
+                        strength: Math.min(1, boostFlow)
+                    };
+                }
             }
         }
 
         // Teleport: space collapses toward this pilot's ship; otherwise the
         // world-space blink-enemy warp (shared) projects into this pane.
         let cStr = 0;
-        if (player.isWarping) {
+        let cR = 270;
+        if (player.isCloaked || player.cloakFade > 0.01) {
+            // Cloak: the blink's implosion, held open — starts at blink
+            // strength/radius and deepens + widens over the hold, then eases
+            // out through cloakFade after release.
+            cStr = player.cloakStrength();
+            cR = 270 + 130 * cStr;
+        } else if (player.isWarping) {
             cStr = Math.sin(Math.PI * Math.min(1, player.warpTimer / player.warpDuration));
         } else if (player.teleportOutlineFade > 0.01) {
             cStr = player.teleportOutlineFade * 0.55;
         }
         if (cStr > 0.01) {
-            collapse = { x: cx, y: cy, r: 270 * ws, strength: cStr };
+            collapse = { x: cx, y: cy, r: cR * ws, strength: cStr };
         } else if (this._blinkWarp) {
             const bw = this._blinkWarp;
             const bx = bw.x * camera.wtsScale + camera.wtsOffX;
@@ -8504,7 +8618,57 @@ export class PlayingState {
             }
             return true;
         }
+        if (id === 'experience_reshaper') {
+            // Remove the item FIRST so the stat resync inside the reshape
+            // doesn't see it; nothing to reshape = item stays in cargo.
+            if (this._reshapeLevelUps(playerInv, entry)) {
+                this.game.sounds.play('level', 0.9);
+                this._notifyConsumableUsed(id);
+            } else {
+                this.game.sounds.play('asteroid_break', 0.5);
+            }
+            return true;
+        }
         return false;
+    }
+
+    // Experience Reshaper: wipes every level-up pick this run, refunds every
+    // skip spent, and re-queues one fresh roll per level claimed so the
+    // player rebuilds their build from scratch. Pending (unclaimed) levels
+    // stay pending. Returns false when there is nothing to reshape — no pick
+    // taken and no skip spent — in which case the item is left in cargo.
+    _reshapeLevelUps(playerInv, entry) {
+        const p = this.player;
+        const picks = Array.isArray(p.lvlChoices) ? p.lvlChoices.length : 0;
+        const skipsUsed = this.levelUpSkipsUsed || 0;
+        if (picks === 0 && skipsUsed === 0) return false;
+
+        if (playerInv && entry) playerInv.removeItemAt(entry.x, entry.y);
+
+        // Back to a blank slate — same reset the respawn penalty uses.
+        this._resetLevelBonuses(p);
+        p.lvlChoices = [];
+        p.upgradeTypeCounts = {};
+
+        // Refund the spent skips; the banked skip-stack multiplier goes
+        // with them (it was bought with those skips).
+        this.levelUpSkipsRemaining = (this.levelUpSkipsRemaining || 0) + skipsUsed;
+        this.levelUpSkipsUsed = 0;
+        this.pendingLevelUpMult = 1;
+
+        // One fresh roll per claimed level, ahead of anything still pending.
+        // Cached Esc'd rolls are stale now (luck/type bias changed).
+        const pending = this.levelUpQueue.slice();
+        const total = picks + skipsUsed + pending.length;
+        const queue = [];
+        for (let lv = 1; lv <= total; lv++) queue.push(lv);
+        this.levelUpQueue = queue;
+        this._levelUpRolls = {};
+
+        this._onInventoryChanged();
+        this.spawnFloatingText(p.worldX, p.worldY - 30,
+            `${picks + skipsUsed} LEVEL-UPS RESHAPED`, '#ffff44');
+        return true;
     }
 
     // Uses the first Small Battery in cargo, scanning left-to-right then
@@ -9482,6 +9646,8 @@ export class PlayingState {
 
         // 3. Additional high-power flags
         if (this.player.hasMultishotGuns) power += 0.1;
+        if (this.player.hasCrossedWiring) power += 0.1 * Math.max(1, this.player.crossShots || 1);
+        if (this.player.hasBombFabricator) power += 0.1;
         if (this.player.hasExplosivesUnit) power += 0.15;
         if (this.player.hasRailgun) power += 0.1;
 
@@ -9502,6 +9668,13 @@ export class PlayingState {
         p.shieldDrainMult = 1.0;
         p.scrapRangeMult = 1.0;
         p.hasTeleport = p.shipData.special === 'teleport';
+        // Vanisher / Blaster base abilities; the matching items add to them.
+        p.hasCloak = p.shipData.special === 'cloak';
+        p.cloakDuration = p.hasCloak ? 3.0 : 0;
+        p.hasCrossedWiring = p.shipData.special === 'crossfire';
+        p.crossShots = p.hasCrossedWiring ? 1 : 0;
+        p.hasBombFabricator = false;
+        p.bombInterval = 500;
         p.hasRailgun = false;
         p.hasEnergyBlaster = false;
         p.energyBlasterCount = 0;
@@ -9536,6 +9709,7 @@ export class PlayingState {
         p.obedienceMult = 1.0;
         p.hasCosmosEngine = false;
         p.luck = 1.0;
+        p.encounterFreqMult = 1.0;
 
         // Combine-scaled weapon/ability multipliers (default = un-combined behavior)
         p.railgunDmgMult = 1.0;        // ×(1 + bonus) on railgun beam damage
@@ -9665,6 +9839,25 @@ export class PlayingState {
                 // 10% boost to main stats applied via multipliers below
                 // 20% boost to luck
                 p.luck += 0.2;
+            }
+            // +100% luck — additive with the Cosmos Engine's +20%.
+            if (item.id === 'probability_manipulator') p.luck += 1.0;
+            // Encounters come 30% more often (combine ladder → up to 100%).
+            if (item.id === 'communications_array') p.encounterFreqMult += (item.bonus ?? 0.30);
+            // Every copy adds its own cloak time (combine ladder: 3s → 8s each).
+            if (item.id === 'gravity_distortion') {
+                p.hasCloak = true;
+                p.cloakDuration += (item.bonus ?? 3.0);
+            }
+            // Every copy adds broadside shots per wing (ladder: 1 → 4 each).
+            if (item.id === 'crossed_wiring') {
+                p.hasCrossedWiring = true;
+                p.crossShots += (item.bonus ?? 1);
+            }
+            // Shortest interval wins (ladder: 500 → 150 units).
+            if (item.id === 'bomb_fabricator') {
+                p.hasBombFabricator = true;
+                p.bombInterval = Math.min(p.bombInterval, item.bonus ?? 500);
             }
             if (item.id === 'cargo_expansion') cargoExpansions += (item.bonus ?? 1);
             if (item.id === 'experience_condenser') p.experienceCondenserMult += (item.bonus ?? 0.2);
@@ -10843,10 +11036,12 @@ export class PlayingState {
         const fovMult       = (p.itemFovMult || 1.0) * p.lvlFovMult;
         // Guaranteed extra projectiles per volley beyond the single baseline shot
         // (Multishot doubles origins; Energy Blaster fires a 3+ spread per origin).
-        const origins   = p.hasMultishotGuns ? 2 : 1;
+        const origins   = (p.hasMultishotGuns || p.hasCrossedWiring) ? 2 : 1;
+        const crossExtra = p.hasCrossedWiring
+            ? Math.max(0, (p.crossShots || 1) - 1) + (p.hasMultishotGuns ? 1 : 0) : 0;
         const perOrigin = p.hasEnergyBlaster
-            ? 3 + Math.max(0, (p.energyBlasterCount || 1) - 1) * 2 + p.lvlExtraProjectiles
-            : 1 + p.lvlExtraProjectiles;
+            ? 3 + Math.max(0, (p.energyBlasterCount || 1) - 1) * 2 + p.lvlExtraProjectiles + crossExtra
+            : 1 + p.lvlExtraProjectiles + crossExtra;
         const extraShots = origins * perOrigin - 1;
 
         const colA = [
@@ -10862,7 +11057,7 @@ export class PlayingState {
             ['Difficulty',    p.lvlDifficultyMult,         true],        // lower difficulty scaling = good
             ['Hull Regen',    `+${hullRegen > 0 ? hullRegen.toFixed(1) : '0.0'}/s`],
             ['Cache Rate',    p.lvlCacheFreqMult],
-            ['Enc. Rate',     p.lvlEncounterFreqMult],
+            ['Enc. Rate',     p.lvlEncounterFreqMult * (p.encounterFreqMult || 1)],
         ];
         const colB = [
             ['Ship Speed',     speedMult],

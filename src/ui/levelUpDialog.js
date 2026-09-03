@@ -608,6 +608,8 @@ export class LevelUpDialog {
         if (!this.canSkip || !this.playingState) return;
         // Decrement skips and bank the next-roll multiplier.
         this.playingState.levelUpSkipsRemaining = Math.max(0, this.playingState.levelUpSkipsRemaining - 1);
+        // Spent-skip tally — the Experience Reshaper refunds this many.
+        this.playingState.levelUpSkipsUsed = (this.playingState.levelUpSkipsUsed || 0) + 1;
         this.playingState.pendingLevelUpMult    = (this.playingState.pendingLevelUpMult || 1)
             * (this.playingState.LEVELUP_SKIP_MULT_STEP || 1.8);
         this.game.sounds.play('click', 0.6);

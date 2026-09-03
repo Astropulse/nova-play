@@ -34,6 +34,7 @@ export class Projectile {
         this.spriteRotOffset = Math.PI / 2;
 
         this.isRocket = false;
+        this.isBomb = false;   // Bomb Fabricator mine: stationary, contact-detonated
         this.target = null;
         this.turnRate = 4.0;
         // "Home then dash" (optional): seek the target for `homeTimer` seconds,
@@ -150,6 +151,21 @@ export class Projectile {
         // Display size matches the original sprite (prescale 4 → /4).
         const w = img.width * ws / 4;
         const h = img.height * ws / 4;
+
+        // Bomb (Bomb Fabricator): a stationary mine — flat orange ring with a
+        // blinking core, no streak. Runs inside the batch's 'screen' blend.
+        if (this.isBomb) {
+            const r = Math.max(3, w * 0.45);
+            const blink = 0.55 + 0.45 * Math.sin(this.lifetime * 9);
+            ctx.strokeStyle = '#ff8833';
+            ctx.lineWidth = Math.max(1, ws);
+            ctx.beginPath(); ctx.arc(hx, hy, r, 0, Math.PI * 2); ctx.stroke();
+            ctx.globalAlpha = blink;
+            ctx.fillStyle = '#ffdd44';
+            ctx.beginPath(); ctx.arc(hx, hy, r * 0.4, 0, Math.PI * 2); ctx.fill();
+            ctx.globalAlpha = 1;
+            return;
+        }
 
         // 1. Tapered trail — a filled triangle that's full width at the head and
         // narrows to a POINT at the tail (the oldest retained history position),

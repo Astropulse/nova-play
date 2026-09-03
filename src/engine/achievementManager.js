@@ -122,6 +122,8 @@ export class AchievementManager {
             consumablesUsed: 0,
             maxKillStreak: 0,           // best "kills within 10s" window ever
             dodgesPerformed: 0,         // lifetime boost/teleport dodges
+            cloaksUsed: 0,              // gravity-distortion cloak activations
+            cloakTime: 0,               // seconds spent cloaked
             asteroidsRammed: 0,         // lifetime ram-kills on asteroids
             distanceTraveled: 0,        // world-units flown, summed at run end
             peakLevelByShip: {},        // {shipId: best level reached in a run}
@@ -177,6 +179,8 @@ export class AchievementManager {
             damageless: true,            // flips false the first hit that lands
             shipId: null,                // set on first player_stats — tags ship-specific achievements
             dodgesPerformed: 0,          // boost/teleport pre-position dodges (see Player.dodgeScored)
+            cloaksUsed: 0,               // gravity-distortion cloak activations this run
+            cloakTime: 0,                // seconds cloaked this run
             peakCargoSlots: 0,
             blinkDistanceTotal: 0,       // sum of all teleport distances this run
             peakBlinkDistance: 0,        // longest single teleport distance this run
@@ -448,6 +452,20 @@ export class AchievementManager {
                 this.lifetime.dodgesPerformed++;
                 break;
 
+            case 'cloak_used':
+                this.run.cloaksUsed++;
+                this.lifetime.cloaksUsed++;
+                break;
+
+            case 'cloak_ended': {
+                const d = (payload && payload.duration) || 0;
+                if (d > 0) {
+                    this.run.cloakTime += d;
+                    this.lifetime.cloakTime += d;
+                }
+                break;
+            }
+
             case 'blink_used': {
                 const d = (payload && payload.distance) || 0;
                 if (d > 0) {
@@ -626,6 +644,23 @@ export class AchievementManager {
                 console.warn(`Achievement check failed for ${ach.id}:`, err);
             }
         }
+    }
+
+    // Dev-console shortcut (`unlockall`): grant every achievement at once,
+    // which by extension opens every gated upgrade, ship, and combine rung.
+    // Silent on purpose — no toast burst, no chime, no "NEW" markers — so it
+    // reads as a profile edit rather than a fanfare. Returns how many were
+    // newly granted.
+    unlockAll() {
+        let granted = 0;
+        for (const ach of ACHIEVEMENTS) {
+            if (this.unlocked.has(ach.id)) continue;
+            this.unlocked.add(ach.id);
+            this.tracked.delete(ach.id);
+            granted++;
+        }
+        if (granted > 0) this._save();
+        return granted;
     }
 
     _unlock(ach) {
@@ -825,12 +860,16 @@ export class AchievementManager {
     // a reliable build capability rather than a lucky Energy Blaster roll.
     _extraProjectilesPerVolley(p) {
         if (!p) return 0;
-        const origins = p.hasMultishotGuns ? 2 : 1;
+        // Crossed Wiring fires from both wings like Multishot; stacked copies
+        // (and Multishot on top) add shots per wing.
+        const origins = (p.hasMultishotGuns || p.hasCrossedWiring) ? 2 : 1;
+        const crossExtra = p.hasCrossedWiring
+            ? Math.max(0, (p.crossShots || 1) - 1) + (p.hasMultishotGuns ? 1 : 0) : 0;
         let perOrigin;
         if (p.hasEnergyBlaster) {
-            perOrigin = 3 + Math.max(0, (p.energyBlasterCount || 1) - 1) * 2 + (p.lvlExtraProjectiles || 0);
+            perOrigin = 3 + Math.max(0, (p.energyBlasterCount || 1) - 1) * 2 + (p.lvlExtraProjectiles || 0) + crossExtra;
         } else {
-            perOrigin = 1 + (p.lvlExtraProjectiles || 0);
+            perOrigin = 1 + (p.lvlExtraProjectiles || 0) + crossExtra;
         }
         return origins * perOrigin - 1;
     }

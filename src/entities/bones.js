@@ -1047,6 +1047,24 @@ export class Carcosa {
                     if (state.netSync && state.netSync.isHost) state.netSync.registerCache(cache);
                 }
             }
+            // The tribute's centerpiece: the Experience Reshaper, flung from
+            // the rebuilt city alongside the caches. Host-only — the drop
+            // path broadcasts it to clients as a normal spawn (each machine
+            // runs this scripted event locally, so an unguarded drop would
+            // double up). Seeded off the caches stream AFTER the cache rolls
+            // so their landing spots are unchanged.
+            if (this._isAuthority() && state._dropItemToSpace) {
+                const reshaper = UPGRADES.find(u => u.id === 'experience_reshaper');
+                if (reshaper) {
+                    const rand = () => this.game.rng ? this.game.rng.caches.next() : Math.random();
+                    const ang = rand() * Math.PI * 2;
+                    const spd = 60 + rand() * 60;
+                    state._dropItemToSpace(reshaper, this.worldX, this.worldY,
+                        Math.cos(ang) * spd, Math.sin(ang) * spd);
+                    const it = state.itemPickups[state.itemPickups.length - 1];
+                    if (it && it.item === reshaper && state._onItemDropped) state._onItemDropped(it);
+                }
+            }
             // Hold the silence a beat longer so the trumpets ring alone —
             // _tickMusicRestore hands the music back when this runs out.
             this._musicRestoreDelay = 2.5;

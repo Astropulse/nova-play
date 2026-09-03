@@ -245,6 +245,7 @@ class BaseWorldSync {
         if (p.isBoosting) flags |= PF.BOOSTING;
         if (this.state.isDead) flags |= PF.DEAD;
         if (p.hasAncientCurse) flags |= PF.CURSED;
+        if (p.isCloaked) flags |= PF.CLOAKED;
         const shots = this._shotQueue;
         this._shotQueue = [];
         return [

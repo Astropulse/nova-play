@@ -32,9 +32,10 @@ export class DevConsole {
             'endless': (args) => this._cmdEndless(args),
             'dev': () => this._cmdDev(),
             'fps_uncap': () => this._cmdFPSUncap(),
-            'perf': () => this._cmdPerf(),
+            'perf': (args) => this._cmdPerf(args),
             'split': (args) => this._cmdSplit(args),
             'coop': (args) => this._cmdSplit(args),
+            'unlockall': () => this._cmdUnlockAll(),
             'help': () => this._cmdHelp()
         };
 
@@ -600,6 +601,20 @@ export class DevConsole {
         console.log(`Spawned encounter: ${type || 'random'}`);
     }
 
+    // Grants every achievement, which unlocks every gated upgrade, ship, and
+    // combine rung in one go. Persists immediately; the title carousel, loot
+    // pools, and combine cap all read the live unlocked set, so it takes
+    // effect without a reload.
+    _cmdUnlockAll() {
+        const mgr = this.game.achievements;
+        if (!mgr) {
+            console.log('No achievement manager available.');
+            return;
+        }
+        const granted = mgr.unlockAll();
+        console.log(`Unlocked everything: ${granted} new achievement(s) granted (${mgr.unlocked.size} total). All upgrades, ships, and combine tiers are now available.`);
+    }
+
     _cmdDev() {
         this.game.devMode = !this.game.devMode;
         console.log(`Developer mode ${this.game.devMode ? 'ENABLED' : 'DISABLED'}`);
@@ -609,7 +624,23 @@ export class DevConsole {
         console.log("FPS uncapping is currently handled by potential FPS monitoring. Logic simulation remains locked to 120Hz for stability.");
     }
 
-    _cmdPerf() {
+    // `perf` toggles the monitor; `perf reset` clears the adaptive-perf
+    // latches (nova_screenfx_off / nova_lowperf) and re-enables post-fx +
+    // cosmetic effects immediately, no restart.
+    _cmdPerf(args) {
+        if (args && args[0] === 'reset') {
+            try {
+                localStorage.removeItem('nova_screenfx_off');
+                localStorage.removeItem('nova_lowperf');
+            } catch (e) { /* no storage */ }
+            this.game.screenFxDisabled = false;
+            this.game.lowPerfMode = false;
+            this.game._lowPerfSeconds = 0;
+            this.game._sfxCostSum = 0;
+            this.game._sfxCostN = 0;
+            console.log('Perf latches cleared: post-fx distortion + cosmetic effects re-enabled.');
+            return;
+        }
         this.game.devMode = !this.game.devMode;
         if (this.game.devMode) {
             console.log(`Performance monitoring ENABLED. Potential FPS: ${this.game.potentialFps}`);
@@ -711,7 +742,7 @@ export class DevConsole {
     }
 
     _cmdHelp() {
-        console.log("Available commands: time, spawn, stat, wave, scrap, exp, locate, save, load, record, boss, hp, encounter, cache, seed, diff, endless, dev, perf, split, help");
+        console.log("Available commands: time, spawn, stat, wave, scrap, exp, locate, save, load, record, boss, hp, encounter, cache, seed, diff, endless, dev, perf [reset], split, unlockall, help");
     }
 
     draw(ctx) {

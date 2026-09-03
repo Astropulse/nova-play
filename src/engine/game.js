@@ -422,10 +422,16 @@ export class Game {
             // User-facing distortion dial (settings): scales every ScreenFX
             // knob; 0 takes the same early-out as the adaptive disable.
             const fxIntensity = SETTINGS.visualDistortion;
-            if (this.screenFxDisabled || this.lowPerfMode || fxIntensity <= 0) {
-                // Weak hardware (or distortion dialed to zero): keep the pass
-                // off. Rendering with zeroed fx takes the early-out path
-                // (hides the overlay, no GPU upload).
+            // SCREEN EFFECTS setting: 'on' always runs the pass (the adaptive
+            // latch + low-perf mode are ignored so effects never quietly stop
+            // mid-run), 'auto' is the adaptive behavior, 'off' never runs it.
+            const fxMode = SETTINGS.screenFx || 'on';
+            const fxOff = fxMode === 'off' || fxIntensity <= 0
+                || (fxMode === 'auto' && (this.screenFxDisabled || this.lowPerfMode));
+            if (fxOff) {
+                // Off / weak hardware (auto) / distortion dialed to zero: keep
+                // the pass off. Rendering with zeroed fx takes the early-out
+                // path (hides the overlay, no GPU upload).
                 this.screenFx.render(ZERO_FX, now / 1000);
             } else {
                 const sfxT0 = performance.now();
@@ -437,11 +443,14 @@ export class Game {
                 // was active); the full-frame upload cost is hardware-bound, not
                 // scene-bound, so a clean average identifies weak hardware
                 // without false-tripping on a momentarily heavy scene.
-                if (this.screenFx._active) {
+                // Only 'auto' samples for the self-disable latch.
+                if (this.screenFx._active && fxMode === 'auto') {
                     this._sfxCostSum += performance.now() - sfxT0;
                     if (++this._sfxCostN >= 45) {
                         const avg = this._sfxCostSum / this._sfxCostN;
-                        if (avg > 3.5) {
+                        // Harness runs (window.__novaNoPerfLatch) never latch —
+                        // their timing is skewed by screenshots/forced scenes.
+                        if (avg > 3.5 && !window.__novaNoPerfLatch) {
                             this.screenFxDisabled = true;
                             try { localStorage.setItem('nova_screenfx_off', '1'); } catch (e) { /* no storage */ }
                             console.log(`[ScreenFX] post-fx averaged ${avg.toFixed(1)}ms/frame — disabling on this hardware`);
@@ -491,7 +500,7 @@ export class Game {
             // signal, not a vsync artifact). Sticky + persisted once tripped.
             if (!this.lowPerfMode && this.potentialFps > 0) {
                 if (this.potentialFps < 80) {
-                    if (++this._lowPerfSeconds >= 4) {
+                    if (++this._lowPerfSeconds >= 4 && !window.__novaNoPerfLatch) {
                         this.lowPerfMode = true;
                         try { localStorage.setItem('nova_lowperf', '1'); } catch (e) { /* no storage */ }
                         console.log(`[Perf] low-performance mode on (sustained ~${this.potentialFps}fps potential) — shedding cosmetic-only effects`);
@@ -730,11 +739,15 @@ export class Game {
             'bruiser_still': 'Assets/Ships/Bruiser/bruiser_still.png',
             'fighter_still': 'Assets/Ships/Fighter/fighter_still.png',
             'looper_still': 'Assets/Ships/Looper/looper_still.png',
+            'vanisher_still': 'Assets/Ships/Vanisher/vanisher_still.png',
+            'blaster_still': 'Assets/Ships/Blaster/blaster_still.png',
             // Ships - jets (thrusting)
             'cruiser_jets': 'Assets/Ships/Cruiser/cruiser_jets.png',
             'bruiser_jets': 'Assets/Ships/Bruiser/bruiser_jets.png',
             'fighter_jets': 'Assets/Ships/Fighter/fighter_jets.png',
             'looper_jets': 'Assets/Ships/Looper/looper_jets.png',
+            'vanisher_jets': 'Assets/Ships/Vanisher/vanisher_jets.png',
+            'blaster_jets': 'Assets/Ships/Blaster/blaster_jets.png',
             // UI
             'title': 'Assets/UI/title.png',
             'start_flight_off': 'Assets/UI/start_flight_off.png',
@@ -940,6 +953,12 @@ export class Game {
             'asteroid_drill_3x2': 'Assets/Upgrades/asteroid_drill_3x2.png',
             'laser_cartridge_1x1': 'Assets/Upgrades/laser_cartridge_1x1.png',
             'cosmos_engine_1x1': 'Assets/Upgrades/cosmos_engine_1x1.png',
+            'communications_array_2x2': 'Assets/Upgrades/communications_array_2x2.png',
+            'probability_manipulator_2x1': 'Assets/Upgrades/probability_manipulator_2x1.png',
+            'experience_reshaper_2x2': 'Assets/Upgrades/experience_reshaper_2x2.png',
+            'gravity_distortion_2x2': 'Assets/Upgrades/gravity_distortion_2x2.png',
+            'crossed_wiring_2x2': 'Assets/Upgrades/crossed_wiring_2x2.png',
+            'bomb_fabricator_2x2': 'Assets/Upgrades/bomb_fabricator_2x2.png',
             // Events
             'cache':   'Assets/Events/cache/cache.png',
             'cache_0': 'Assets/Events/cache/cache_0.png',
@@ -1215,6 +1234,8 @@ export class Game {
             'bruiser_flying': 'Assets/Ships/Bruiser/bruiser_flying.gif',
             'fighter_flying': 'Assets/Ships/Fighter/fighter_flying.gif',
             'looper_flying': 'Assets/Ships/Looper/looper_flying.gif',
+            'vanisher_flying': 'Assets/Ships/Vanisher/vanisher_flying.gif',
+            'blaster_flying': 'Assets/Ships/Blaster/blaster_flying.gif',
             'cthulhu_wake': 'Assets/Events/cthulhu_wake.gif',
             'knowledge_eye': 'Assets/Events/knowledge_eye.gif',
             'obedience_1x1': 'Assets/Upgrades/obedience_1x1.gif',

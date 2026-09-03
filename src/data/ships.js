@@ -70,5 +70,39 @@ export const SHIPS = [
             still: 'looper_still', jets: 'looper_jets', flying: 'looper_flying',
             broken: ['looper_broken_0', 'looper_broken_1', 'looper_broken_2', 'looper_broken_3', 'looper_broken_4']
         }
+    },
+    {
+        // Stealth fighter: light hull, thin shield, quick, and boost is a
+        // hold-to-cloak (Gravity Distortion built in — see Player.hasCloak).
+        id: 'vanisher',
+        name: 'Vanisher',
+        description: 'Stealth fighter. Boost cloaks\nthe ship while held.',
+        health: 90,
+        speed: 9,
+        shield: 15,
+        storage: { cols: 4, rows: 3 },
+        baseDamage: 9.0,
+        special: 'cloak',
+        assets: {
+            still: 'vanisher_still', jets: 'vanisher_jets', flying: 'vanisher_flying',
+            broken: ['vanisher_broken_0', 'vanisher_broken_1', 'vanisher_broken_2', 'vanisher_broken_3', 'vanisher_broken_4']
+        }
+    },
+    {
+        // Armored gun platform: heavy hull + shield, slow, and its wing
+        // cannons fire broadside (Crossed Wiring built in — Player.hasCrossedWiring).
+        id: 'blaster',
+        name: 'Blaster',
+        description: 'Armored gun platform. Wing\ncannons fire broadside.',
+        health: 180,
+        speed: 5,
+        shield: 35,
+        storage: { cols: 4, rows: 4 },
+        baseDamage: 9.0,
+        special: 'crossfire',
+        assets: {
+            still: 'blaster_still', jets: 'blaster_jets', flying: 'blaster_flying',
+            broken: ['blaster_broken_0', 'blaster_broken_1', 'blaster_broken_2', 'blaster_broken_3', 'blaster_broken_4']
+        }
     }
 ];
