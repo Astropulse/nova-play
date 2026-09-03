@@ -1396,8 +1396,10 @@ export class PlayingState {
         const damage = currentBaseDamage * 4.0 * p.laserOverrideMult;
         const bx = p.worldX - Math.cos(p.angle) * 22;
         const by = p.worldY - Math.sin(p.angle) * 22;
-        const bomb = new Projectile(this.game, bx, by, p.angle, 0, 'blue_laser_ball_big', p, damage, 30.0);
+        // 7.5s armed, then a 0.6s fade-out (Projectile._drawBody reads bombLife).
+        const bomb = new Projectile(this.game, bx, by, p.angle, 0, 'blue_laser_ball_big', p, damage, 8.1);
         bomb.isBomb = true;
+        bomb.bombLife = 8.1;
         bomb.friendly = true;
         this.projectiles.push(bomb);
         this.game.sounds.play('railgun_target', { volume: 0.3, x: bx, y: by });
@@ -1436,9 +1438,13 @@ export class PlayingState {
                 this._onEntityDestroyed(ev);
             }
         }
-        this._spawnExplosion(x, y, dmg);
-        this.cinematics.spawnRing(x, y, { color: '#ff8833', maxR: R, dur: 0.35, width: 4 });
-        this._spawnSparks(x, y, 22, { color: '#ffb347', speedMin: 160, speedMax: 520 });
+        // Blue laser explosion (the same gif the rocket/explosives pop uses,
+        // at its native world-layer size) — pushed directly rather than
+        // through _spawnExplosion so its 64-unit inner damage doesn't double
+        // up with the blast loop above.
+        this.explosions.push({ worldX: x, worldY: y, timer: 0.45, maxTimer: 0.45 });
+        this.cinematics.spawnRing(x, y, { color: '#44ddff', maxR: R, dur: 0.35, width: 4 });
+        this._spawnSparks(x, y, 22, { color: '#9fe8ff', speedMin: 160, speedMax: 520 });
         this._spawnSparks(x, y, 8, { color: '#ffffff', speedMin: 200, speedMax: 600 });
         this.game.sounds.play('ship_explode', { volume: 0.45, x, y });
         this._triggerShakeAt(x, y, 2.5);

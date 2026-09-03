@@ -152,17 +152,17 @@ export class Projectile {
         const w = img.width * ws / 4;
         const h = img.height * ws / 4;
 
-        // Bomb (Bomb Fabricator): a stationary mine — flat orange ring with a
-        // blinking core, no streak. Runs inside the batch's 'screen' blend.
+        // Bomb (Bomb Fabricator): the big blue laser ball parked in space —
+        // drawn at its NATIVE pixel scale for the world layer (w/h above),
+        // never upscaled. The pulse is brightness only, and it fades out
+        // over its last 0.6s of life. No streak. Runs inside the batch's
+        // 'screen' blend.
         if (this.isBomb) {
-            const r = Math.max(3, w * 0.45);
-            const blink = 0.55 + 0.45 * Math.sin(this.lifetime * 9);
-            ctx.strokeStyle = '#ff8833';
-            ctx.lineWidth = Math.max(1, ws);
-            ctx.beginPath(); ctx.arc(hx, hy, r, 0, Math.PI * 2); ctx.stroke();
-            ctx.globalAlpha = blink;
-            ctx.fillStyle = '#ffdd44';
-            ctx.beginPath(); ctx.arc(hx, hy, r * 0.4, 0, Math.PI * 2); ctx.fill();
+            const age = (this.bombLife || 8.1) - this.lifetime;
+            const fade = Math.min(1, this.lifetime / 0.6);
+            const pulse = 0.7 + 0.3 * Math.sin(age * 6.0);
+            ctx.globalAlpha = fade * pulse;
+            ctx.drawImage(img, hx - w / 2, hy - h / 2, w, h);
             ctx.globalAlpha = 1;
             return;
         }
