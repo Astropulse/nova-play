@@ -1724,6 +1724,11 @@ const sharedAppliers = {
         if (!shop) return;
         if (m.inv) shop.inventory.deserialize(m.inv);
         if (m.perm) shop.permUpgrades = { ...m.perm };
+        if (m.saved !== undefined) {
+            // One saved (pinned) station per run, on every machine.
+            if (m.saved) for (const s of this.state.shops) s.saved = false;
+            shop.saved = !!m.saved;
+        }
     },
 
     applyCacheState(m) {

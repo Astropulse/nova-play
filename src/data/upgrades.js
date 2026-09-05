@@ -617,7 +617,7 @@ export const UPGRADES = [
         width: 2,
         height: 2,
         cost: 80,
-        rarity: 'rare',
+        rarity: 'epic',
         combine: {
             stat: 'crossShots',
             base: 1,

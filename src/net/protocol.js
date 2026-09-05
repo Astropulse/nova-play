@@ -78,7 +78,7 @@ export const MSG = {
     LOCK_REQ: 60,       // c→h {kind:'shop'|'cache'|'encounter', id}
     LOCK_RES: 61,       // h→c {kind, id, granted, byPid}
     UNLOCK: 62,         // c→h {kind, id}
-    SHOP_STATE: 63,     // both {idx, inv, perm} (after a shop session / purchase)
+    SHOP_STATE: 63,     // both {idx, inv, perm, saved} (after a shop session / purchase; saved = pinned station)
     CACHE_STATE: 64,    // both {nid, items:[{id,tier}], emptied}
     ENCOUNTER_OUTCOME: 65, // c→h {nid, outcome:'depart'|'hostile'|'stay', maxScrap, forced}
     SHOP_SPAWNED: 66,   // h→c {idx, x, y, seed, assetKey, inv} (new shop entered the world)

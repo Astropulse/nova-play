@@ -99,7 +99,8 @@ export const TUTORIAL_DESCRIPTIONS = {
         ],
         'Discovering more shops': [
             "To get stronger, you need more [upgrade]upgrades[/upgrade] than one shop can provide.",
-            "Purchase the [upgrade]shop map[/upgrade] to reveal more shops in the sector."
+            "Purchase the [upgrade]shop map[/upgrade] to reveal more shops in the sector.",
+            "Found a favorite? [good]Save[/good] one station from its shop screen and it will never leave your radar."
         ]
     }
 };

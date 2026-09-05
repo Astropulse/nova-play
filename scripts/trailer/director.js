@@ -311,6 +311,8 @@ const DT = 1 / FPS;
         // "CLAIM LEVELS" banner over every shot. Quietly discard the queue
         // (the one on-camera level-up in `mine` is opened by hand).
         if (p && p._levelUpQueue) p._levelUpQueue.length = 0;
+        // no mid-fight level-ups (the LEVEL UP! ring/text): keep XP just under the bar
+        if (p && p.expNeeded) p.exp = Math.min(p.exp, p.expNeeded * 0.6);
     };
     const quiet = () => {
         S.waveTimer = 9999; S._earlyHookIndex = 99;
@@ -801,32 +803,44 @@ const DT = 1 / FPS;
     const BUILD_SPRAY = { blasters: 3, multishot: true, extra: 6, fireRate: 0.9, damage: 1.6, speed: 0.9 };            // a wall of pellets
     const BUILD_FAST = { blasters: 0, multishot: true, extra: 1, fireRate: 0.3, damage: 1.1, speed: 1.4 };            // machine gun
     const BUILD_HEAVY = { blasters: 0, multishot: false, extra: 0, fireRate: 1.8, damage: 16.0, bigShots: true, speed: 1.6 };  // one shot, one kill
+    // Montage fights: half the enemies are already on us (we cut into a fight
+    // under way), the other half pour in from off-screen. Every shot fires.
+    const nearRing = (Cls, n, rMin, rMax, diff) => {
+        for (let k = 0; k < n; k++) {
+            const a = bot.rand() * Math.PI * 2, d = rMin + bot.rand() * (rMax - rMin);
+            const en = new Cls(g, P().worldX + Math.cos(a) * d, P().worldY + Math.sin(a) * d, diff);
+            if (Cls === Enemy) Enemy.rollUpgrade(en, P());
+            S.enemies.push(en);
+        }
+    };
+    const brawl = (nNear, nFar, diff, specials) => {
+        nearRing(Enemy, nNear, 380, 820, diff);
+        ringOfEnemies(nFar, 1400, 1900, diff);
+        for (const [Cls, n] of (specials || [])) { nearRing(Cls, Math.ceil(n / 2), 450, 850, diff); ringOf(Cls, Math.floor(n / 2), 1400, 1800, diff); }
+    };
+    const fight = (range = 2800) => pilot.set({ type: 'hunt', range, rampage: true, noBoost: true });
+    const bossFight = (getT, standoff) => pilot.set({ type: 'hunt', range: 2800, rampage: true, noBoost: true,
+        pool: () => { const t = getT(); const arr = S.enemies.slice(); if (t && !arr.includes(t)) arr.push(t); return arr; } });
     function MONTAGE_SHOTS() { return [
-        // 1 (2 beats) the cruiser: railgun through a rock cluster
-        shot('m_rail', 2, 2.2, function (cx) {
-            far(1); swapShip('cruiser'); this._b = BUILD_RAIL; loadout(this._b); fov(1.2);
-            asteroidField(34, 260, 1000);
-            const x = P().worldX, y = P().worldY;
-            pilot.set({ type: 'hunt', pool: () => S.asteroids, range: 1700, rampage: true, noBoost: true });
+        // 1 (2 beats) the cruiser: railgun volleys through a swarm and its rocks
+        shot('m_rail', 2, 3.4, function (cx) {
+            far(1); swapShip('cruiser'); this._b = BUILD_PAST_RAIL; loadout(this._b); fov(1.3);
+            asteroidField(16, 500, 1400); brawl(18, 14, 6); fight();
         }, function () { loadout(this._b); }),
-        // 2 (2) the fighter vs the nanite swarm
-        shot('m_nanite', 2, 2.5, function (cx) {
-            far(2); swapShip('vanisher'); this._b = BUILD_SPRAY; loadout(this._b); fov(1.25);
-            ringOf(NaniteEnemy, 6, 500, 800, 5); ringOfEnemies(6, 700, 1000, 4);
-            pilot.set({ type: 'hunt', range: 2600, rampage: true });
+        // 2 (2) the vanisher: a wall of pellets into the nanite swarm
+        shot('m_nanite', 2, 3.4, function (cx) {
+            far(2); swapShip('vanisher'); this._b = BUILD_SPRAY; loadout(this._b); fov(1.3);
+            brawl(16, 12, 6, [[NaniteEnemy, 8]]); fight();
         }, function () { loadout(this._b); }),
-        // 3 (2) the bruiser: rockets into a cruiser mob
-        shot('m_rockets', 2, 2.5, function (cx) {
-            far(3); swapShip('bruiser'); this._b = BUILD_ROCKETS; loadout(this._b); fov(1.3);
-            ringOfEnemies(16, 600, 1100, 6);
-            const x = P().worldX, y = P().worldY;
-            pilot.set({ type: 'hunt', range: 2600, rampage: true });
+        // 3 (2) the bruiser: cannon + rockets into a cruiser pack
+        shot('m_rockets', 2, 3.4, function (cx) {
+            far(3); swapShip('bruiser'); this._b = BUILD_ROCKETS; loadout(this._b); fov(1.35);
+            brawl(20, 16, 7); fight();
         }, function () { loadout(this._b); }),
-        // 4 (2) the looper vs blink ships
-        shot('m_blink', 2, 2.5, function (cx) {
-            far(4); swapShip('looper'); this._b = BUILD_FAST; loadout(this._b); fov(1.2);
-            ringOf(BlinkEnemy, 7, 500, 900, 5);
-            pilot.set({ type: 'hunt', range: 2600, rampage: true });
+        // 4 (2) the looper: machine gun vs blink ships
+        shot('m_blink', 2, 3.4, function (cx) {
+            far(4); swapShip('looper'); this._b = BUILD_FAST; loadout(this._b); fov(1.3);
+            brawl(16, 12, 6, [[BlinkEnemy, 8]]); fight();
         }, function () { loadout(this._b); }),
         // 5 (2) a shop: the station, the ship pulling in, loot in the lane
         shot('m_shop', 2, 2.0, function (cx) {
@@ -836,30 +850,28 @@ const DT = 1 / FPS;
             try { for (let i = 0; i < 4; i++) S.itemPickups.push(new ItemPickup(g, x + 140 + i * 90, y + 120 - i * 40, UPGRADES[(i * 7) % UPGRADES.length])); } catch (e) {}
             pilot.set({ type: 'goto', pts: [[x + 260, y + 10]], speed: 520, arrive: 'stop', avoid: true, aim: [x + 520, y - 40] });
         }, function () { loadout(this._b); }),
-        // 6 (2) the risen: bone ships, reanimating around us
-        shot('m_bones', 2, 2.3, function (cx) {
-            far(6); swapShip('blaster'); this._b = BUILD_HEAVY; loadout(this._b); fov(1.3);
-            ringOf(BoneEnemy, 9, 450, 900, 6);
-            pilot.set({ type: 'hunt', range: 2600, rampage: true });
+        // 6 (2) the risen: bone ships everywhere, the blaster hull's heavy guns
+        shot('m_bones', 2, 3.4, function (cx) {
+            far(6); swapShip('blaster'); this._b = BUILD_HEAVY; loadout(this._b); fov(1.35);
+            brawl(12, 10, 6, [[BoneEnemy, 14]]); fight();
         }, function () { loadout(this._b); }),
-        // 7 (1) the Starcore
-        shot('m_starcore', 1, 2.8, function (cx) {
-            far(7); swapShip('bruiser'); this._b = BUILD_HEAVY; loadout(this._b); fov(1.4);
-            const p = P(); const b = new Starcore(g, p.worldX + 520, p.worldY, 6); S.enemies.push(b); this._boss = b;
-            pilot.set({ type: 'strike', target: () => this._boss, standoff: 560, rampage: true });
+        // 7 (1) the Event Horizon and its escort
+        shot('m_horizon', 1, 3.8, function (cx) {
+            far(7); swapShip('bruiser'); this._b = BUILD_MONSTER; loadout(this._b); fov(1.45);
+            const p = P(); const b = new EventHorizon(g, p.worldX + 640, p.worldY, 6); S.enemies.push(b); this._boss = b;
+            brawl(16, 10, 6); bossFight(() => this._boss);
         }, function () { loadout(this._b); }),
-        // 8 (1) the Event Horizon
-        shot('m_horizon', 1, 2.8, function (cx) {
-            far(8); swapShip('vanisher'); this._b = BUILD_FAST; loadout(this._b); fov(1.4);
-            const p = P(); const b = new EventHorizon(g, p.worldX + 560, p.worldY - 60, 6); S.enemies.push(b); this._boss = b;
-            pilot.set({ type: 'strike', target: () => this._boss, standoff: 620, rampage: true });
+        // 8 (1) the Asteroid Crusher in its rock field
+        shot('m_crusher', 1, 3.8, function (cx) {
+            far(8); swapShip('cruiser'); this._b = BUILD_PAST_RAIL; loadout(this._b); fov(1.45);
+            asteroidField(16, 500, 1300);
+            const p = P(); const b = new AsteroidCrusher(g, p.worldX + 600, p.worldY + 60, 6); S.enemies.push(b); this._boss = b;
+            brawl(14, 10, 6); bossFight(() => this._boss);
         }, function () { loadout(this._b); }),
-        // 9 (1) the Asteroid Crusher
-        shot('m_crusher', 1, 2.8, function (cx) {
-            far(9); swapShip('cruiser'); this._b = BUILD_RAIL; loadout(this._b); fov(1.4);
-            asteroidField(18, 500, 1400);
-            const p = P(); const b = new AsteroidCrusher(g, p.worldX + 540, p.worldY + 40, 6); S.enemies.push(b); this._boss = b;
-            pilot.set({ type: 'strike', target: () => this._boss, standoff: 600, rampage: true });
+        // 9 (1) missiles and shields: the vanisher's machine gun
+        shot('m_missile', 1, 3.4, function (cx) {
+            far(9); swapShip('vanisher'); this._b = BUILD_FAST; loadout(this._b); fov(1.3);
+            brawl(8, 10, 7, [[MissileEnemy, 8], [ShieldEnemy, 6]]); fight();
         }, function () { loadout(this._b); }),
         // 10 (1) the wake — Cthulhu opens
         shot('m_cthulhu', 1, 2.0, function (cx) {
@@ -868,18 +880,16 @@ const DT = 1 / FPS;
             pilot.set({ type: 'hold', aim: () => this._c || null });
         }, function () { loadout(this._b); fxSet(0.3, 0.2); }),
         // 11 (2) the locusts and their mother
-        shot('m_locust', 2, 2.5, function (cx) {
-            far(11); swapShip('blaster'); this._b = BUILD_SPRAY; loadout(this._b); fov(1.35);
-            const p = P(); try { const m = new SwarmMother(g, p.worldX + 700, p.worldY - 80, 5); S.enemies.push(m); } catch (e) {}
-            ringOf(LocustEnemy, 22, 500, 1000, 4);
-            const x = p.worldX, y = p.worldY;
-            pilot.set({ type: 'hunt', range: 2600, rampage: true });
+        shot('m_locust', 2, 3.6, function (cx) {
+            far(11); swapShip('blaster'); this._b = BUILD_SPRAY; loadout(this._b); fov(1.4);
+            const p = P(); try { const m = new SwarmMother(g, p.worldX + 760, p.worldY - 80, 5); S.enemies.push(m); } catch (e) {}
+            nearRing(LocustEnemy, 18, 420, 900, 4); ringOf(LocustEnemy, 16, 1400, 1800, 4); fight();
         }, function () { loadout(this._b); }),
-        // 12 (2) the angel's beam
-        shot('m_seraph', 2, 3.5, function (cx) {
-            far(12); swapShip('bruiser'); this._b = BUILD_MONSTER; loadout(this._b); fov(1.4);
-            const p = P(); const se = new Seraph(g, p.worldX + 480, p.worldY); se.revealed = true; S.events.push(se); this._se = se;
-            pilot.set({ type: 'strike', target: () => this._se, standoff: 520, rampage: true });
+        // 12 (2) the angel and its escort
+        shot('m_seraph', 2, 4.0, function (cx) {
+            far(12); swapShip('bruiser'); this._b = BUILD_MONSTER; loadout(this._b); fov(1.45);
+            const p = P(); const se = new Seraph(g, p.worldX + 520, p.worldY); se.revealed = true; S.events.push(se); this._se = se;
+            brawl(14, 10, 6); pilot.set({ type: 'hunt', range: 2800, rampage: true, noBoost: true, pool: () => (S.enemies.length ? S.enemies : [this._se]) });
         }, function () { loadout(this._b); }),
         // 13 (1) the eye
         shot('m_eye', 1, 1.5, function (cx) {
@@ -888,24 +898,23 @@ const DT = 1 / FPS;
             if (S.dread) { S.dread.forceLevel = 3; S.dread.eye = null; S.dread._trigger('eye'); }
             pilot.set({ type: 'hold', aim: () => this._k || null });
         }, function () { loadout(this._b); fxSet(0.4, 0.3); }),
-        // 14 (1) the wheels' spin
-        shot('m_wheels', 1, 4.3, function (cx) {
-            far(14); swapShip('cruiser'); this._b = BUILD_ROCKETS; loadout(this._b); fov(1.4);
-            const p = P(); const w = new Wheels(g, p.worldX + 420, p.worldY); w.revealed = true; S.events.push(w); this._w = w;
-            pilot.set({ type: 'strike', target: () => this._w, standoff: 500, rampage: true });
+        // 14 (1) the wheels' spin, and everyone around it
+        shot('m_wheels', 1, 4.6, function (cx) {
+            far(14); swapShip('cruiser'); this._b = BUILD_ROCKETS; loadout(this._b); fov(1.45);
+            const p = P(); const w = new Wheels(g, p.worldX + 480, p.worldY); w.revealed = true; S.events.push(w); this._w = w;
+            brawl(14, 10, 6); pilot.set({ type: 'hunt', range: 2800, rampage: true, noBoost: true, pool: () => (S.enemies.length ? S.enemies : [this._w]) });
             this._spun = false;
-        }, function (cx, t) { loadout(this._b); if (!this._spun && t >= 4.0) { this._spun = true; const w = this._w; if (w && w.state === 'fight') { w.attack = null; w._startSpin(P()); } } }),
-        // 15 (1) one head of the beast
-        shot('m_head', 1, 2.5, function (cx) {
-            far(15); swapShip('vanisher'); this._b = BUILD_HEAVY; loadout(this._b); fov(1.35);
-            const p = P(); try { this._head = Dragon.spawnSolo(g, S, 'blasphemy', p.worldX + 560, p.worldY - 40); } catch (e) { console.log('TRAILER head ' + e); }
-            pilot.set({ type: 'strike', target: () => (this._head && this._head.heads && this._head.heads[0]) || null, standoff: 560, rampage: true });
+        }, function (cx, t) { loadout(this._b); if (!this._spun && t >= 4.2) { this._spun = true; const w = this._w; if (w && w.state === 'fight') { w.attack = null; w._startSpin(P()); } } }),
+        // 15 (1) one head of the beast, its pack, our heavy guns
+        shot('m_head', 1, 3.4, function (cx) {
+            far(15); swapShip('vanisher'); this._b = BUILD_HEAVY; loadout(this._b); fov(1.4);
+            const p = P(); try { this._head = Dragon.spawnSolo(g, S, 'blasphemy', p.worldX + 600, p.worldY - 40); } catch (e) { console.log('TRAILER head ' + e); }
+            brawl(8, 10, 6); bossFight(() => (this._head && this._head.heads && this._head.heads[0]) || null);
         }, function () { loadout(this._b); }),
         // 16 (1) everything at once — the monster build in a wall of ships
-        shot('m_wall', 1, 2.5, function (cx) {
-            far(16); swapShip('fighter'); this._b = BUILD_MONSTER; loadout(this._b); fov(1.35);
-            ringOfEnemies(30, 380, 900, 8); ringOf(BerserkEnemy, 4, 500, 700, 6); ringOf(MissileEnemy, 4, 700, 900, 6);
-            pilot.set({ type: 'hunt', range: 2600, rampage: true, noBoost: true });
+        shot('m_wall', 1, 3.4, function (cx) {
+            far(16); swapShip('fighter'); this._b = BUILD_MONSTER; loadout(this._b); fov(1.4);
+            brawl(28, 20, 8, [[BerserkEnemy, 6], [MissileEnemy, 6]]); fight();
         }, function () { loadout(this._b); }),
     ]; }
 
@@ -1220,6 +1229,7 @@ const DT = 1 / FPS;
                 { at: 8.4, fn() {   // "when nothing comes home" — kill everything, stop the ship
                     this._still = true;
                     S.enemies.length = 0; S.projectiles.length = 0; S.sparks && (S.sparks.length = 0);
+                    this._b = BUILD_HEAVY;                            // no rockets under the king — nothing auto-fires
                     pilot.set({ type: 'idle' });                     // hands off the stick; the ship coasts to a stop
                     fov(1.15);
                     if (S.dread) { S.dread.forceLevel = 1; S.dread.shadow = null; }
@@ -1259,7 +1269,7 @@ const DT = 1 / FPS;
                 if (S.dread) S.dread.forceLevel = 3;
             },
             tick(cx, t) {
-                quiet(); heal(); dreadHold(); if (S.dread) S.dread.eye = null;
+                quiet(); heal(); dreadHold(); if (S.dread) S.dread.eye = null; loadout(BUILD_HEAVY);
                 const k = Math.min(1, t / 5.9);
                 setVignette(k * 0.4, 44);
                 fxSet(0.12 + 0.2 * k, 0.08 + 0.15 * k);
@@ -1595,7 +1605,7 @@ const DT = 1 / FPS;
     // scene it only SIMULATES (draw + screenshot skipped) and copies the frames.
     // Bump RENDER_CORE when shared helpers (rig, loadout, cards, subs) change
     // in a way that alters pictures without touching scene source.
-    const RENDER_CORE = 'core-v4p';
+    const RENDER_CORE = 'core-v4q';
     const fnv = (str) => { let h = 0x811c9dc5; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; } return h.toString(16).padStart(8, '0'); };
     const sceneKey = (sc, i) => fnv(RENDER_CORE + '|' + i + '|' + sc.name + '|' + sc.preroll + '|' + sc.record + '|' +
         (sc.setup ? sc.setup.toString() : '') + (sc.tick ? sc.tick.toString() : '') +

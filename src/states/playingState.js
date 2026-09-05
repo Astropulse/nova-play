@@ -1675,7 +1675,7 @@ export class PlayingState {
             shop: this.activeShop, isShop: this.isShopOpen,
             cache: this.activeCacheUI, isCache: this.isCacheOpen, activeCache: this._activeCache,
             ssx: this.shopScrollX, ssy: this.shopScrollY, csx: this.cacheScrollX, csy: this.cacheScrollY,
-            perm: this._currentPermButtons, paused: this.paused,
+            perm: this._currentPermButtons, saveBtn: this._saveStationButton, paused: this.paused,
             // Claim-levels button is per-pilot: its visibility (w>0) + geometry +
             // focusability must reflect THIS pilot's own level queue, not the last
             // pilot to update (which made it show / be reachable in every pane).
@@ -1691,6 +1691,7 @@ export class PlayingState {
         this.activeCacheUI = lp.cache || null; this.isCacheOpen = !!lp.cache;
         this._activeCache = lp.cacheEntity || null;
         this._currentPermButtons = ui.permButtons || null;
+        this._saveStationButton = ui.saveStationBtn || null;
         this.pauseButtons.claimLevels = ui.claimBtn || (ui.claimBtn = { x: 0, y: 0, w: 0, h: 0, hovered: false });
         im.mouseScreenX = vx; im.mouseScreenY = vy;
         if (synthBtns) { im.mouseButtons = synthBtns; im.mouseButtonsJustPressed = synthJP; }
@@ -1706,6 +1707,7 @@ export class PlayingState {
         ui.cacheScrollX = this.cacheScrollX; ui.cacheScrollY = this.cacheScrollY;
         ui.gpFocus = this._gpFocus;
         ui.permButtons = this._currentPermButtons;
+        ui.saveStationBtn = this._saveStationButton;
         ui.claimBtn = this.pauseButtons.claimLevels;
         // An update path may have closed the modal (cleared activeShop/CacheUI) —
         // persist that back to the slot.
@@ -1718,7 +1720,7 @@ export class PlayingState {
         this.activeCacheUI = saved.cache; this.isCacheOpen = saved.isCache; this._activeCache = saved.activeCache;
         this.shopScrollX = saved.ssx; this.shopScrollY = saved.ssy;
         this.cacheScrollX = saved.csx; this.cacheScrollY = saved.csy;
-        this._currentPermButtons = saved.perm; this.paused = saved.paused;
+        this._currentPermButtons = saved.perm; this._saveStationButton = saved.saveBtn; this.paused = saved.paused;
         this.pauseButtons.claimLevels = saved.claimBtn;
         im.mouseScreenX = saved.mx; im.mouseScreenY = saved.my;
         im.mouseButtons = saved.btns; im.mouseButtonsJustPressed = saved.jp;
@@ -4644,7 +4646,7 @@ export class PlayingState {
 
     _netSendShopState(shop) {
         if (!this.netSync || shop.netId === undefined) return;
-        const m = { idx: shop.netId, inv: shop.inventory.serialize(), perm: { ...shop.permUpgrades } };
+        const m = { idx: shop.netId, inv: shop.inventory.serialize(), perm: { ...shop.permUpgrades }, saved: shop.saved };
         if (this.netSync.isHost) this.net.broadcast(MSG.SHOP_STATE, m);
         else this.net.send(MSG.SHOP_STATE, m);
     }
@@ -7023,6 +7025,10 @@ export class PlayingState {
             return { crt: 0, warp: w };
         }
         if (this.isDead) return { crt: 0, warp: 0 };
+        // Any open menu/overlay (pause, cargo, shop, cache, encounter, level-up,
+        // trade, chat; co-op pane UIs too) switches every distortion off — the
+        // UI must never be read through a warped or rippling pass.
+        if (this._menuOpen()) return { crt: 0, warp: 0 };
         const d = this.dread ? this.dread.getFx() : null;
         const crt = this.killStreak ? this.killStreak.fxIntensity : 0;
         const warp = d ? d.warp : 0;
@@ -7047,6 +7053,18 @@ export class PlayingState {
 
         const f = this._pilotFx(this.player, this.camera, this._boostFlowLevel);
         return { crt, warp, ripple: f.ripple, flow: f.flow, collapse: f.collapse };
+    }
+
+    // True while any modal UI is up (same set the touch layout treats as
+    // modal), including a co-op pilot's in-pane inventory or level-up dialog.
+    _menuOpen() {
+        if (this.paused || this.isShopOpen || this.isEncounterOpen || this.isCacheOpen
+            || this.isLevelUpOpen || this.isTradeOpen || (this.chatUI && this.chatUI.active)) return true;
+        if (this._coopInv) return true;
+        for (const lp of this.localPlayers) {
+            if (lp.levelUpDialog || lp.paused) return true;
+        }
+        return false;
     }
 
     triggerFlash(color = '#ff0000', duration = 0.8, alpha = 0.35) {
@@ -7543,13 +7561,13 @@ export class PlayingState {
         const btnW = 60 * permS;
         const btnH = 24 * permS;
         const gap  = 8  * uiScale;
-        const totalBtnsH = (btnH * 4) + (gap * 3);
+        const totalBtnsH = (btnH * 5) + (gap * 4); // 4 perm upgrades + save station
         // Touch (side-by-side panels): the vertical column would land on the
         // player panel — lay the four buttons out as a centered row below.
         const touchUi = this.game.touchMode && !this._uiVp;
         let startX, startY, stepX, stepY;
         if (touchUi) {
-            const rowW = btnW * 4 + gap * 3;
+            const rowW = btnW * 5 + gap * 4;
             startX = Math.floor((cw - rowW) / 2);
             startY = Math.min(ch - btnH - 14 * uiScale,
                 shopLayout.panelY + shopLayout.totalH + 8 * uiScale);
@@ -7604,6 +7622,34 @@ export class PlayingState {
         });
 
         this._currentPermButtons = upgrades;
+
+        // -- Save station -----------------------------------------------------
+        // Fifth button: pins THIS station as the run's one saved shop, so it is
+        // never pruned/despawned by later reveals. Same flat style as the perm
+        // buttons; cyan (the panel title color) marks the pinned state.
+        {
+            const shop = this.activeShop;
+            const pinned = !!shop.saved;
+            const otherPinned = !pinned && this.shops.some(s => s.saved && s !== shop);
+            let bx = startX + 4 * stepX;
+            let by = startY + 4 * stepY;
+            if (touchUi && bx + btnW > cw - gap) {
+                // Narrow pane: the row overflowed -- drop it to a centered 2nd row.
+                bx = Math.floor((cw - btnW) / 2);
+                by = startY + btnH + gap;
+            }
+            ctx.fillStyle   = pinned ? '#113344' : '#222222';
+            ctx.strokeStyle = pinned ? '#44ddff' : '#888888';
+            ctx.lineWidth = 1;
+            ctx.fillRect(bx, by, btnW, btnH);
+            ctx.strokeRect(bx, by, btnW, btnH);
+            ctx.fillStyle = '#ffffff';
+            ctx.fillText(pinned ? 'Saved' : 'Save', bx + btnW / 2, by + Math.floor(btnH * 0.35));
+            ctx.fillStyle = pinned ? '#44ddff' : (otherPinned ? '#ffff44' : '#88aabb');
+            ctx.fillText(pinned ? 'ON RADAR' : (otherPinned ? 'REPLACES' : 'STATION'),
+                bx + btnW / 2, by + Math.floor(btnH * 0.75));
+            this._saveStationButton = { x: bx, y: by, w: btnW, h: btnH };
+        }
         ctx.textBaseline = 'alphabetic';
 
         // ── Scrap display ─────────────────────────────────────────────────────
@@ -9173,6 +9219,13 @@ export class PlayingState {
                 });
             }
         }
+        if (this._saveStationButton) {
+            extraButtons.push({
+                id: 'saveStation',
+                rect: this._saveStationButton,
+                onActivate: () => this._toggleSaveStation(this.activeShop)
+            });
+        }
         const cl = this.pauseButtons.claimLevels;
         if (this.levelUpQueue.length > 0 && cl.w > 0) {
             extraButtons.push({
@@ -9204,6 +9257,12 @@ export class PlayingState {
                     }
                 }
                 if (clickedPerm) return;
+            }
+            const sb = this._saveStationButton;
+            if (sb && mouse.x >= sb.x && mouse.x <= sb.x + sb.w &&
+                mouse.y >= sb.y && mouse.y <= sb.y + sb.h) {
+                this._toggleSaveStation(this.activeShop);
+                return;
             }
 
             if (!this._tryPickUpItem(mouse, shopInv, shopLayout, 'shopScrollX', 'shopScrollY')) {
@@ -9993,14 +10052,37 @@ export class PlayingState {
         shop.revealed = true;
         this.revealedShops.push(shop);
 
-        // Prune oldest shop marker if count > 3
-        while (this.revealedShops.length > 3) {
-            const oldest = this.revealedShops.shift();
-            if (oldest) {
-                oldest.revealed = false;
-                oldest.alive = false; // Despawn from world when pruned from radar
-            }
+        // Prune the oldest marker past the cap of 3. The SAVED station (the one
+        // shop the player pinned this run) never counts against the cap and is
+        // never pruned or despawned -- only unsaved shops age out.
+        const cap = 3 + (this.revealedShops.some(s => s.saved) ? 1 : 0);
+        while (this.revealedShops.length > cap) {
+            const idx = this.revealedShops.findIndex(s => !s.saved);
+            if (idx === -1) break;
+            const oldest = this.revealedShops.splice(idx, 1)[0];
+            oldest.revealed = false;
+            oldest.alive = false; // Despawn from world when pruned from radar
         }
+    }
+
+    // The player may pin ONE station per run: it stays on the radar and is
+    // never despawned when new shops are revealed (shop maps, proximity).
+    // Pinning a second shop moves the pin; pinning the pinned shop unpins it.
+    // Multiplayer: the flag rides SHOP_STATE (sent on shop close) and the join
+    // snapshot, so every machine keeps the same station.
+    _toggleSaveStation(shop) {
+        if (!shop) return;
+        if (shop.saved) {
+            shop.saved = false;
+            this.game.sounds.play('click', 0.5);
+        } else {
+            for (const s of this.shops) s.saved = false;
+            shop.saved = true;
+            this.game.sounds.play('select', 0.8);
+        }
+        // Re-run the radar cap with the pin moved: the shop we're docked at
+        // becomes the newest marker, and a just-unpinned surplus shop ages out.
+        this._revealShop(shop);
     }
 
     spawnDistantShop(targetBody = null) {
@@ -10589,6 +10671,9 @@ export class PlayingState {
         }
         // Always reveal the spawn shop if it's nearby (parity with a fresh run).
         if (this.shops.length) this._revealShop(this.shops[0]);
+        // The run's saved station is shared -- it's on everyone's radar.
+        const savedShop = this.shops.find(s => s.saved);
+        if (savedShop) this._revealShop(savedShop);
 
         // World entities via the same spawn handlers ongoing replication uses.
         this.asteroids = [];
@@ -11241,9 +11326,25 @@ export class PlayingState {
         }
         const noseOffset = 36;
 
-        // Determine firing origins
+        // Determine firing origins. Origins may carry their own `angle`
+        // (broadsides); otherwise the beam aims via getTargetAngle.
         const origins = [];
-        if (p.hasMultishotGuns) {
+        // Extra beams per origin: level-up Multi-Shot, plus (broadside only)
+        // stacked Crossed Wiring copies and Multishot Guns — same accounting
+        // as the projectile path in Player.
+        let extraShots = p.lvlExtraProjectiles;
+        if (p.hasCrossedWiring) {
+            // Crossed Wiring: beams leave the wing cannons (48 out, 12 aft —
+            // the Blaster's barrel tips) perpendicular to the facing, one
+            // broadside each way. Targeting-module aim doesn't apply.
+            const perpAngle = p.angle + Math.PI / 2;
+            const offset = 48, aft = 12;
+            const cx = p.worldX - Math.cos(p.angle) * aft;
+            const cy = p.worldY - Math.sin(p.angle) * aft;
+            origins.push({ x: cx + Math.cos(perpAngle) * offset, y: cy + Math.sin(perpAngle) * offset, angle: perpAngle });
+            origins.push({ x: cx - Math.cos(perpAngle) * offset, y: cy - Math.sin(perpAngle) * offset, angle: perpAngle + Math.PI });
+            extraShots += Math.max(0, (p.crossShots || 1) - 1) + (p.hasMultishotGuns ? 1 : 0);
+        } else if (p.hasMultishotGuns) {
             const perpAngle = p.angle + Math.PI / 2;
             const offset = 15;
             origins.push({
@@ -11271,11 +11372,11 @@ export class PlayingState {
             origins.forEach(origin => {
                 const extraCount = (p.energyBlasterCount - 1) * 2;
                 // Multi-Shot level-up adds extra beams to the burst
-                const count = 3 + Math.floor(Math.random() * 3) + extraCount + p.lvlExtraProjectiles; // 3-5 + 2 per extra + Multi-Shot
+                const count = 3 + Math.floor(Math.random() * 3) + extraCount + extraShots; // 3-5 + 2 per extra + Multi-Shot
                 const spreadBase = 0.5 + (p.energyBlasterCount - 1) * 0.1; // Wider with more blasters
                 const dmgReduc = Math.pow(0.85, p.energyBlasterCount - 1); // 15% reduction per extra
 
-                const fireAngle = p.getTargetAngle(origin.x, origin.y);
+                const fireAngle = origin.angle ?? p.getTargetAngle(origin.x, origin.y);
                 for (let i = 0; i < count; i++) {
                     const spread = (Math.random() - 0.5) * spreadBase;
                     const angle = fireAngle + spread;
@@ -11286,14 +11387,15 @@ export class PlayingState {
             });
         } else { // Default to Railgun if no Energy Blaster
             origins.forEach(origin => {
-                const fireAngle = p.getTargetAngle(origin.x, origin.y);
+                const fireAngle = origin.angle ?? p.getTargetAngle(origin.x, origin.y);
                 const dirX = Math.cos(fireAngle);
                 const dirY = Math.sin(fireAngle);
-                // The big gun has recoil — view kicks opposite the beam (this pilot's pane)
-                cam.punch(-dirX, -dirY, 9);
+                // The big gun has recoil — view kicks opposite the beam (this
+                // pilot's pane). Opposed broadsides cancel out, so skip it there.
+                if (!p.hasCrossedWiring) cam.punch(-dirX, -dirY, 9);
                 this._fireSingleBeam(origin.x, origin.y, dirX, dirY, beamLength, currentBaseDamage * 2.5 * p.railgunDmgMult * damageMult, p);
-                // Extra beams from Multi-Shot level-up — increasing spread, reduced damage
-                for (let ei = 0; ei < p.lvlExtraProjectiles; ei++) {
+                // Extra beams (Multi-Shot level-up / stacked broadsides) — increasing spread, reduced damage
+                for (let ei = 0; ei < extraShots; ei++) {
                     const spread = (0.08 + ei * 0.06) * (Math.random() < 0.5 ? 1 : -1);
                     const a = fireAngle + spread;
                     this._fireSingleBeam(origin.x, origin.y, Math.cos(a), Math.sin(a), beamLength, currentBaseDamage * 2.5 * p.railgunDmgMult * damageMult * 0.7, p);
@@ -11414,7 +11516,14 @@ export class PlayingState {
                 const screen = this.camera.worldToScreen(p.worldX, p.worldY, game.width, game.height);
                 const noseOffset = 36 * game.worldScale;
 
-                if (p.hasMultishotGuns) {
+                if (p.hasCrossedWiring) {
+                    // Broadside targeting lines: out of each wing cannon, sideways.
+                    const perpAngle = p.angle + Math.PI / 2;
+                    const offset = 48 * game.worldScale, aft = 12 * game.worldScale;
+                    const cx = screen.x - Math.cos(p.angle) * aft, cy = screen.y - Math.sin(p.angle) * aft;
+                    this._drawTiledLine(ctx, img, perpAngle, 0.4, cx + Math.cos(perpAngle) * offset, cy + Math.sin(perpAngle) * offset);
+                    this._drawTiledLine(ctx, img, perpAngle + Math.PI, 0.4, cx - Math.cos(perpAngle) * offset, cy - Math.sin(perpAngle) * offset);
+                } else if (p.hasMultishotGuns) {
                     const perpAngle = p.angle + Math.PI / 2;
                     const offset = 15 * game.worldScale;
                     this._drawTiledLine(ctx, img, p.angle, 0.4, screen.x + Math.cos(p.angle) * noseOffset + Math.cos(perpAngle) * offset, screen.y + Math.sin(p.angle) * noseOffset + Math.sin(perpAngle) * offset);

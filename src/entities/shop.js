@@ -19,6 +19,10 @@ export class Shop {
         this.worldY = worldY;
         this.alive = true;
         this.revealed = false; // For radar
+        // Pinned by the player (ONE per run, PlayingState._toggleSaveStation):
+        // never pruned from the radar queue or despawned when newer shops are
+        // revealed by shop maps / proximity.
+        this.saved = false;
         this.isFirstEverShop = !!opts.firstEverShop;
 
         // Shops don't rotate
@@ -228,6 +232,7 @@ export class Shop {
             worldX: this.worldX,
             worldY: this.worldY,
             revealed: this.revealed,
+            saved: this.saved,
             assetKey: this.assetKey,
             permUpgrades: { ...this.permUpgrades },
             inventory: this.inventory.serialize()
@@ -238,6 +243,7 @@ export class Shop {
         this.worldX = data.worldX;
         this.worldY = data.worldY;
         this.revealed = data.revealed;
+        this.saved = !!data.saved;
         this.assetKey = data.assetKey;
         this.img = this.game.assets.get(this.assetKey);
         this.permUpgrades = { ...data.permUpgrades };
