@@ -46,6 +46,17 @@ function rotationOf(e) {
     return (e.angle || 0) + (e.hitRotOffset !== undefined ? e.hitRotOffset : Math.PI / 2);
 }
 
+// Conservative broad-phase radius: every point of the entity's hitbox (ellipse
+// at any rotation, or the fallback circle) lies within this distance of
+// (worldX, worldY). Used to register hulls in a collision grid; the narrow
+// phase (ellipseContains / ellipseSweep) still makes the actual decision.
+export function hullBoundRadius(e) {
+    const hb = resolve(e);
+    if (!hb) return e.radius || 0;
+    const s = e.hitScale != null ? e.hitScale : 1;
+    return Math.max(hb.rx, hb.ry) * s;
+}
+
 // True if world point (px,py) lies inside the entity's hitbox, optionally grown
 // by `pad` world units (use the other body's radius for circle-vs-hull tests).
 // Falls back to the entity's circular `radius` when it has no ellipse.
@@ -97,12 +108,14 @@ export function ellipseSweep(e, proj, pad = 0) {
     const c = Math.cos(phi), sn = Math.sin(phi);
     // Map both endpoints into a frame where the ellipse is the unit circle:
     // rotate into sprite-local axes, then divide by the (padded) half-extents.
-    const norm = (x, y) => {
-        const dx = x - e.worldX, dy = y - e.worldY;
-        return [(dx * c + dy * sn) / rx, (-dx * sn + dy * c) / ry];
-    };
-    const [ax, ay] = norm(p0x, p0y);
-    const [bx, by] = norm(p1x, p1y);
+    // Keep endpoints scalar: this hot path runs for every candidate hull.
+    // Preserve operation order so boundary decisions match the original math.
+    const dx0 = p0x - e.worldX, dy0 = p0y - e.worldY;
+    const dx1 = p1x - e.worldX, dy1 = p1y - e.worldY;
+    const ax = (dx0 * c + dy0 * sn) / rx;
+    const ay = (-dx0 * sn + dy0 * c) / ry;
+    const bx = (dx1 * c + dy1 * sn) / rx;
+    const by = (-dx1 * sn + dy1 * c) / ry;
     const ex = bx - ax, ey = by - ay;
     const len2 = ex * ex + ey * ey;
     let t = len2 > 0 ? -(ax * ex + ay * ey) / len2 : 0;

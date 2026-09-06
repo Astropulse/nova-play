@@ -1,12 +1,14 @@
+import { effectIsActive, effectBounds, unionRect, mergeUploadRects } from './screenFxBounds.js';
+
 // Full-screen CRT-style post-processing (chromatic aberration, vignette,
 // barrel distortion) driven by an intensity value 0..1 — used by the
 // kill-streak escalation (and later, story-dread effects).
 //
-// The game renders on a 2D canvas; this samples that canvas into a WebGL2
-// texture each frame and draws a distorted fullscreen pass on an overlay
-// canvas stacked above it. The overlay is hidden and the pass skipped
-// entirely while intensity is 0, so the idle cost is zero. If WebGL2 is
-// unavailable it degrades to a silent no-op.
+// The game renders on Canvas2D. This uploads only texels the unchanged shader
+// can sample and draws affected regions on a transparent WebGL2 overlay. Exact
+// identity regions expose the original Canvas; globally supported effects keep
+// their full pane. The full-resolution texture and filtering are unchanged.
+// Idle frames skip the upload/pass entirely; unavailable WebGL2 is a no-op.
 
 const VERT = `#version 300 es
 void main() {
@@ -148,14 +150,21 @@ export class ScreenFX {
         this.canvas = null;
         this.gl = null;
         this._failed = false;
+        this._contextLost = false;
+        this._program = null;
+        this._texture = null;
+        this._singleEffect = [null];
         this._active = false;
+        this.boundedTransfers = true; // false: full-frame reference path for A/B checks
+        this.lastUploadPixels = 0;
+        this.lastDrawPixels = 0;
         this._texW = 0;
         this._texH = 0;
     }
 
     _init() {
         try {
-            const canvas = document.createElement('canvas');
+            const canvas = this.canvas || document.createElement('canvas');
             canvas.id = 'fxCanvas';
             canvas.style.position = 'fixed';
             canvas.style.top = '0';
@@ -163,13 +172,29 @@ export class ScreenFX {
             canvas.style.pointerEvents = 'none';
             canvas.style.display = 'none';
             const gl = canvas.getContext('webgl2', {
-                alpha: false, depth: false, stencil: false,
+                alpha: true, depth: false, stencil: false,
                 antialias: false, premultipliedAlpha: false,
                 preserveDrawingBuffer: false
             });
             if (!gl) { this._failed = true; return; }
-            document.body.appendChild(canvas);
+            if (!this.canvas) {
+                this._onContextLost = e => {
+                    e.preventDefault();
+                    this._contextLost = true;
+                    this._hide();
+                };
+                this._onContextRestored = () => {
+                    this._contextLost = false;
+                    this._texW = 0; this._texH = 0;
+                    this._init();
+                };
+                canvas.addEventListener('webglcontextlost', this._onContextLost);
+                canvas.addEventListener('webglcontextrestored', this._onContextRestored);
+                document.body.appendChild(canvas);
+            }
 
+            this.canvas = canvas;
+            this.gl = gl;
             const compile = (type, src) => {
                 const sh = gl.createShader(type);
                 gl.shaderSource(sh, src);
@@ -186,6 +211,7 @@ export class ScreenFX {
             if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
                 throw new Error(gl.getProgramInfoLog(prog));
             }
+            for (const sh of gl.getAttachedShaders(prog)) gl.deleteShader(sh);
             gl.useProgram(prog);
 
             const tex = gl.createTexture();
@@ -196,6 +222,8 @@ export class ScreenFX {
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
             gl.uniform1i(gl.getUniformLocation(prog, 'u_tex'), 0);
 
+            this._program = prog;
+            this._texture = tex;
             this.canvas = canvas;
             this.gl = gl;
             this._uRes = gl.getUniformLocation(prog, 'u_res');
@@ -213,9 +241,7 @@ export class ScreenFX {
         } catch (e) {
             console.error('[ScreenFX] init failed, disabling post-fx:', e);
             this._failed = true;
-            if (this.canvas && this.canvas.parentNode) this.canvas.parentNode.removeChild(this.canvas);
-            this.canvas = null;
-            this.gl = null;
+            this.destroy();
         }
     }
 
@@ -234,111 +260,119 @@ export class ScreenFX {
     // `intensity` (0..1, the settings distortion dial) scales every knob at
     // uniform-upload time so caller descriptors are never mutated.
     render(fx, time, intensity = 1) {
-        if (this._failed) return;
-        this._intensity = intensity;
-        const crt = (fx.crt || 0) * intensity, warp = (fx.warp || 0) * intensity;
-        const ripple = fx.ripple && fx.ripple.strength * intensity > 0.004 ? fx.ripple : null;
-        const flow = fx.flow && fx.flow.strength * intensity > 0.004 ? fx.flow : null;
-        const collapse = fx.collapse && fx.collapse.strength * intensity > 0.004 ? fx.collapse : null;
-        if (crt <= 0.004 && warp <= 0.004 && !ripple && !flow && !collapse) {
-            if (this._active) {
-                this.canvas.style.display = 'none';
-                this._active = false;
-            }
-            return;
-        }
-        if (!this.gl) {
-            this._init();
-            if (this._failed) return;
-        }
-
-        const src = this.game.canvas;
-        const gl = this.gl;
-        if (!this._active) {
-            this.canvas.style.display = 'block';
-            this._active = true;
-        }
-
-        // Match the game canvas backing size (device pixels)
-        if (this._texW !== src.width || this._texH !== src.height) {
-            this._texW = src.width;
-            this._texH = src.height;
-            this.canvas.width = src.width;
-            this.canvas.height = src.height;
-            this.canvas.style.width = '100vw';
-            this.canvas.style.height = '100vh';
-            gl.viewport(0, 0, src.width, src.height);
-            // No UNPACK_FLIP_Y_WEBGL — it triggers a slow CPU copy for canvas
-            // sources. The fragment shader flips the sample V instead (identical
-            // result, far cheaper upload). texSubImage2D reuses the allocation.
-            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
-        } else {
-            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, src);
-        }
-
-        gl.uniform2f(this._uRes, src.width, src.height);
-        gl.uniform1f(this._uTime, time);
-        // Whole canvas = one "pane". _setEffectUniforms applies the intensity
-        // scale itself, so hand it the raw descriptor.
-        gl.uniform2f(this._uPaneOrigin, 0, 0);
-        gl.uniform2f(this._uPaneSize, src.width, src.height);
-        this._setEffectUniforms(fx, src.height);
-        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        this._singleEffect[0] = fx;
+        this._renderEffects(this._singleEffect, time, intensity, false);
     }
 
-    // Split-screen: run the post-pass once per pane, each scissored to its rect
-    // with its own effect descriptor. crt/warp are global (shared streak/dread)
-    // but their geometry (barrel/vignette/wobble) centers on each pane; boost/
-    // ripple/teleport are positioned by that pilot's own camera. All panes are
-    // drawn whenever ANY effect is active so the overlay covers the whole screen.
-    // panes: [{ rect:{x,y,w,h}(canvas px, top-down), crt, warp, ripple?, flow?, collapse? }]
     renderPanes(panes, time, intensity = 1) {
-        if (this._failed) return;
-        this._intensity = intensity;
-        const isOn = (p) => ((p.crt || 0) * intensity) > 0.004 || ((p.warp || 0) * intensity) > 0.004
-            || (p.ripple && p.ripple.strength * intensity > 0.004)
-            || (p.flow && p.flow.strength * intensity > 0.004)
-            || (p.collapse && p.collapse.strength * intensity > 0.004);
-        const any = panes.some(isOn);
-        if (!any) {
-            if (this._active) { this.canvas.style.display = 'none'; this._active = false; }
-            return;
-        }
-        if (!this.gl) { this._init(); if (this._failed) return; }
+        this._renderEffects(panes, time, intensity, true);
+    }
 
-        const src = this.game.canvas;
-        const gl = this.gl;
+    _hide() {
+        if (this._active && this.canvas) this.canvas.style.display = 'none';
+        this._active = false;
+        this.lastUploadPixels = 0;
+        this.lastUploadRects = 0;
+        this.lastDrawPixels = 0;
+    }
+
+    _renderEffects(effects, time, intensity, split) {
+        if (this._failed || this._contextLost) return;
+        this._intensity = intensity;
+        if (!effects.some(fx => effectIsActive(fx, intensity))) { this._hide(); return; }
+        if (!this.gl) { this._init(); if (this._failed) return; }
+        const src = this.game.canvas, gl = this.gl;
+        const w = src.width, h = src.height;
+        if (!w || !h) { this._hide(); return; }
+        const whole = { x: 0, y: 0, w, h };
+        const regions = [];
+        const sources = [];
+        for (const fx of effects) {
+            const pane = split ? fx.rect : whole;
+            const bounds = this.boundedTransfers
+                ? effectBounds(fx, pane, w, h, intensity)
+                : { draw: pane, source: whole };
+            if (!bounds) continue;
+            regions.push({ fx, pane, draw: bounds.draw });
+            sources.push(bounds.source);
+        }
+        if (!sources.length) { this._hide(); return; }
+        // Disjoint effect regions (shield hits in different panes) upload as
+        // separate rects; one union would copy all the untouched space between
+        // them. `mergeUploadRects` keeps a single union for dense/global cases.
+        const uploads = this.boundedTransfers && this.disjointUploads !== false
+            ? mergeUploadRects(sources) : [sources.reduce(unionRect, null)];
         if (!this._active) { this.canvas.style.display = 'block'; this._active = true; }
 
-        if (this._texW !== src.width || this._texH !== src.height) {
-            this._texW = src.width;
-            this._texH = src.height;
-            this.canvas.width = src.width;
-            this.canvas.height = src.height;
-            this.canvas.style.width = '100vw';
-            this.canvas.style.height = '100vh';
-            gl.viewport(0, 0, src.width, src.height);
-            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
-        } else {
-            gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, src);
+        gl.useProgram(this._program);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, this._texture);
+        gl.bindVertexArray(null);
+        gl.disable(gl.BLEND);
+        if (this._texW !== w || this._texH !== h) {
+            this._texW = w; this._texH = h;
+            this.canvas.width = w; this.canvas.height = h;
+            this.canvas.style.width = '100vw'; this.canvas.style.height = '100vh';
+            gl.viewport(0, 0, w, h);
+            // Keep full-resolution addressing (the shader is unchanged). Only
+            // sampled texels need fresh pixels; storage is allocated on resize.
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
         }
-
-        gl.uniform2f(this._uRes, src.width, src.height);
+        // TexImageSource subrect overload: no crop canvas, ImageBitmap, readback
+        // or async copy. Texture Y follows source rows (top-down); the existing
+        // fragment shader flips V. Reset unpack state even if a source throws.
+        this.lastUploadPixels = 0;
+        this.lastUploadRects = uploads.length;
+        for (const source of uploads) {
+            const full = source.x === 0 && source.y === 0 && source.w === w && source.h === h;
+            if (full) {
+                gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, src);
+            } else {
+                gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, source.x);
+                gl.pixelStorei(gl.UNPACK_SKIP_ROWS, source.y);
+                try {
+                    gl.texSubImage2D(gl.TEXTURE_2D, 0, source.x, source.y,
+                        source.w, source.h, gl.RGBA, gl.UNSIGNED_BYTE, src);
+                } finally {
+                    gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
+                    gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
+                }
+            }
+            this.lastUploadPixels += source.w * source.h;
+        }
+        this.lastDrawPixels = 0;
+        gl.disable(gl.SCISSOR_TEST);
+        gl.clearColor(0, 0, 0, 0);
+        gl.clear(gl.COLOR_BUFFER_BIT); // erase previous frame's affected regions
+        gl.uniform2f(this._uRes, w, h);
         gl.uniform1f(this._uTime, time);
-
-        // gl_FragCoord is global to the framebuffer; the scissor box limits which
-        // pixels each pass writes, so the viewport stays full-canvas.
         gl.enable(gl.SCISSOR_TEST);
-        for (const p of panes) {
-            const r = p.rect;
-            const glY = src.height - (r.y + r.h); // top-down rect → gl bottom-up
-            gl.uniform2f(this._uPaneOrigin, r.x, glY);
-            gl.uniform2f(this._uPaneSize, r.w, r.h);
-            this._setEffectUniforms(p, src.height);
-            gl.scissor(Math.round(r.x), Math.round(glY), Math.round(r.w), Math.round(r.h));
+        for (const { fx, pane, draw } of regions) {
+            gl.uniform2f(this._uPaneOrigin, pane.x, h - (pane.y + pane.h));
+            gl.uniform2f(this._uPaneSize, pane.w, pane.h);
+            this._setEffectUniforms(fx, h);
+            gl.scissor(Math.round(draw.x), Math.round(h - draw.y - draw.h), Math.round(draw.w), Math.round(draw.h));
             gl.drawArrays(gl.TRIANGLES, 0, 3);
+            this.lastDrawPixels += draw.w * draw.h;
         }
         gl.disable(gl.SCISSOR_TEST);
+    }
+
+    destroy() {
+        this._hide();
+        if (this.canvas) {
+            this.canvas.removeEventListener('webglcontextlost', this._onContextLost);
+            this.canvas.removeEventListener('webglcontextrestored', this._onContextRestored);
+            this.canvas.remove();
+        }
+        if (this.gl && !this._contextLost) {
+            if (this._texture) this.gl.deleteTexture(this._texture);
+            if (this._program) this.gl.deleteProgram(this._program);
+        }
+        this._singleEffect[0] = null;
+        this.canvas = null; this.gl = null;
+        this._texture = null; this._program = null;
+        this._texW = 0; this._texH = 0;
     }
 
     // Uploads the per-effect uniforms (crt/warp/ripple/flow/collapse). Positions

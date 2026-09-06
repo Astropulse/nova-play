@@ -1,0 +1,252 @@
+<!DOCTYPE html><meta charset="utf-8"><title>NOVA renderer transfer regression</title>
+<style>body{margin:0;background:#000}canvas{position:fixed;left:0;top:0;pointer-events:none}</style>
+<script type="module">
+import { ScreenFX } from '../../src/engine/screenFx.js';
+import { World } from '../../src/world/world.js';
+import { AssetLoader } from '../../src/engine/assetLoader.js';
+import { computeSplitLayout } from '../../src/world/splitScreen.js';
+window.runTransferDiff = async reference => {
+    const refModule = async path => {
+        const base = new URL('../../' + path, location.href);
+        const source = reference[path].replace(/from '([^']+)'/g, (_, p) => 'from ' + JSON.stringify(new URL(p, base).href));
+        const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
+        try { return await import(url); } finally { URL.revokeObjectURL(url); }
+    };
+    const { ScreenFX: RefFX } = await refModule('src/engine/screenFx.js');
+    const { World: RefWorld } = await refModule('src/world/world.js');
+    const { HUD: RefHUD } = await refModule('src/ui/hud.js');
+    const { HUD } = await import('../../src/ui/hud.js');
+    const assets = new AssetLoader(); await assets.loadAtlas('../../Assets/atlas/atlas.json');
+    const mk = read => {
+        const canvas = document.createElement('canvas');
+        return canvas.getContext('2d', read ? { willReadFrequently: true } : {});
+    };
+    const src = mk(false), a = mk(true), b = mk(true);
+    const game = { canvas: src.canvas, assets, worldScale: 2, currentState: {} };
+    const old = new RefFX(game), current = new ScreenFX(game);
+    old.warm(); current.warm();
+    if (!old.gl || !current.gl) throw Error('WebGL unavailable');
+    const dbg = current.gl.getExtension('WEBGL_debug_renderer_info');
+    const renderer = dbg ? current.gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : 'unknown';
+    let cases = 0, failures = 0, maxDelta = 0;
+    const failuresByCase = [], metrics = [];
+    const compare = label => {
+        const w = a.canvas.width, h = a.canvas.height;
+        const x = a.getImageData(0,0,w,h).data, y = b.getImageData(0,0,w,h).data;
+        let diff = 0, max = 0, bx0=w, by0=h, bx1=-1, by1=-1;
+        for (let i=0; i<x.length; i+=4) {
+            let d=0; for(let j=0;j<4;j++) d=Math.max(d,Math.abs(x[i+j]-y[i+j]));
+            if(d) { diff++; max=Math.max(max,d); const px=(i>>2)%w, py=(i>>2)/w|0; if(px<bx0)bx0=px; if(px>bx1)bx1=px; if(py<by0)by0=py; if(py>by1)by1=py; }
+        }
+        cases++; maxDelta=Math.max(maxDelta,max);
+        if(diff) { failures++; failuresByCase.push({label,diff,max,bbox:[bx0,by0,bx1,by1]}); console.log('FAIL '+JSON.stringify(failuresByCase.at(-1))); }
+    };
+    const resize = (w,h) => { for(const c of [src,a,b]) { c.canvas.width=w; c.canvas.height=h; } };
+    let frame=0;
+    const pattern = rects => {
+        src.fillStyle='#000';src.fillRect(0,0,src.canvas.width,src.canvas.height);
+        frame++;
+        for(const r of rects) {
+            src.save();src.beginPath();src.rect(r.x,r.y,r.w,r.h);src.clip();
+            for(let i=0;i<80;i++) {
+                src.fillStyle='rgb('+((i*17+frame*31)%256)+','+((i*47+frame*53)%256)+','+((i*83+frame*19)%256)+')';
+                src.fillRect(r.x+(i*71)%r.w,r.y+(i*43)%r.h,53.25,31.5);
+            }
+            src.fillStyle='#9fe8ff';src.font='17px sans-serif';src.fillText('NOVA pixel comparison '+frame,r.x+10,r.y+30);
+            src.restore();
+        }
+    };
+    const composite = (out,fx) => {
+        out.clearRect(0,0,out.canvas.width,out.canvas.height);
+        out.drawImage(src.canvas,0,0);
+        if(fx._active) out.drawImage(fx.canvas,0,0);
+    };
+    const checkFX = (label, fx, intensity=1, split=false) => {
+        // Model a newly presented default framebuffer, including unused panes.
+        old.gl.disable(old.gl.SCISSOR_TEST);old.gl.clearColor(0,0,0,1);old.gl.clear(old.gl.COLOR_BUFFER_BIT);
+        if(split){old.renderPanes(fx,3.717,intensity);current.renderPanes(fx,3.717,intensity);}
+        else{old.render(fx,3.717,intensity);current.render(fx,3.717,intensity);}
+        composite(a,old);composite(b,current);
+        compare(label);
+        const error=current.gl.getError(); if(error)throw Error('WebGL error '+error+' at '+label);
+        metrics.push({label,pixels:src.canvas.width*src.canvas.height,uploaded:current.lastUploadPixels,uploadRects:current.lastUploadRects,drawn:current.lastDrawPixels});
+    };
+    const multiUpload = [];
+    for(const [w,h] of [[320,180],[719,1279],[1279,719],[1280,720],[2560,1440]]) {
+        resize(w,h); const whole={x:0,y:0,w,h};
+        const ripple={x:w*.5+25,y:h*.5,cx:w*.5,cy:h*.5,r:35,strength:.8,t:.14};
+        const variants=[
+            {crt:0,warp:0}, {crt:1,warp:1}, {crt:.25,warp:.5},
+            {ripple}, {ripple:{...ripple,cx:2,cy:3,x:2,y:3}},
+            {ripple:{...ripple,cx:-100,cy:-100,x:-100,y:-100}},
+            {ripple:{...ripple,r:150,strength:2,t:.3}},
+            {flow:{x:w/2,y:h/2,dirX:.6,dirY:.8,strength:1}},
+            {collapse:{x:w/2,y:h/2,r:120,strength:1,ab:0}},
+            {collapse:{x:w/2,y:h/2,r:600,strength:2,ab:3}},
+            {crt:.2,warp:.1,ripple,flow:{x:w*.6,y:h*.4,dirX:-.8,dirY:.6,strength:.7},collapse:{x:12,y:20,r:150,strength:.4}},
+            {ripple:{...ripple,strength:.004}},
+        ];
+        for(let i=0;i<variants.length;i++){pattern([whole]);checkFX(w+'x'+h+' solo '+i,variants[i],i%3===0?.5:1);}
+        for(const n of [2,3,4,5,7,8]) {
+            const rects=computeSplitLayout(n,w,h);
+            // multi: a shield hit in EVERY pane (disjoint upload regions);
+            // mixed: shields in the first/last panes + a global crt pane;
+            // seam: shields hugging the pane seams / overlapping neighbours;
+            // sweep: hits moving across panes over several frames.
+            for(const kind of ['shield','boost','all','tiny','multi','mixed','seam','sweep']) {
+                const frames=kind==='sweep'?6:1;
+                for(let f=0;f<frames;f++){
+                    pattern(rects);
+                    const panes=rects.map((r,i)=>{
+                        const cx=r.x+r.w/2,cy=r.y+r.h/2;
+                        if(kind==='all')return {rect:r,crt:.4,warp:.7,ripple:{...ripple,cx,cy,x:cx+5,y:cy}};
+                        if(kind==='multi')return {rect:r,ripple:{...ripple,cx:cx+i*7,cy:cy-i*5,x:cx+5,y:cy,r:35+i*9}};
+                        if(kind==='mixed'){
+                            if(i===1)return {rect:r,crt:.5,warp:0};
+                            if(i===0||i===n-1)return {rect:r,ripple:{...ripple,cx,cy,x:cx+5,y:cy}};
+                            return {rect:r,crt:0,warp:0};
+                        }
+                        if(kind==='seam')return {rect:r,ripple:{...ripple,cx:r.x+(i%2?r.w-3:3),cy:r.y+(i<n/2?r.h-2:2),x:r.x+3,y:r.y+2,r:60,strength:1.5}};
+                        if(kind==='sweep'){
+                            if(i%3===2)return {rect:r,crt:0,warp:0};
+                            const sx=r.x+(r.w*(f+.5))/frames,sy=r.y+r.h*(i%2?.2:.8);
+                            return {rect:r,ripple:{...ripple,cx:sx,cy:sy,x:sx+4,y:sy,r:40+f*15}};
+                        }
+                        if(i>0)return {rect:r,crt:kind==='tiny'?.002:0,warp:0};
+                        return kind==='shield'||kind==='tiny'
+                            ?{rect:r,ripple:{...ripple,cx,cy,x:cx+5,y:cy}}
+                            :{rect:r,flow:{x:cx,y:cy,dirX:.8,dirY:.6,strength:1},collapse:{x:cx,y:cy,r:70,strength:.4}};
+                    });
+                    checkFX(w+'x'+h+' panes='+n+' '+kind+(frames>1?' f'+f:''),panes,1,true);
+                    if(kind==='multi'&&f===0)multiUpload.push({size:[w,h],panes:n,uploadRects:current.lastUploadRects,uploaded:current.lastUploadPixels,refUploaded:old.lastUploadPixels});
+                }
+            }
+        }
+    }
+
+    // HUD exp bar: the cached silhouette must be pixel-identical to the
+    // per-frame rebuild across a full two-second wave sweep, many fill widths
+    // (growing on ONE instance so the cache invalidates), bar sizes, empty/full,
+    // pulse extrema, lowPerfMode and tall panes.
+    {
+        const mkHud=(Ctor,g,pl)=>{const hh=new Ctor(g,pl);return hh;};
+        // The level text above the bar is untouched by the exp-bar change and
+        // the GPU canvas rasterizes glyphs with ±1 noise between draws (the
+        // control pair below shows it), so text is stubbed out of this case:
+        // only the bar, its bloom and the wave are compared.
+        for(const c of [a,b]){c.fillText=()=>{};c.strokeText=()=>{};}
+        for(const [w,h] of [[1280,720],[719,1279],[640,360]]) {
+            resize(w,h);
+            const state={trueTotalTime:0,camera:{displacementX:0,displacementY:0}};
+            const hudGame={assets,width:w,height:h,hudScale:3,touchMode:false,lowPerfMode:false,currentState:state,worldScale:2};
+            const player={exp:0,expNeeded:100,level:7,_levelUpQueue:[]};
+            // Two reference instances form a CONTROL pair: any delta between
+            // them is GPU-canvas rasterization noise (text / blur), not a code
+            // difference, and the same case is then excused for the real pair.
+            const ho=mkHud(RefHUD,hudGame,player),ho2=mkHud(RefHUD,hudGame,player),hn=mkHud(HUD,hudGame,player);
+            ho._hudScale=3;ho2._hudScale=3;hn._hudScale=3;
+            const fills=[0,0.004,0.13,0.5,0.5,0.51,0.999,1,0.25,0.25,0.25,1,0];
+            let step=0;
+            for(const lowPerf of [false,true]) {
+                hudGame.lowPerfMode=lowPerf;
+                for(let i=0;i<fills.length;i++) {
+                    player.exp=fills[i]*100;
+                    state.trueTotalTime=(step++)*0.137;   // sweeps through the 2 s wave period
+                    player._levelUpQueue=i%4===0?[1]:[];
+                    const clear=c=>{c.setTransform(1,0,0,1,0,0);c.globalAlpha=1;c.globalCompositeOperation='source-over';c.fillStyle='#123';c.fillRect(0,0,w,h);c.fillStyle='#8a4';c.fillRect(0,h*.6,w,h*.4);};
+                    const label='hud exp bar '+w+'x'+h+' fill='+fills[i]+' lowPerf='+lowPerf+' t='+state.trueTotalTime.toFixed(3);
+                    clear(a);clear(b);ho._drawExpBar(a,w,h);ho2._drawExpBar(b,w,h);
+                    const before=failures;compare(label+' [control ref/ref]');
+                    const noisy=failures>before;
+                    if(noisy){failures=before;cases--;failuresByCase.pop();}
+                    clear(a);clear(b);ho._drawExpBar(a,w,h);hn._drawExpBar(b,w,h);
+                    const before2=failures;compare(label);
+                    if(failures>before2&&noisy){failures=before2;failuresByCase.at(-1).excused='control pair differed too';console.log('NOISE '+label);}
+                }
+            }
+        }
+    }
+
+    // Verify the world transfer is pixel-identical with actual layered foreground
+    // blending, pane clips, odd dimensions, layout shrink and separate cameras.
+    for(const seed of [42,15]) {
+        const wo=new RefWorld(game,seed),wn=new World(game,seed);
+        for(const [w,h] of [[1280,720],[1279,719]]) {
+            resize(w,h);
+            for(const n of [8,7,5,4,3,2]) {
+                const rects=computeSplitLayout(n,w,h);
+                const views=rects.map((r,i)=>({rect:r,camera:{x:1234+i*777,y:-321-i*654,viewport:r,scale:.35+i*.13},
+                    player:{vx:600-i*60,vy:-220,boostIntensity:i%2}}));
+                for(const c of [a,b]){c.fillStyle='#000';c.fillRect(0,0,w,h);}
+                const front=(ctx,v)=>{
+                    ctx.globalCompositeOperation='screen';ctx.fillStyle='rgba(60,200,255,.4)';ctx.fillRect(v.rect.x+12,v.rect.y+17,100,70);
+                    ctx.globalCompositeOperation='lighter';ctx.fillStyle='rgba(255,80,30,.4)';ctx.fillRect(v.rect.x+45,v.rect.y+55,90,80);
+                    ctx.globalCompositeOperation='source-over';ctx.font='20px sans-serif';ctx.fillStyle='#eee';ctx.fillText('NOVA',v.rect.x+14,v.rect.y+42);
+                };
+                for(const v of views){
+                    game.worldScale=v.camera.scale;a.save();a.beginPath();a.rect(v.rect.x,v.rect.y,v.rect.w,v.rect.h);a.clip();
+                    wo.draw(a,v.camera,v.player,12.37);front(a,v);a.restore();
+                }
+                wn.drawViews(b,views,12.37);
+                for(const v of views){
+                    game.worldScale=v.camera.scale;b.save();b.beginPath();b.rect(v.rect.x,v.rect.y,v.rect.w,v.rect.h);b.clip();
+                    wn.draw(b,v.camera,v.player,12.37,true);front(b,v);b.restore();
+                }
+                compare('world seed='+seed+' '+w+'x'+h+' panes='+n);
+            }
+        }
+        wo.gl.getExtension('WEBGL_lose_context')?.loseContext();wn.gl.getExtension('WEBGL_lose_context')?.loseContext();
+    }
+    // Context restoration must invalidate storage and redraw fresh source pixels.
+    const ext=current.gl.getExtension('WEBGL_lose_context');
+    if(ext) {
+        ext.loseContext();
+        await new Promise(resolve=>setTimeout(resolve,100));
+        if(current._active) throw Error('Lost overlay remained visible');
+        const restored=new Promise(resolve=>current.canvas.addEventListener('webglcontextrestored',resolve,{once:true}));
+        ext.restoreContext();await restored;
+        resize(640,360);pattern([{x:0,y:0,w:640,h:360}]);
+        checkFX('context restored',{ripple:{x:320,y:180,cx:320,cy:180,r:50,strength:1,t:.2}});
+    }
+    // Run the actual Game/PlayingState/menus, not only isolated draw helpers.
+    const { Game } = await import('../../src/engine/game.js');
+    const { PlayingState } = await import('../../src/states/playingState.js');
+    const { MenuState } = await import('../../src/states/menuState.js');
+    const { SHIPS } = await import('../../src/data/ships.js');
+    const liveCanvas=document.createElement('canvas');document.body.appendChild(liveCanvas);
+    const live=new Game(liveCanvas);
+    live.assets=assets;live._atlasReady=Promise.resolve();live._sfxReady=Promise.resolve();
+    const playing=new PlayingState(live,SHIPS[0]);live.setState(playing);
+    live.screenFx=new ScreenFX(live);
+    const smoke=[];
+    for(const n of [1,4,8,3,1]) {
+        playing.setCoopCount(n);
+        for(let f=0;f<3;f++) {
+            live.input.update(1/60);playing.update(1/60);
+            live.ctx.fillStyle='#000';live.ctx.fillRect(0,0,live.width,live.height);
+            playing.draw(live.ctx);
+            const fx=playing.getScreenFx();
+            if(fx.panes)live.screenFx.renderPanes(fx.panes,5);else live.screenFx.render(fx,5);
+        }
+        smoke.push('gameplay '+n+' pilots');
+    }
+    playing.paused=true;playing.draw(live.ctx);smoke.push('pause');
+    live.resize();playing.draw(live.ctx);smoke.push('resize');
+    const stream=liveCanvas.captureStream(0);
+    const track=stream.getVideoTracks()[0];
+    if(!track)throw Error('Game canvas capture track missing');
+    if(track.requestFrame)track.requestFrame();
+    track.stop();smoke.push('base-canvas capture API');
+    const menu=new MenuState(live);live.setState(menu);
+    await new Promise(resolve=>setTimeout(resolve,50));
+    menu.update(1/60);menu.draw(live.ctx);smoke.push('return to menu');
+    const shot=liveCanvas.toDataURL('image/png');
+    if(shot.length<1000)throw Error('Empty gameplay/menu capture');
+    // Game.destroy clears shared assets after all pixel comparisons have finished.
+    live.destroy();liveCanvas.remove();
+
+    current.destroy();
+    if(current.canvas||current.gl)throw Error('Destroy retained renderer');
+    return {renderer,cases,failures,maxDelta,failuresByCase,metrics,smoke,multiUpload};
+};
+</script>

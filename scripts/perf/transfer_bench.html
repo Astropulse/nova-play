@@ -1,0 +1,83 @@
+<!DOCTYPE html><meta charset="utf-8"><title>NOVA renderer transfer benchmark</title>
+<script type="module">
+import { AssetLoader } from '../../src/engine/assetLoader.js';
+import { World } from '../../src/world/world.js';
+import { ScreenFX } from '../../src/engine/screenFx.js';
+import { computeSplitLayout } from '../../src/world/splitScreen.js';
+window.runTransferBench = async () => {
+    const assets = new AssetLoader(); await assets.loadAtlas('../../Assets/atlas/atlas.json');
+    const canvas = document.createElement('canvas'), ctx = canvas.getContext('2d');
+    const game = { canvas, assets, worldScale: 2, currentState: {} };
+    const world = new World(game, 42), fx = new ScreenFX(game); fx.warm();
+    const gl = fx.gl, wg = world.gl;
+    const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+    const renderer = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : 'unknown';
+    const timer = gl.getExtension('EXT_disjoint_timer_query_webgl2');
+    let timed = false, queries = [];
+    const ship = assets.get('enemy_ship_0').canvas;
+    const originalDrawImage = ctx.drawImage.bind(ctx);
+    let copies = 0;
+    ctx.drawImage = (image,...args) => { if(image===world.glCanvas)copies++;originalDrawImage(image,...args); };
+    const rows = [];
+    for(const [w,h] of [[1280,720],[2560,1440]]) {
+        canvas.width=w;canvas.height=h;
+        for(const scenario of ['solo-shield','solo-global','coop4-boost','coop4-global','coop8-shield','coop4-multishield','coop8-multishield']) {
+            const n=scenario.includes('coop4')?4:scenario.includes('coop8')?8:1;
+            const rects=computeSplitLayout(n,w,h);
+            const views=rects.map((r,i)=>({rect:r,camera:{x:1200+i*400,y:-300,scale:n===1?2:.8,viewport:r},
+                player:{vx:600,vy:-220,boostIntensity:.8}}));
+            const effects=rects.map((r,i)=>{
+                const x=r.x+r.w/2,y=r.y+r.h/2;
+                if(scenario.includes('global'))return {rect:r,crt:.25,warp:.15};
+                if(scenario.includes('multishield'))return {rect:r,ripple:{x:x+25,y,cx:x,cy:y,r:70,strength:1,t:.17}};
+                if(i)return {rect:r,crt:0,warp:0};
+                if(scenario.includes('shield'))return {rect:r,ripple:{x:x+25,y,cx:x,cy:y,r:70,strength:1,t:.17}};
+                return {rect:r,flow:{x,y,dirX:.8,dirY:.6,strength:1}};
+            });
+            const render=(bounded,t)=>{
+                copies=0;ctx.fillStyle='#000';ctx.fillRect(0,0,w,h);
+                const prepared=bounded&&n>1&&world.drawViews(ctx,views,t);
+                for(const v of views){
+                    game.worldScale=v.camera.scale;ctx.save();ctx.beginPath();ctx.rect(v.rect.x,v.rect.y,v.rect.w,v.rect.h);ctx.clip();
+                    world.draw(ctx,v.camera,v.player,t,prepared);
+                    for(let i=0;i<120;i++)ctx.drawImage(ship,v.rect.x+(i*167+t*4)%v.rect.w,v.rect.y+i*211%v.rect.h,48,48);
+                    ctx.font='24px sans-serif';ctx.fillStyle='#9fe8ff';ctx.fillText('NOVA TRANSFER PROBE',v.rect.x+20,v.rect.y+30);ctx.restore();
+                }
+                const query = timed && timer ? gl.createQuery() : null;
+                if(query)gl.beginQuery(timer.TIME_ELAPSED_EXT,query);
+                fx.boundedTransfers=bounded;
+                fx.disjointUploads=bounded;
+                if(n===1)fx.render(effects[0],t);else fx.renderPanes(effects,t);
+                if(query){gl.endQuery(timer.TIME_ELAPSED_EXT);queries.push(query);}
+            };
+            for(const bounded of [false,true,true,false]) {
+                timed=false;queries=[];
+                for(let i=0;i<8;i++)render(bounded,i);
+                wg.finish();gl.finish();
+                const samples=[];timed=true;
+                for(let i=0;i<50;i++){
+                    await new Promise(resolve=>setTimeout(resolve,0));
+                    const begin=performance.now();render(bounded,i*.016);
+                    const submit=performance.now();gl.finish();wg.finish();
+                    samples.push({submit:submit-begin,complete:performance.now()-begin});
+                }
+                timed=false;
+                let fxGpuMedian=null;
+                if(queries.length){
+                    const deadline=performance.now()+3000;
+                    while(!gl.getQueryParameter(queries.at(-1),gl.QUERY_RESULT_AVAILABLE)&&performance.now()<deadline)await new Promise(r=>setTimeout(r,5));
+                    if(!gl.getParameter(timer.GPU_DISJOINT_EXT)&&gl.getQueryParameter(queries.at(-1),gl.QUERY_RESULT_AVAILABLE)){
+                        const values=queries.map(q=>gl.getQueryParameter(q,gl.QUERY_RESULT)/1e6).sort((a,b)=>a-b);fxGpuMedian=values[Math.floor(values.length/2)];
+                    }
+                    for(const q of queries)gl.deleteQuery(q);
+                }
+                const med=k=>samples.map(s=>s[k]).sort((a,b)=>a-b)[25];
+                const row={size:[w,h],scenario,bounded,worldTransfers:copies,uploadPixels:fx.lastUploadPixels,uploadRects:fx.lastUploadRects,drawPixels:fx.lastDrawPixels,
+                    submitMedian:med('submit'),completeMedian:med('complete'),fxGpuMedian};
+                rows.push(row);console.log('TRANSFER '+JSON.stringify(row));
+            }
+        }
+    }
+    return {renderer,note:'Hidden Electron, synchronized microframes, not game FPS. Both A/B paths render the same scene and effects.',rows};
+};
+</script>

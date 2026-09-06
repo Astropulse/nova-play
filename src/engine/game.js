@@ -35,6 +35,16 @@ export class Game {
         // touch-control layout, read live by player.js / touchControls.js.
         loadBindings();
 
+        // GPU foreground layer (world/spriteBatch.js, perf audit 2 ticket 9
+        // prototype): PlayingState draws the bottom of its painter stack as an
+        // instanced batch over the starfield instead of hundreds of Canvas
+        // drawImage calls. Renderer switch for A/B checks: set
+        // localStorage nova_gpuscene = '0' (or game.gpuScene = false) to keep
+        // the pure Canvas path.
+        let gpuScene = true;
+        try { gpuScene = localStorage.getItem('nova_gpuscene') !== '0'; } catch (e) { /* no storage */ }
+        this.gpuScene = gpuScene;
+
         // Dynamic scaling
         this.worldScale = 2; // In-game world
         this.worldScaleModifier = 1.0; // Base FOV scale
@@ -47,6 +57,9 @@ export class Game {
 
         // Subsystems
         this.assets = new AssetLoader();
+        // Phones hold far less GPU/RAM headroom for prescaled animation
+        // surfaces (see assetLoader.js animation budget) — halve it there.
+        if (this.touchMode) this.assets.animBudgetBytes = 96 * 1048576;
         this.input = new InputManager(canvas);
         this.input.touch.enabled = this.touchMode;
         this.sounds = new SoundManager();
@@ -461,6 +474,10 @@ export class Game {
                 }
             }
         }
+
+        // Animation surface budget housekeeping (prefetch next frames,
+        // release long-idle animations) — see assetLoader.js.
+        if (this.assets && this.assets.tick) this.assets.tick(now);
 
         // --- Recording Timer ---
         if (!this._recIndicator) {
@@ -1294,6 +1311,8 @@ export class Game {
 
         // Remove global listeners
         window.removeEventListener('resize', this._resizeListener);
+
+        if (this.screenFx) { this.screenFx.destroy(); this.screenFx = null; }
 
         // Destroy subsystems (explicit nulling helps GC)
         if (this.assets) { this.assets.destroy(); this.assets = null; }

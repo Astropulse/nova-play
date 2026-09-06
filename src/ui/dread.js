@@ -470,6 +470,13 @@ export class DreadDirector {
     // touch the backdrop.
     // The Eye is the deepest thing there is — drawn alone, immediately on top
     // of the bare starfield, beneath even the ambience weather.
+    // True when drawEye()/drawBackground() would emit anything this frame
+    // (they sit between the starfield and rubble in the painter order; the GPU
+    // foreground layer needs to know).
+    isDrawingBackdrop() {
+        return !!this.eye || this.patches.length > 0 || this.shadows.length > 0;
+    }
+
     drawEye(ctx) {
         if (this.eye) {
             const pupilFrames = this.game.assets.get('knowledge_eye');

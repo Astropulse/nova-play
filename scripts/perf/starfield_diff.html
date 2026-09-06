@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<!--
+  Starfield differential harness (see scripts/perf/starfield_diff.mjs, which
+  launches this page in a hidden Electron window). Renders the SAME seeded
+  World through two implementations of src/world/world.js — the working-tree
+  file and a reference copy extracted from git at src/world/.world_ref.tmp.js —
+  for a matrix of cameras / boost intensities / world scales / star culls /
+  split-screen panes / black-hole seeds, and pixel-compares the results.
+  Any nonzero diff means the renderer change is NOT visually neutral.
+-->
+<meta charset="utf-8">
+<title>Starfield diff</title>
+<body style="background:#000;margin:0">
+<script type="module">
+import { AssetLoader } from '../../src/engine/assetLoader.js';
+import { SETTINGS } from '../../src/engine/settings.js';
+import { World as WorldNew } from '../../src/world/world.js';
+import { World as WorldRef } from '../../src/world/.world_ref.tmp.js';
+
+const log = (m) => console.log(m);
+try {
+    const assets = new AssetLoader();
+    await assets.loadAtlas('../../Assets/atlas/atlas.json');
+
+    const W = 1280, H = 720;
+    const mk = () => {
+        const c = document.createElement('canvas');
+        c.width = W; c.height = H;
+        document.body.appendChild(c);
+        return c.getContext('2d', { willReadFrequently: true });
+    };
+    const ctxRef = mk(), ctxNew = mk();
+    const game = { assets, worldScale: 2, currentState: {} };
+
+    const cameras = [
+        { x: 0, y: 0 },
+        { x: 2048, y: 2048 },            // wrap seams
+        { x: 123456.7, y: -98765.4 },
+        { x: 5e6, y: -5e6 },             // world extremes (float mod slack)
+    ];
+    const boosts = [0, 0.005, 0.3, 1.0];
+    const scales = [2, 1, 0.5, 0.1, 0.05]; // 0.05 → >64 tiles (chunked draws)
+    const culls = [0, 0.33];
+    const seeds = [42, 43, 15]; // 43/15 generate black holes (source-over)
+
+    let cases = 0, failures = 0;
+    const compare = (label) => {
+        const a = ctxRef.getImageData(0, 0, W, H).data;
+        const b = ctxNew.getImageData(0, 0, W, H).data;
+        let diff = 0, maxD = 0, lit = 0;
+        for (let i = 0; i < a.length; i += 4) {
+            if (a[i] | a[i + 1] | a[i + 2]) lit++;
+            const d = Math.max(Math.abs(a[i] - b[i]), Math.abs(a[i + 1] - b[i + 1]),
+                Math.abs(a[i + 2] - b[i + 2]), Math.abs(a[i + 3] - b[i + 3]));
+            if (d) { diff++; if (d > maxD) maxD = d; }
+        }
+        cases++;
+        if (diff) failures++;
+        log(`${diff ? 'FAIL' : 'PASS'}  ${label}  lit=${lit} diff=${diff} maxDelta=${maxD}`);
+    };
+    const drawBoth = (wa, wb, camera, player, t) => {
+        for (const c of [ctxRef, ctxNew]) { c.setTransform(1, 0, 0, 1, 0, 0); c.globalAlpha = 1; c.fillStyle = '#000'; c.fillRect(0, 0, W, H); }
+        wa.draw(ctxRef, camera, player, t);
+        wb.draw(ctxNew, camera, player, t);
+    };
+
+    for (const seed of seeds) {
+        const wa = new WorldRef(game, seed);
+        const wb = new WorldNew(game, seed);
+        const player = { boostIntensity: 0, vx: 600, vy: -220 };
+        for (const ws of scales) {
+            game.worldScale = ws;
+            for (const cull of culls) {
+                wa.starCull = wb.starCull = cull;
+                for (const cam of cameras) {
+                    for (const bi of boosts) {
+                        player.boostIntensity = bi;
+                        drawBoth(wa, wb, { x: cam.x, y: cam.y }, player, 10.37);
+                        compare(`seed=${seed} ws=${ws} cull=${cull} cam=(${cam.x},${cam.y}) boost=${bi}`);
+                    }
+                }
+            }
+        }
+        // Split-screen: two panes, drawn in sequence into the same canvas.
+        game.worldScale = 2;
+        wa.starCull = wb.starCull = 0;
+        for (const bi of [0, 1]) {
+            player.boostIntensity = bi;
+            for (const c of [ctxRef, ctxNew]) { c.fillStyle = '#000'; c.fillRect(0, 0, W, H); }
+            const panes = [
+                { x: 100, y: 200, viewport: { x: 0, y: 0, w: W / 2, h: H } },
+                { x: -4000, y: 900, viewport: { x: W / 2, y: 0, w: W / 2, h: H } },
+            ];
+            for (const cam of panes) { wa.draw(ctxRef, cam, player, 3.3); }
+            for (const cam of panes) { wb.draw(ctxNew, cam, player, 3.3); }
+            compare(`seed=${seed} split-screen boost=${bi}`);
+        }
+        // Reduced-particles star cull baseline.
+        SETTINGS.reducedParticles = true;
+        drawBoth(wa, wb, { x: 777, y: -777 }, player, 1.1);
+        compare(`seed=${seed} reducedParticles`);
+        SETTINGS.reducedParticles = false;
+    }
+    log(`DONE cases=${cases} failures=${failures}`);
+} catch (e) {
+    log(`ERROR ${e && e.stack || e}`);
+    log('DONE cases=0 failures=1');
+}
+</script>
+</body>

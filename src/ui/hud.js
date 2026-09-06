@@ -686,14 +686,37 @@ export class HUD {
                     this.expGlowCanvas.height = barH;
                 }
                 this.expGlowCtx.clearRect(0, 0, barW, barH);
-                
-                // Draw the filled segment silhouette
-                this.draw3Slice(this.expGlowCtx, fullAsset, 0, 0, barW, barH);
-                this.expGlowCtx.save();
-                this.expGlowCtx.globalCompositeOperation = 'destination-in';
-                this.expGlowCtx.fillStyle = 'white';
-                this.expGlowCtx.fillRect(0, 0, fillW, barH);
-                this.expGlowCtx.restore();
+
+                // The filled segment silhouette depends only on the sprite,
+                // the bar size and the integer fill width, so it lives in its
+                // own immutable surface and is rebuilt only when one of those
+                // changes. Copying it in (same size, integer offset, onto a
+                // cleared canvas) is an exact pixel copy of what re-slicing +
+                // clipping produced every frame. The wave below mutates the
+                // working copy, never the cached mask.
+                if (!this._expMaskCanvas) {
+                    this._expMaskCanvas = document.createElement('canvas');
+                    this._expMaskCtx = this._expMaskCanvas.getContext('2d');
+                    this._expMaskKey = '';
+                }
+                const maskKey = `${barW}|${barH}|${fillW}`;
+                if (this._expMaskKey !== maskKey || this._expMaskAsset !== fullAsset) {
+                    if (this._expMaskCanvas.width !== barW || this._expMaskCanvas.height !== barH) {
+                        this._expMaskCanvas.width = barW;
+                        this._expMaskCanvas.height = barH;
+                    } else {
+                        this._expMaskCtx.clearRect(0, 0, barW, barH);
+                    }
+                    this.draw3Slice(this._expMaskCtx, fullAsset, 0, 0, barW, barH);
+                    this._expMaskCtx.save();
+                    this._expMaskCtx.globalCompositeOperation = 'destination-in';
+                    this._expMaskCtx.fillStyle = 'white';
+                    this._expMaskCtx.fillRect(0, 0, fillW, barH);
+                    this._expMaskCtx.restore();
+                    this._expMaskKey = maskKey;
+                    this._expMaskAsset = fullAsset;
+                }
+                this.expGlowCtx.drawImage(this._expMaskCanvas, 0, 0);
 
                 // 2. SHAPE-ACCURATE BLOOM (Concentrated where the wave is)
                 // The two per-frame ctx.filter blur passes are the single

@@ -19,6 +19,7 @@ export class SpatialHash {
         this.inv = 1 / cellSize;
         this.cells = new Map(); // packed cell key -> entity[]
         this._pool = [];        // reusable cell arrays
+        this._stamp = 0;        // queryBoxInto dedupe counter
     }
 
     // Pack a signed cell coordinate pair into one integer key. The 16-bit mask
@@ -59,6 +60,57 @@ export class SpatialHash {
             }
             arr.push(it);
         }
+    }
+
+    // Insert one entity into every cell its axis-aligned box overlaps. Use this
+    // (after clear()) instead of rebuild() when entities have real extents
+    // (asteroid radius, enemy hull ellipse): a big body then lands in each
+    // cell it touches, so a queryBoxInto() of any size finds it without the
+    // caller having to pad every query by the largest body in the world.
+    // `_shStamp` is reserved on the item for queryBoxInto's dedupe.
+    insertBox(item, minX, minY, maxX, maxY) {
+        const inv = this.inv;
+        const cells = this.cells;
+        const pool = this._pool;
+        const minCx = Math.floor(minX * inv), maxCx = Math.floor(maxX * inv);
+        const minCy = Math.floor(minY * inv), maxCy = Math.floor(maxY * inv);
+        for (let cx = minCx; cx <= maxCx; cx++) {
+            for (let cy = minCy; cy <= maxCy; cy++) {
+                const k = ((cx & 0xFFFF) << 16) | (cy & 0xFFFF);
+                let arr = cells.get(k);
+                if (arr === undefined) {
+                    arr = pool.length ? pool.pop() : [];
+                    cells.set(k, arr);
+                }
+                arr.push(item);
+            }
+        }
+    }
+
+    // Append every entity registered (via insertBox) in a cell that overlaps
+    // the query box into `out` (cleared first) and return it. An entity that
+    // spans several of the visited cells is appended ONCE (per-query stamp on
+    // `item._shStamp`). Broad-phase only: the caller runs the exact test.
+    queryBoxInto(minX, minY, maxX, maxY, out) {
+        out.length = 0;
+        const inv = this.inv;
+        const cells = this.cells;
+        const stamp = ++this._stamp;
+        const minCx = Math.floor(minX * inv), maxCx = Math.floor(maxX * inv);
+        const minCy = Math.floor(minY * inv), maxCy = Math.floor(maxY * inv);
+        for (let cx = minCx; cx <= maxCx; cx++) {
+            for (let cy = minCy; cy <= maxCy; cy++) {
+                const arr = cells.get(((cx & 0xFFFF) << 16) | (cy & 0xFFFF));
+                if (arr === undefined) continue;
+                for (let i = 0; i < arr.length; i++) {
+                    const it = arr[i];
+                    if (it._shStamp === stamp) continue;
+                    it._shStamp = stamp;
+                    out.push(it);
+                }
+            }
+        }
+        return out;
     }
 
     // Append every entity whose cell overlaps the query box [x±r, y±r] into

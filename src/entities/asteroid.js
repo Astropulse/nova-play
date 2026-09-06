@@ -1,6 +1,7 @@
 // Dynamic scaling is now handled via game.worldScale
 
 import { SETTINGS } from '../engine/settings.js';
+import { BLEND_SRC_OVER, BLEND_LIGHTER, BLEND_SCREEN } from '../world/spriteBatch.js';
 
 // Asteroid sizes — maps to asset keys, stats, and split behavior
 const ASTEROID_TYPES = {
@@ -89,7 +90,21 @@ function getCachedRadius(img, key) {
 
 /// Utility to slice a sprite into Voronoi-based shards — 'Fast' mode uses logical dimensions for speed
 export class VoronoiSlicer {
+    // Synchronous slice — drains sliceSteps, so the output is identical to a
+    // build that was spread over several prewarm pump calls.
     static slice(asset, numPieces) {
+        const it = VoronoiSlicer.sliceSteps(asset, numPieces);
+        for (;;) {
+            const r = it.next();
+            if (r.done) return r.value;
+        }
+    }
+
+    // Resumable slice: draws the seeds up front (same RNG order as before),
+    // then yields after every partitioned pixel row and every fragment
+    // canvas so a caller can bound how long one main-thread step runs.
+    // Returns the fragment list from the final next().
+    static *sliceSteps(asset, numPieces) {
         if (!asset) return [];
         const img = asset.canvas || asset;
 
@@ -151,6 +166,7 @@ export class VoronoiSlicer {
                 if (y > s.maxY) s.maxY = y;
                 s.pixels.push({ x, y, r: data[idx], g: data[idx + 1], b: data[idx + 2], a: a });
             }
+            yield;
         }
 
         // 4. Create a canvas fragment for each shard
@@ -158,6 +174,7 @@ export class VoronoiSlicer {
         for (let i = 0; i < numPieces; i++) {
             const s = shardData[i];
             if (s.pixels.length < 2) continue;
+            yield;
 
             const sw = (s.maxX - s.minX) + 1;
             const sh = (s.maxY - s.minY) + 1;
@@ -196,12 +213,48 @@ export class VoronoiSlicer {
 // layout per sprite is shared by every death; velocities/spins/rotations stay
 // per-death random, which preserves nearly all the visual variety.
 const _shatterCache = new Map();
+// key -> in-flight sliceSteps iterator started by prewarmShatterSteps.
+const _shatterPending = new Map();
 export function getCachedShatter(asset, key, numPieces) {
     if (!asset) return [];
     if (key && _shatterCache.has(key)) return _shatterCache.get(key);
-    const frags = VoronoiSlicer.slice(asset, numPieces);
+    let frags;
+    const pending = key ? _shatterPending.get(key) : undefined;
+    if (pending) {
+        // A prewarm build is part-way through: finish THAT one synchronously
+        // (its seeds are already drawn) rather than starting a second layout.
+        for (;;) {
+            const r = pending.next();
+            if (r.done) { frags = r.value; break; }
+        }
+        _shatterPending.delete(key);
+    } else {
+        frags = VoronoiSlicer.slice(asset, numPieces);
+    }
     if (key) _shatterCache.set(key, frags);
     return frags;
+}
+
+// Resumable warm-up of a death-shatter layout (engine/prewarm.js pumps it a
+// few ms at a time). The layout is published to the cache in one step when
+// complete; a synchronous getCachedShatter that lands mid-build drains the
+// same iterator, so both paths yield the identical first-built layout.
+export function* prewarmShatterSteps(asset, key, numPieces) {
+    if (!asset || !key || _shatterCache.has(key)) return;
+    let it = _shatterPending.get(key);
+    if (!it) {
+        it = VoronoiSlicer.sliceSteps(asset, numPieces);
+        _shatterPending.set(key, it);
+    }
+    while (!_shatterCache.has(key)) {
+        const r = it.next();
+        if (r.done) {
+            if (!_shatterCache.has(key)) _shatterCache.set(key, r.value);
+            _shatterPending.delete(key);
+            break;
+        }
+        yield;
+    }
 }
 
 // Settings-aware shatter for PURE-COSMETIC debris (enemy death shards etc.).
@@ -228,6 +281,8 @@ export function debrisShatter(asset, key, numPieces) {
 // Every entity sharing a sprite shares one cell layout; each entity keeps its
 // own removed-set, so the slice only ever runs once per sprite.
 const _fractureModelCache = new Map();
+// key -> { model, it } for a chip layout that prewarmSteps is building.
+const _fracturePending = new Map();
 
 // Target chunk size in logical pixels. Kept constant so a big sprite just gets
 // MORE chunks rather than bigger ones — chips look the same scale everywhere.
@@ -249,11 +304,45 @@ export class FractureModel {
         if (!SETTINGS.voronoiFractures) return null;
         let model = _fractureModelCache.get(key);
         if (model === undefined) {
-            model = new FractureModel(asset);
-            if (!model.cells.length) model = null;
-            _fractureModelCache.set(key, model);
+            const pending = _fracturePending.get(key);
+            if (pending) {
+                // Prewarm was part-way through this sprite: finish that build
+                // synchronously (same seeds) instead of starting another.
+                for (;;) { if (pending.it.next().done) break; }
+                FractureModel._publish(key, pending);
+                model = _fractureModelCache.get(key);
+            } else {
+                model = new FractureModel(asset);
+                if (!model.cells.length) model = null;
+                _fractureModelCache.set(key, model);
+            }
         }
         return model;
+    }
+
+    // Resumable warm-up (engine/prewarm.js): builds the chip layout a few
+    // pixel rows per step into a private model and publishes it to the cache
+    // in one step when complete. Idempotent; a cache hit returns at once.
+    static *prewarmSteps(asset, key) {
+        if (!asset || !SETTINGS.voronoiFractures || _fractureModelCache.has(key)) return;
+        let pending = _fracturePending.get(key);
+        if (!pending) {
+            const model = new FractureModel(null);
+            pending = { model, it: FractureModel._buildSteps(asset, model) };
+            _fracturePending.set(key, pending);
+        }
+        while (!_fractureModelCache.has(key)) {
+            const r = pending.it.next();
+            if (r.done) { FractureModel._publish(key, pending); break; }
+            yield;
+        }
+    }
+
+    static _publish(key, pending) {
+        if (!_fractureModelCache.has(key)) {
+            _fractureModelCache.set(key, pending.model.cells.length ? pending.model : null);
+        }
+        _fracturePending.delete(key);
     }
 
     // Single-pass build: ONE pixel readback of the sprite, partition + edge
@@ -261,17 +350,29 @@ export class FractureModel {
     // (The previous implementation ran VoronoiSlicer and then re-read every
     // cell canvas with getImageData — up to 320 synchronous readbacks, a
     // 100ms+ frame stall the first time each sprite got shot.)
+    // Synchronous: drains _buildSteps. `new FractureModel(null)` makes an
+    // empty shell for prewarmSteps to fill.
     constructor(asset) {
+        this.cells = [];
+        if (!asset) return;
+        const it = FractureModel._buildSteps(asset, this);
+        for (;;) { if (it.next().done) break; }
+    }
+
+    // The build itself, resumable: yields after every partitioned pixel row
+    // (the seed-count-bound inner loop is the expensive part) so the prewarm
+    // pump can cap each step. Seeds are drawn up front in the original order.
+    static *_buildSteps(asset, model) {
         const img = asset.canvas || asset;
-        this.lw = asset.width || img.width;
-        this.lh = asset.height || img.height;
+        model.lw = asset.width || img.width;
+        model.lh = asset.height || img.height;
         // Physical (prescaled) dimensions — composite at this resolution so a
         // chipped sprite matches the crispness of the un-chipped one exactly.
-        this.pw = img.width;
-        this.ph = img.height;
-        this.prescale = asset.prescale || (this.lw ? img.width / this.lw : 1);
+        model.pw = img.width;
+        model.ph = img.height;
+        model.prescale = asset.prescale || (model.lw ? img.width / model.lw : 1);
 
-        const lw = this.lw, lh = this.lh;
+        const lw = model.lw, lh = model.lh;
 
         // Piece count scales with area → constant chunk size regardless of object.
         const numPieces = Math.max(12, Math.min(320, Math.round((lw * lh) / (CHUNK_PX * CHUNK_PX))));
@@ -326,6 +427,7 @@ export class FractureModel {
                     }
                 }
             }
+            yield;
         }
 
         // Describe cells WITHOUT creating canvases. Canvas elements are the
@@ -333,7 +435,7 @@ export class FractureModel {
         // real canvas once it actually breaks off or gets erased from the
         // composite — a handful per hit — so they materialize lazily in
         // ensureCanvas() from the retained sprite pixels.
-        this._spriteData = data;
+        model._spriteData = data;
         const cells = [];
         let maxDist = 1;
         let edgeCount = 0;
@@ -357,10 +459,10 @@ export class FractureModel {
             if (cell.dist > maxDist) maxDist = cell.dist;
             cells.push(cell);
         }
-        this.cells = cells;
-        this.maxDist = maxDist;
+        model.cells = cells;
+        model.maxDist = maxDist;
         // Only the silhouette shell is ever removable → surface damage only.
-        this.maxRemovable = edgeCount;
+        model.maxRemovable = edgeCount;
     }
 
     // Create a cell's canvas on first use (break-off debris / composite erase).
@@ -570,6 +672,18 @@ export class Rubble {
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         ctx.globalAlpha = 1;
     }
+
+    // GPU-layer twin of draw() (world/spriteBatch.js). `smooth` mirrors the
+    // canvas's base imageSmoothingEnabled. Keep in step with draw().
+    emit(batch, camera, smooth) {
+        if (!this.alive || !this.img) return;
+        const sx = this.worldX * camera.wtsScale + camera.wtsOffX;
+        const sy = this.worldY * camera.wtsScale + camera.wtsOffY;
+        const w = this.img.width * this.game.worldScale;
+        const h = this.img.height * this.game.worldScale;
+        const alpha = Math.max(0, this.lifetime / this.maxLifetime);
+        batch.sprite(this.img.canvas || this.img, sx, sy, w, h, this.rotation, alpha, BLEND_SRC_OVER, !smooth);
+    }
 }
 
 // ProceduralDebris — similar to Rubble but uses a passed-in canvas/image (used for ship breakup)
@@ -623,6 +737,18 @@ export class ProceduralDebris {
         ctx.imageSmoothingEnabled = false;
         ctx.drawImage(canvas, -w / 2, -h / 2, w, h);
         ctx.restore();
+    }
+
+    // GPU-layer twin of draw() — shards always sample nearest. Keep in step.
+    emit(batch, camera) {
+        if (!this.alive || !this.img) return;
+        const sx = this.worldX * camera.wtsScale + camera.wtsOffX;
+        const sy = this.worldY * camera.wtsScale + camera.wtsOffY;
+        const canvas = this.img.canvas || this.img;
+        const w = canvas.width * this.game.worldScale;
+        const h = canvas.height * this.game.worldScale;
+        const alpha = this.noFade ? 1.0 : Math.max(0, this.lifetime / this.maxLifetime);
+        batch.sprite(canvas, sx, sy, w, h, this.rotation, alpha, BLEND_SRC_OVER, true);
     }
 }
 
@@ -779,6 +905,34 @@ export class Scrap {
         ctx.drawImage(this.img.canvas || this.img, -w / 2, -h / 2, w, h);
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         ctx.globalAlpha = 1;
+    }
+
+    // GPU-layer twin of draw(): gold vacuum tracer (lighter, butt-capped line
+    // as a rotated quad) then the sprite. Keep in step with draw().
+    emit(batch, camera, smooth) {
+        if (!this.alive || !this.img) return;
+        const sx = this.worldX * camera.wtsScale + camera.wtsOffX;
+        const sy = this.worldY * camera.wtsScale + camera.wtsOffY;
+        const w = this.img.width * this.game.worldScale;
+        const h = this.img.height * this.game.worldScale;
+        let alpha = 1.0;
+        if (this.lifetime < 5.0) alpha = Math.max(0, this.lifetime / 5.0);
+        if (this.suckTimer > 0.05) {
+            const speed = Math.sqrt(this.vx * this.vx + this.vy * this.vy);
+            if (speed > 250) {
+                const ws = this.game.worldScale;
+                const trail = Math.min(0.06, 18 / speed);
+                const ex = sx - this.vx * trail * ws, ey = sy - this.vy * trail * ws;
+                const dx = ex - sx, dy = ey - sy;
+                const len = Math.sqrt(dx * dx + dy * dy);
+                if (len > 0) {
+                    // #ffd24a at alpha*0.4, lineWidth max(1, ws*0.6)
+                    batch.rect((sx + ex) / 2, (sy + ey) / 2, len, Math.max(1, ws * 0.6), Math.atan2(dy, dx),
+                        1, 210 / 255, 74 / 255, alpha * 0.4, BLEND_LIGHTER);
+                }
+            }
+        }
+        batch.sprite(this.img.canvas || this.img, sx, sy, w, h, this.rotation, alpha, BLEND_SRC_OVER, !smooth);
     }
 }
 
@@ -1003,6 +1157,22 @@ export class ItemPickup {
         ctx.stroke();
 
         ctx.restore();
+    }
+
+    // GPU-layer twin of draw(): the 1.2x sprite then the 2px white ring at
+    // 0.3 alpha. Keep in step with draw().
+    emit(batch, camera, smooth) {
+        if (!this.alive) return;
+        if (this._isFlashOff()) return;
+        const frame = this.game.getAnimationFrame(this.assetKey);
+        if (!frame) return;
+        const sx = this.worldX * camera.wtsScale + camera.wtsOffX;
+        const sy = this.worldY * camera.wtsScale + camera.wtsOffY;
+        const w = (frame.width || 16) * this.game.worldScale;
+        const h = (frame.height || 16) * this.game.worldScale;
+        const renderScale = 1.2;
+        batch.sprite(frame.canvas || frame, sx, sy, w * renderScale, h * renderScale, this.rotation, 1, BLEND_SRC_OVER, !smooth);
+        batch.ring(sx, sy, Math.max(w, h) * 0.7, 1, 1, 1, 1, 0.3, BLEND_SRC_OVER);
     }
 }
 
@@ -1490,6 +1660,41 @@ export class ExpOrb {
         ctx.drawImage(glow.canvas, -glowW / 2, -glowH / 2, glowW, glowH);
 
         ctx.restore();
+    }
+
+    // GPU-layer twin of draw(): screen-blended trail ghosts then the cached
+    // glow at the spawn scale. Keep in step with draw().
+    emit(batch, camera, smooth) {
+        if (!this.alive) return;
+        const asset = this.game.assets.get(this.assetKey);
+        if (!asset || !Array.isArray(asset)) return;
+        const frameIndex = Math.floor((this.time * 1000 + this.animOffset) / this.frameDuration) % asset.length;
+        const frameData = asset[frameIndex];
+        const frame = frameData.canvas || frameData;
+        const sx = this.worldX * camera.wtsScale + camera.wtsOffX;
+        const sy = this.worldY * camera.wtsScale + camera.wtsOffY;
+        const w = (frameData.width || 12) * this.game.worldScale;
+        const h = (frameData.height || 12) * this.game.worldScale;
+        const nearest = !smooth;
+        const hLen = this._histLen || 0;
+        const hMax = this.maxHistory;
+        const wtsS = camera.wtsScale, wtsOX = camera.wtsOffX, wtsOY = camera.wtsOffY;
+        for (let i = 0; i < hLen; i++) {
+            const idx = (this._histHead - i + hMax) % hMax;
+            const pos = this.history[idx];
+            if (!pos) continue;
+            const tsx = pos.x * wtsS + wtsOX;
+            const tsy = pos.y * wtsS + wtsOY;
+            const alpha = 0.4 * (1 - i / hLen);
+            const scale = (1 - i / (hLen * 1.5));
+            batch.sprite(frame, tsx, tsy, w * scale, h * scale, 0, alpha, BLEND_SCREEN, nearest);
+        }
+        const spawnScale = Math.min(1.0, this.suckTimer * 5.0);
+        const glow = ExpOrb._getGlowForFrame(frame);
+        const pxScale = w / glow.srcW;
+        const glowW = glow.canvas.width * pxScale * spawnScale;
+        const glowH = glow.canvas.height * pxScale * spawnScale;
+        batch.sprite(glow.canvas, sx, sy, glowW, glowH, 0, 1, BLEND_SCREEN, nearest);
     }
 }
 

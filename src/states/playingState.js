@@ -51,7 +51,7 @@ import { SpaceCache, CacheSpawner, CACHE_STATE, CACHE_CONFIG } from '../entities
 import { CacheUI } from '../ui/cacheUI.js';
 import { LevelUpDialog, applyLevelUpChoice } from '../ui/levelUpDialog.js';
 import { GP } from '../engine/inputManager.js';
-import { ellipseContains, ellipseSweep } from '../engine/collision.js';
+import { ellipseContains, ellipseSweep, hullBoundRadius } from '../engine/collision.js';
 import { RandomStreams, randomSeed, RNG } from '../engine/rng.js';
 import { HostWorldSync, ClientWorldSync, mpQuantityMult, mpHealthMult, mpScrapMult } from '../net/netSync.js';
 import { drawBeamStrip } from '../engine/vfx.js';
@@ -63,7 +63,7 @@ import { CinematicDirector } from '../ui/cinematics.js';
 import { KillStreakFX } from '../ui/killStreak.js';
 import { DreadDirector } from '../ui/dread.js';
 import { Ambience } from '../world/ambience.js';
-import { FRACTURE_PREWARM_KEYS } from '../engine/prewarm.js';
+import { pumpRunPrewarm } from '../engine/prewarm.js';
 import { SpatialHash } from '../engine/spatialHash.js';
 
 // Module-level filters (defined once so the per-frame grid rebuilds allocate no
@@ -95,6 +95,10 @@ function _projSweepHit(proj, cx, cy, cr) {
     const ex = p0x + dx * t - cx, ey = p0y + dy * t - cy;
     return ex * ex + ey * ey < cr * cr;
 }
+
+// Collision-grid candidates come back in cell order; sort by array index so a
+// loop over them visits hulls in the same order the plain array scan did.
+const _byCollIdx = (a, b) => a._collIdx - b._collIdx;
 
 export class PlayingState {
     constructor(game, shipData, { skipInit = false, handoff = null, netRun = null, localCoop = null } = {}) {
@@ -499,6 +503,18 @@ export class PlayingState {
         // counts climb together. Cell size ~ the dodge broad-phase radius.
         this._projGrid = new SpatialHash(1024);
 
+        // Collision broad-phase grids (spatialHash insertBox/queryBoxInto),
+        // rebuilt at the collision phase from POST-movement positions with
+        // each hull's real extent (asteroid radius / enemy ellipse bound).
+        // The AI grids above are built before movement and are point-based,
+        // so they can't serve the collision loops. See _buildCollisionGrids.
+        this._collAstGrid = new SpatialHash(256);
+        this._collEnemyGrid = new SpatialHash(256);
+        this._collAstN = 0;      // asteroids.length when the grid was built
+        this._collEnemyN = 0;    // enemies.length when the grid was built
+        this._collCandidates = [];   // scratch: projectile queries
+        this._collCandidates2 = [];  // scratch: enemy-vs-asteroid queries
+
         // Performance profiler (dev mode only)
         this.perf = new PerfProfiler();
 
@@ -520,31 +536,109 @@ export class PlayingState {
         this._startFracturePrewarm();
     }
 
-    // Background pre-warm of the per-sprite damage models. Each step costs a
-    // few ms; spreading them out keeps the frame budget intact while making
-    // first-hit chip damage and death shatters effectively free later.
-    // Normally the title-screen prewarm (engine/prewarm.js) has already built
-    // all of these, making every step here a cache hit — this run-time pass
-    // only does real work when a run starts before that pump finished.
+    // Background pre-warm of the per-sprite damage models (+ the rest of the
+    // title-screen warm-up list). Normally the title-screen pump
+    // (engine/prewarm.js) has already built all of these, making every step
+    // a cache hit — this run-time pass only does real work when a run starts
+    // before that pump finished. It resumes the SAME module-level pump from
+    // update() (after the 1.2s grace the old timer chain used), so each step
+    // is time-capped instead of building a whole sprite synchronously.
     _startFracturePrewarm() {
-        const keys = FRACTURE_PREWARM_KEYS;
+        this._prewarmDelay = 1.2;
+    }
 
-        let idx = 0;
-        const step = () => {
-            this._prewarmTimer = null;
-            if (this.game.currentState !== this || idx >= keys.length) return;
-            const [key, pieces] = keys[idx++];
-            const img = this.game.assets.get(key);
-            if (img) {
-                FractureModel.get(img, key);      // chip-damage cell layout
-                getCachedShatter(img, key, pieces); // death shatter layout
-                if (key.startsWith('enemy_ship')) {
-                    Enemy.getGlowSprite(img, key, '#ff4444'); // upgraded-enemy glow
-                }
+    // Collision broad phase (see the collision block in update): register
+    // every live near-pilot asteroid + enemy in a grid by its hull box at the
+    // current (post-movement) position. Each entity remembers its array index
+    // so candidate loops can reproduce the plain array-order scan.
+    _buildCollisionGrids() {
+        const ag = this._collAstGrid, eg = this._collEnemyGrid;
+        ag.clear();
+        eg.clear();
+        const asts = this.asteroids;
+        for (let i = 0; i < asts.length; i++) {
+            const a = asts[i];
+            a._collIdx = i;
+            if (!a.alive || !a._nearPlayer) continue;
+            const r = a.radius;
+            ag.insertBox(a, a.worldX - r, a.worldY - r, a.worldX + r, a.worldY + r);
+        }
+        this._collAstN = asts.length;
+        const ens = this.enemies;
+        for (let i = 0; i < ens.length; i++) {
+            const e = ens[i];
+            e._collIdx = i;
+            if (!e.alive || !e._nearPlayer) continue;
+            const r = hullBoundRadius(e);
+            eg.insertBox(e, e.worldX - r, e.worldY - r, e.worldX + r, e.worldY + r);
+        }
+        this._collEnemyN = ens.length;
+    }
+
+    // Segment box of a projectile's travel this frame (the same endpoints
+    // _projSweepHit / ellipseSweep use), grown by `pad`. Writes into
+    // this._collBox and returns it.
+    _projQueryBox(proj, pad) {
+        const p1x = proj.worldX, p1y = proj.worldY;
+        const p0x = proj._prevX !== undefined ? proj._prevX : p1x;
+        const p0y = proj._prevY !== undefined ? proj._prevY : p1y;
+        const b = this._collBox || (this._collBox = { minX: 0, minY: 0, maxX: 0, maxY: 0 });
+        b.minX = (p0x < p1x ? p0x : p1x) - pad;
+        b.maxX = (p0x > p1x ? p0x : p1x) + pad;
+        b.minY = (p0y < p1y ? p0y : p1y) - pad;
+        b.maxY = (p0y > p1y ? p0y : p1y) + pad;
+        return b;
+    }
+
+    // First asteroid (lowest array index) whose hull the projectile's travel
+    // segment sweeps through this frame, or null. Grid candidates cover
+    // indices < astN; asteroids appended since the grid was built are scanned
+    // in order after them.
+    _firstAsteroidHit(proj, astN) {
+        const b = this._projQueryBox(proj, proj.radius + 1);
+        const cand = this._collAstGrid.queryBoxInto(b.minX, b.minY, b.maxX, b.maxY, this._collCandidates);
+        let best = null, bestIdx = astN;
+        for (let i = 0; i < cand.length; i++) {
+            const ast = cand[i];
+            if (ast._collIdx >= bestIdx || !ast.alive || !ast._nearPlayer) continue;
+            if (_projSweepHit(proj, ast.worldX, ast.worldY, proj.radius + ast.radius)) {
+                best = ast;
+                bestIdx = ast._collIdx;
             }
-            this._prewarmTimer = setTimeout(step, 150);
-        };
-        this._prewarmTimer = setTimeout(step, 1200);
+        }
+        if (best) return best;
+        const asts = this.asteroids;
+        for (let i = astN; i < asts.length; i++) {
+            const ast = asts[i];
+            if (!ast.alive || !ast._nearPlayer) continue;
+            if (_projSweepHit(proj, ast.worldX, ast.worldY, proj.radius + ast.radius)) return ast;
+        }
+        return null;
+    }
+
+    // First enemy (lowest array index) whose hull ellipse the projectile's
+    // travel segment sweeps through this frame (grown by the shot radius),
+    // or null. Same candidate + tail order as _firstAsteroidHit.
+    _firstEnemyHit(proj, enN) {
+        const b = this._projQueryBox(proj, proj.radius + 1);
+        const cand = this._collEnemyGrid.queryBoxInto(b.minX, b.minY, b.maxX, b.maxY, this._collCandidates);
+        let best = null, bestIdx = enN;
+        for (let i = 0; i < cand.length; i++) {
+            const en = cand[i];
+            if (en._collIdx >= bestIdx || !en.alive || !en._nearPlayer) continue;
+            if (ellipseSweep(en, proj, proj.radius)) {
+                best = en;
+                bestIdx = en._collIdx;
+            }
+        }
+        if (best) return best;
+        const ens = this.enemies;
+        for (let i = enN; i < ens.length; i++) {
+            const en = ens[i];
+            if (!en.alive || !en._nearPlayer) continue;
+            if (ellipseSweep(en, proj, proj.radius)) return en;
+        }
+        return null;
     }
 
     // Host-side: batch-despawn anything in arr that died without its own
@@ -914,10 +1008,7 @@ export class PlayingState {
         // Math.random() (MenuState also clears this on enter).
         if (this.game.rng === this.rng) this.game.rng = null;
 
-        if (this._prewarmTimer) {
-            clearTimeout(this._prewarmTimer);
-            this._prewarmTimer = null;
-        }
+        this._prewarmDelay = undefined;
 
         // Leaving a multiplayer run ends the session: the host closes the
         // world for everyone, a client just disconnects.
@@ -955,6 +1046,13 @@ export class PlayingState {
             // in _netPreFrame) and let the reconnect loop run in the background.
             if (this.net.state === 'reconnecting') { this._reconnecting = true; return; }
             this._reconnecting = false;
+        }
+
+        // Fallback warm-up (see _startFracturePrewarm): time-capped slices of
+        // the shared prewarm pump until it reports every task done.
+        if (this._prewarmDelay !== undefined) {
+            if (this._prewarmDelay > 0) this._prewarmDelay -= dt;
+            else if (pumpRunPrewarm(this.game, dt)) this._prewarmDelay = undefined;
         }
 
         // Local co-op: let an unclaimed controller drop in (press Start to join),
@@ -3583,14 +3681,26 @@ export class PlayingState {
 
         // _nearPlayer tags are already computed after asteroid update (used by enemy AI too)
 
+        // Broad phase: register every live near-pilot asteroid + enemy hull in
+        // a grid at its post-movement position, then each projectile tests
+        // only the hulls whose boxes overlap its travel segment. The hit is
+        // still the LOWEST array index passing the unchanged narrow-phase test
+        // (never the geometrically nearest), and anything appended to the
+        // arrays mid-loop (death debris, drones — they carry _nearPlayer) sits
+        // past astN/enN and is scanned in array order after the grid
+        // candidates, exactly where the plain scan would have reached it. The
+        // callbacks only kill/spawn — nothing moves or grows during the
+        // collision phase — so one build serves every loop below.
+        this._buildCollisionGrids();
+        const astN = this._collAstN, enN = this._collEnemyN;
+
         for (const proj of this.projectiles) {
             if (!proj.alive) continue;
 
             // vs Asteroids (All Projectiles)
-            for (const ast of this.asteroids) {
-                if (!ast.alive || !ast._nearPlayer) continue;
-                const cr = proj.radius + ast.radius;
-                if (_projSweepHit(proj, ast.worldX, ast.worldY, cr)) {
+            {
+                const ast = this._firstAsteroidHit(proj, astN);
+                if (ast) {
                     proj.alive = false;
                     if (proj.isBomb) this._detonateBomb(proj);
                     this.game.sounds.play('hit', { volume: 0.4, x: proj.worldX, y: proj.worldY });
@@ -3631,7 +3741,6 @@ export class PlayingState {
                     if (!proj.netVisual && ((this._isLocalShot(proj) && proj.owner.hasExplosivesUnit) || proj.isRocket)) {
                         this._spawnExplosion(proj.worldX, proj.worldY, proj.damage * 0.5);
                     }
-                    break;
                 }
             }
             if (!proj.alive) continue;
@@ -3674,10 +3783,9 @@ export class PlayingState {
                 if (!proj.alive) continue;
 
                 // vs Enemies
-                for (const en of this.enemies) {
-                    if (!en.alive || !en._nearPlayer) continue;
-                    // Rotated-ellipse hull test, grown by the projectile radius.
-                    if (ellipseSweep(en, proj, proj.radius)) {
+                {
+                    const en = this._firstEnemyHit(proj, enN);
+                    if (en) {
                         proj.alive = false;
                         if (proj.isBomb) this._detonateBomb(proj);
                         // Directional shield (shield enemy): absorb front-arc hits.
@@ -3701,23 +3809,22 @@ export class PlayingState {
                             if ((proj.owner && proj.owner.hasExplosivesUnit) || proj.isRocket) {
                                 this._spawnExplosion(proj.worldX, proj.worldY, proj.damage * 0.5);
                             }
-                            break;
-                        }
-                        this.game.sounds.play('hit', { volume: 0.4, x: proj.worldX, y: proj.worldY });
-                        this._spawnSparks(proj.worldX, proj.worldY, 5 + Math.floor(Math.random() * 4), {
-                            dir: Math.atan2(proj.worldY - en.worldY, proj.worldX - en.worldX),
-                            spread: Math.PI * 0.9, color: '#fff2b0'
-                        });
-                        if (this._routeDamage(en, proj.damage, proj.worldX, proj.worldY, proj.owner)) {
-                            this.cinematics.deathPop(en);
-                            this._onEntityDestroyed(en);
                         } else {
-                            this._triggerShakeAt(proj.worldX, proj.worldY, 0.5);
+                            this.game.sounds.play('hit', { volume: 0.4, x: proj.worldX, y: proj.worldY });
+                            this._spawnSparks(proj.worldX, proj.worldY, 5 + Math.floor(Math.random() * 4), {
+                                dir: Math.atan2(proj.worldY - en.worldY, proj.worldX - en.worldX),
+                                spread: Math.PI * 0.9, color: '#fff2b0'
+                            });
+                            if (this._routeDamage(en, proj.damage, proj.worldX, proj.worldY, proj.owner)) {
+                                this.cinematics.deathPop(en);
+                                this._onEntityDestroyed(en);
+                            } else {
+                                this._triggerShakeAt(proj.worldX, proj.worldY, 0.5);
+                            }
+                            if ((proj.owner && proj.owner.hasExplosivesUnit) || proj.isRocket) {
+                                this._spawnExplosion(proj.worldX, proj.worldY, proj.damage * 0.5);
+                            }
                         }
-                        if ((proj.owner && proj.owner.hasExplosivesUnit) || proj.isRocket) {
-                            this._spawnExplosion(proj.worldX, proj.worldY, proj.damage * 0.5);
-                        }
-                        break;
                     }
                 }
             }
@@ -3855,9 +3962,25 @@ export class PlayingState {
         // (Note: still inside collisions timing block. Host-authority: both
         // sides are replicas on clients, so the host resolves these.)
         if (isNetHost) {
+            const cand2 = this._collCandidates2;
             for (const en of this.enemies) {
                 if (!en.alive || !en._nearPlayer) continue;
-                for (const ast of this.asteroids) {
+                // Grid candidates (sorted back into array order), then the live
+                // tail appended since the grid was built — debris this very
+                // loop spawns lands there and is reached, as before.
+                const er = en.radius + 1;
+                const cands = this._collAstGrid.queryBoxInto(
+                    en.worldX - er, en.worldY - er, en.worldX + er, en.worldY + er, cand2);
+                if (cands.length > 1) cands.sort(_byCollIdx);
+                const nCand = cands.length;
+                for (let ci = 0; ; ci++) {
+                    let ast;
+                    if (ci < nCand) ast = cands[ci];
+                    else {
+                        const ti = astN + (ci - nCand);
+                        if (ti >= this.asteroids.length) break;
+                        ast = this.asteroids[ti];
+                    }
                     if (!ast.alive || !ast._nearPlayer) continue;
                     const dx = en.worldX - ast.worldX;
                     const dy = en.worldY - ast.worldY;
@@ -6101,6 +6224,17 @@ export class PlayingState {
         // pane rect. Screen-space UI (HUD/overlays) is drawn once, afterwards.
         if (this.splitScreen && this.splitScreen.active) {
             const views = this.splitScreen.buildViews(this.localPlayers, this.camera);
+            // A/B switch for transfer profiling; both paths draw the same pixels.
+            this.perf.begin('world');
+            // GPU foreground layer per pane (see _gpuLayerTier): the tier is
+            // decided before the batched background so drawViews can emit it
+            // under the blit; a pane whose batch aborted falls back to Canvas.
+            for (const v of views) v.gpuTier = this._gpuLayerTier(v.camera);
+            const backgroundDrawn = this.game.batchWorldViews !== false
+                && this.world.drawViews(ctx, views, this.totalGameTime,
+                    (batch, cam, v) => v.gpuTier ? this._emitGpuLayer(batch, cam, v.gpuTier) : false);
+            if (backgroundDrawn) for (const v of views) { if (!v.gpuLayer) v.gpuTier = 0; }
+            this.perf.end('world');
             const savedCam = this.camera, savedPlayer = this.player, savedWS = this.game.worldScale;
             for (let i = 0; i < views.length; i++) {
                 const v = views[i];
@@ -6112,7 +6246,7 @@ export class PlayingState {
                 ctx.beginPath();
                 ctx.rect(v.rect.x, v.rect.y, v.rect.w, v.rect.h);
                 ctx.clip();
-                this._drawWorld(ctx);
+                this._drawWorld(ctx, backgroundDrawn, backgroundDrawn ? v.gpuTier : -1);
                 // Kill-streak + dread vignettes sit over the world, under the HUD —
                 // centered on THIS pane. The streak is this pane's pilot's own
                 // (this.player is swapped to v.player above); dread is shared.
@@ -6407,37 +6541,142 @@ export class PlayingState {
 
     // World-space render for one view (the active this.camera / this.player):
     // background, entities, the local ship + its FX. No screen-space UI.
-    _drawWorld(ctx) {
+    // ── GPU foreground layer (world/spriteBatch.js; perf audit 2, ticket 9) ──
+    // The bottom of _drawWorld's painter stack can be drawn as one instanced
+    // batch over the starfield, inside the starfield's GL canvas, before the
+    // single blit. Order and blends are preserved only while nothing that
+    // stays on Canvas would sit between the starfield and that layer, so the
+    // tier is decided per camera every frame:
+    //   0 — Canvas path (dread eye / void patches / ghost ships / comets are
+    //       drawing, a shop is in view, split-screen with sector weather, the
+    //       renderer switch is off, or the batch is unavailable);
+    //   1 — rubble + scrap on the GPU (events/caches, drawn between scrap and
+    //       pickups, are in view);
+    //   2 — rubble + scrap + item pickups + exp orbs on the GPU.
+    // A batch that can't pack a sprite reports false and the pane falls back
+    // to Canvas for the frame — never a partial or misordered draw.
+    _gpuLayerTier(camera) {
+        if (this.game.gpuScene === false) return 0;
+        const w = this.world;
+        if (!w || !w.spriteBatch || !w.gl) return 0;
+        if (this.dread.isDrawingBackdrop()) return 0;
+        if (this.ambience.comets.length > 0) return 0;
+        const split = !!(this.splitScreen && this.splitScreen.active);
+        if (split && this.ambience.isDrawing()) return 0;
+        const ws = camera.wtsScale || this.game.worldScale;
+        const vp = camera.viewport;
+        const halfW = (vp ? vp.w : this.game.width) / ws / 2;
+        const halfH = (vp ? vp.h : this.game.height) / ws / 2;
+        const near = (e, pad) => {
+            const dx = e.worldX - camera.x, dy = e.worldY - camera.y;
+            return Math.abs(dx) < halfW + pad && Math.abs(dy) < halfH + pad;
+        };
+        // Shops draw right after the starfield blit (world.draw), under rubble.
+        for (const s of this.shops) {
+            if (!s.img) continue;
+            const half = Math.max(s.img.width || 0, s.img.height || 0) + 200 / ws;
+            if (near(s, half)) return 0;
+        }
+        // Events and caches sit between scrap and pickups: tier 1 only.
+        for (const ev of this.events) {
+            if (ev.alive && near(ev, (ev.radius || 0) + 3000)) return 1;
+        }
+        for (const c of this.caches) {
+            if (c.alive !== false && near(c, 400)) return 1;
+        }
+        return 2;
+    }
+
+    // Emit the layer for `camera` into the batch (called by World between the
+    // starfield and the blit). Returns true when drawn, false when the batch
+    // aborted (caller draws the layer on Canvas).
+    _emitGpuLayer(batch, camera, tier) {
+        const g = this.game;
+        const vp = camera.viewport || null;
+        batch.begin(g.width, g.height, vp, performance.now());
+        const smooth = !!SETTINGS.smoothScaling;
+        const ws = camera.wtsScale || g.worldScale;
+        const camX = camera.x, camY = camera.y;
+        const cullX = (vp ? vp.w : g.width) / ws / 2 + 200;
+        const cullY = (vp ? vp.h : g.height) / ws / 2 + 200;
+        if (!(this.splitScreen && this.splitScreen.active)) this.ambience.emitGpu(batch, camera);
+        for (const r of this.rubble) {
+            const dx = r.worldX - camX, dy = r.worldY - camY;
+            if (dx > -cullX && dx < cullX && dy > -cullY && dy < cullY) r.emit(batch, camera, smooth);
+        }
+        for (const s of this.scrapEntities) {
+            const dx = s.worldX - camX, dy = s.worldY - camY;
+            if (dx > -cullX && dx < cullX && dy > -cullY && dy < cullY) s.emit(batch, camera, smooth);
+        }
+        if (tier >= 2) {
+            for (const it of this.itemPickups) {
+                const dx = it.worldX - camX, dy = it.worldY - camY;
+                if (dx > -cullX && dx < cullX && dy > -cullY && dy < cullY) it.emit(batch, camera, smooth);
+            }
+            for (const orb of this.expOrbs) {
+                const dx = orb.worldX - camX, dy = orb.worldY - camY;
+                if (dx > -cullX && dx < cullX && dy > -cullY && dy < cullY) orb.emit(batch, camera, smooth);
+            }
+        }
+        if (batch.failed) { batch.discard(); return false; }
+        batch.flush();
+        return true;
+    }
+
+    // `gpuTier`: -1 = decide here (single view / per-pane background), else
+    // the tier drawViews already emitted for this pane (0 = none).
+    _drawWorld(ctx, backgroundDrawn = false, gpuTier = -1) {
         // --- World / starfield ---
         this.perf.begin('world');
-        this.world.draw(ctx, this.camera, this.player, this.totalGameTime);
+        let tier = gpuTier;
+        if (!backgroundDrawn) {
+            tier = this._gpuLayerTier(this.camera);
+            const drawn = this.world.draw(ctx, this.camera, this.player, this.totalGameTime, false,
+                tier ? (batch, cam) => this._emitGpuLayer(batch, cam, tier) : null);
+            if (drawn !== true) tier = 0;
+        } else {
+            this.world.draw(ctx, this.camera, this.player, this.totalGameTime, true);
+            if (tier < 0) tier = 0;
+        }
         // Backdrop stack, deepest first: the Eye, then sector weather/sky
         // events, then the nearer dread moments (void patches, ghost ships).
+        // (A GPU tier > 0 means none of these draw this frame except the
+        // ambience tint/dust, which the layer already emitted in single view.)
         this.dread.drawEye(ctx);
-        this.ambience.draw(ctx, this.camera);
+        this.ambience.draw(ctx, this.camera, tier > 0 && !(this.splitScreen && this.splitScreen.active));
         this.dread.drawBackground(ctx);
         this.perf.end('world');
 
         // --- Pre-compute draw culling bounds ---
         // Entities outside this radius from the camera center don't need draw calls.
         // This avoids calling worldToScreen + draw for hundreds of distant entities.
+        // The extent is THIS camera's viewport (a split-screen pane, whose
+        // clip would discard anything past its rect anyway) — the full window
+        // for a single view, byte-identical to before. Same 200-unit margin,
+        // so an object's visual reach past its center is covered exactly as it
+        // is at the window edge in single view.
         const camX = this.camera.x;
         const camY = this.camera.y;
         const ws = this.game.worldScale;
-        const drawCullX = this.game.width / ws / 2 + 200;  // half-viewport + margin in world units
-        const drawCullY = this.game.height / ws / 2 + 200;
+        const vp = this.camera.viewport;
+        const drawCullX = (vp ? vp.w : this.game.width) / ws / 2 + 200;  // half-viewport + margin in world units
+        const drawCullY = (vp ? vp.h : this.game.height) / ws / 2 + 200;
 
         // --- Particles / rubble / scrap / events / pickups ---
+        // Tier 1 of the GPU layer already drew rubble + scrap under the blit;
+        // tier 2 also pickups + orbs (no event/cache could sit between).
         this.perf.begin('particles');
-        for (const r of this.rubble) {
-            const dx = r.worldX - camX, dy = r.worldY - camY;
-            if (dx > -drawCullX && dx < drawCullX && dy > -drawCullY && dy < drawCullY)
-                r.draw(ctx, this.camera);
-        }
-        for (const s of this.scrapEntities) {
-            const dx = s.worldX - camX, dy = s.worldY - camY;
-            if (dx > -drawCullX && dx < drawCullX && dy > -drawCullY && dy < drawCullY)
-                s.draw(ctx, this.camera);
+        if (tier < 1) {
+            for (const r of this.rubble) {
+                const dx = r.worldX - camX, dy = r.worldY - camY;
+                if (dx > -drawCullX && dx < drawCullX && dy > -drawCullY && dy < drawCullY)
+                    r.draw(ctx, this.camera);
+            }
+            for (const s of this.scrapEntities) {
+                const dx = s.worldX - camX, dy = s.worldY - camY;
+                if (dx > -drawCullX && dx < drawCullX && dy > -drawCullY && dy < drawCullY)
+                    s.draw(ctx, this.camera);
+            }
         }
         for (const ev of this.events) {
             ev.draw(ctx, this.camera); // Events are few and may have large visuals
@@ -6445,15 +6684,17 @@ export class PlayingState {
         for (const c of this.caches) {
             c.draw(ctx, this.camera); // Caches are few
         }
-        for (const it of this.itemPickups) {
-            const dx = it.worldX - camX, dy = it.worldY - camY;
-            if (dx > -drawCullX && dx < drawCullX && dy > -drawCullY && dy < drawCullY)
-                it.draw(ctx, this.camera);
-        }
-        for (const orb of this.expOrbs) {
-            const dx = orb.worldX - camX, dy = orb.worldY - camY;
-            if (dx > -drawCullX && dx < drawCullX && dy > -drawCullY && dy < drawCullY)
-                orb.draw(ctx, this.camera);
+        if (tier < 2) {
+            for (const it of this.itemPickups) {
+                const dx = it.worldX - camX, dy = it.worldY - camY;
+                if (dx > -drawCullX && dx < drawCullX && dy > -drawCullY && dy < drawCullY)
+                    it.draw(ctx, this.camera);
+            }
+            for (const orb of this.expOrbs) {
+                const dx = orb.worldX - camX, dy = orb.worldY - camY;
+                if (dx > -drawCullX && dx < drawCullX && dy > -drawCullY && dy < drawCullY)
+                    orb.draw(ctx, this.camera);
+            }
         }
         this.perf.end('particles');
 

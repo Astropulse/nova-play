@@ -1,0 +1,162 @@
+<!DOCTYPE html><meta charset="utf-8"><title>NOVA GPU foreground layer diff</title>
+<style>body{margin:0;background:#000}</style>
+<script type="module">
+// GPU foreground layer (world/spriteBatch.js) vs the Canvas 2D entity draws it
+// replaces: same seeded world, same entities, same camera — rendered both ways
+// and compared with a TOLERANCE (this path is near-identical by design, not
+// byte-identical: GPU bilinear/AA vs Skia). Also a submit/complete microbench.
+import { AssetLoader } from '../../src/engine/assetLoader.js';
+import { SETTINGS } from '../../src/engine/settings.js';
+import { World } from '../../src/world/world.js';
+import { Camera } from '../../src/world/camera.js';
+import { Ambience } from '../../src/world/ambience.js';
+import { Rubble, ProceduralDebris, Scrap, ItemPickup, ExpOrb, getCachedShatter } from '../../src/entities/asteroid.js';
+
+const mulberry = (a) => () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+
+window.runSceneDiff = async () => {
+    const assets = new AssetLoader(); await assets.loadAtlas('../../Assets/atlas/atlas.json');
+    const W = 1280, H = 720;
+    const mk = () => { const c = document.createElement('canvas'); c.width = W; c.height = H; return c.getContext('2d', { willReadFrequently: true }); };
+    const a = mk(), b = mk();
+    const game = {
+        assets, worldScale: 2, width: W, height: H, lowPerfMode: false, currentState: { shops: [] }, lastDt: 1 / 60,
+        getAnimationFrame(key) { const s = assets.get(key); if (!s) return null; return Array.isArray(s) ? s[0] : s; },
+    };
+    const cam = new Camera(game);
+    game.camera = cam;
+    const player = { worldX: 1234, worldY: -567, vx: 380, vy: -120, boostIntensity: 0 };
+    cam.snapTo(player); cam.update(1 / 60, player);
+    const world = new World(game, 42);
+    if (!world.gl || !world.spriteBatch) throw Error('WebGL2 / sprite batch unavailable');
+
+    // ── Entities (seeded) ────────────────────────────────────────────────
+    const build = (seed, counts) => {
+        const rng = mulberry(seed); const saved = Math.random; Math.random = rng;
+        const halfW = W / game.worldScale / 2 + 150, halfH = H / game.worldScale / 2 + 150;
+        const at = () => [player.worldX + (rng() - 0.5) * halfW * 2, player.worldY + (rng() - 0.5) * halfH * 2];
+        const rubble = [], scrap = [], pickups = [], orbs = [];
+        for (let i = 0; i < counts.rubble; i++) { const [x, y] = at(); const r = new Rubble(game, x, y); r.lifetime = rng() * r.maxLifetime; rubble.push(r); }
+        const frags = getCachedShatter(assets.get('asteroid_big_0'), 'asteroid_big_0', 60);
+        const cells = getCachedShatter(assets.get('enemy_ship_0'), 'enemy_ship_0', 13);
+        for (let i = 0; i < counts.debris; i++) {
+            const [x, y] = at(); const src = i % 3 ? frags : cells; const f = src[Math.floor(rng() * src.length)];
+            const d = new ProceduralDebris(game, x, y, f.canvas, 0, 0, rng() * 6.3, 0, 0.3 + rng() * 0.5, i % 7 === 0);
+            d.lifetime = rng() * d.maxLifetime; rubble.push(d);
+        }
+        for (let i = 0; i < counts.scrap; i++) {
+            const [x, y] = at(); const s = new Scrap(game, x, y, i % 5 === 0 ? 'big' : 'small');
+            if (i % 4 === 0) { s.suckTimer = 0.3; s.vx = 260 + rng() * 400; s.vy = (rng() - 0.5) * 500; }
+            if (i % 9 === 0) s.lifetime = rng() * 5; scrap.push(s);
+        }
+        const keys = Object.keys(assets.atlasAnims).filter(k => { const f = assets.atlasAnims[k].frames[0]; return f.w <= 32 && f.h <= 32; }).slice(0, 6);
+        for (let i = 0; i < counts.pickups; i++) { const [x, y] = at(); pickups.push(new ItemPickup(game, x, y, { assetKey: keys[i % keys.length] })); }
+        for (let i = 0; i < counts.orbs; i++) {
+            const [x, y] = at(); const o = new ExpOrb(game, x, y, 5);
+            for (let k = 0; k < 8; k++) o.update(1 / 60, player.worldX, player.worldY);
+            o.suckTimer = i % 3 === 0 ? 0.08 : 1; orbs.push(o);
+        }
+        Math.random = saved;
+        return { rubble, scrap, pickups, orbs };
+    };
+    const ambience = new Ambience(game, {});
+    const seedAmbience = (seed) => {
+        const rng = mulberry(seed);
+        ambience._tintAlpha = 0.031; ambience._tintR = 40.4; ambience._tintG = 120.6; ambience._tintB = 200.2;
+        ambience.dust.length = 0;
+        for (let i = 0; i < 60; i++) ambience.dust.push({ x: cam.x * 0.5 + (rng() - 0.5) * 700, y: cam.y * 0.5 + (rng() - 0.5) * 400, vx: 0, vy: 0, life: 2 + rng() * 12, maxLife: 16, warm: rng() < 0.5, size: rng() < 0.8 ? 1 : 2 });
+    };
+
+    const cull = (e) => Math.abs(e.worldX - cam.x) < W / game.worldScale / 2 + 200 && Math.abs(e.worldY - cam.y) < H / game.worldScale / 2 + 200;
+    const drawCanvas = (ctx, ents, withAmbience, t) => {
+        ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+        ctx.imageSmoothingEnabled = SETTINGS.smoothScaling;
+        ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+        world.draw(ctx, cam, player, t);
+        if (withAmbience) ambience.draw(ctx, cam);
+        for (const r of ents.rubble) if (cull(r)) r.draw(ctx, cam);
+        for (const s of ents.scrap) if (cull(s)) s.draw(ctx, cam);
+        for (const p of ents.pickups) if (cull(p)) p.draw(ctx, cam);
+        for (const o of ents.orbs) if (cull(o)) o.draw(ctx, cam);
+    };
+    const drawGpu = (ctx, ents, withAmbience, t) => {
+        ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+        ctx.imageSmoothingEnabled = SETTINGS.smoothScaling;
+        ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+        const smooth = !!SETTINGS.smoothScaling;
+        const ok = world.draw(ctx, cam, player, t, false, (batch, c) => {
+            batch.begin(W, H, null, performance.now());
+            if (withAmbience) ambience.emitGpu(batch, c);
+            for (const r of ents.rubble) if (cull(r)) r.emit(batch, c, smooth);
+            for (const s of ents.scrap) if (cull(s)) s.emit(batch, c, smooth);
+            for (const p of ents.pickups) if (cull(p)) p.emit(batch, c, smooth);
+            for (const o of ents.orbs) if (cull(o)) o.emit(batch, c, smooth);
+            if (batch.failed) { batch.discard(); return false; }
+            batch.flush(); return true;
+        });
+        if (ok !== true) throw Error('GPU layer aborted');
+    };
+
+    const results = [];
+    const images = {};
+    const compare = (label, saveImages) => {
+        const x = a.getImageData(0, 0, W, H).data, y = b.getImageData(0, 0, W, H).data;
+        let lit = 0, d8 = 0, d24 = 0, d64 = 0, max = 0, sum = 0;
+        const diff = saveImages ? new Uint8ClampedArray(x.length) : null;
+        for (let i = 0; i < x.length; i += 4) {
+            if (x[i] | x[i + 1] | x[i + 2] | y[i] | y[i + 1] | y[i + 2]) lit++;
+            const d = Math.max(Math.abs(x[i] - y[i]), Math.abs(x[i + 1] - y[i + 1]), Math.abs(x[i + 2] - y[i + 2]));
+            sum += d; if (d > max) max = d;
+            if (d > 8) d8++; if (d > 24) d24++; if (d > 64) d64++;
+            if (diff) { const v = Math.min(255, d * 4); diff[i] = v; diff[i + 1] = d > 24 ? v : 0; diff[i + 2] = 0; diff[i + 3] = 255; }
+        }
+        const total = W * H;
+        const row = { label, lit, over8: d8, over24: d24, over64: d64, maxDelta: max, meanDelta: sum / total, over24Pct: 100 * d24 / Math.max(1, lit) };
+        results.push(row); console.log('SCENE ' + JSON.stringify(row));
+        if (saveImages) {
+            images[label + ' canvas'] = a.canvas.toDataURL('image/png');
+            images[label + ' gpu'] = b.canvas.toDataURL('image/png');
+            const dc = document.createElement('canvas'); dc.width = W; dc.height = H;
+            dc.getContext('2d').putImageData(new ImageData(diff, W, H), 0, 0);
+            images[label + ' diff'] = dc.toDataURL('image/png');
+        }
+    };
+
+    for (const smooth of [true, false]) {
+        SETTINGS.smoothScaling = smooth;
+        for (const [seed, counts] of [[1, { rubble: 120, debris: 80, scrap: 120, pickups: 12, orbs: 80 }], [2, { rubble: 40, debris: 30, scrap: 60, pickups: 6, orbs: 30 }]]) {
+            const ents = build(seed, counts);
+            seedAmbience(seed);
+            for (const withAmb of [true, false]) {
+                const t = 7.3 + seed;
+                drawCanvas(a, ents, withAmb, t); drawGpu(b, ents, withAmb, t);
+                compare(`smooth=${smooth} seed=${seed} ambience=${withAmb}`, smooth && seed === 1 && withAmb);
+            }
+        }
+    }
+    const err = world.gl.getError(); if (err) throw Error('WebGL error ' + err);
+
+    // ── Microbench: dense layer, submit + completion ─────────────────────
+    SETTINGS.smoothScaling = true;
+    const dense = build(9, { rubble: 250, debris: 150, scrap: 200, pickups: 20, orbs: 150 });
+    seedAmbience(9);
+    const bench = {};
+    for (const mode of ['canvas', 'gpu', 'canvas', 'gpu']) {
+        const samples = [];
+        for (let i = 0; i < 60; i++) {
+            await new Promise(r => setTimeout(r, 0));
+            const t0 = performance.now();
+            if (mode === 'canvas') drawCanvas(a, dense, true, i * 0.016); else drawGpu(b, dense, true, i * 0.016);
+            const t1 = performance.now();
+            world.gl.finish();
+            (mode === 'canvas' ? a : b).getImageData(0, 0, 1, 1);
+            samples.push({ submit: t1 - t0, complete: performance.now() - t0 });
+        }
+        const med = k => samples.map(s => s[k]).sort((p, q) => p - q)[30];
+        bench[mode] = { submitMedian: med('submit'), completeMedian: med('complete'), draws: world.spriteBatch.stats.draws };
+    }
+    const layerCount = dense.rubble.length + dense.scrap.length + dense.pickups.length + dense.orbs.length;
+    console.log('BENCH ' + JSON.stringify({ entities: layerCount, ...bench, atlasEntries: world.spriteBatch.entries.size }));
+    return { results, bench: { entities: layerCount, ...bench }, images, atlasEntries: world.spriteBatch.entries.size };
+};
+</script>

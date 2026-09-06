@@ -5,10 +5,17 @@
 // Pumping the same cache builds one at a time while the player sits on the
 // title menu makes them free by the time a run starts.
 //
-// PlayingState keeps its own staggered prewarm as a fallback (e.g. a run
-// started before the title pump finished) — every entry here is idempotent
-// and a cache hit costs only a Map lookup.
-import { FractureModel, getCachedShatter, ExpOrb } from '../entities/asteroid.js';
+// PlayingState resumes this same pump from its update() as a fallback (e.g. a
+// run started before the title pump finished) — every entry here is
+// idempotent and a cache hit costs only a Map lookup.
+//
+// Tasks may be plain functions or GENERATOR functions. A generator task is
+// resumed across pump calls with a per-call time cap (SLICE_BUDGET_MS), so a
+// big sprite's fracture partition (opaque pixels x up to 320 seeds) or a
+// 16-frame animation's surfaces never land on one frame. Intermediate state
+// stays private to the generator; caches are published whole on completion
+// (asteroid.js FractureModel.prewarmSteps / prewarmShatterSteps).
+import { FractureModel, prewarmShatterSteps, ExpOrb } from '../entities/asteroid.js';
 import { Enemy } from '../entities/enemy.js';
 import { ScreenFX } from './screenFx.js';
 import { FIRE_EXPLOSION_KEYS } from './vfx.js';
@@ -42,35 +49,46 @@ function buildTasks(game) {
         game.screenFx.warm();
     });
 
-    // ExpOrb glow halo per GIF frame.
-    tasks.push(() => {
+    // ExpOrb glow halo per GIF frame (one frame per step).
+    tasks.push(function* () {
         const expAsset = game.assets.get('exp');
         if (expAsset && Array.isArray(expAsset)) {
             for (const frame of expAsset) {
                 const f = frame.canvas || frame;
                 if (f) ExpOrb._getGlowForFrame(f);
+                yield;
             }
         }
     });
 
-    // Death-explosion GIF variants: slice + prescale each variant's atlas frames
-    // now so the first ship/boss death doesn't materialize them mid-combat.
-    tasks.push(() => {
-        for (const key of FIRE_EXPLOSION_KEYS) game.assets.get(key);
+    // Death-explosion GIF variants: materialize each variant's prescaled
+    // frame surfaces (one frame per step) so the first ship/boss death
+    // doesn't build them mid-combat. Frames are lazy in the loader;
+    // warmFrame builds one WITHOUT the consumer lookahead (a plain `.canvas`
+    // read would queue the next frame too and count as playback).
+    tasks.push(function* () {
+        for (const key of FIRE_EXPLOSION_KEYS) {
+            const frames = game.assets.get(key);
+            if (!Array.isArray(frames)) continue;
+            for (const f of frames) {
+                if (game.assets.warmFrame) game.assets.warmFrame(f); else f.canvas;
+                yield;
+            }
+        }
     });
 
     // (Lasers now render as simple stroked streaks — no glow sprite to pre-bake.)
 
     // Per-sprite damage models: chip-damage cell layout, death shatter layout,
-    // and the upgraded-enemy glow. One sprite per task — the big asteroid
-    // slices are the most expensive single steps (tens of ms), so they each
-    // get their own pump slot.
+    // and the upgraded-enemy glow. One sprite per task, and each layout is
+    // built a few pixel rows per pump call (the big asteroid partitions are
+    // tens of ms end to end) so no single frame pays for a whole sprite.
     for (const [key, pieces] of FRACTURE_PREWARM_KEYS) {
-        tasks.push(() => {
+        tasks.push(function* () {
             const img = game.assets.get(key);
             if (!img) return;
-            FractureModel.get(img, key);      // chip-damage cell layout
-            getCachedShatter(img, key, pieces); // death shatter layout
+            yield* FractureModel.prewarmSteps(img, key);      // chip-damage cell layout
+            yield* prewarmShatterSteps(img, key, pieces);    // death shatter layout
             if (key.startsWith('enemy_ship')) {
                 Enemy.getGlowSprite(img, key, '#ff4444'); // upgraded-enemy glow
             }
@@ -84,29 +102,64 @@ function buildTasks(game) {
 let _tasks = null;
 let _idx = 0;
 let _accum = 0;
-const STEP_INTERVAL = 0.12; // seconds between tasks — same cadence the in-run prewarm uses
+let _cur = null;            // in-progress generator task (resumed each call)
+const STEP_INTERVAL = 0.12; // seconds between tasks — same cadence the in-run prewarm used
+const SLICE_BUDGET_MS = 3;  // main-thread time one pump call may spend inside a resumable task
+
+// Resume the current generator task until it finishes or the slice budget
+// runs out. Errors drop the task (same as a failing plain task).
+function _advance() {
+    const t0 = performance.now();
+    try {
+        for (;;) {
+            if (_cur.next().done) { _cur = null; break; }
+            if (performance.now() - t0 >= SLICE_BUDGET_MS) break;
+        }
+    } catch (e) {
+        console.warn('[Prewarm] task failed:', e);
+        _cur = null;
+    }
+}
+
+function _finished() {
+    if (_tasks && _idx >= _tasks.length && !_cur) {
+        if (!_finished.logged) {
+            _finished.logged = true;
+            console.log(`[Prewarm] warm-up complete (${_tasks.length} tasks)`);
+        }
+        return true;
+    }
+    return false;
+}
 
 /**
- * Run at most one warm-up task per call, spaced STEP_INTERVAL apart. Call it
- * from a state's update() once the full atlas is available (the menu gates on
- * its World being built, which already waits for the full atlas).
+ * Advance the warm-up: resume an in-progress resumable task for at most
+ * SLICE_BUDGET_MS, otherwise start the next task once STEP_INTERVAL has
+ * elapsed. Call it from a state's update() once the full atlas is available
+ * (the menu gates on its World being built, which already waits for the full
+ * atlas; PlayingState calls it too as a fallback).
  * @returns {boolean} true once every task has run.
  */
 export function pumpRunPrewarm(game, dt) {
-    if (_tasks && _idx >= _tasks.length) return true;
+    if (_cur) {
+        _advance();
+        if (!_cur) _accum = 0;
+        return _finished();
+    }
+    if (_finished()) return true;
     _accum += dt;
     if (_accum < STEP_INTERVAL) return false;
     _accum = 0;
     if (!_tasks) _tasks = buildTasks(game);
     const task = _tasks[_idx++];
     try {
-        task();
+        const r = task();
+        if (r && typeof r.next === 'function') {
+            _cur = r;
+            _advance();
+        }
     } catch (e) {
         console.warn('[Prewarm] task failed:', e);
     }
-    if (_idx >= _tasks.length) {
-        console.log(`[Prewarm] title-screen warm-up complete (${_tasks.length} tasks)`);
-        return true;
-    }
-    return false;
+    return _finished();
 }

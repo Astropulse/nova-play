@@ -5,11 +5,28 @@
 // implementation.
 import { mulberry32 } from '../engine/rng.js';
 import { SETTINGS } from '../engine/settings.js';
+import { SpriteBatch } from './spriteBatch.js';
 
 // Baseline cull under the reduced-particles setting: hide half the ordinary
 // stars (pre-shuffled list, so it's a uniform random subset). Combined with
 // the dragon's story cull via max(), so neither undercuts the other.
 const REDUCED_PARTICLES_STAR_CULL = 0.5;
+
+// Star records live in an RGBA32F data texture (3 texels per star) that the
+// vertex shader reads with texelFetch, so ONE instanced draw per batch can
+// submit every (boost sample x wrap tile x star) copy: the shader decodes
+// gl_InstanceID into those three indices itself. Vertex attributes can't do
+// that — a divisor advances per instance, it can't repeat a star across copies
+// in the sample -> wrap -> star order the source-over black holes rely on.
+const STAR_DATA_TEX_W = 1024;   // texels per row (WebGL2 guarantees >= 2048)
+const STAR_TEXELS_PER_STAR = 3;
+// Wrap tiles a single draw can address (uniform ivec2 array). More than this
+// (only at absurd FOV) falls back to one draw per sample per tile chunk.
+const MAX_TILES_PER_DRAW = 64;
+const BOOST_SAMPLES = 8;
+// Conservative slack (world units) when rejecting wrap tiles: the shader's
+// float mod() can land a hair outside [-V/2, V/2] at far camera coordinates.
+const TILE_REJECT_SLACK_WORLD = 64;
 
 export class World {
     constructor(game, seed = 42) {
@@ -167,19 +184,23 @@ export class World {
         // --- Shaders ---
         const vsSource = `#version 300 es
         in vec2 a_position;
-        in vec2 a_offset;
-        in vec4 a_texCoords;
-        in vec2 a_size;
-        in float a_alphaBoost;
-        in float a_rotation;
+
+        // Per-star records (see STAR_DATA_TEX_W): texel 0 = offset.xy, uv.xy;
+        // texel 1 = uv size, sprite size; texel 2 = alphaBoost, rotation.
+        uniform highp sampler2D u_starData;
+        uniform int u_starBase;     // first texel of this batch's records
+        uniform int u_instCount;    // stars drawn per copy (starCull-capped)
+        uniform int u_tileCount;    // wrap tiles addressed by this draw
+        uniform ivec2 u_tiles[${MAX_TILES_PER_DRAW}];
+        uniform int u_sampleBase;   // first boost sample in this draw
+        uniform float u_sampleAlpha[${BOOST_SAMPLES}];
+        uniform vec2 u_sampleStreak[${BOOST_SAMPLES}];
 
         uniform vec2 u_resolution;
         uniform vec2 u_center;
         uniform vec2 u_cameraXY;
         uniform float u_parallax;
         uniform float u_worldScale;
-        uniform vec2 u_wrapOffset;
-        uniform vec2 u_streakOffset;
         uniform float u_virtualSize;
         uniform vec2 u_atlasSize;
         uniform float u_time;
@@ -187,8 +208,32 @@ export class World {
 
         out vec2 v_texCoord;
         out float v_alphaBoost;
+        flat out float v_globalAlpha;
 
         void main() {
+            // Instance order is sample -> wrap X -> wrap Y -> star, the exact
+            // submission order of the old per-tile draw loop.
+            int copy = gl_InstanceID / u_instCount;
+            int star = gl_InstanceID - copy * u_instCount;
+            int sIdx = copy / u_tileCount;
+            int tile = copy - sIdx * u_tileCount;
+            ivec2 wrap = u_tiles[tile];
+            int smp = u_sampleBase + sIdx;
+            int t0 = (u_starBase + star) * ${STAR_TEXELS_PER_STAR};
+            vec4 d0 = texelFetch(u_starData, ivec2(t0 % ${STAR_DATA_TEX_W}, t0 / ${STAR_DATA_TEX_W}), 0);
+            int t1 = t0 + 1;
+            vec4 d1 = texelFetch(u_starData, ivec2(t1 % ${STAR_DATA_TEX_W}, t1 / ${STAR_DATA_TEX_W}), 0);
+            int t2 = t0 + 2;
+            vec4 d2 = texelFetch(u_starData, ivec2(t2 % ${STAR_DATA_TEX_W}, t2 / ${STAR_DATA_TEX_W}), 0);
+            vec2 a_offset = d0.xy;
+            vec4 a_texCoords = vec4(d0.zw, d1.xy);
+            vec2 a_size = d1.zw;
+            float a_alphaBoost = d2.x;
+            float a_rotation = d2.y;
+            vec2 u_wrapOffset = vec2(wrap);
+            vec2 u_streakOffset = u_sampleStreak[smp];
+            v_globalAlpha = u_sampleAlpha[smp];
+
             float relX = a_offset.x - (u_cameraXY.x * u_parallax);
             relX = mod(relX, u_virtualSize);
             if(relX < 0.0) relX += u_virtualSize;
@@ -261,16 +306,16 @@ export class World {
         
         in vec2 v_texCoord;
         in float v_alphaBoost;
-        
+        flat in float v_globalAlpha;
+
         uniform sampler2D u_texture;
-        uniform float u_globalAlpha;
         uniform int u_isBlackHole;
-        
+
         out vec4 outColor;
-        
+
         void main() {
             vec4 texColor = texture(u_texture, v_texCoord);
-            float alphaMult = u_isBlackHole == 1 ? 1.0 : (v_alphaBoost * u_globalAlpha);
+            float alphaMult = u_isBlackHole == 1 ? 1.0 : (v_alphaBoost * v_globalAlpha);
             outColor = texColor * alphaMult;
         }`;
 
@@ -292,22 +337,23 @@ export class World {
         // Location lookups
         this.locs = {
             a_position: gl.getAttribLocation(this.program, "a_position"),
-            a_offset: gl.getAttribLocation(this.program, "a_offset"),
-            a_texCoords: gl.getAttribLocation(this.program, "a_texCoords"),
-            a_size: gl.getAttribLocation(this.program, "a_size"),
-            a_alphaBoost: gl.getAttribLocation(this.program, "a_alphaBoost"),
-            a_rotation: gl.getAttribLocation(this.program, "a_rotation"),
-            
+
+            u_starData: gl.getUniformLocation(this.program, "u_starData"),
+            u_starBase: gl.getUniformLocation(this.program, "u_starBase"),
+            u_instCount: gl.getUniformLocation(this.program, "u_instCount"),
+            u_tileCount: gl.getUniformLocation(this.program, "u_tileCount"),
+            u_tiles: gl.getUniformLocation(this.program, "u_tiles"),
+            u_sampleBase: gl.getUniformLocation(this.program, "u_sampleBase"),
+            u_sampleAlpha: gl.getUniformLocation(this.program, "u_sampleAlpha"),
+            u_sampleStreak: gl.getUniformLocation(this.program, "u_sampleStreak"),
+
             u_resolution: gl.getUniformLocation(this.program, "u_resolution"),
             u_center: gl.getUniformLocation(this.program, "u_center"),
             u_cameraXY: gl.getUniformLocation(this.program, "u_cameraXY"),
             u_parallax: gl.getUniformLocation(this.program, "u_parallax"),
             u_worldScale: gl.getUniformLocation(this.program, "u_worldScale"),
-            u_wrapOffset: gl.getUniformLocation(this.program, "u_wrapOffset"),
-            u_streakOffset: gl.getUniformLocation(this.program, "u_streakOffset"),
             u_virtualSize: gl.getUniformLocation(this.program, "u_virtualSize"),
             u_atlasSize: gl.getUniformLocation(this.program, "u_atlasSize"),
-            u_globalAlpha: gl.getUniformLocation(this.program, "u_globalAlpha"),
             u_isBlackHole: gl.getUniformLocation(this.program, "u_isBlackHole"),
             u_texture: gl.getUniformLocation(this.program, "u_texture"),
             u_time: gl.getUniformLocation(this.program, "u_time"),
@@ -330,39 +376,32 @@ export class World {
         ]), gl.STATIC_DRAW);
         gl.enableVertexAttribArray(this.locs.a_position);
         gl.vertexAttribPointer(this.locs.a_position, 2, gl.FLOAT, false, 0, 0);
-
-        this.instanceBuffer = gl.createBuffer();
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer);
-
-        // Instance Layout
-        const stride = (2 + 4 + 2 + 1 + 1) * 4; // 10 floats = 40 bytes
-        
-        gl.enableVertexAttribArray(this.locs.a_offset);
-        gl.vertexAttribPointer(this.locs.a_offset, 2, gl.FLOAT, false, stride, 0);
-        gl.vertexAttribDivisor(this.locs.a_offset, 1);
-
-        gl.enableVertexAttribArray(this.locs.a_texCoords);
-        gl.vertexAttribPointer(this.locs.a_texCoords, 4, gl.FLOAT, false, stride, 8);
-        gl.vertexAttribDivisor(this.locs.a_texCoords, 1);
-
-        gl.enableVertexAttribArray(this.locs.a_size);
-        gl.vertexAttribPointer(this.locs.a_size, 2, gl.FLOAT, false, stride, 24);
-        gl.vertexAttribDivisor(this.locs.a_size, 1);
-
-        gl.enableVertexAttribArray(this.locs.a_alphaBoost);
-        gl.vertexAttribPointer(this.locs.a_alphaBoost, 1, gl.FLOAT, false, stride, 32);
-        gl.vertexAttribDivisor(this.locs.a_alphaBoost, 1);
-
-        gl.enableVertexAttribArray(this.locs.a_rotation);
-        gl.vertexAttribPointer(this.locs.a_rotation, 1, gl.FLOAT, false, stride, 36);
-        gl.vertexAttribDivisor(this.locs.a_rotation, 1);
-        
+        // Star records are NOT vertex attributes — see STAR_DATA_TEX_W.
         gl.bindVertexArray(null);
+
+        // GPU foreground layer (spriteBatch.js): PlayingState emits the bottom
+        // of its painter stack into this batch between the starfield and the
+        // blit. Optional — a failure here just leaves the Canvas path.
+        this.spriteBatch = null;
+        try {
+            this.spriteBatch = new SpriteBatch(gl);
+        } catch (e) {
+            console.warn('[World] sprite batch unavailable, foreground stays on Canvas:', e);
+        }
     }
 
     _initLayers() {
         if(!this.gl) return; // Fallback handled outside
-        
+        this.layers = []; // (re)built from scratch — also on context restore
+        // Per-draw scratch (allocated once; uploaded with the *v uniform calls)
+        if (!this._tileScratch) {
+            this._tileScratch = new Int32Array(MAX_TILES_PER_DRAW * 2);
+            this._sampleAlpha = new Float32Array(BOOST_SAMPLES);
+            this._sampleStreak = new Float32Array(BOOST_SAMPLES * 2);
+            this._visK = [];
+            this._visM = [];
+        }
+
         const layerConfigs = [
             { parallax: 0.02, count: 320, alpha: 0.25, singleStarCount: 160 },
             { parallax: 0.05, count: 200, alpha: 0.35, singleStarCount: 200 },
@@ -451,6 +490,10 @@ export class World {
             const packBatch = (list, blendMode, isBh) => {
                 const buffer = new Float32Array(list.length * 10);
                 let off = 0;
+                // Largest half-extent (world units) any sprite in this batch
+                // can reach from its center at any rotation: |w cos| + |h sin|
+                // over 2 is at most (w + h) / 2. Drives wrap-tile rejection.
+                let maxExtent = 0;
                 list.forEach(item => {
                     const uvInfo = this.uvMap.get(item.img);
                     if(!uvInfo) {
@@ -460,23 +503,25 @@ export class World {
                         buffer[off++] = 0; buffer[off++] = 0;
                         buffer[off++] = 0; buffer[off++] = 0;
                         return;
-                    } 
-                    
+                    }
+
                     buffer[off++] = item.x;
                     buffer[off++] = item.y;
-                    
+
                     buffer[off++] = uvInfo.u;
                     buffer[off++] = uvInfo.v;
                     buffer[off++] = uvInfo.uWidth;
                     buffer[off++] = uvInfo.vHeight;
-                    
+
                     buffer[off++] = uvInfo.w;
                     buffer[off++] = uvInfo.h;
-                    
+
                     buffer[off++] = item.alphaBoost;
                     buffer[off++] = item.rotation;
+                    const ext = (uvInfo.w + uvInfo.h) / 2;
+                    if (ext > maxExtent) maxExtent = ext;
                 });
-                return { count: list.length, buffer, blendMode, isBlackHole: isBh };
+                return { count: list.length, buffer, blendMode, isBlackHole: isBh, maxExtent, starBase: 0 };
             };
 
             const batches = [];
@@ -488,27 +533,137 @@ export class World {
             }
             if (starsScreen.length) batches.push(packBatch(starsScreen, 'screen', false));
 
-            // Load into GPU buffers immediately
-            batches.forEach(b => {
-                b.vbo = this.gl.createBuffer();
-                this.gl.bindBuffer(this.gl.ARRAY_BUFFER, b.vbo);
-                this.gl.bufferData(this.gl.ARRAY_BUFFER, b.buffer, this.gl.STATIC_DRAW);
-            });
-
             this.layers.push({
                 parallax: config.parallax,
                 alpha: config.alpha,
                 batches: batches
             });
         });
+
+        this._uploadStarData();
     }
 
-    draw(ctx, camera, player, worldTime = 0) {
-        if (!this.gl || this._glContextLost || this.gl.isContextLost()) return;
+    // Pack every batch's star records into one RGBA32F texture (3 texels per
+    // star, row-major over STAR_DATA_TEX_W) and remember each batch's first
+    // texel index. Values are the same float32s the old instance VBOs held.
+    _uploadStarData() {
+        const gl = this.gl;
+        let totalStars = 0;
+        for (const layer of this.layers) {
+            for (const b of layer.batches) {
+                b.starBase = totalStars;
+                totalStars += b.count;
+            }
+        }
+        const texels = Math.max(1, totalStars * STAR_TEXELS_PER_STAR);
+        const rows = Math.ceil(texels / STAR_DATA_TEX_W);
+        const data = new Float32Array(STAR_DATA_TEX_W * rows * 4);
+        for (const layer of this.layers) {
+            for (const b of layer.batches) {
+                const src = b.buffer;
+                let dst = b.starBase * STAR_TEXELS_PER_STAR * 4;
+                for (let i = 0, off = 0; i < b.count; i++, off += 10) {
+                    // texel 0: offset.xy, uv.xy
+                    data[dst++] = src[off];     data[dst++] = src[off + 1];
+                    data[dst++] = src[off + 2]; data[dst++] = src[off + 3];
+                    // texel 1: uv size, sprite size
+                    data[dst++] = src[off + 4]; data[dst++] = src[off + 5];
+                    data[dst++] = src[off + 6]; data[dst++] = src[off + 7];
+                    // texel 2: alphaBoost, rotation, (pad)
+                    data[dst++] = src[off + 8]; data[dst++] = src[off + 9];
+                    data[dst++] = 0;            data[dst++] = 0;
+                }
+            }
+        }
+        this.starDataRows = rows;
+        if (!this.starDataTex) this.starDataTex = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, this.starDataTex);
+        // Raw float records: no premultiply during this upload (the atlas
+        // upload wants it on; restore afterwards).
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, STAR_DATA_TEX_W, rows, 0, gl.RGBA, gl.FLOAT, data);
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.bindTexture(gl.TEXTURE_2D, null);
+    }
+
+    // Wrap-tile indices along one axis whose copies could touch the pane.
+    // A star's base screen coordinate for tile k is c + (relX + k*V)*ws with
+    // relX in [-V/2, V/2] (plus mod() slack), then the streak offset and the
+    // sprite's own extent. Tiles whose whole reach misses [lo, hi] draw
+    // nothing after clipping, so skipping them changes no pixel.
+    static _visibleTileAxis(range, center, V, ws, lo, hi, reach, out) {
+        out.length = 0;
+        const half = (V / 2 + TILE_REJECT_SLACK_WORLD) * ws + reach;
+        for (let k = -range; k <= range; k++) {
+            const base = center + k * V * ws;
+            if (base + half < lo || base - half > hi) continue;
+            out.push(k);
+        }
+        return out;
+    }
+
+    // Render every non-overlapping split-screen background before the foreground
+    // layers. This takes one WebGL -> Canvas snapshot instead of one per pane;
+    // foreground compositing still happens on the original Canvas, in order.
+    // `layerFn(batch, camera, view)` (optional) draws a GPU foreground layer
+    // over each pane's starfield before the blit (see spriteBatch.js); its
+    // return value is stored on `view.gpuLayer` (false = the caller must draw
+    // that layer on Canvas).
+    drawViews(ctx, views, worldTime = 0, layerFn = null) {
+        if (!this.gl || this._glContextLost || this.gl.isContextLost()) return false;
+        const cw = ctx.canvas.width, ch = ctx.canvas.height;
+        if (this.glCanvas.width !== cw || this.glCanvas.height !== ch) {
+            this.glCanvas.width = cw; this.glCanvas.height = ch;
+            this.gl.viewport(0, 0, cw, ch);
+        }
+        // Layouts with 3/5/7 pilots leave unused cells. Never retain stars there
+        // from an earlier layout or frame (also works between synchronous draws).
+        this.gl.disable(this.gl.SCISSOR_TEST);
+        this.gl.clearColor(0, 0, 0, 0);
+        this.gl.clear(this.gl.COLOR_BUFFER_BIT);
+        for (const v of views) {
+            if (!this._renderBackground(cw, ch, v.camera, v.player, worldTime, v.camera.scale)) return false;
+            v.gpuLayer = (layerFn && this.spriteBatch) ? layerFn(this.spriteBatch, v.camera, v) : false;
+        }
+        ctx.save();
+        ctx.imageSmoothingEnabled = false;
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = 1;
+        ctx.drawImage(this.glCanvas, 0, 0);
+        ctx.restore();
+        return true;
+    }
+
+    // Returns the GPU layer result (true = drawn, false = not drawn) when
+    // `layerFn` is given and the background was rendered here; else undefined.
+    draw(ctx, camera, player, worldTime = 0, backgroundDrawn = false, layerFn = null) {
+        let layerResult;
+        if (!backgroundDrawn) {
+            if (!this._renderBackground(ctx.canvas.width, ctx.canvas.height, camera, player, worldTime)) return false;
+            layerResult = (layerFn && this.spriteBatch) ? layerFn(this.spriteBatch, camera, null) : false;
+            const vp = camera.viewport;
+            ctx.save();
+            ctx.imageSmoothingEnabled = false;
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.globalAlpha = 1;
+            if (vp) ctx.drawImage(this.glCanvas, vp.x, vp.y, vp.w, vp.h, vp.x, vp.y, vp.w, vp.h);
+            else ctx.drawImage(this.glCanvas, 0, 0);
+            ctx.restore();
+        }
+        // Shops stay in their original per-pane position in the painter order.
+        if (this.game.currentState.shops) {
+            for (const shop of this.game.currentState.shops) shop.draw(ctx, camera);
+        }
+        return layerResult;
+    }
+
+    _renderBackground(cw, ch, camera, player, worldTime = 0, worldScale = this.game.worldScale) {
+        if (!this.gl || this._glContextLost || this.gl.isContextLost()) return false;
         
-        const cw = ctx.canvas.width;
-        const ch = ctx.canvas.height;
-        const worldScale = this.game.worldScale;
         const boostIntensity = player ? player.boostIntensity : 0;
         const isBoosting = boostIntensity > 0.01;
         const streakFactor = 0.04;
@@ -550,6 +705,9 @@ export class World {
         const rangeX = Math.ceil(viewW / this.virtualSize / 2) + 1;
         const rangeY = Math.ceil(viewH / this.virtualSize / 2) + 1;
 
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, this.starDataTex);
+        gl.uniform1i(this.locs.u_starData, 1);
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, this.texture);
         gl.uniform1i(this.locs.u_texture, 0);
@@ -561,13 +719,29 @@ export class World {
         const effStarCull = Math.max(this.starCull,
             SETTINGS.reducedParticles ? REDUCED_PARTICLES_STAR_CULL : 0);
 
+        const samples = isBoosting ? BOOST_SAMPLES : 1;
+        const sampleAlpha = this._sampleAlpha;
+        const sampleStreak = this._sampleStreak;
+        const tiles = this._tileScratch;
+        const visK = this._visK, visM = this._visM;
+        const paneX0 = vp.x, paneX1 = vp.x + vp.w;
+        const paneY0 = vp.y, paneY1 = vp.y + vp.h;
+
         for (const layer of this.layers) {
             const layerAlpha = layer.alpha * (0.95 + 0.05 * Math.sin(worldTime * (1 + layer.parallax * 2)));
             gl.uniform1f(this.locs.u_parallax, layer.parallax);
-            
-            const samples = isBoosting ? 8 : 1;
+
             const svx = player ? -player.vx * layer.parallax * streakFactor * boostIntensity * worldScale : 0;
             const svy = player ? -player.vy * layer.parallax * streakFactor * boostIntensity * worldScale : 0;
+            // Per-sample streak offsets are the same for every batch in the
+            // layer (|offsetMult| < 1, so |svx|/|svy| bound the streak reach).
+            for (let s = 0; s < samples; s++) {
+                const offsetMult = samples > 1 ? (s / samples) : 0;
+                sampleStreak[s * 2] = svx * offsetMult;
+                sampleStreak[s * 2 + 1] = svy * offsetMult;
+            }
+            gl.uniform2fv(this.locs.u_sampleStreak, sampleStreak);
+            const streakReachX = Math.abs(svx), streakReachY = Math.abs(svy);
 
             for (const batch of layer.batches) {
                 // Determine blend
@@ -579,38 +753,84 @@ export class World {
                     // Lighter and approx screen on premultiplied
                     gl.blendFunc(gl.ONE, gl.ONE);
                 }
-                
+
                 gl.uniform1i(this.locs.u_isBlackHole, batch.isBlackHole ? 1 : 0);
 
-                // Bind pre-loaded VBO for instances
-                gl.bindBuffer(gl.ARRAY_BUFFER, batch.vbo);
-                const stride = (2 + 4 + 2 + 1 + 1) * 4;
-                gl.vertexAttribPointer(this.locs.a_offset, 2, gl.FLOAT, false, stride, 0);
-                gl.vertexAttribPointer(this.locs.a_texCoords, 4, gl.FLOAT, false, stride, 8);
-                gl.vertexAttribPointer(this.locs.a_size, 2, gl.FLOAT, false, stride, 24);
-                gl.vertexAttribPointer(this.locs.a_alphaBoost, 1, gl.FLOAT, false, stride, 32);
-                gl.vertexAttribPointer(this.locs.a_rotation, 1, gl.FLOAT, false, stride, 36);
+                // starCull hides the tail of the (pre-shuffled) star list.
+                const instCount = (batch.cullable && effStarCull > 0)
+                    ? Math.max(0, Math.round(batch.count * (1 - effStarCull)))
+                    : batch.count;
+                if (instCount <= 0) continue;
 
+                // Per-sample global alpha — the same arithmetic the old loop
+                // uploaded one uniform at a time. Additive batches skip samples
+                // whose weight is zero (s = 0 and s = 7: sin(0), sin(pi)):
+                // texColor * ~1e-17 quantizes to 0 and ONE/ONE adds nothing,
+                // so the pixels are identical. Black holes are source-over and
+                // ignore alpha, so every sample of theirs is kept.
+                let s0 = samples, s1 = 0;
                 for (let s = 0; s < samples; s++) {
                     const t = samples > 1 ? s / (samples - 1) : 0.5;
                     const weight = samples > 1 ? Math.sin(t * Math.PI) : 1.0;
-                    const offsetMult = samples > 1 ? (s / samples) : 0;
                     const boostComp = samples > 1 ? (1.8 / samples) : 1.0;
-                    let finalAlpha = batch.isBlackHole ? 1.0 : (layerAlpha * weight * boostComp);
-                    
-                    gl.uniform1f(this.locs.u_globalAlpha, finalAlpha);
-                    gl.uniform2f(this.locs.u_streakOffset, svx * offsetMult, svy * offsetMult);
+                    const finalAlpha = batch.isBlackHole ? 1.0 : (layerAlpha * weight * boostComp);
+                    sampleAlpha[s] = finalAlpha;
+                    if (batch.isBlackHole || finalAlpha > 1e-9) {
+                        if (s < s0) s0 = s;
+                        s1 = s + 1;
+                    }
+                }
+                if (s1 <= s0) continue;
+                gl.uniform1fv(this.locs.u_sampleAlpha, sampleAlpha);
 
-                    // starCull hides the tail of the (pre-shuffled) star list.
-                    const instCount = (batch.cullable && effStarCull > 0)
-                        ? Math.max(0, Math.round(batch.count * (1 - effStarCull)))
-                        : batch.count;
-                    if (instCount <= 0) continue;
-                    for (let k = -rangeX; k <= rangeX; k++) {
-                        for (let m = -rangeY; m <= rangeY; m++) {
-                            gl.uniform2f(this.locs.u_wrapOffset, k, m);
-                            gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, instCount);
+                // Wrap tiles whose copies can reach this pane (see
+                // _visibleTileAxis). Rejecting a whole tile skips its vertex
+                // work without touching any pixel that would have been drawn.
+                const reachX = batch.maxExtent * worldScale + streakReachX + 2;
+                const reachY = batch.maxExtent * worldScale + streakReachY + 2;
+                World._visibleTileAxis(rangeX, centerX, this.virtualSize, worldScale, paneX0, paneX1, reachX, visK);
+                World._visibleTileAxis(rangeY, centerY, this.virtualSize, worldScale, paneY0, paneY1, reachY, visM);
+                const tileCount = visK.length * visM.length;
+                if (tileCount === 0) continue;
+
+                gl.uniform1i(this.locs.u_starBase, batch.starBase);
+                gl.uniform1i(this.locs.u_instCount, instCount);
+
+                if (tileCount <= MAX_TILES_PER_DRAW) {
+                    // ONE draw for every sample x tile x star copy of the batch,
+                    // in k-outer / m-inner tile order like the old loops.
+                    let n = 0;
+                    for (let ki = 0; ki < visK.length; ki++) {
+                        for (let mi = 0; mi < visM.length; mi++) {
+                            tiles[n++] = visK[ki];
+                            tiles[n++] = visM[mi];
                         }
+                    }
+                    gl.uniform2iv(this.locs.u_tiles, tiles);
+                    gl.uniform1i(this.locs.u_tileCount, tileCount);
+                    gl.uniform1i(this.locs.u_sampleBase, s0);
+                    gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, (s1 - s0) * tileCount * instCount);
+                } else {
+                    // Absurd FOV: more tiles than one draw addresses. Keep the
+                    // sample -> tile order by chunking tiles inside each sample.
+                    for (let s = s0; s < s1; s++) {
+                        gl.uniform1i(this.locs.u_sampleBase, s);
+                        let n = 0;
+                        const flush = () => {
+                            const cnt = n >> 1;
+                            gl.uniform2iv(this.locs.u_tiles, tiles);
+                            gl.uniform1i(this.locs.u_tileCount, cnt);
+                            gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, cnt * instCount);
+                            n = 0;
+                        };
+                        for (let ki = 0; ki < visK.length; ki++) {
+                            for (let mi = 0; mi < visM.length; mi++) {
+                                tiles[n++] = visK[ki];
+                                tiles[n++] = visM[mi];
+                                if (n === tiles.length) flush();
+                            }
+                        }
+                        if (n > 0) flush();
                     }
                 }
             }
@@ -620,26 +840,6 @@ export class World {
         gl.bindVertexArray(null);
         gl.disable(gl.SCISSOR_TEST);
 
-        // Output to main context
-        ctx.save();
-        ctx.imageSmoothingEnabled = false;
-        // The glCanvas has no background so just draw it directly
-        ctx.globalCompositeOperation = 'source-over';
-        ctx.globalAlpha = 1.0;
-        // Blit only this pane's sub-rect (the rest of the scratch canvas holds
-        // other panes). Full-view cameras blit the whole canvas as before.
-        if (camera.viewport) {
-            ctx.drawImage(this.glCanvas, vp.x, vp.y, vp.w, vp.h, vp.x, vp.y, vp.w, vp.h);
-        } else {
-            ctx.drawImage(this.glCanvas, 0, 0);
-        }
-        ctx.restore();
-
-        // Draw Shops (Delegated to shop system as originally coded via loop)
-        if (this.game.currentState.shops) {
-            for (const shop of this.game.currentState.shops) {
-                shop.draw(ctx, camera);
-            }
-        }
+        return true;
     }
 }

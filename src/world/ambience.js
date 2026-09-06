@@ -198,12 +198,47 @@ export class Ambience {
 
     // ── Drawing ──────────────────────────────────────────────────────────────
 
-    draw(ctx, camera) {
+    // True when draw() would emit anything this frame (the GPU foreground
+    // layer must know whether the backdrop sits between starfield and rubble).
+    isDrawing() {
+        return this._tintAlpha > 0.004 || this.comets.length > 0 || this.dust.length > 0;
+    }
+
+    // GPU-layer twin of the tint wash + dust drift (single view only — the
+    // draw() projection uses the full window center, so split-screen panes
+    // keep the Canvas path). Comets stay on Canvas; callers fall back when
+    // any exist. Keep in step with draw().
+    emitGpu(batch, camera) {
+        const ws = this.game.worldScale;
+        const W = this.game.width, H = this.game.height;
+        if (this._tintAlpha > 0.004) {
+            batch.rect(W / 2, H / 2, W, H, 0,
+                Math.round(this._tintR) / 255, Math.round(this._tintG) / 255, Math.round(this._tintB) / 255,
+                parseFloat(this._tintAlpha.toFixed(3)), 1 /* lighter */);
+        }
+        if (this.dust.length > 0) {
+            for (const p of this.dust) {
+                const sx = (p.x - camera.x * DUST_PARALLAX) * ws + W / 2;
+                const sy = (p.y - camera.y * DUST_PARALLAX) * ws + H / 2;
+                if (sx < -10 || sx > W + 10 || sy < -10 || sy > H + 10) continue;
+                const lifeFrac = p.life / p.maxLife;
+                const alpha = Math.min(0.35, lifeFrac) * (p.warm ? 0.9 : 0.6);
+                const s = Math.max(1, Math.round(p.size * ws * 0.5));
+                const x = Math.round(sx), y = Math.round(sy);
+                if (p.warm) batch.rect(x + s / 2, y + s / 2, s, s, 0, 202 / 255, 165 / 255, 106 / 255, alpha, 0);
+                else batch.rect(x + s / 2, y + s / 2, s, s, 0, 138 / 255, 147 / 255, 166 / 255, alpha, 0);
+            }
+        }
+    }
+
+    // `gpuHandled`: the tint wash + dust were already emitted to the GPU layer
+    // this frame (see emitGpu); only comets remain (none when it's set).
+    draw(ctx, camera, gpuHandled = false) {
         const ws = this.game.worldScale;
         const W = this.game.width, H = this.game.height;
 
         // ── Sector tint: one soft additive wash, eased over seconds ──
-        if (this._tintAlpha > 0.004) {
+        if (!gpuHandled && this._tintAlpha > 0.004) {
             ctx.save();
             ctx.globalCompositeOperation = 'lighter';
             ctx.fillStyle = `rgba(${Math.round(this._tintR)},${Math.round(this._tintG)},${Math.round(this._tintB)},${this._tintAlpha.toFixed(3)})`;
@@ -251,7 +286,7 @@ export class Ambience {
         }
 
         // ── Dust drift ──
-        if (this.dust.length > 0) {
+        if (!gpuHandled && this.dust.length > 0) {
             ctx.save();
             for (const p of this.dust) {
                 const sx = (p.x - camera.x * DUST_PARALLAX) * ws + W / 2;
