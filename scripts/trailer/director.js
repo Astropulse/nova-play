@@ -286,8 +286,8 @@ const DT = 1 / FPS;
     fl.style.cssText = 'position:fixed;inset:0;z-index:47;pointer-events:none;opacity:0;';
     document.body.appendChild(fl);
     const FLASHES = [
-        { t: 35.00, c: 'rgba(255,64,40,0.55)', d: 0.14 },  // the tear
-        { t: 75.29, c: 'rgba(255,255,255,0.7)', d: 0.10 }, // the shout lands
+        { t: 37.50, c: 'rgba(255,64,40,0.55)', d: 0.14 },  // the tear
+        { t: 77.79, c: 'rgba(255,255,255,0.7)', d: 0.10 }, // the shout lands
     ];
     function drawFlashes(t) {
         let a = 0, c = '#fff';
@@ -299,6 +299,11 @@ const DT = 1 / FPS;
     }
 
     // ── Shared helpers ────────────────────────────────────────────────────────
+    // Trailer camera offset: the camera centres on a shifted point (the ship
+    // sits off-centre) — used by the cold open; zero everywhere else.
+    const camOff = { x: 0, y: 0 };
+    { const _cu = g.camera.update.bind(g.camera);
+      g.camera.update = (dt, t) => _cu(dt, (camOff.x || camOff.y) && t ? { worldX: t.worldX + camOff.x, worldY: t.worldY + camOff.y, vx: t.vx, vy: t.vy } : t); }
     const bot = new CineBot(g, 20260826);
     // THE PILOT: flies the ship through the game's own inputs toward scene goals.
     const pilot = new Pilot(g, 20260903);
@@ -926,15 +931,17 @@ const DT = 1 / FPS;
     // beat by ~0.4s. Records sum to 93.5.
     const SCENES = [
 
-        { // black + click (cut to picture at 1.15, speech 1.55)
-            name: 'black', preroll: 0, record: 0.35, hud: false, crosshair: false,
-            setup(cx) { quiet(); clearCombat(); setOverlay(1, ''); cx.rig.stop(); bot.setMode('off'); flags.subsOverCard = false; sub.style.zIndex = '46'; },
-        },
-
         { // briefing: slow authored glide through the nebula
-            name: 'drift', preroll: 6, record: 6.54, hud: false, crosshair: false,
+            name: 'drift', preroll: 6, record: 9.39, hud: false, crosshair: false,
             setup(cx) {
-                quiet(); clearCombat();
+                quiet(); clearCombat(); setOverlay(1, ''); flags.subsOverCard = false; sub.style.zIndex = '46';
+                // the NOVA title over the flight (a transparent overlay, not the black card)
+                let tt = document.getElementById('openTitle');
+                if (!tt) { tt = document.createElement('div'); tt.id = 'openTitle';
+                    tt.style.cssText = 'position:fixed;left:50%;top:27%;transform:translate(-50%,-50%);z-index:47;pointer-events:none;opacity:0';
+                    tt.innerHTML = '<img src="/Assets/UI/title.png" style="width:840px;image-rendering:pixelated;display:block">';
+                    document.body.appendChild(tt); }
+                camOff.x = 0; camOff.y = -230;               // the ship low in frame
                 const n = densestNebula();
                 // A slow glide THROUGH the nebula's heart; camera starts on the
                 // path so the ship is centered from the first visible frame.
@@ -946,7 +953,7 @@ const DT = 1 / FPS;
                     S.asteroids = S.asteroids.filter(a => Math.hypot(a.worldX - p.worldX, a.worldY - p.worldY) > 2600);
                 };
                 this._clearRocks();
-                pilot.set({ type: 'goto', speed: 250, avoid: true, pts: [[n.x - 250, n.y - 40], [n.x + 400, n.y + 30], [n.x + 1000, n.y - 50], [n.x + 1700, n.y - 20]] });
+                pilot.set({ type: 'goto', speed: 250, avoid: true, pts: [[n.x - 250, n.y - 40], [n.x + 400, n.y + 30], [n.x + 1000, n.y - 50], [n.x + 1700, n.y - 20], [n.x + 2400, n.y + 30]] });
             },
             beats: [
                 { at: 5.85, fn() { this._clearRocks(); } },   // the sky stays quiet
@@ -954,10 +961,16 @@ const DT = 1 / FPS;
             tick(cx, t) {
                 quiet(); heal();
                 S.enemies.length = 0; S.encounters.length = 0;   // nothing but the sky in the opening
-                // fade in from the black card over the first visible 0.55s
-                const r = t - 6;
-                if (r >= 0 && r < 0.6) setOverlay(1 - Math.min(1, r / 0.55), '');
-                else if (r >= 0.6) setOverlay(0, '');
+                const r = t - 6;                                          // recorded time
+                if (r >= 0 && r < 0.45) setOverlay(1 - Math.min(1, r / 0.4), '');
+                else if (r >= 0.45) setOverlay(0, '');
+                // cold open: title up by 0.9 s, holds; the narrator starts at 3.42;
+                // the title fades 3.2→4.4 while the ship re-centres and the view pulls out 3.2→5.8
+                const tt = document.getElementById('openTitle');
+                if (tt) { let a = 0; if (r >= 0.2) a = Math.min(1, (r - 0.2) / 0.7); if (r >= 3.2) a = Math.max(0, 1 - (r - 3.2) / 1.2); tt.style.opacity = a.toFixed(3); if (r > 4.6) tt.remove(); }
+                const k = r < 3.2 ? 0 : Math.min(1, (r - 3.2) / 2.6), e = k * k * (3 - 2 * k);
+                P().itemFovMult = 0.72 + 0.28 * e;                        // zoomed in → normal
+                camOff.y = -230 * (1 - e); camOff.x = 0;                  // low in frame → centred
             },
         },
 
@@ -1403,10 +1416,10 @@ const DT = 1 / FPS;
                 this._lit = Math.max(this._lit * 0.94, e);
                 const floor = Math.min(0.10, r * 0.03);
                 const drg = document.getElementById('drg');
-                if (T >= 119.97) { if (drg) drg.style.opacity = '0'; return; }   // gone before the black
+                if (T >= 122.47) { if (drg) drg.style.opacity = '0'; return; }   // gone before the black
                 if (drg) drg.style.opacity = String(Math.min(1, floor + 0.9 * this._lit));
                 // eyes: shut (frames 0/1 breathe) until the last big breath, then open and stay open
-                if (!this._eyes && T >= 118.87) { this._eyes = true; this._f = 2; this._eyeT = T; }
+                if (!this._eyes && T >= 121.37) { this._eyes = true; this._f = 2; this._eyeT = T; }
                 let f;
                 if (this._eyes) f = 2 + Math.floor((T - this._eyeT) * 5) % 10;
                 else f = (Math.floor(T * 0.6) % 2);
@@ -1441,7 +1454,7 @@ const DT = 1 / FPS;
           // own pilot (a fake pad on a real co-op body) toward a wandering slot
           // in the lead's frame — they turn, catch up, fall back, overshoot.
           // No combat, no rocks. Just the fleet.
-            name: 'button', preroll: 0, record: 4.01, hud: true, crosshair: false,
+            name: 'button', preroll: 0, record: 7.60, hud: true, crosshair: false,
             setup(cx) {
                 fxSet(0, 0); setVignette(0);
                 ov.style.background = '#000';
@@ -1465,12 +1478,12 @@ const DT = 1 / FPS;
                         const [hx, hy] = HOME[i];
                         q.worldX = p.worldX + hx + (bot.rand() - 0.5) * 200; q.worldY = p.worldY + hy + (bot.rand() - 0.5) * 160;
                         q.angle = 0; q.vx = 380; q.vy = 0;
-                        const wp = new Pilot(g, 777 + i * 131, { io: 'pad', player: () => q });
+                        const wp = new Pilot(g, 777 + i * 131, { player: () => q });
                         q.input = wp.pad; q.useMouseAim = false; q.controlsEnabled = true; q.health = q.maxHealth;
                         wp.set({ type: 'follow', lead: () => P(), offset: [hx, hy] });
                         wingPilots.push(wp);
                     });
-                    P().input = null; P().useMouseAim = true;
+                    P().input = pilot.pad; P().useMouseAim = false;
                     S.splitScreen.setCount(1);                       // ONE screen
                     S.localPlayers[0].killStreak = S.killStreak; S.killStreak.pilot = null;
                 } catch (e) { console.log('TRAILER coop failed ' + (e.stack || e)); }
@@ -1486,7 +1499,9 @@ const DT = 1 / FPS;
                 quiet(); S.waveTimer = 87; heal(); this._clearSky();
                 for (const q of this._mates) { if (q && !q.dead) { q.health = q.maxHealth; if (q.maxShieldEnergy) q.shieldEnergy = q.maxShieldEnergy; if (q._levelUpQueue) q._levelUpQueue.length = 0; } }
                 g.input.mouseButtons.delete(0);                      // nobody fires
-                if (t >= 1.48 && this._c === 0) { this._c = 1; setOverlay(0, ''); g.sounds.play('select', { volume: 0.8 }); }
+                // "A word of advice?" — the black FADES up on the fleet (1.4 s); the banner lands on "bring friends"
+                { const k = Math.max(0, Math.min(1, (t - 0.05) / 1.4)); setOverlay(1 - k * k * (3 - 2 * k), ''); }
+                if (t >= 1.48 && this._c === 0) { this._c = 1; g.sounds.play('select', { volume: 0.8 }); }
                 if (this._c >= 1) {
                     let b = document.getElementById('coopBanner');
                     if (!b) {
@@ -1501,7 +1516,7 @@ const DT = 1 / FPS;
         },
 
         { // the end card
-            name: 'title', preroll: 0, record: 9.6, hud: false, crosshair: false,
+            name: 'title', preroll: 0, record: 9.19, hud: false, crosshair: false,
             setup(cx) {
                 const b = document.getElementById('coopBanner'); if (b) b.remove();
                 try { S.setCoopCount(1); } catch (e) {}
@@ -1542,7 +1557,7 @@ const DT = 1 / FPS;
         if (scene.name !== 'black' && scene.name !== 'blackbeat' && scene.name !== 'title'
             && scene.name !== 'nova') { ov.style.background = '#000'; setOverlay(0, ''); }
         scene._fired = new Set();
-        pilot.set({ type: 'idle' }); pilot.forceShield = false; wingPilots = []; rig.stop();
+        pilot.set({ type: 'idle' }); pilot.forceShield = false; wingPilots = []; rig.stop(); camOff.x = 0; camOff.y = 0;
         // No modal survives a cut: force-close dialogs and unpause.
         try {
             if (S.activeLevelUpDialog) { try { S.activeLevelUpDialog._selectChoice(0); } catch (e2) {} }
@@ -1583,6 +1598,7 @@ const DT = 1 / FPS;
         AV.recording = recording;
         if (recording) { AV.recT = recFrames / FPS; recFrames++; }
         try { if (scene.tick) scene.tick.call(scene, cx, tLocal); } catch (e) { console.log('TRAILER tick error [' + scene.name + '] ' + (e.stack || e)); }
+        { const lp = P(); if (lp && lp.input !== pilot.pad) { lp.input = pilot.pad; lp.useMouseAim = false; } }   // the lead's controller
         try { pilot.drive(DT); for (const m of wingPilots) m.drive(DT); } catch (e) { console.log('TRAILER pilot error ' + (e.stack || e)); }
         try { rig.tick(DT); } catch (e) { console.log('TRAILER rig error ' + (e.stack || e)); }
 
@@ -1605,7 +1621,7 @@ const DT = 1 / FPS;
     // scene it only SIMULATES (draw + screenshot skipped) and copies the frames.
     // Bump RENDER_CORE when shared helpers (rig, loadout, cards, subs) change
     // in a way that alters pictures without touching scene source.
-    const RENDER_CORE = 'core-v4q';
+    const RENDER_CORE = 'core-v6';
     const fnv = (str) => { let h = 0x811c9dc5; for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; } return h.toString(16).padStart(8, '0'); };
     const sceneKey = (sc, i) => fnv(RENDER_CORE + '|' + i + '|' + sc.name + '|' + sc.preroll + '|' + sc.record + '|' +
         (sc.setup ? sc.setup.toString() : '') + (sc.tick ? sc.tick.toString() : '') +

@@ -38,7 +38,8 @@ import numpy as np
 ROOT = r"D:\Art\Astropulse\RetroDiffusion\Examples\Game\Nova"
 MUS = os.path.join(ROOT, "scripts", "trailer", "music")
 SR = 44100
-DUR = 135.82
+T0 = 2.5        # the cold open
+DUR = 141.5
 
 def rd_any(path):
     raw = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-ac", "2", "-ar", str(SR), "-f", "s16le", "-"],
@@ -76,7 +77,7 @@ ACTS = [
         "Synth":  [(72.20, 1.0), (90.17, 1.0), (96.4, 0.7), (102.4, 0.6), (105.82, 0.0)],
         "FX":     [(72.20, 1.0), (96.4, 0.8), (102.4, 0.6), (105.82, 0.0)],
     }),
-    ("the liturgy", 158.0, 122.26, 135.82, -2.0, {
+    ("the liturgy", 158.0, 122.26, 139.0, -2.0, {
         "Synth":          [(122.26, 0.0), (123.0, 1.0)],
         "Bass":           [(122.26, 0.0), (123.0, 0.6)],
         "Backing Vocals": [(122.26, 1.0)],
@@ -90,6 +91,7 @@ t_axis = np.arange(len(buf)) / SR
 edl = []
 for ai, (song, sin, din, dout, gain, stems) in enumerate(ACTS):
     files = stems_of(song)
+    din += T0; dout += T0; stems = {k: [(t + T0, v) for (t, v) in pts] for k, pts in stems.items()}
     n = int((dout - din) * SR); j0 = int(din * SR); j1 = min(len(buf), j0 + n)
     i0 = int(sin * SR)
     seg_t = t_axis[j0:j1]

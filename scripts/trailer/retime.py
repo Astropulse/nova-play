@@ -137,3 +137,5 @@ if __name__ == '__main__':
     print('DUCK: (%.2f, %.2f) (%.2f, %.2f)' % (m(49.40), m(51.70), m(72.78), m(87.29)))
     print('WORDS: bring %.2f  beast %.2f  luck %.2f  self %.2f  Learn %.2f  You(omen) %.2f  Do(seeshim) %.2f' % (
         m(89.02), m(90.70), m(92.66), m(9.69), m(16.04), m(32.20), m(57.25)))
+# v5 (2026-09-11): a 2.5 s cold open (T0) shifts the whole clock; the black card is gone (drift = the
+# opener, record 9.39); the wing holds 7.60 s until the narrator is done, the end card 9.19. TOTAL = 141.5.

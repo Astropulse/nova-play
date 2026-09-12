@@ -27,6 +27,7 @@ LINES = extract_block(bfx, 'LINES')
 CORRUPT = extract_block(bfx, 'CORRUPT')
 PLACE = dict((lid, at) for at, lid in extract_block(asm, 'PLACE'))
 PLACE['15_breathing'] = 65.72  # placed separately (the dragon)
+T0 = 2.5   # the cold open (assemble_demo.py T0)
 
 STAGE = {
     '01_briefing': 'radio', '02_contract': 'radio', '03_generous': 'radio',
@@ -35,9 +36,13 @@ STAGE = {
     '10_answer1': 'quiet', '11_answer2': 'shout',
     '12_seeshim': 'whisper', '13_others': 'whisper', '14_dontname': 'whisper',
     '16_button': 'radio',
+    # v3 clip ids (TRAILER-SCRIPT.md clip map)
+    '07_stars': 'omen', '10_keep1': 'quiet', '11_keep2': 'shout',
+    '12_sees': 'whisper', '14_dontstop': 'whisper',
 }
 HL = {'wheels', 'fire,', 'fire', 'angel,', 'angel', 'swarm,', 'swarm', 'dead',
-      'king', 'yellow', 'spark', 'name.', 'heads,', 'heads.', 'seven'}
+      'king', 'yellow', 'spark', 'name.', 'heads,', 'heads.', 'seven',
+      'flying.', 'flying', 'others.', 'work', 'friends.', 'friends,', 'watching'}
 
 def env_at(lid, t_clip):
     if lid not in CORRUPT: return 0.0
@@ -49,17 +54,23 @@ def env_at(lid, t_clip):
             return W[i-1] + (W[i] - W[i-1]) * max(0, min(1, f))
     return W[-1]
 
-tr = json.load(open(os.path.join(HERE, 'review', 'narration_transcript.json'), encoding='utf-8'))
-words = []
-for seg in tr:
-    for w in seg['words']:
-        words.append((w['s'], w['e'], w['w'].strip()))
+def load_words(name):
+    tr = json.load(open(os.path.join(HERE, 'review', name), encoding='utf-8'))
+    out = []
+    for seg in tr:
+        for w in seg['words']:
+            out.append((w['s'], w['e'], w['w'].strip().replace('Pilate', 'Pilot')))   # whisper's ear
+    return out
+WORDS1 = load_words('narration_transcript.json')
+WORDS2 = load_words('narration2_transcript.json')
 
 out = []
-for (cin, cout, lid, stage_chain) in LINES:
+for entry in LINES:
+    cin, cout, lid, stage_chain = entry[:4]
+    words = WORDS2 if (len(entry) > 4 and entry[4] == 'N2') else WORDS1
     if lid not in PLACE or lid == '15_breathing':
         continue
-    at = PLACE[lid]
+    at = PLACE[lid] + T0
     for (ws, we, txt) in words:
         if ws >= cin - 0.05 and ws < cout - 0.1:
             t = round(at + (ws - cin), 3)

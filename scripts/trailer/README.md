@@ -13,16 +13,23 @@ Everything is data-driven from one clock: retime the audio and every other
 layer (scenes, subtitles, SFX ducks, flashes, music) is re-derived, never
 re-tuned by hand.
 
+**Media is not in git.** The narration takes, the cut voice clips (`vo/`), the
+Suno library (`music/`), every mix/render (`*.wav`, `*.mp3`, `*.mp4` here and
+at the repo root) are ignored — only the scripts and the small data files
+(`subtitles.json`, `breath.json`, `cuts.json`, the dragon art) are tracked.
+Keep the media alongside the checkout; `build_vo_fx.py` regenerates `vo/` from
+the takes.
+
 ## 1. THE CALL — narration + radio FX
 
 | File | Role |
 | --- | --- |
-| `Narration.wav` | The recorded take (one continuous read) |
+| `Narration.wav`, `narration2.wav` | The first take (one continuous read) and the second take (the script-v3 replacement lines; `Narration2_leveled.wav` = level-matched copy) — `LINES` entries tagged `'N2'` cut from the second |
 | `transcribe_vo.py` | faster-whisper (`small.en`, word timestamps) → `review/narration_transcript.json` |
 | `build_vo_fx.py` | Cuts the take into clips (`LINES`), synthesizes the radio SFX (noise-snap clicks, keyed static beds, crackle, whine, burst) and renders each clip through its radio chain; `CORRUPT` holds the per-clip corruption envelopes (a mono-symmetric port of the game's corruption bus + granular demon double) → `vo/fx/*.wav`, `vo/sfx/*.wav` |
 | `assemble_demo.py` | Places the clips on the trailer clock (`PLACE`), keys the clicks/beds, breathing off-radio → `narration-fx-demo.wav/.mp3` |
 | `gen_subtitles.py` | Word-level subtitle track on the same clock (stage per clip, corruption weight per word) → `subtitles.json` |
-| `TRAILER-SCRIPT.md` | The clean lines-only script (v2) + line→mechanic map |
+| `TRAILER-SCRIPT.md` | The clean lines-only script (v3) + line→mechanic map + the clip map for re-records |
 
 Rules the mix obeys (user-directed): one radio identity for every line, static
 only while the channel is keyed, distortion follows the performance (smooth
@@ -36,7 +43,9 @@ steps it 1/30 s per call; `capture.mjs` screenshots every recorded frame.
 `director.js` holds `SCENES` — each with `preroll` (stepped, not recorded),
 `record`, a `setup`, timed `beats` and a per-frame `tick`. Staging tools in
 the file: the PILOT (`pilot.js`) — the ship is FLOWN through the game's own
-inputs (mouse aim, W/S, Space, ShiftLeft, fire), never moved. Scenes set goals:
+CONTROLLER path (a `FakePad` assigned as `player.input`: right stick aim, an
+analog left stick as a proportional throttle — never a key toggled on/off —
+triggers for fire/boost, bumper shield), never moved. Scenes set goals:
 `goto` (waypoints, rock avoidance, shoot rocks/enemies en route, ease to a
 stop), `cruise`, `hold` (stop, face, optionally back off on S), `hunt` (joust
 passes, bursts, dodge + shield reflex), `strike` (boss standoff band), `mine`
@@ -64,7 +73,7 @@ call is logged with its recorded-time stamp → `frames/sfxlog.json`).
 | `cardart/` | Sprite frames (PNG per gif frame, extracted with PIL) for the info cards and the dragon; stepped on the virtual clock by `animSprites()` / the dragon tick, preloaded before `TRAILER.ready` |
 | `breath.json` | 30 fps envelope of the placed dragon breathing (from `vo/fx/15_breathing.wav` at its `assemble_demo.py` placement) — lights and tears the dragon head in sync with each breath |
 | `dragon.gif/.png` | The dragon head art (12 frames: eyes shut → open) used by the `dragoneyes` scene |
-| `pilot.js` | THE PILOT — goal-driven input driver (see above); `FakePad` = per-wingman input source |
+| `pilot.js` | THE PILOT — goal-driven controller driver (see above); every pilot (lead + wingmen) holds a `FakePad` (a GamepadInputSource look-alike); the lead's aim is mirrored into the mouse cursor so the crosshair follows |
 | `cinebot.js` | The first autopilot (retired; the Pilot supersedes it) |
 
 Render chain (≈40 min at 1080p30; the monster-arsenal scenes run ~0.5 fps):
@@ -72,6 +81,7 @@ Render chain (≈40 min at 1080p30; the monster-arsenal scenes run ~0.5 fps):
 ```sh
 node scripts/perf/server.mjs 8123          # static server, once
 node scripts/trailer/capture.mjs           # frames/
+sh scripts/trailer/finish.sh                 # encode + SFX/narration/music mux + proxy (the four lines below, in one)
 ffmpeg -y -framerate 30 -i scripts/trailer/frames/f%05d.png -c:v libx264 -pix_fmt yuv420p -crf 18 -preset medium -movflags +faststart previs-silent.mp4
 python scripts/trailer/mix_gamesfx.py
 ffmpeg -y -i previs-silent.mp4 -i previs-audio.wav -map 0:v -map 1:a -c:v copy -c:a aac -b:a 192k -shortest -movflags +faststart nova-trailer-previs.mp4

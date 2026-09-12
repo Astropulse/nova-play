@@ -18,6 +18,8 @@ import numpy as np
 
 ROOT = r"D:\Art\Astropulse\RetroDiffusion\Examples\Game\Nova"
 SRC = os.path.join(ROOT, "scripts", "trailer", "Narration.wav")
+# the second take (script v3 replacement lines), level-matched to the first (+0.8 dB)
+SRC2 = os.path.join(ROOT, "scripts", "trailer", "Narration2_leveled.wav")
 VO = os.path.join(ROOT, "scripts", "trailer", "vo")
 RAW = os.path.join(VO, "raw"); FXD = os.path.join(VO, "fx"); SFX = os.path.join(VO, "sfx")
 for d in (VO, RAW, FXD, SFX): os.makedirs(d, exist_ok=True)
@@ -207,23 +209,23 @@ def smoothstep_env(n, T, W):
     return e * e * (3 - 2 * e)
 
 # ── Line cuts + base radio chains ────────────────────────────────────────────
-LINES = [
+LINES = [   # (in, out, id, chain[, 'N2' = cut from the second take])
     (0.00, 5.60,  "01_briefing",  "A"),
     (5.65, 10.15, "02_contract",  "A"),
     (10.20, 13.55, "03_generous", "A"),
     (13.60, 20.30, "04_instruct", "A2"),
     (20.35, 22.45, "05_die",      "B"),
     (22.70, 24.35, "06_comeback", "B"),
-    (24.40, 28.30, "07_deep",     "C1"),
-    (28.35, 36.90, "08_liturgy1", "C2"),
-    (36.95, 43.60, "09_liturgy2", "A"),    # CLEAR plain radio after the peak
-    (45.45, 47.70, "10_answer1",  "A"),    # clear, plain
-    (47.80, 49.80, "11_answer2",  "E2"),   # broken, a little too loud
-    (49.90, 56.16, "12_seeshim",  "F"),    # + game corruption below
-    (56.20, 59.30, "13_others",   "F"),    # + game corruption below
-    (59.45, 64.90, "14_dontname", "F"),    # CLEAR close-dry
-    (65.30, 76.40, "15_breathing","BR"),   # + game corruption below
-    (76.45, 87.20, "16_button",   "A"),
+    (4.20, 8.90,  "07_stars",     "C1", "N2"),   # "If the stars start watching you, ignore them."
+    (28.35, 36.90, "08_liturgy1", "C2"),         # "...they'll raise the dead, and when nothing comes home,"
+    (9.70, 12.30, "09_liturgy2",  "A",  "N2"),   # "They'll send the king in yellow."  CLEAR
+    (16.10, 18.20, "10_keep1",    "A",  "N2"),   # "Keep flying."  clear, plain
+    (18.80, 20.60, "11_keep2",    "E2", "N2"),   # "KEEP FLYING!"  broken, a little too loud
+    (22.85, 27.60, "12_sees",     "F",  "N2"),   # "He sees you. He's been on the line this whole time."
+    (27.90, 30.50, "13_others",   "F",  "N2"),   # "This is how we lost the others."
+    (31.05, 37.10, "14_dontstop", "F",  "N2"),   # "Pilot, listen to me. Don't stop. You have far too much work to do."  CLEAR
+    (65.30, 76.40, "15_breathing","BR"),         # the dragon
+    (40.20, 48.10, "16_button",   "A",  "N2"),   # "A word of advice? Bring friends. ... Good luck, pilot."
 ]
 
 CHAINS = {
@@ -260,11 +262,13 @@ CHAINS = {
           "aecho=0.6:0.4:38|61:0.25|0.18,volume=5dB",
 }
 
-for (s, e, lid, stage) in LINES:
+for entry in LINES:
+    s, e, lid, stage = entry[:4]
+    src = SRC2 if (len(entry) > 4 and entry[4] == "N2") else SRC
     raw = os.path.join(RAW, lid + ".wav")
     fx = os.path.join(FXD, lid + ".wav")
     dur = e - s
-    ff("-ss", str(s), "-t", str(dur), "-i", SRC,
+    ff("-ss", str(s), "-t", str(dur), "-i", src,
        "-af", "afade=t=in:d=0.05,afade=t=out:st=%.3f:d=0.12" % (dur - 0.12), raw)
     ff("-i", raw, "-af", CHAINS[stage], fx)
 
@@ -276,12 +280,11 @@ CORRUPT = {
     # (blend = a^2, so these read gentler than the numbers look)
     "02_contract":  ([0, 2.2, 3.3, 4.1, 5.2, 99],               [0, 0, 0.35, 0.4, 0, 0]),
     "04_instruct":  ([0, 2.2, 3.4, 4.4, 5.0, 6.1, 6.7, 99],     [0, 0, 0.15, 0.35, 0.65, 0.65, 0.25, 0]),
-    "07_deep":      ([0, 1.3, 2.3, 3.2, 4.2, 99],               [0, 0, 0.3, 0.3, 0, 0]),
+    "07_stars":     ([0, 1.0, 2.2, 3.3, 4.2, 99],               [0, 0, 0.3, 0.3, 0, 0]),         # a tinge on "watching you"
     "08_liturgy1":  ([0, 1.0, 3.0, 4.3, 5.9, 7.4, 99],          [0, 0.1, 0.35, 0.7, 0.7, 0, 0]),
-    "11_answer2":   ([0, 0.15, 1.85, 2.0, 99],                  [0.35, 0.7, 0.7, 0.35, 0.35]),
-    "12_seeshim":   ([0, 0.8, 2.5, 4.0, 5.6, 6.3, 99],          [0.1, 0.4, 0.28, 0.5, 0.4, 0.35, 0.35]),
-    "13_others":    ([0, 1.0, 2.4, 3.1, 99],                    [0.3, 0.45, 0.5, 0.35, 0.35]),
-    "16_button":    ([0, 4.2, 4.9, 6.4, 7.3, 99],               [0, 0, 0.45, 0.45, 0, 0]),
+    "11_keep2":     ([0, 0.15, 1.5, 1.7, 99],                   [0.35, 0.7, 0.7, 0.35, 0.35]),   # the shout, broken
+    "12_sees":      ([0, 0.8, 2.2, 3.4, 4.3, 99],               [0.1, 0.4, 0.28, 0.5, 0.4, 0.35]),
+    "13_others":    ([0, 0.8, 1.9, 2.4, 99],                    [0.3, 0.45, 0.5, 0.35, 0.35]),
 }
 for i, (lid, (T, W)) in enumerate(CORRUPT.items()):
     fxp = os.path.join(FXD, lid + ".wav")

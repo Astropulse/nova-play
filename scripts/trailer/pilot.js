@@ -1,10 +1,12 @@
 // Pilot — flies the ship through the game's OWN controls (scripts/trailer/).
 //
-// Nothing here moves the ship. It produces the inputs a person produces —
-// mouse aim (the nose lerps toward it at the game's fixed rate), W to thrust
-// along the nose, S to brake, Space to boost, ShiftLeft to shield, the left
-// button to fire — toward a scene GOAL. The director controls the situation;
-// the pilot executes actions inside it. Deterministic (seeded LCG).
+// Nothing here moves the ship. It produces the inputs a person on a CONTROLLER
+// produces — right stick aim (the nose lerps toward it at the game's fixed
+// rate), left stick throttle (an analog vector the game projects onto the
+// nose: forward, eased, or reverse at half power — never a key toggled on and
+// off), left trigger boost, right trigger fire, bumper shield — toward a scene
+// GOAL. The director controls the situation; the pilot executes actions
+// inside it. Deterministic (seeded LCG).
 //
 //   pilot.set({ type: 'goto',   pts: [[x,y]..], speed, arrive: 'pass'|'stop', avoid, shootRocks, fireAt })
 //   pilot.set({ type: 'cruise', heading, speed, weave, boost })
@@ -16,30 +18,30 @@
 //   pilot.forceShield = true|false      // scene-scripted shield (the death beat)
 //   pilot.drive(dt)                     // once per frame, BEFORE the game update
 //
-// io: 'mouse' drives game.input (the primary pilot); 'pad' drives a FakePad
-// object you assign as player.input (co-op wingmen: useMouseAim = false).
+// Every pilot drives a FakePad (a GamepadInputSource look-alike) that you
+// assign as player.input (useMouseAim = false) — the lead and the wingmen
+// alike. The lead's pad also mirrors its aim into game.input's mouse position
+// so the crosshair draws where the pilot is looking.
+
+import { GP } from '/src/engine/inputManager.js';
 
 export class FakePad {
     constructor() {
         this.usesMouseAim = false;
         this.leftStickX = 0; this.leftStickY = 0;
         this.rightStickX = 0; this.rightStickY = 0;
-        this.w = false; this.s = false; this.fire = false; this.boost = false; this.shield = false;
+        this.fire = false; this.boost = false; this.shield = false;
         this._boostPrev = false; this._boostJust = false;
     }
     frame() { this._boostJust = this.boost && !this._boostPrev; this._boostPrev = this.boost; }
-    isKeyDown(c) {
-        if (c === 'KeyW') return this.w; if (c === 'KeyS') return this.s;
-        if (c === 'ShiftLeft' || c === 'ShiftRight') return this.shield; if (c === 'Space') return this.boost;
-        return false;
-    }
-    isKeyJustPressed(c) { return c === 'Space' && this._boostJust; }
-    isMouseDown(b) { return b === 0 && this.fire; }
+    isKeyDown() { return false; }
+    isKeyJustPressed() { return false; }
+    isMouseDown() { return false; }
     isMouseJustPressed() { return false; }
-    isGamepadDown() { return false; }
+    isGamepadDown(b) { return b === GP.LB && this.shield; }
     isGamepadJustPressed() { return false; }
-    isTriggerDown() { return false; }
-    isTriggerJustPressed() { return false; }
+    isTriggerDown(side) { return side === 'right' ? this.fire : side === 'left' ? this.boost : false; }
+    isTriggerJustPressed(side) { return side === 'left' && this._boostJust; }
 }
 
 export class Pilot {
@@ -47,8 +49,10 @@ export class Pilot {
         this.g = game;
         this._rng = (seed >>> 0) || 1;
         this.player = opts.player || (() => game.currentState && game.currentState.player);
-        this.io = opts.io || 'mouse';
-        this.pad = this.io === 'pad' ? new FakePad() : null;
+        this.io = opts.io || 'pad';
+        this.pad = new FakePad();          // the controller this pilot holds
+        this.mirror = opts.mirror !== false && !opts.player;   // the lead mirrors its aim into the mouse cursor (crosshair)
+        this._thr = 0;                     // analog throttle state (0..1), eased
         this.goal = { type: 'idle' };
         this.forceShield = false;
         this.t = 0;
@@ -65,7 +69,6 @@ export class Pilot {
         this._avoid = 0;          // smoothed steering offset (radians)
         this._wpi = 0;            // goto: waypoint index
         this._mine = 'shoot';
-        this._wHold = false;
     }
     rand() { this._rng = (Math.imul(1664525, this._rng) + 1013904223) >>> 0; return this._rng / 4294967296; }
     randIn(a, b) { return a + (b - a) * this.rand(); }
@@ -73,29 +76,28 @@ export class Pilot {
 
     set(goal) {
         this.goal = goal || { type: 'idle' };
-        this._wpi = 0; this._joust = 'approach'; this._breakT = 0; this._mine = 'shoot'; this.target = null;
+        this._wpi = 0; this._passed = false; this._joust = 'approach'; this._breakT = 0; this._mine = 'shoot'; this.target = null;
         this._react = this.randIn(0.1, 0.25);
     }
 
     // ── input plumbing ────────────────────────────────────────────────────────
     _emit(o) {
-        // o: { w, s, fire, boost, shield }
-        if (this.pad) {
-            const p = this.player();
+        // o: { sx, sy (left stick vector, |v| <= 1), fire, boost, shield }
+        const p = this.player(), pad = this.pad;
+        if (p && !p.dead) {
             const dx = this.aimX - p.worldX, dy = this.aimY - p.worldY, d = Math.hypot(dx, dy) || 1;
-            this.pad.rightStickX = dx / d; this.pad.rightStickY = dy / d;
-            this.pad.w = !!o.w; this.pad.s = !!o.s; this.pad.fire = !!o.fire; this.pad.boost = !!o.boost; this.pad.shield = !!o.shield;
-            this.pad.frame();
-            return;
+            pad.rightStickX = dx / d; pad.rightStickY = dy / d;
+        } else { pad.rightStickX = 0; pad.rightStickY = 0; }
+        pad.leftStickX = o.sx || 0; pad.leftStickY = o.sy || 0;
+        pad.fire = !!o.fire; pad.boost = !!o.boost; pad.shield = !!o.shield;
+        pad.frame();
+        if (this.mirror) {   // the crosshair follows the lead's aim
+            const im = this.g.input, S = this.S, cam = S && S.camera;
+            if (cam) {
+                im.mouseScreenX = (this.aimX - cam.x) * this.g.worldScale + this.g.width / 2;
+                im.mouseScreenY = (this.aimY - cam.y) * this.g.worldScale + this.g.height / 2;
+            }
         }
-        const im = this.g.input, S = this.S, cam = S && S.camera;
-        if (cam) {
-            im.mouseScreenX = (this.aimX - cam.x) * this.g.worldScale + this.g.width / 2;
-            im.mouseScreenY = (this.aimY - cam.y) * this.g.worldScale + this.g.height / 2;
-        }
-        const key = (c, on) => { if (on) im.keysDown.add(c); else im.keysDown.delete(c); };
-        key('KeyW', !!o.w); key('KeyS', !!o.s); key('Space', !!o.boost); key('ShiftLeft', !!o.shield);
-        if (o.fire) im.mouseButtons.add(0); else im.mouseButtons.delete(0);
     }
     _release() { this._emit({}); }
 
@@ -186,7 +188,15 @@ export class Pilot {
                 let d = Math.hypot(wp[0] - p.worldX, wp[1] - p.worldY);
                 const last = this._wpi >= pts.length - 1;
                 if (!last && d < (G.reach || 150)) { this._wpi++; wp = pts[this._wpi]; d = Math.hypot(wp[0] - p.worldX, wp[1] - p.worldY); }
-                const dir = Math.atan2(wp[1] - p.worldY, wp[0] - p.worldX);
+                let dir = Math.atan2(wp[1] - p.worldY, wp[0] - p.worldX);
+                if (last && G.arrive !== 'stop') {
+                    // a pass-through: once the last waypoint is reached (or is behind
+                    // us) keep flying along the final leg — never turn back for it
+                    const prev = pts.length > 1 ? pts[pts.length - 2] : null;
+                    const legA = prev ? Math.atan2(wp[1] - prev[1], wp[0] - prev[0]) : p.angle;
+                    if (d < (G.reach || 150) || (wp[0] - p.worldX) * Math.cos(legA) + (wp[1] - p.worldY) * Math.sin(legA) < 0) this._passed = true;
+                    if (this._passed) dir = legA;
+                }
                 const r = G.avoid === false ? { ang: dir, brake: false } : this._avoidRocks(dir, speed);
                 travel = r.ang; brake = r.brake;
                 want = G.speed || 700;
@@ -335,18 +345,23 @@ export class Pilot {
         this.aimX += (Math.sin(this.t * 1.7 + this._wp1) * 0.6 + Math.sin(this.t * 4.1 + this._wp2) * 0.4) * wA * dt * 3;
         this.aimY += (Math.cos(this.t * 1.3 + this._wp2) * 0.6 + Math.sin(this.t * 3.5 + this._wp1) * 0.4) * wA * dt * 3;
 
-        // ── throttle: hold W while the nose is roughly on the travel line and we
-        //    are under the wanted speed; brake with S when asked ──
-        let w = false, s = false;
+        // ── throttle: the left stick points where we want to go, deflected in
+        //    proportion to how far under the wanted speed we are (eased, never
+        //    snapped). The game projects it onto the nose: forward when the nose
+        //    is on the line, fading as it turns off it, reverse (half power)
+        //    when the line is behind us. A brake is the stick pulled straight
+        //    back against the nose. ──
+        let sx = 0, sy = 0;
         if (travel != null && want > 0) {
-            let err = travel - p.angle; while (err > Math.PI) err -= Math.PI * 2; while (err < -Math.PI) err += Math.PI * 2;
-            const onLine = Math.abs(err) < 0.85;
-            if (this._wHold) { if (speed > want * 1.08 || !onLine) this._wHold = false; }
-            else if (speed < want * 0.92 && onLine) this._wHold = true;
-            w = this._wHold;
-        } else this._wHold = false;
-        if (brake && speed > 40) { s = true; w = false; }
-        if (this._backOff) { s = true; w = false; }
+            const target = Math.max(0, Math.min(1, (want - speed) / Math.max(120, want * 0.35)));
+            this._thr += (target - this._thr) * Math.min(1, dt * 6);
+        } else this._thr *= Math.pow(0.04, dt);
+        if (this._thr > 0.03 && travel != null) {
+            const m = 0.14 + 0.86 * this._thr;       // stays above the game's 0.1 stick threshold
+            sx = Math.cos(travel) * m; sy = Math.sin(travel) * m;
+        }
+        if (brake && speed > 40) { const m = Math.min(1, 0.45 + speed / 600); sx = -Math.cos(p.angle) * m; sy = -Math.sin(p.angle) * m; this._thr = 0; }
+        if (this._backOff) { sx = -Math.cos(p.angle) * 0.9; sy = -Math.sin(p.angle) * 0.9; this._thr = 0; }
 
         // ── trigger discipline: bursts when on line; railgun = HOLD while on line ──
         let fireNow = false;
@@ -367,6 +382,6 @@ export class Pilot {
         if (this._shieldT > 0) { this._shieldT -= dt; shieldWant = true; }
         if (this.forceShield) shieldWant = true;
 
-        this._emit({ w, s, fire: fireNow, boost, shield: shieldWant });
+        this._emit({ sx, sy, fire: fireNow, boost, shield: shieldWant });
     }
 }

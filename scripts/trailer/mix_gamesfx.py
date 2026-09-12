@@ -47,7 +47,7 @@ placed = 0
 # achievement stings; the level-up sting only where the level-up is on camera
 def skip(tms, key):
     if key.startswith('trumpet') or key == 'achievement': return True
-    if key == 'level' and not (19.4 <= tms / 1000 <= 21.4): return True
+    if key == 'level' and not (21.9 <= tms / 1000 <= 23.9): return True
     return False
 for (tms, key, vol, pitch) in log:
     if skip(tms, key): continue
@@ -81,7 +81,7 @@ print('placed:', placed, ' skipped keys:', missing)
 # after the liturgy and for the dragon's breathing (through the black)
 t_axis = np.arange(len(buf)) / SR
 duck = np.ones(len(buf))
-for (d0, d1) in [(107.70, 122.21), (126.22, 140.0)]:   # the breathing/black, and the end card (no game sounds under the logo)
+for (d0, d1) in [(110.20, 124.71), (132.33, 150.0)]:   # the breathing/black, and the end card (no game sounds under the logo)
     duck *= 1 - np.clip((t_axis - (d0 - 0.4)) / 0.4, 0, 1) * np.clip(((d1) - t_axis) / 0.4, 0, 1).clip(0, 1)
 buf *= duck[:, None]
 
