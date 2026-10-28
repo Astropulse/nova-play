@@ -156,6 +156,14 @@ export class ScreenFX {
         this._singleEffect = [null];
         this._active = false;
         this.boundedTransfers = true; // false: full-frame reference path for A/B checks
+        // Firefox snapshots the WHOLE source canvas on every canvas→texture
+        // upload, even for a subrect, so a small shield ripple cost 10–28 ms a
+        // frame there. Copying just the subrect into a scratch canvas first
+        // (canvas→canvas stays cheap) and uploading that is ~free. Chromium
+        // uploads subrects directly and fast, so it keeps the direct path.
+        this.cropUploads = typeof navigator !== 'undefined' && /firefox/i.test(navigator.userAgent || '');
+        this._crop = null;
+        this._cropCtx = null;
         this.lastUploadPixels = 0;
         this.lastDrawPixels = 0;
         this._texW = 0;
@@ -327,6 +335,17 @@ export class ScreenFX {
             const full = source.x === 0 && source.y === 0 && source.w === w && source.h === h;
             if (full) {
                 gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, src);
+            } else if (this.cropUploads) {
+                // Crop into an exact-size scratch canvas, then upload that.
+                const sx = Math.max(0, Math.floor(source.x)), sy = Math.max(0, Math.floor(source.y));
+                const sw = Math.min(w - sx, Math.ceil(source.w)), sh = Math.min(h - sy, Math.ceil(source.h));
+                if (sw > 0 && sh > 0) {
+                    if (!this._crop) { this._crop = document.createElement('canvas'); this._cropCtx = this._crop.getContext('2d'); }
+                    if (this._crop.width !== sw || this._crop.height !== sh) { this._crop.width = sw; this._crop.height = sh; }
+                    else this._cropCtx.clearRect(0, 0, sw, sh);
+                    this._cropCtx.drawImage(src, sx, sy, sw, sh, 0, 0, sw, sh);
+                    gl.texSubImage2D(gl.TEXTURE_2D, 0, sx, sy, gl.RGBA, gl.UNSIGNED_BYTE, this._crop);
+                }
             } else {
                 gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, source.x);
                 gl.pixelStorei(gl.UNPACK_SKIP_ROWS, source.y);

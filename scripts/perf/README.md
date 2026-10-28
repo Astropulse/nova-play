@@ -15,6 +15,7 @@ lag, the exp-bar bloom, projectile draw cost, and enemy-AI O(n²) scaling).
 | File | What it is |
 |------|-----------|
 | `server.mjs` | Static HTTP server (serves the repo root) + `POST /perflog` which prints each body to stdout. Node built-ins only. |
+| `ramtest.html` + `ramtest.js` | Focused repro: holds the shield and flies asteroids (small/medium/big) into the ship, then the same unshielded. POSTs per-crash worst frames, frame count, every `ScreenFX.render` call time (`fxCalls`) and per-section maxima (impactFx/stateFx/uiFx/_damagePlayer/_onEntityDestroyed/draw). Works in any browser — used to find the Firefox canvas→WebGL snapshot stall. For Firefox use a throwaway profile with `user.js` → `user_pref("widget.windows.window_occlusion_tracking.enabled", false);` or a backgrounded window throttles rAF and the numbers are garbage. |
 | `stress.html` | Test page. Has `<base href="/">` so the game's relative asset `fetch`es resolve from the repo root. Loads `/src/main.js` then `/scripts/perf/harness.js`. |
 | `harness.js` | Boots a solo `PlayingState`, installs full-frame instrumentation, runs the bot scenario, POSTs per-phase results. URL params: `?nolowperf=1` forces `lowPerfMode` off (measure full bloom as an A/B baseline); `?coop=N` (2–8) runs the **same arc in N-player local split-screen co-op** (see below). |
 | `bot.js` | `Bot` class — drives the ship with real `game.input` (keys + mouse). |
