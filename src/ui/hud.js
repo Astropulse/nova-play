@@ -196,10 +196,20 @@ export class HUD {
             const eased = 1 - Math.pow(1 - rp, 3);
             shownScrap = Math.round(roll.from + (p.scrap - roll.from) * eased);
         }
+        // Coin payout (LootFlight): scrap is credited instantly, but the
+        // counter only climbs as the flying coins land — and flashes on each.
+        const loot = state && state.lootFlight;
+        if (loot && loot.inFlightScrap > 0) shownScrap = Math.max(0, shownScrap - Math.round(loot.inFlightScrap));
+        if (loot && loot.scrapFlash > 0) ctx.fillStyle = loot.scrapFlash > 0.5 ? '#ffffff' : '#ffe066';
         const scrapText = (dread && dread.glitchScrap > 0)
             ? `SCRAP: ${dread.garble(String(p.scrap).length + 1)}`
             : `SCRAP: ${shownScrap}`;
         ctx.fillText(scrapText, cw - margin, this._hudScale * 10);
+        // Flight anchors for LootFlight (coin target = middle of the number).
+        const scrapW = ctx.measureText(scrapText).width;
+        this.scrapAnchorX = cw - margin - this._hudScale * 8;
+        this.scrapAnchorY = this._hudScale * 6;
+        this.scrapAnchorLeft = cw - margin - scrapW;
         ctx.textAlign = 'left';
 
         // Tracked achievements — vertical stack below the scrap counter.
@@ -668,6 +678,9 @@ export class HUD {
         this.draw3Slice(ctx, emptyAsset, x, y, barW, barH);
 
         const expPct = Math.max(0, Math.min(1, p.exp / p.expNeeded));
+        // LootFlight target: XP motes fly into the fill's leading edge.
+        this.expAnchorX = x + Math.max(hudScale * 4, Math.floor(barW * expPct));
+        this.expAnchorY = y + barH / 2;
         if (expPct > 0) {
             const fillW = Math.floor(barW * expPct);
             if (fillW > 0) {
@@ -1157,6 +1170,21 @@ export class HUD {
         const offRightMax = boxW + margin;
         const boxX = Math.floor(restingX + (1 - eased) * offRightMax);
         const boxY = ch - margin - boxH;
+        // Celebration burst as the card settles (LootFlight overlay); the
+        // card's live rect is shared every frame so its twinkles follow it.
+        {
+            const lf0 = this.game.currentState && this.game.currentState.lootFlight;
+            if (lf0) {
+                const r = lf0.toastRect || (lf0.toastRect = { x: 0, y: 0, w: 0, h: 0 });
+                r.x = boxX; r.y = boxY; r.w = boxW; r.h = boxH;
+                lf0.toastSeen = performance.now();
+            }
+        }
+        if (t >= 0.1 && this._toastFxAch !== ach) {
+            this._toastFxAch = ach;
+            const lf = this.game.currentState && this.game.currentState.lootFlight;
+            if (lf && lf.toastBurst) lf.toastBurst(restingX, boxY, boxW, boxH, !!ach.unlock);
+        }
 
         ctx.save();
         ctx.globalAlpha = eased;

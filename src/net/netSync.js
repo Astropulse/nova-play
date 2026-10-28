@@ -306,9 +306,13 @@ class BaseWorldSync {
         }
         this.game.sounds.play(entity instanceof Asteroid ? 'asteroid_break' : 'ship_explode',
             { volume: 0.4, x: entity.worldX, y: entity.worldY });
+        if (state._impactKill) state._impactKill(entity);
         if (entity._generateProceduralDebris) {
             const debris = entity._generateProceduralDebris();
-            for (const d of debris) { if (state.rubble.length < 250) state.rubble.push(d); }
+            for (const d of debris) {
+                if (state.rubble.length < 250) state.rubble.push(d);
+                if (state.impactFx && !(entity instanceof Asteroid) && Math.random() < 0.35) state.impactFx.smolder(d, 1.1 + Math.random() * 1.2);
+            }
         }
         const rubbleCount = entity.rubbleCount || 4;
         for (let i = 0; i < rubbleCount; i++) {
@@ -1491,12 +1495,15 @@ export class ClientWorldSync extends BaseWorldSync {
             p.scrap += ent.value;
             state.stats.scrapCollected += ent.value;
             if (this.game.achievements) this.game.achievements.notify('scrap_collected', { amount: ent.value });
-            this.game.sounds.play('scrap', { volume: 0.4, x: ent.worldX, y: ent.worldY });
+            this.game.sounds.play('scrap', { volume: 0.4, x: ent.worldX, y: ent.worldY, pitch: state._ladderPitch ? state._ladderPitch('scrap') : 1 });
             state.spawnFloatingText(ent.worldX, ent.worldY, `+${ent.value}`, '#ffff00');
+            if (state.impactFx) state.impactFx.pickup(ent.worldX, ent.worldY);
+            if (state.lootFlight) state.lootFlight.spawnScrap(ent.worldX, ent.worldY, ent.value, ent);
         } else if (ent instanceof ExpOrb) {
             const finalExp = Math.ceil(ent.amount * (p.experienceCondenserMult || 1.0));
             p.addExp(finalExp);
-            this.game.sounds.play('exp', { volume: 0.15, x: ent.worldX, y: ent.worldY });
+            this.game.sounds.play('exp', { volume: 0.15, x: ent.worldX, y: ent.worldY, pitch: state._ladderPitch ? state._ladderPitch('exp') : 1 });
+            if (state.lootFlight) state.lootFlight.spawnExp(ent.worldX, ent.worldY);
             state.spawnFloatingText(ent.worldX + (Math.random() - 0.5) * 20, ent.worldY + (Math.random() - 0.5) * 20, `+${finalExp} XP`, '#915dbf');
         } else if (ent instanceof ItemPickup) {
             // Item was already optimistically added at request time.

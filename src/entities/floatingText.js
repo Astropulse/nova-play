@@ -13,11 +13,18 @@ export class FloatingText {
         this.worldX += (Math.random() - 0.5) * 40;
         this.worldY += (Math.random() - 0.5) * 40;
 
-        // Broader velocity arc and higher speed
+        // Popped up and sideways, then arcs back down under gravity — numbers
+        // feel thrown off the impact instead of drifting.
         const angle = -Math.PI / 2 + (Math.random() - 0.5) * 1.5; // Wider arc
-        const speed = 120 + Math.random() * 80; // Much faster
+        const speed = 200 + Math.random() * 90;
         this.vx = Math.cos(angle) * speed;
         this.vy = Math.sin(angle) * speed;
+        this.gravity = 640;
+
+        // Damage stacking (PlayingState.spawnFloatingText): rapid hits on one
+        // target fold into this number, which counts up and heats in colour.
+        this.total = 0;
+        this.flash = 0;
 
         // Scale based on number magnitude: 0 -> 1x, 100 -> 2x, etc.
         const numValue = parseFloat(this.text.replace(/[^0-9.-]/g, '')) || 0;
@@ -27,13 +34,33 @@ export class FloatingText {
         this.scale = this.targetScale * 0.5; // Initial pop-in scale
     }
 
+    // Fold another hit into a stacked damage number: the total counts up,
+    // the colour steps red → orange → gold → white-hot, the glyph flashes
+    // white for a beat and the number gets kicked back up.
+    addDamage(amount) {
+        this.total += amount;
+        const t = Math.ceil(this.total);
+        this.text = `-${t}`;
+        this.color = t < 30 ? '#ff4444' : t < 100 ? '#ff7a3a' : t < 300 ? '#ffd24a' : '#fff6d8';
+        this.flash = 0.07;
+        this.vy = Math.min(this.vy, -150 - Math.random() * 60);
+        this.vx *= 0.5;
+        this.lifetime = Math.max(this.lifetime, 0.6);
+        this.maxLifetime = Math.max(this.maxLifetime, this.lifetime);
+        this.targetScale = (1.25) * (1 + Math.pow(t, 0.5) / 10);
+        this.lastAdd = 0;
+    }
+
     update(dt) {
         this.worldX += this.vx * dt;
         this.worldY += this.vy * dt;
+        this.vy += this.gravity * dt;
+        if (this.flash > 0) this.flash -= dt;
+        if (this.lastAdd !== undefined) this.lastAdd += dt;
 
         // Apply light friction to slow down the float
         this.vx *= 0.96;
-        this.vy *= 0.96;
+        this.vy *= 0.985;
 
         this.lifetime -= dt;
         if (this.lifetime <= 0) {
@@ -64,7 +91,7 @@ export class FloatingText {
         // canvas, cached globally so repeated numbers (and every other instance)
         // reuse it, then blit. Pixel-identical at the rendered size; the pop-in /
         // shrink animation just scales the blit.
-        const glyph = FloatingText._getGlyph(this.text, this.color, this.targetScale * ws);
+        const glyph = FloatingText._getGlyph(this.text, this.flash > 0 ? '#ffffff' : this.color, this.targetScale * ws);
         const s = (this.scale * ws) / glyph.renderScale;
 
         ctx.globalAlpha = alpha;

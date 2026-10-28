@@ -224,6 +224,8 @@ function executeActions(actions, vars, player, state, encounter) {
         const isConverting = actions.includes('convert_hostile');
         const abstractActions = ['add_scrap', 'add_perm_health', 'heal']; // Match HostileEncounter._grantAbstractRewards
         if (isConverting && abstractActions.includes(type)) continue;
+        // Cosmetic: make the outcome physical (gains fly in, losses fly out).
+        if (state && state.impactFx) state.impactFx.encounterAction(type, player, encounter);
 
         switch (type) {
             case 'remove_item': {

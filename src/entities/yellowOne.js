@@ -689,6 +689,9 @@ export class YellowOne {
             // Mark as finished
             this.isFinished = true;
             this.state = YO_STATE.FINISHED;
+            // Let the heralds/confetti/sparkles fade out instead of vanishing
+            // in one frame (drawn by draw() while this counts down).
+            this._kvOutroEnd = performance.now() + 2500;
 
             // Let King's Victory continue playing - it will end naturally
             // and playingState will restore normal music
@@ -1663,6 +1666,18 @@ export class YellowOne {
         // Draw scripted sequence elements
         if (this.state === YO_STATE.SCRIPTED && this.scriptPhase === 2) {
             this._drawScriptedElements(ctx, camera);
+        } else if (this.state === YO_STATE.FINISHED && this._kvOutroEnd) {
+            // Outro: the ceremony's last frame fades away over 2.5s.
+            const left = (this._kvOutroEnd - performance.now()) / 2500;
+            if (left > 0) {
+                ctx.save();
+                ctx.globalAlpha = left;
+                const ca = this.christusAlpha;
+                this.christusAlpha = 0.7 * left;
+                this._drawScriptedElements(ctx, camera);
+                this.christusAlpha = ca;
+                ctx.restore();
+            } else this._kvOutroEnd = 0;
         }
 
         // Draw constellation in finished state

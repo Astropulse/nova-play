@@ -551,6 +551,16 @@ export class LevelUpDialog {
         if (index < 0 || index >= this.choices.length) return;
         const choice = this.choices[index];
         applyLevelUpChoice(choice, this.player, this.playingState);
+        // Spectacle: the card blazes, then its power streams into the ship.
+        {
+            const ps = this.playingState, r = this._cardRects && this._cardRects[index];
+            if (ps && ps.uiFx && r) {
+                const cam = ps.camera, p = this.player;
+                const sx = p.worldX * cam.wtsScale + cam.wtsOffX, sy = p.worldY * cam.wtsScale + cam.wtsOffY;
+                ps.uiFx.levelPick({ x: r.x + (this._ox || 0), y: r.y + (this._oy || 0), w: r.w, h: r.h },
+                    choice.bonusColor, !!choice.isCursed, sx, sy);
+            }
+        }
 
         // Record the pick (oldest first) so a fraction of level progress can be
         // reconstructed on respawn by replaying these in order. `pct`/`flatValue`
@@ -605,6 +615,10 @@ export class LevelUpDialog {
     }
 
     _skipChoice() {
+        {
+            const ps = this.playingState, r = this._skipRect;
+            if (ps && ps.uiFx && r) ps.uiFx.levelSkip({ x: r.x + (this._ox || 0), y: r.y + (this._oy || 0), w: r.w, h: r.h });
+        }
         if (!this.canSkip || !this.playingState) return;
         // Decrement skips and bank the next-roll multiplier.
         this.playingState.levelUpSkipsRemaining = Math.max(0, this.playingState.levelUpSkipsRemaining - 1);
@@ -636,6 +650,7 @@ export class LevelUpDialog {
             : (this.game.touchMode ? this.game.uiScale + 1 : this.game.uiScale);
         const ox      = vp ? ps._uiX : 0;
         const oy      = vp ? ps._uiY : 0;
+        this._ox = ox; this._oy = oy; // screen offset for the pick spectacle
         const t       = this.appearTimer / this.appearDuration;
         const eased   = 1 - Math.pow(1 - Math.min(1, t), 3);
 

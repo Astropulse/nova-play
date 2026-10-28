@@ -352,6 +352,10 @@ export class EncounterDialog {
         if (index < 0 || index >= this.options.length) return;
         const opt = this.options[index];
         this.game.sounds.play('click', 0.5);
+        {
+            const st = this.game.currentState, r = this._optRects && this._optRects[index];
+            if (st && st.uiFx && r) st.uiFx.encounterPick(r);
+        }
 
         if (!opt.action) {
             this.closed = true;
@@ -553,6 +557,7 @@ export class EncounterDialog {
             for (let i = 0; i < this.options.length; i++) {
                 const optY = textY + i * lineHeight;
                 const optH = lineHeight;
+                (this._optRects || (this._optRects = []))[i] = { x: panelX + pad, y: optY, w: panelW - pad * 2, h: optH };
 
                 // Hit test
                 const mouseInBounds = mouse.x >= panelX + pad && mouse.x <= panelX + panelW - pad &&

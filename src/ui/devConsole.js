@@ -24,6 +24,7 @@ export class DevConsole {
             'load': () => this._cmdLoad(),
             'record': (args) => this._cmdRecord(args),
             'boss': (args) => this._cmdBoss(args),
+            'juice': (args) => this._cmdJuice(args),
             'hp': () => this._cmdHP(),
             'encounter': (args) => this._cmdEncounter(args),
             'cache': (args) => this._cmdCache(args),
@@ -237,6 +238,26 @@ export class DevConsole {
     //             "enemy basic 1 beam"    one basic enemy with the beam upgrade
     //             "enemy basic 2 health speed"  two enemies with both upgrades
     //             "enemy upgraded 5"      five enemies with a random upgrade each
+    // juice [beat#|stop] — scripted, captioned tour of every juice effect
+    // staged in the live run (ui/juicePreview.js). Single-player only.
+    _cmdJuice(args) {
+        const state = this.game.currentState;
+        if (!state || !state.player || !state.impactFx) { console.log('No active game.'); return; }
+        if (state.netSync) { console.log('juice preview is single-player only.'); return; }
+        if (args[0] === 'stop') {
+            if (state.juicePreview) { state.juicePreview.stop(); state.juicePreview = null; }
+            console.log('Juice preview stopped.');
+            return;
+        }
+        const start = args[0] && /^\d+$/.test(args[0]) ? parseInt(args[0], 10) - 1 : 0;
+        import('./juicePreview.js').then(({ JuicePreview }) => {
+            if (state.juicePreview) state.juicePreview.stop();
+            state.juicePreview = new JuicePreview(this.game, state, start);
+            console.log('Juice preview started (juice stop to end).');
+            this.active = false;
+        });
+    }
+
     _cmdEnemy(args) {
         const state = this.game.currentState;
         if (!state || !state.player || !state._addEnemies) { console.log('No active game.'); return; }

@@ -134,6 +134,12 @@ export class EncounterShip {
             case ENC_STATE.DEPARTING: {
                 // Fly away from player
                 const awayAngle = Math.atan2(-dy, -dx);
+                // Engines punch: one departure flash + ion spray (cosmetic).
+                if (!this._fxDeparted) {
+                    this._fxDeparted = true;
+                    const st0 = this.game.currentState;
+                    if (st0 && st0.impactFx) st0.impactFx.warpOut(this.worldX, this.worldY, awayAngle);
+                }
                 this.vx += Math.cos(awayAngle) * 2000 * dt;
                 this.vy += Math.sin(awayAngle) * 2000 * dt;
 

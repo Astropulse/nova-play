@@ -60,6 +60,12 @@ import { ChatOverlay, playerColor } from '../ui/chat.js';
 import { TradeUI } from '../ui/tradeUI.js';
 import { drawShipOutline } from '../net/remotePlayer.js';
 import { CinematicDirector } from '../ui/cinematics.js';
+import { ImpactFX, RAMP } from '../ui/impactFx.js';
+import { StateFX } from '../ui/stateFx.js';
+import { UIFX } from '../ui/uiFx.js';
+import { CineFX } from '../ui/cineFx.js';
+import { LootFlight } from '../ui/lootFlight.js';
+import { SfxSynth, ladderPitch } from '../engine/sfxSynth.js';
 import { KillStreakFX } from '../ui/killStreak.js';
 import { DreadDirector } from '../ui/dread.js';
 import { Ambience } from '../world/ambience.js';
@@ -377,6 +383,27 @@ export class PlayingState {
         // Cinematic overlay layer (boss telegraphs, shockwaves, letterbox).
         // Cosmetic only — it never pauses the sim and never touches seeded RNG.
         this.cinematics = new CinematicDirector(game, this);
+
+        // Layered arcade impacts (hit stars, kill blasts, shockwave rings,
+        // chain escalation). Cosmetic only, pooled typed arrays.
+        this.impactFx = new ImpactFX(game);
+        // Procedural juice SFX (zaps, coin dings, ricochets, thumps, chimes)
+        // and the coin/XP payout flights into the HUD.
+        this.sfx = new SfxSynth(game.sounds);
+        this.impactFx.synth = this.sfx;
+        this.lootFlight = new LootFlight(game, this);
+        // State-transition juice for bosses, world events and special enemies.
+        this.stateFx = new StateFX(game, this);
+        // Screen-space spectacle (interactions + cinematic overlays); drawn
+        // last and self-clocked so it plays over paused dialogs.
+        this.uiFx = new UIFX(game, this);
+        // Cinematic director (Yellow One's death, the Dragon's arrival),
+        // ticked on the UIFX clock so it runs while the sim is frozen.
+        this.cineFx = new CineFX(game, this);
+        this.uiFx.onFrame = (dt) => this.cineFx.tick(dt);
+        this.lootFlight.synth = this.sfx;
+        this._fxPilots = [];
+        this._pickupLadder = { scrap: 0, scrapT: -9, exp: 0, expT: -9 };
 
         // Kill-streak fanfare (rarity vignette + confetti/gore bursts).
         // Local-only: each player's own kills feed their own streak. In local
@@ -1520,6 +1547,8 @@ export class PlayingState {
         for (const en of this.enemies) {
             if (!en.alive || !inBlast(en, en.radius)) continue;
             if (this._routeDamage(en, dmg, en.worldX, en.worldY, bomb.owner)) {
+                const bl = Math.hypot(en.worldX - x, en.worldY - y) || 1;
+                en._killDX = (en.worldX - x) / bl; en._killDY = (en.worldY - y) / bl;
                 this.cinematics.deathPop(en);
                 this._onEntityDestroyed(en);
             }
@@ -1544,6 +1573,9 @@ export class PlayingState {
         this.cinematics.spawnRing(x, y, { color: '#44ddff', maxR: R, dur: 0.35, width: 4 });
         this._spawnSparks(x, y, 22, { color: '#9fe8ff', speedMin: 160, speedMax: 520 });
         this._spawnSparks(x, y, 8, { color: '#ffffff', speedMin: 200, speedMax: 600 });
+        this.impactFx.star(x, y, 12, 0.22, RAMP.electric, 1);
+        this.impactFx.ring(x, y, R * 0.2, R * 1.1, 0.4, 3, RAMP.white);
+        this.impactFx.blast(x, y, R * 0.6);
         this.game.sounds.play('ship_explode', { volume: 0.45, x, y });
         this._triggerShakeAt(x, y, 2.5);
     }
@@ -2699,8 +2731,65 @@ export class PlayingState {
                 s.vx *= drag;
                 s.vy *= drag;
                 s.life -= dt;
-                if (s.life <= 0) this.sparks.splice(i, 1);
+                if (s.life <= 0) {
+                    // Swap-remove (order is irrelevant) instead of an O(n) splice.
+                    const last = this.sparks.pop();
+                    if (i < this.sparks.length) this.sparks[i] = last;
+                }
             }
+        }
+        this.impactFx.update(dt);
+        // Damaged ships smoke -> burn -> arc (proximity-culled to live pilots).
+        {
+            const pilots = this._fxPilots;
+            pilots.length = 0;
+            for (const lp of this.localPlayers) if (lp.player && !lp.player.dead) pilots.push(lp.player);
+            if (!pilots.length && this.player) pilots.push(this.player);
+            this.impactFx.emitDamage(this.enemies, dt, pilots);
+            this.impactFx.tickPilots(pilots, dt);
+        }
+        // Rocket/missile smoke trails + bomb beacons, glinting scrap, and the
+        // distant background skirmishes.
+        this.impactFx.tickProjectiles(this.projectiles, dt);
+        this.impactFx.tickScrap(this.scrapEntities, dt);
+        this.impactFx.tickSkirmish(dt, this.camera);
+        this.stateFx.tick(dt);
+        // Event-boss auras + burn stages (+ Dragon head shatter finales).
+        {
+            const list = this._fxBossList || (this._fxBossList = []);
+            list.length = 0;
+            for (const ev of this.events) {
+                const n = ev.constructor && ev.constructor.name;
+                if (n === 'Seraph' || n === 'Wheels' || n === 'Hive' || n === 'YellowOne' || n === 'Carcosa' || n === 'CthulhuEvent') list.push(ev);
+            }
+            if (this.dragonEvent && this.dragonEvent.heads) for (const h of this.dragonEvent.heads) list.push(h);
+            // Burn stages for the event bosses (enemy-list bosses already get them).
+            if (list.length) this.impactFx.emitDamage(list, dt, this._fxPilots, true);
+            for (const en of this.enemies) if (en.alive && en.constructor && en.constructor.name === 'SwarmMother') list.push(en);
+            if (list.length) this.impactFx.tickBosses(list, dt, this._fxPilots);
+        }
+        // Asteroid Crusher tractor tethers.
+        for (const ast of this.asteroids) {
+            if (ast.alive && ast.tractoredBy && ast.tractoredBy.alive) this.impactFx.tractor(ast.tractoredBy, ast, dt);
+        }
+        // Beacon glints on interactables near the pilot: shops (cyan),
+        // closed caches (gold), hailing encounter ships (white).
+        {
+            const pl = this.player, fx = this.impactFx, R2 = 700 * 700;
+            const near = (e) => { const dx = e.worldX - pl.worldX, dy = e.worldY - pl.worldY; return dx * dx + dy * dy < R2; };
+            for (const sh of this.shops) if (near(sh)) fx.beacon(sh, RAMP.electric, 1.6, dt);
+            for (const c of this.caches) {
+                if ((c.state === CACHE_STATE.CLOSED || c.state === CACHE_STATE.FOUND) && near(c)) fx.beacon(c, RAMP.gold, 1.2, dt);
+            }
+            for (const e of this.encounters) {
+                if (e.alive && (e.state === ENC_STATE.ORBITING || e.state === ENC_STATE.APPROACHING) && near(e)) fx.beacon(e, RAMP.white, 1.5, dt);
+            }
+        }
+        this.lootFlight.update(dt);
+        // Dev: scripted juice preview tour (console `juice`).
+        if (this.juicePreview) {
+            this.juicePreview.update(dt);
+            if (this.juicePreview.done) this.juicePreview = null;
         }
 
         // --- Movement fx: boost space-bend level (per pilot) + engine-wash trail ---
@@ -3215,6 +3304,8 @@ export class PlayingState {
                 if (mp) {
                     for (const proj of e.pendingProjectiles) this.netSync.queueEnemyProjectile(proj, e);
                 }
+                // Muzzle pop: telegraphs incoming fire (budgeted in ImpactFX).
+                for (const proj of e.pendingProjectiles) this.impactFx.enemyMuzzle(proj.worldX, proj.worldY);
                 this.projectiles.push(...e.pendingProjectiles);
                 e.pendingProjectiles.length = 0;
             }
@@ -3462,8 +3553,9 @@ export class PlayingState {
                     if (this.game.achievements) {
                         this.game.achievements.notify('scrap_collected', { amount: s.value });
                     }
-                    this.game.sounds.play('scrap', { volume: 0.4, x: s.worldX, y: s.worldY });
+                    this.game.sounds.play('scrap', { volume: 0.4, x: s.worldX, y: s.worldY, pitch: this._ladderPitch('scrap') });
                     this.spawnFloatingText(s.worldX, s.worldY, `+${s.value}`, '#ffff00');
+                    this.impactFx.pickup(s.worldX, s.worldY); this.lootFlight.spawnScrap(s.worldX, s.worldY, s.value, s);
                 }
             } else if (canCollect && s.alive) {
                 const dx = s.worldX - this.player.worldX;
@@ -3479,8 +3571,9 @@ export class PlayingState {
                                 if (this.game.achievements) {
                                     this.game.achievements.notify('scrap_collected', { amount: s.value });
                                 }
-                                this.game.sounds.play('scrap', { volume: 0.4, x: s.worldX, y: s.worldY });
+                                this.game.sounds.play('scrap', { volume: 0.4, x: s.worldX, y: s.worldY, pitch: this._ladderPitch('scrap') });
                                 this.spawnFloatingText(s.worldX, s.worldY, `+${s.value}`, '#ffff00');
+                                this.impactFx.pickup(s.worldX, s.worldY); this.lootFlight.spawnScrap(s.worldX, s.worldY, s.value, s);
                             }
                         } else {
                             // Effects play on the host's TOOK confirmation
@@ -3494,8 +3587,9 @@ export class PlayingState {
                         if (this.game.achievements) {
                             this.game.achievements.notify('scrap_collected', { amount: s.value });
                         }
-                        this.game.sounds.play('scrap', { volume: 0.4, x: s.worldX, y: s.worldY });
+                        this.game.sounds.play('scrap', { volume: 0.4, x: s.worldX, y: s.worldY, pitch: this._ladderPitch('scrap') });
                         this.spawnFloatingText(s.worldX, s.worldY, `+${s.value}`, '#ffff00');
+                        this.impactFx.pickup(s.worldX, s.worldY); this.lootFlight.spawnScrap(s.worldX, s.worldY, s.value, s);
                     }
                 }
             }
@@ -3641,7 +3735,7 @@ export class PlayingState {
                     orb.alive = false;
                     const finalExp = Math.ceil(orb.amount * (collector.experienceCondenserMult || 1.0));
                     collector.addExp(finalExp);
-                    this.game.sounds.play('exp', { volume: 0.15, x: orb.worldX, y: orb.worldY });
+                    this.game.sounds.play('exp', { volume: 0.15, x: orb.worldX, y: orb.worldY, pitch: this._ladderPitch('exp') }); this.lootFlight.spawnExp(orb.worldX, orb.worldY);
                     this.spawnFloatingText(orb.worldX + (Math.random() - 0.5) * 20, orb.worldY + (Math.random() - 0.5) * 20, `+${finalExp} XP`, '#915dbf');
                 }
             } else if (canCollect && canTakeOrb && orb.alive && distSq < collectRange * collectRange) {
@@ -3651,7 +3745,7 @@ export class PlayingState {
                             orb.alive = false;
                             const finalExp = Math.ceil(orb.amount * (this.player.experienceCondenserMult || 1.0));
                             this.player.addExp(finalExp);
-                            this.game.sounds.play('exp', { volume: 0.15, x: orb.worldX, y: orb.worldY });
+                            this.game.sounds.play('exp', { volume: 0.15, x: orb.worldX, y: orb.worldY, pitch: this._ladderPitch('exp') }); this.lootFlight.spawnExp(orb.worldX, orb.worldY);
                             this.spawnFloatingText(orb.worldX + (Math.random() - 0.5) * 20, orb.worldY + (Math.random() - 0.5) * 20, `+${finalExp} XP`, '#915dbf');
                         }
                     } else {
@@ -3661,7 +3755,7 @@ export class PlayingState {
                     orb.alive = false;
                     const finalExp = Math.ceil(orb.amount * (this.player.experienceCondenserMult || 1.0));
                     this.player.addExp(finalExp);
-                    this.game.sounds.play('exp', { volume: 0.15, x: orb.worldX, y: orb.worldY });
+                    this.game.sounds.play('exp', { volume: 0.15, x: orb.worldX, y: orb.worldY, pitch: this._ladderPitch('exp') }); this.lootFlight.spawnExp(orb.worldX, orb.worldY);
 
                     // Floating text for every collection
                     const offsetX = (Math.random() - 0.5) * 20;
@@ -3754,6 +3848,13 @@ export class PlayingState {
                     // events without a fitted hitbox); grown by the shot radius.
                     if (ellipseSweep(ev, proj, proj.radius)) {
                         proj.alive = false;
+                        {
+                            // Event bosses get their own signature hit colours.
+                            const hdx = proj.worldX - ev.worldX, hdy = proj.worldY - ev.worldY;
+                            const hl = Math.sqrt(hdx * hdx + hdy * hdy) || 1;
+                            const pv = Math.sqrt(proj.vx * proj.vx + proj.vy * proj.vy) || 1;
+                            this.impactFx.hit(proj.worldX, proj.worldY, hdx / hl, hdy / hl, proj.vx / pv, proj.vy / pv, this.impactFx.themeRamp(ev));
+                        }
                         if (proj.isBomb) this._detonateBomb(proj);
                         if (this._routeDamage(ev, proj.damage, proj.worldX, proj.worldY, proj.owner)) {
                             this._onEntityDestroyed(ev);
@@ -3793,28 +3894,35 @@ export class PlayingState {
                         if ((!this.netSync || this.netSync.isHost) && en.tryBlock && en.tryBlock(proj)) {
                             // Player-style shield impact: blue sparks + a small ripple-ring flare.
                             this.game.sounds.play('shield', { volume: 0.35, x: proj.worldX, y: proj.worldY });
-                            this._spawnSparks(proj.worldX, proj.worldY, 5 + Math.floor(Math.random() * 4), {
-                                dir: Math.atan2(proj.worldY - en.worldY, proj.worldX - en.worldX),
-                                spread: Math.PI * 0.6, color: '#44ddff'
-                            });
-                            this.cinematics.spawnRing(proj.worldX, proj.worldY, { color: '#44ddff', maxR: 26, dur: 0.25, width: 2 });
+                            // Ricochet off the bubble + lightning crawling along it.
+                            {
+                                const sdx = proj.worldX - en.worldX, sdy = proj.worldY - en.worldY;
+                                const pv = Math.sqrt(proj.vx * proj.vx + proj.vy * proj.vy) || 1;
+                                this.impactFx.deflect(proj.worldX, proj.worldY, en.worldX, en.worldY,
+                                    Math.sqrt(sdx * sdx + sdy * sdy), proj.vx / pv, proj.vy / pv, en);
+                            }
                             if (en.shieldJustBroke) {
                                 en.shieldJustBroke = false;
                                 // Bubble shatters — mirror the player's shield-break beat.
                                 this._triggerShakeAt(en.worldX, en.worldY, 1.2);
                                 this.game.sounds.play('shield_break', { volume: 0.5, x: en.worldX, y: en.worldY });
-                                this._spawnSparks(en.worldX, en.worldY, 14, { color: '#44ddff', speedMin: 160, speedMax: 420 });
-                                this.cinematics.spawnRing(en.worldX, en.worldY, { color: '#44ddff', maxR: Math.round(en.radius * 2.2), dur: 0.4, width: 4 });
+                                this.impactFx.shieldBreak(en.worldX, en.worldY, en.radius || 20);
                             }
                             if ((proj.owner && proj.owner.hasExplosivesUnit) || proj.isRocket) {
                                 this._spawnExplosion(proj.worldX, proj.worldY, proj.damage * 0.5);
                             }
                         } else {
                             this.game.sounds.play('hit', { volume: 0.4, x: proj.worldX, y: proj.worldY });
-                            this._spawnSparks(proj.worldX, proj.worldY, 5 + Math.floor(Math.random() * 4), {
-                                dir: Math.atan2(proj.worldY - en.worldY, proj.worldX - en.worldX),
-                                spread: Math.PI * 0.9, color: '#fff2b0'
-                            });
+                            // Spark-style hit: white star stamp + spark cone + micro ring.
+                            {
+                                const hdx = proj.worldX - en.worldX, hdy = proj.worldY - en.worldY;
+                                const hl = Math.sqrt(hdx * hdx + hdy * hdy) || 1;
+                                const pv = Math.sqrt(proj.vx * proj.vx + proj.vy * proj.vy) || 1;
+                                this.impactFx.hit(proj.worldX, proj.worldY, hdx / hl, hdy / hl, proj.vx / pv, proj.vy / pv, this.impactFx.themeRamp(en));
+                                this.impactFx.markDamage(en, proj.worldX, proj.worldY);
+                                // Kill direction for a directional blast + debris shove.
+                                en._killDX = proj.vx / pv; en._killDY = proj.vy / pv;
+                            }
                             if (this._routeDamage(en, proj.damage, proj.worldX, proj.worldY, proj.owner)) {
                                 this.cinematics.deathPop(en);
                                 this._onEntityDestroyed(en);
@@ -3859,6 +3967,17 @@ export class PlayingState {
                             spread: Math.PI * 0.9,
                             color: pl.shielding ? '#9fe8ff' : '#ff9a5a'
                         });
+                        {
+                            const pdx = proj.worldX - pl.worldX, pdy = proj.worldY - pl.worldY;
+                            const pl2 = Math.sqrt(pdx * pdx + pdy * pdy) || 1;
+                            const pv = Math.sqrt((proj.vx || 0) * (proj.vx || 0) + (proj.vy || 0) * (proj.vy || 0)) || 1;
+                            if (pl.shielding) {
+                                this.impactFx.deflect(proj.worldX, proj.worldY, pl.worldX, pl.worldY,
+                                    pl.shieldRadius || pl2, (proj.vx || 0) / pv, (proj.vy || 0) / pv, pl);
+                            } else {
+                                this.impactFx.playerHit(proj.worldX, proj.worldY, pdx / pl2, pdy / pl2);
+                            }
+                        }
 
                         const kdx = pl.worldX - proj.worldX;
                         const kdy = pl.worldY - proj.worldY;
@@ -4162,6 +4281,41 @@ export class PlayingState {
         }
     }
 
+    // Layered arcade death FX (ImpactFX). Shared by local kills and MP
+    // replicas (netSync.cosmeticDeath). Asteroids shatter; ships blow up and
+    // feed the kill chain (rapid kills escalate rings/stars + extra shake);
+    // bosses and huge events roll a staggered chain of sub-bursts.
+    _impactKill(entity) {
+        const fx = this.impactFx;
+        if (!fx) return;
+        const r = entity.radius || 20;
+        const kx = entity._killDX || 0, ky = entity._killDY || 0;
+        if (entity instanceof Asteroid) {
+            fx.shatter(entity.worldX, entity.worldY, r, kx, ky);
+        } else if (entity.isBoss || r > 90) {
+            fx.bigExplode(entity.worldX, entity.worldY, r);
+            fx.bossDeath(entity);
+        } else {
+            fx.explode(entity.worldX, entity.worldY, r, kx, ky);
+            // Nanite hulls burst into a crackling electric swarm as they split.
+            if (entity.constructor && entity.constructor.name === 'NaniteEnemy') {
+                fx.burst(entity.worldX, entity.worldY, RAMP.electric, 18, 150, 450);
+                fx.storm(entity.worldX, entity.worldY, 10, 70, 4, RAMP.electric, 0.2);
+            }
+        }
+    }
+
+    // Pentatonic pickup ladder: rapid consecutive scrap/exp pickups climb in
+    // pitch (resets after a short gap) - the Vampire-Survivors gem cascade.
+    _ladderPitch(kind) {
+        const L = this._pickupLadder;
+        const now = this.trueTotalTime || 0;
+        const tk = kind + 'T';
+        L[kind] = (now - L[tk] < 0.45) ? L[kind] + 1 : 0;
+        L[tk] = now;
+        return ladderPitch(L[kind], 3); // caps at +7 semitones (a fifth)
+    }
+
     // killerPid (multiplayer): who actually landed the kill. Defaults to the
     // entity's last damage source, falling back to the local pilot.
     _onEntityDestroyed(entity, killerPid = undefined) {
@@ -4176,7 +4330,8 @@ export class PlayingState {
         const killerPilot = coop ? (entity._lastDamageByPilot || this.player) : this.player;
 
         this._triggerShakeAt(entity.worldX, entity.worldY, entity instanceof Asteroid ? 1.5 : 1.8);
-        this.game.sounds.play(entity instanceof Asteroid ? 'asteroid_break' : 'ship_explode', { volume: 0.4, x: entity.worldX, y: entity.worldY });
+        this.game.sounds.play(entity instanceof Asteroid ? 'asteroid_break' : 'ship_explode', { volume: 0.4, x: entity.worldX, y: entity.worldY, pitch: 0.9 + Math.random() * 0.2 });
+        this._impactKill(entity);
 
         // Boss Music: Return to previous music state when all bosses are dead
         if (entity.isBoss) {
@@ -4260,7 +4415,18 @@ export class PlayingState {
         let enemySpawns = null;
         for (const s of spawns) {
             if (s instanceof Scrap) { if (this.scrapEntities.length < 200) { this.scrapEntities.push(s); if (gameplaySpawns) gameplaySpawns.push(s); } }
-            else if (s instanceof Rubble || s instanceof ProceduralDebris) { if (this.rubble.length < 250) this.rubble.push(s); }
+            else if (s instanceof Rubble || s instanceof ProceduralDebris) {
+                // Wreckage carries the killing shot's momentum.
+                if (entity._killDX !== undefined) {
+                    const imp = 90 + Math.random() * 140;
+                    s.vx += entity._killDX * imp; s.vy += entity._killDY * imp;
+                }
+                // Some ship chunks keep burning as they tumble away.
+                if (!(entity instanceof Asteroid) && s instanceof ProceduralDebris && Math.random() < 0.35) {
+                    this.impactFx.smolder(s, 1.1 + Math.random() * 1.2);
+                }
+                if (this.rubble.length < 250) this.rubble.push(s);
+            }
             else if (s instanceof Asteroid) {
                 // Mid-tick spawns won't have _nearPlayer set yet, which would cause
                 // projectiles fired this frame to skip them via the broad-phase filter.
@@ -4792,6 +4958,7 @@ export class PlayingState {
     // The deal goes bad: the transmission tears away, the ship flashes red.
     _hostileTurnFx(enc) {
         this._dialogTear = 0.3;
+        this.impactFx.hostileTurn(enc.worldX, enc.worldY, enc.radius || 40);
         enc.hostileFlash = 1.2;
         this.cinematics.spawnRing(enc.worldX, enc.worldY,
             { color: '#ff3333', maxR: 160, dur: 0.5, width: 4 });
@@ -5470,6 +5637,7 @@ export class PlayingState {
             this.spawnFloatingText(p.worldX, p.worldY, 'DOWN', '#ff5544');
             // Localized blow-up at the downed pilot (they respawn shortly) + a
             // shake on THEIR pane.
+            this.impactFx.playerDeath(p.worldX, p.worldY, p);
             this._spawnSparks(p.worldX, p.worldY, 20, { color: '#ffb24a', speedMin: 120, speedMax: 460 });
             this.cinematics.spawnRing(p.worldX, p.worldY, { color: '#ff7744', maxR: 160, dur: 0.5, width: 4 });
             this._pilotCamera(p).shake(2.5, 10.0);
@@ -5543,10 +5711,7 @@ export class PlayingState {
                 this.game.sounds.play('shield_break', { volume: 0.7, x: p.worldX, y: p.worldY });
                 // The bubble shatters: shard burst + ring sized to the bubble
                 this.shieldRipples = this.shieldRipples.filter(r => r.player !== p);
-                this._spawnSparks(p.worldX, p.worldY, 14,
-                    { color: '#44ddff', speedMin: 160, speedMax: 420 });
-                this.cinematics.spawnRing(p.worldX, p.worldY,
-                    { color: '#44ddff', maxR: Math.round(p.shieldRadius * 1.25), dur: 0.4, width: 4 });
+                this.impactFx.shieldBreak(p.worldX, p.worldY, Math.round((p.shieldRadius || 40) * 0.66), p);
             } else {
                 cam.shake(0.4, 15.0); // Subtle hit feedback (this pilot's pane)
                 this.game.sounds.play('asteroid_break', { volume: 0.3, x: p.worldX, y: p.worldY }); // Shield hit sound
@@ -6078,6 +6243,32 @@ export class PlayingState {
     }
 
     spawnFloatingText(x, y, text, color) {
+        // Damage numbers (`-N`, red) stack: a hit landing near a number that
+        // was fed <0.4s ago folds into it, so focused fire reads as one
+        // climbing, heating total instead of a cloud of identical digits.
+        if (color === '#ff4444' && text.charCodeAt(0) === 45) {
+            const amt = parseInt(text.slice(1), 10);
+            if (amt > 0) {
+                const stacks = this._dmgStacks || (this._dmgStacks = []);
+                for (let i = stacks.length - 1; i >= 0; i--) {
+                    const ft = stacks[i];
+                    if (!ft.alive || ft.lastAdd > 0.4) { stacks[i] = stacks[stacks.length - 1]; stacks.pop(); continue; }
+                    const dx = ft.originX - x, dy = ft.originY - y;
+                    if (dx * dx + dy * dy < 60 * 60) {
+                        ft.originX = x; ft.originY = y;
+                        ft.addDamage(amt);
+                        return;
+                    }
+                }
+                const ft = new FloatingText(this.game, x, y, text, color);
+                ft.originX = x; ft.originY = y;
+                ft.total = amt;
+                ft.lastAdd = 0;
+                this.floatingTexts.push(ft);
+                if (stacks.length < 48) stacks.push(ft);
+                return;
+            }
+        }
         this.floatingTexts.push(new FloatingText(this.game, x, y, text, color));
     }
 
@@ -6308,6 +6499,9 @@ export class PlayingState {
             }
             // Multiplayer: chat keeps working while dead/spectating.
             if (this.chatUI) this.chatUI.draw(ctx, this.hud ? this.hud.shieldBarTopY : null);
+            // Spectacle layer (the Yellow One's crack of light lives here),
+            // under the white fade so the light dissolves into it.
+            this.uiFx.frame(ctx);
             // Yellow One fade overlays on top of the death screen. Match the
             // SCRIPTED instance specifically — a first-YellowOne match can hit
             // the world's dormant one if a second ever exists (test harness).
@@ -6328,6 +6522,22 @@ export class PlayingState {
 
         // --- Screen-space UI (HUD, indicators, overlays, post-FX) ---
         this._drawScreenUI(ctx);
+        // Spectacle layer is normally drawn inside _drawScreenUI (just under
+        // the Yellow One fades); fall back here if that pass exited early.
+        if (!this._uiFxDrawn) this.uiFx.frame(ctx);
+        this._uiFxDrawn = false;
+    }
+
+    // Screen point of the SCRAP label above an inventory panel (shop UI).
+    _uiScrapAnchor(layout) {
+        return [layout.panelX + layout.totalW / 2 + (this._uiX || 0), layout.panelY - 30 * this._uiS + (this._uiY || 0)];
+    }
+
+    // Screen rect of an item sitting at (col,row) in a panel layout.
+    _uiItemRect(layout, item, col, row, scrollX = 0, scrollY = 0) {
+        const ss = layout.slotSize;
+        return { x: layout.gridVisX + col * ss - scrollX + (this._uiX || 0), y: layout.gridVisY + row * ss - scrollY + (this._uiY || 0),
+            w: (item.width || 1) * ss, h: (item.height || 1) * ss };
     }
 
     // Per-pane HUD for co-op (drawn inside each pane's clip): pilot label, level,
@@ -6645,6 +6855,7 @@ export class PlayingState {
         this.dread.drawEye(ctx);
         this.ambience.draw(ctx, this.camera, tier > 0 && !(this.splitScreen && this.splitScreen.active));
         this.dread.drawBackground(ctx);
+        this.impactFx.drawBackground(ctx, this.camera);
         this.perf.end('world');
 
         // --- Pre-compute draw culling bounds ---
@@ -6703,6 +6914,8 @@ export class PlayingState {
         for (const e of this.enemies) {
             if (e.drawUnder) e.drawUnder(ctx, this.camera);
         }
+        // Juice that sits BEHIND hulls/rocks (boss tethers, accretion).
+        this.impactFx.drawUnder(ctx, this.camera);
         this.perf.end('boss');
 
         // --- Asteroids draw ---
@@ -6810,6 +7023,7 @@ export class PlayingState {
         this.perf.begin('particles');
         this._drawExplosions(ctx);
         this._drawSparks(ctx);
+        this.impactFx.draw(ctx, this.camera);
         this.cinematics.drawWorld(ctx, this.camera);
         // Kill-streak confetti/gore bursts are world-space spectacle at the kill
         // site — every pane should see every pilot's bursts, not just its own.
@@ -6872,6 +7086,10 @@ export class PlayingState {
                 this._drawEncounterIndicators(ctx);
             }
 
+            // Coin / XP payout flights into the HUD (single view).
+            if (this.localPlayers.length <= 1) this.lootFlight.draw(ctx);
+            if (this.juicePreview) this.juicePreview.draw(ctx);
+
             // --- Teammate Indicators (multiplayer) ---
             if (this.netSync) {
                 this._drawPlayerIndicators(ctx);
@@ -6919,6 +7137,8 @@ export class PlayingState {
         if (!this.yellowOneScriptActive) {
             this.hud.drawToast(ctx);
         }
+        // Achievement/unlock confetti above the toast.
+        if (this.lootFlight) this.lootFlight.drawOverlay(ctx);
 
         // Multiplayer overlays: chat + incoming trade request prompt.
         if (this.chatUI) this.chatUI.draw(ctx, this.hud ? this.hud.shieldBarTopY : null);
@@ -6941,6 +7161,10 @@ export class PlayingState {
         // (Match the SCRIPTED instance, not just the first YellowOne — the
         // world always holds a dormant one, and a harness-spawned second
         // instance would otherwise shadow the fading one.)
+        // Spectacle layer goes UNDER the Yellow One's white fades (so its
+        // particles dissolve into the white instead of floating over it).
+        this.uiFx.frame(ctx);
+        this._uiFxDrawn = true;
         for (const ev of this.events) {
             if (ev instanceof YellowOne && ev.state === YO_STATE.SCRIPTED) {
                 if (ev.fadeToWhite > 0) {
@@ -7136,6 +7360,7 @@ export class PlayingState {
     // confirmation paths all route here).
     celebratePickup(item, player = this.player) {
         if (!item || !item.rarity) return;
+        this.impactFx.itemPickup(player.worldX, player.worldY, item.rarity);
         // 'unique' is the top of the actual item ladder (horror rewards like
         // the Cosmos Engine) — it gets the full legendary treatment.
         const tier = { rare: 0, epic: 1, legendary: 2, unique: 2 }[item.rarity];
@@ -9036,8 +9261,10 @@ export class PlayingState {
                 if (ejected && ejected.length > 0) this._ejectItems(ejected);
             }
             this.game.sounds.play('select', 0.8);
+            this.uiFx.permBuy(bounds.x + (this._uiX || 0), bounds.y + (this._uiY || 0), bounds.w, bounds.h);
         } else if (!bounds.maxed && this.activeShop.permUpgrades[bounds.id].stock > 0) {
             this.game.sounds.play('asteroid_break', 0.3);
+            this.uiFx.shopFail(bounds.x + (this._uiX || 0), bounds.y + (this._uiY || 0), bounds.w, bounds.h);
         }
     }
 
@@ -9522,6 +9749,10 @@ export class PlayingState {
             if (this.player.scrap >= it.cost && playerInv.autoAdd(it)) {
                 this.player.scrap -= it.cost;
                 this.game.sounds.play('select', 0.8);
+                {
+                    const m = this.game.getMousePos(), ss = 32 * this._uiS;
+                    this.uiFx.shopBuy(m.x - ss / 2, m.y - ss / 2, ss, ss, it.rarity, m.x, m.y - 80 * this._uiS);
+                }
                 this._onInventoryChanged();
                 if (this.game.achievements) {
                     this.game.achievements.notify('upgrade_collected', { item: it });
@@ -9530,6 +9761,7 @@ export class PlayingState {
                 // Can't afford / no room — put it back on the shelf.
                 shopInv.addItem(it, this.draggedItem.x, this.draggedItem.y);
                 this.game.sounds.play('asteroid_break', 0.5);
+                { const m = this.game.getMousePos(), ss = 32 * this._uiS; this.uiFx.shopFail(m.x - ss / 2, m.y - ss / 2, ss, ss); }
             }
             this.draggedItem = null;
         }
@@ -9545,6 +9777,11 @@ export class PlayingState {
                         this.player.scrap -= this.draggedItem.item.cost;
                         playerInv.addItem(this.draggedItem.item, pCol, pRow);
                         this.game.sounds.play('select', 0.8);
+                        {
+                            const r = this._uiItemRect(playerLayout, this.draggedItem.item, pCol, pRow, this.playerScrollX || 0, this.playerScrollY || 0);
+                            const [ax, ay] = this._uiScrapAnchor(playerLayout);
+                            this.uiFx.shopBuy(r.x, r.y, r.w, r.h, this.draggedItem.item.rarity, ax, ay);
+                        }
                         this._onInventoryChanged();
                         if (this.game.achievements) {
                             this.game.achievements.notify('upgrade_collected', { item: this.draggedItem.item });
@@ -9553,6 +9790,10 @@ export class PlayingState {
                     } else {
                         shopInv.addItem(this.draggedItem.item, this.draggedItem.x, this.draggedItem.y);
                         this.game.sounds.play('asteroid_break', 0.5);
+                        {
+                            const r = this._uiItemRect(shopLayout, this.draggedItem.item, this.draggedItem.x, this.draggedItem.y, this.shopScrollX || 0, this.shopScrollY || 0);
+                            this.uiFx.shopFail(r.x, r.y, r.w, r.h);
+                        }
                     }
                 } else {
                     playerInv.addItem(this.draggedItem.item, pCol, pRow);
@@ -9581,6 +9822,11 @@ export class PlayingState {
                     this.player.scrap += Math.floor(this.draggedItem.item.cost * 0.7);
                     shopInv.addItem(this.draggedItem.item, sCol, sRow);
                     this.game.sounds.play('select', 0.8);
+                    {
+                        const r = this._uiItemRect(shopLayout, this.draggedItem.item, sCol, sRow, this.shopScrollX || 0, this.shopScrollY || 0);
+                        const [ax, ay] = this._uiScrapAnchor(playerLayout);
+                        this.uiFx.shopSell(r.x, r.y, r.w, r.h, ax, ay);
+                    }
                     this._onInventoryChanged();
                 } else {
                     shopInv.addItem(this.draggedItem.item, sCol, sRow);
@@ -10415,6 +10661,10 @@ export class PlayingState {
             encounter.dialogData = dialog;
         }
         this.encounters.push(encounter);
+        // Arrival: the ship warps in (only worth showing if it's in view).
+        if (Math.hypot(encounter.worldX - this.player.worldX, encounter.worldY - this.player.worldY) < 1100) {
+            this.impactFx.warpIn(encounter.worldX, encounter.worldY, 34);
+        }
 
         // Notify player via sound
         this.game.sounds.play('boost', 0.8);
@@ -10493,6 +10743,7 @@ export class PlayingState {
             { color: '#ffd24a', maxR: 140, dur: 0.5, width: 3 });
         this._spawnSparks(player.worldX, player.worldY, 16,
             { color: '#ffd24a', speedMin: 120, speedMax: 360 });
+        this.impactFx.levelUp(player);
     }
 
     _openLevelUpDialog(level) {
@@ -11650,12 +11901,21 @@ export class PlayingState {
         if (this.netSync) {
             this.netSync.queueLocalShot(1, startX, startY, Math.atan2(dirY, dirX), 0, 'blue_laser_ball');
         }
+        // Everything this beam damages, as [distance-along-beam, x, y] triples,
+        // for the cosmetic chain lightning that links them afterwards.
+        const chain = this._railChain || (this._railChain = []);
+        chain.length = 0;
+        const linkHit = (ent) => {
+            const pd = Math.max(0, (ent.worldX - startX) * dirX + (ent.worldY - startY) * dirY);
+            chain.push(pd, ent.worldX, ent.worldY);
+        };
 
         // vs Asteroids
         for (const ast of this.asteroids) {
             if (!ast.alive) continue;
             if (this._rayIntersectsCircle(startX, startY, dirX, dirY, length, ast.worldX, ast.worldY, ast.radius)) {
                 this.game.sounds.play('hit', 0.6);
+                linkHit(ast);
                 if (this._routeDamage(ast, damage, undefined, undefined, shooter)) {
                     this._onEntityDestroyed(ast);
                 }
@@ -11675,6 +11935,13 @@ export class PlayingState {
             if (!en.alive) continue;
             if (this._rayIntersectsCircle(startX, startY, dirX, dirY, length, en.worldX, en.worldY, en.radius)) {
                 this.game.sounds.play('hit', 0.6);
+                {
+                    // Pierce crackle where the beam crosses the hull.
+                    const pd = Math.max(0, (en.worldX - startX) * dirX + (en.worldY - startY) * dirY);
+                    this.impactFx.railHit(startX + dirX * pd, startY + dirY * pd, dirX, dirY, en);
+                    en._killDX = dirX; en._killDY = dirY;
+                    linkHit(en);
+                }
                 if (this._routeDamage(en, damage, undefined, undefined, shooter)) {
                     this._onEntityDestroyed(en);
                 }
@@ -11693,6 +11960,7 @@ export class PlayingState {
             if (!ev.alive) continue;
             if (this._rayIntersectsCircle(startX, startY, dirX, dirY, length, ev.worldX, ev.worldY, ev.radius)) {
                 this.game.sounds.play('hit', 0.6);
+                linkHit(ev);
                 if (this._routeDamage(ev, damage, undefined, undefined, shooter)) {
                     this._onEntityDestroyed(ev);
                 } else if (ev.state === CTHULHU_STATE.DESTRUCTIBLE) {
@@ -11726,6 +11994,7 @@ export class PlayingState {
             angle: Math.atan2(dirY, dirX),
             timer: 0.15
         });
+        if (chain.length >= 6) this.impactFx.chainLightning(chain);
     }
 
     _rayIntersectsCircle(rx, ry, dx, dy, maxDist, cx, cy, radius) {
@@ -11817,6 +12086,7 @@ export class PlayingState {
             maxTimer: 0.3
         });
         this._triggerShakeAt(x, y, 2.5);
+        this.impactFx.blast(x, y, 64);
 
         // Explosion area of effect
         const radius = 64;
@@ -11939,6 +12209,7 @@ export class PlayingState {
         this.isDead = true;
         this.player.alive = false;
         this.deathTimer = 0;
+        this.impactFx.playerDeath(this.player.worldX, this.player.worldY);
         this.game.sounds.stopMusic();
         this.game.sounds.play('ship_explode', 0.8);
 

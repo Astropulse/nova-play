@@ -415,6 +415,15 @@ export class CacheUI {
             const cy = g.gy + (slotY + this.revealItem.height / 2) * g.slotSize;
             this._spawnUiConfetti(12 + jTier * 8, cx, cy);
         }
+        // Spectacle (UIFX, screen space): rays/flash/fountain in rarity colours.
+        {
+            const st = this.game.currentState;
+            if (st && st.uiFx && this._lastGrid) {
+                const g = this._lastGrid;
+                st.uiFx.cacheReveal(g.gx + slotX * g.slotSize + (st._uiX || 0), g.gy + slotY * g.slotSize + (st._uiY || 0),
+                    this.revealItem.width * g.slotSize, this.revealItem.height * g.slotSize, this.revealItem.rarity);
+            }
+        }
         // Keep cache entity in sync so re-opens show the same state
         this.cache._cachedExtraRolls = this._extraRollsGiven;
         this.revealItem      = null;

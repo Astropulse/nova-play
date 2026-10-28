@@ -985,7 +985,7 @@ export class Player {
         const isShieldKeyDown = input.isKeyDown(KEYS.shield)
             || (KEYS.shield === 'ShiftLeft' && input.isKeyDown('ShiftRight'));
         const isBumperDown = input.isGamepadDown(GP.LB) || input.isGamepadDown(GP.RB);
-        const wantShield = (input.isMouseDown(MOUSE.shield) || isShieldKeyDown || isBumperDown) && !this.shieldBroken && this.shieldEnergy > 0;
+        const wantShield = (input.isMouseDown(MOUSE.shield) || isShieldKeyDown || isBumperDown || this._forceShield) && !this.shieldBroken && this.shieldEnergy > 0; // _forceShield: dev juice preview
 
         // Sound: Shield activation
         if (wantShield && !this.shielding) {
