@@ -42,6 +42,10 @@ export const SETTINGS_DEFAULTS = Object.freeze({
     // Fewer cosmetic particles (sparks, rubble, death debris) and a thinner
     // starfield (~half the ordinary stars). Rare objects are never culled.
     reducedParticles: false,
+
+    // 0..1 scale on cosmetic juice density (impact sparks, smoke, lightning,
+    // ambient motes, UI spectacle bursts). Touch devices run at 70% of it.
+    juiceDensity: 1.0,
 });
 
 // Allowed values for string-valued settings (validated on load/set).

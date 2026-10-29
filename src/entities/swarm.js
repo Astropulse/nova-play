@@ -9,6 +9,7 @@ import { ellipseContains } from '../engine/collision.js';
 import { pickFireExplosion, fireExplosionFrame } from '../engine/vfx.js';
 import { MUSIC_STATE } from '../engine/soundManager.js';
 import { CACHE_CONFIG } from './spaceCache.js';
+import { drawShadowGlow } from './shadowGlow.js';
 
 export const HIVE_STATE = {
     IDLE: 'hive_idle',     // Pre-fight slumber (never 'dormant' — that string
@@ -1556,13 +1557,15 @@ export class Hive {
         ctx.save();
         ctx.translate(sx, sy);
         ctx.rotate(this.rotation);
-        if (this._hitFlash > 0) {
-            ctx.shadowBlur = 18 * ws;
-            ctx.shadowColor = SWARM_YELLOW;
-        }
         // Chipped combs: draw the composited sprite once cells have broken off.
-        const src = (this._fx && this._fx.count > 0) ? this._fx.composite(img) : (img.canvas || img);
+        const chipped = this._fx && this._fx.count > 0;
+        const src = chipped ? this._fx.composite(img) : (img.canvas || img);
         ctx.imageSmoothingEnabled = false;
+        if (this._hitFlash > 0) {
+            // Baked shadow layer (was shadowBlur 18*ws, SWARM_YELLOW on the draw).
+            drawShadowGlow(ctx, src, img.width, img.height, -w / 2, -h / 2, w, h,
+                18 * ws, SWARM_YELLOW, chipped ? this._fx.version : 0);
+        }
         ctx.drawImage(src, -w / 2, -h / 2, w, h);
         ctx.restore();
 

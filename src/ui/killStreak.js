@@ -1,4 +1,5 @@
 import { RARITY_COLORS } from '../data/upgrades.js';
+import { drawCachedText, TEXT_OUTLINE4 } from './textSprite.js';
 
 // Kill-streak fanfare, three escalating layers:
 //   1. Extra world particles — confetti (later gore) bursting from each kill.
@@ -456,28 +457,32 @@ export class KillStreakFX {
             }
             ctx.globalAlpha = 1;
 
+            // 4-way outlined text via the shared text-sprite cache
+            // (textSprite.js): same passes, same integer anchor, rendered
+            // once per (text, size, colour). While the pop is animating the
+            // size changes every frame, so it draws directly then.
             const text = `x${this.streak}`;
-            ctx.font = `${size}px Astro4x`;
-            ctx.fillStyle = '#000000';
-            ctx.fillText(text, cx - o, cy);
-            ctx.fillText(text, cx + o, cy);
-            ctx.fillText(text, cx, cy - o);
-            ctx.fillText(text, cx, cy + o);
-            ctx.fillStyle = color;
-            ctx.fillText(text, cx, cy);
+            const font = `${size}px Astro4x`;
+            if (this.pop > 0) {
+                ctx.font = font;
+                ctx.fillStyle = '#000000';
+                ctx.fillText(text, cx - o, cy);
+                ctx.fillText(text, cx + o, cy);
+                ctx.fillText(text, cx, cy - o);
+                ctx.fillText(text, cx, cy + o);
+                ctx.fillStyle = color;
+                ctx.fillText(text, cx, cy);
+            } else {
+                drawCachedText(ctx, text, cx, cy, font, 'center', 'top', color, TEXT_OUTLINE4, '#000000', o);
+            }
 
-            // Small label under the number
+            // Small label under the number (constant 0.85 alpha is baked
+            // into the sprite: the 5 passes compound exactly as before).
             const labelSize = Math.floor(4 * hudScale);
             const labelY = cy + size + Math.round(hudScale);
-            ctx.font = `${labelSize}px Astro4x`;
             ctx.globalAlpha = 0.85;
-            ctx.fillStyle = '#000000';
-            ctx.fillText('STREAK', cx - o, labelY);
-            ctx.fillText('STREAK', cx + o, labelY);
-            ctx.fillText('STREAK', cx, labelY - o);
-            ctx.fillText('STREAK', cx, labelY + o);
-            ctx.fillStyle = horror ? '#881111' : '#ccddee';
-            ctx.fillText('STREAK', cx, labelY);
+            drawCachedText(ctx, 'STREAK', cx, labelY, `${labelSize}px Astro4x`, 'center', 'top',
+                horror ? '#881111' : '#ccddee', TEXT_OUTLINE4, '#000000', o, 'miter', true);
 
             // Timer bar — full on every kill, drains to zero, faster per tier.
             const frac = Math.max(0, Math.min(1, this.timer / this.window));

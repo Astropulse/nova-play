@@ -16,6 +16,39 @@ const TAU = Math.PI * 2;
 const WINDUP = new Set(['windup', 'tele', 'aim', 'rear', 'gather', 'mark', 'signal', 'carve']);
 const ACTIVE = new Set(['dash', 'fall', 'charge', 'storm', 'sweep', 'run', 'fire', 'spin', 'cast']);
 
+// Event classes that are bosses → their codex / achievement id.
+const SIGHT_IDS = { Seraph: 'Seraph', Wheels: 'Wheels', Hive: 'Swarm', Carcosa: 'Carcosa', YellowOne: 'YellowOne', Dragon: 'Dragon' };
+
+// Hoisted particle option objects (ImpactFX.puff/streaks only read them,
+// synchronously; the two with a per-call `dir` are set right before use).
+const O_DRAG0p8_TOP3 = { drag: 0.8, top: 3 };
+const O_DRAG1p2_TOP3 = { drag: 1.2, top: 3 };
+const O_DRAG2 = { drag: 2 };
+const O_DRAG2_TOP3 = { drag: 2, top: 3 };
+const O_DRAG1p5_TOP3 = { drag: 1.5, top: 3 };
+const O_DRAG1p2_TOP4 = { drag: 1.2, top: 4 };
+const O_DRAG1p6_TOP3 = { drag: 1.6, top: 3 };
+const O_DRAG1p5_TOP4 = { drag: 1.5, top: 4 };
+const O_DRAG2_TOP2 = { drag: 2, top: 2 };
+const O_EMBER_DRIFT = { dir: 0, spread: 1, speedMin: 30, speedMax: 120, lifeMin: 0.3, lifeMax: 0.6, drag: 2, len: 0.016 };
+const O_EMBER_JET = { dir: 0, spread: 0.2, speedMin: 200, speedMax: 380, lifeMin: 0.2, lifeMax: 0.4, drag: 2, len: 0.03 };
+
+// Event class name → memoised per constructor (no per-frame
+// constructor.name reads / startsWith in the dispatch loop).
+const _evKind = new WeakMap();
+function evKind(e) {
+    const k = e.constructor;
+    if (!k) return EV_NONE;
+    let v = _evKind.get(k);
+    if (!v) {
+        const n = k.name;
+        v = { n, sight: SIGHT_IDS[n], head: !!(n && n.startsWith('Head')) };
+        _evKind.set(k, v);
+    }
+    return v;
+}
+const EV_NONE = { n: undefined, sight: undefined, head: false };
+
 function mem(e) { return e._sfx || (e._sfx = { acc: 0, acc2: 0, t: 0 }); }
 
 export class StateFX {
@@ -34,6 +67,27 @@ export class StateFX {
         return Math.min(n, 6);
     }
 
+    // left: seconds until the attack fires; total: telegraph window.
+    _telegraph(m, key, x, y, ramp, left, total, dt, R) {
+        if (!(left > 0) || left > total) { m[key + 'f'] = 0; return; }
+        const u = 1 - left / total;
+        const n = this._due(m, key, 18 + 50 * u, dt);
+        if (n) this.fx.inward(x, y, ramp, n, Math.max(24, R * (1.8 - u)), 0.18);
+        if (left < 0.09 && !m[key + 'f']) {
+            m[key + 'f'] = 1;
+            this.fx.star(x, y, 6, 0.12, RAMP.white, 1);
+            this.fx.light(x, y, 40, 0.6, 0.12, LIGHT.red);
+        }
+    }
+
+    // First sighting of a boss → the codex marks it SIGHTED.
+    _sight(e, id) {
+        const m = mem(e);
+        if (m.seen || !this._near(e, 900)) return;
+        m.seen = 1;
+        if (this.game.achievements) this.game.achievements.notify('boss_encountered', { bossId: id });
+    }
+
     _near(e, R = 1700) {
         const p = this.state.player;
         if (!p) return true;
@@ -45,7 +99,8 @@ export class StateFX {
         const s = this.state;
         for (let i = 0; i < s.events.length; i++) {
             const e = s.events[i];
-            const n = e.constructor && e.constructor.name;
+            const kind = evKind(e), n = kind.n;
+            if (kind.sight) this._sight(e, kind.sight);
             switch (n) {
                 case 'Seraph': this._seraph(e, dt); break;
                 case 'Wheels': this._wheels(e, dt); break;
@@ -59,10 +114,17 @@ export class StateFX {
                 case 'GravenIdol': this._idol(e, dt); break;
                 case 'Dragon': this._dragon(e, dt); break;
                 default:
-                    if (n && n.startsWith('Head')) this._head(e, dt);
+                    if (kind.head) this._head(e, dt);
             }
         }
         for (let i = 0; i < s.enemies.length; i++) this._enemy(s.enemies[i], dt);
+        // Railgun charge-up: energy pulls into the nose while it targets.
+        for (const lp of s.localPlayers) {
+            const p = lp.player;
+            if (!p || !p.isRailgunTargeting) continue;
+            const m = mem(p), a = p.angle || 0;
+            this.fx.inward(p.worldX + Math.cos(a) * 22, p.worldY + Math.sin(a) * 22, RAMP.electric, this._due(m, 'rg', 45, dt), 60, 0.2);
+        }
         for (let i = 0; i < s.caches.length; i++) this._cache(s.caches[i], dt);
         if (s.bossWrecks) for (let i = 0; i < s.bossWrecks.length; i++) this._wreck(s.bossWrecks[i], dt);
     }
@@ -76,7 +138,7 @@ export class StateFX {
         for (let k = this._due(m, 'sm', 3, dt); k > 0; k--) {
             const a = Math.random() * TAU, d = Math.random() * R * 0.6;
             fx.puff(w.worldX + Math.cos(a) * d, w.worldY + Math.sin(a) * d, (Math.random() - 0.5) * 16, (Math.random() - 0.5) * 16,
-                2, 5 + Math.random() * 3, 8, 1.8, RAMP.smoke, { drag: 0.8, top: 3 });
+                2, 5 + Math.random() * 3, 8, 1.8, RAMP.smoke, O_DRAG0p8_TOP3);
         }
         if (this._due(m, 'sp', 0.8, dt)) {
             const a = Math.random() * TAU, d = Math.random() * R * 0.5;
@@ -140,7 +202,7 @@ export class StateFX {
         const form = e.form, pf = m.form; m.form = form;
         if (pf && form !== pf) {
             if (form === 'opened') { fx.sunburst(x, eyeY, SUN_GOLD, 0.9, 0.9); fx.light(x, eyeY, 90, 0.8, 0.5, LIGHT.gold); }
-            else for (let k = 0; k < 6; k++) fx.puff(x + (Math.random() - 0.5) * 40, eyeY + (Math.random() - 0.5) * 20, (Math.random() - 0.5) * 30, -20, 2, 5, 7, 1.0, RAMP.smoke, { drag: 1.2, top: 3 });
+            else for (let k = 0; k < 6; k++) fx.puff(x + (Math.random() - 0.5) * 40, eyeY + (Math.random() - 0.5) * 20, (Math.random() - 0.5) * 30, -20, 2, 5, 7, 1.0, RAMP.smoke, O_DRAG1p2_TOP3);
         }
         // Rage ignites / burns.
         const rg = !!e.raged, prg = m.rg; m.rg = rg;
@@ -153,7 +215,7 @@ export class StateFX {
         if (rg) {
             for (let k = this._due(m, 'rg', 12, dt); k > 0; k--) {
                 const ang = Math.random() * TAU, d = Math.random() * 70;
-                fx.puff(x + Math.cos(ang) * d, y + Math.sin(ang) * d, Math.cos(ang) * 30, Math.sin(ang) * 30 - 20, 1.5, 3.5, 0.6, 0.35, RAMP.fire, { drag: 2 });
+                fx.puff(x + Math.cos(ang) * d, y + Math.sin(ang) * d, Math.cos(ang) * 30, Math.sin(ang) * 30 - 20, 1.5, 3.5, 0.6, 0.35, RAMP.fire, O_DRAG2);
             }
             if (this._due(m, 'rgl', 7, dt)) fx.light(x, y, 180, 0.4, 0.15, LIGHT.red, 1);
         }
@@ -249,7 +311,7 @@ export class StateFX {
                 if (!l) continue;
                 fx.hitSpark(l.worldX, l.worldY, RAMP.abyss);
                 fx.burst(l.worldX, l.worldY, RAMP.spore, 10, 80, 260);
-                fx.puff(l.worldX, l.worldY, 0, 0, 2, 5, 7, 0.8, RAMP.spore, { drag: 2, top: 3 });
+                fx.puff(l.worldX, l.worldY, 0, 0, 2, 5, 7, 0.8, RAMP.spore, O_DRAG2_TOP3);
             }
         }
         m.ln = ln;
@@ -308,7 +370,7 @@ export class StateFX {
                     if (!h) continue;
                     const dx = h.x - p.worldX, dy = h.y - p.worldY;
                     if (dx * dx + dy * dy > 1200 * 1200) continue;
-                    for (let k = 0; k < 3; k++) fx.puff(h.x + (Math.random() - 0.5) * 30, h.y + (Math.random() - 0.5) * 30, (Math.random() - 0.5) * 30, (Math.random() - 0.5) * 30, 2, 4, 6, 1.0, RAMP.dust, { drag: 1.5, top: 3 });
+                    for (let k = 0; k < 3; k++) fx.puff(h.x + (Math.random() - 0.5) * 30, h.y + (Math.random() - 0.5) * 30, (Math.random() - 0.5) * 30, (Math.random() - 0.5) * 30, 2, 4, 6, 1.0, RAMP.dust, O_DRAG1p5_TOP3);
                     fx.star(h.x, h.y, 3, 0.35, RAMP.level, 0);
                     break;
                 }
@@ -417,7 +479,7 @@ export class StateFX {
                 // Venting atmosphere after the breach.
                 for (let k = this._due(m, 'vn', 10 * (1 - m.vent / 4), dt); k > 0; k--) {
                     const a = Math.random() * TAU;
-                    fx.puff(e.worldX + Math.cos(a) * 30, e.worldY + Math.sin(a) * 30, Math.cos(a) * 80, Math.sin(a) * 80, 2, 5, 8, 1.2, RAMP.dust, { drag: 1.2, top: 4 });
+                    fx.puff(e.worldX + Math.cos(a) * 30, e.worldY + Math.sin(a) * 30, Math.cos(a) * 80, Math.sin(a) * 80, 2, 5, 8, 1.2, RAMP.dust, O_DRAG1p2_TOP4);
                 }
             }
         }
@@ -428,7 +490,7 @@ export class StateFX {
             fx.burst(x, y, RAMP.spark, 30, 200, 600);
             for (let k = 0; k < 12; k++) {
                 const a = Math.random() * TAU, d = Math.random() * 60;
-                fx.puff(x + Math.cos(a) * d, y + Math.sin(a) * d, Math.cos(a) * 70, Math.sin(a) * 70, 3, 6, 8, 1.2, RAMP.dust, { drag: 1.5, top: 3 });
+                fx.puff(x + Math.cos(a) * d, y + Math.sin(a) * d, Math.cos(a) * 70, Math.sin(a) * 70, 3, 6, 8, 1.2, RAMP.dust, O_DRAG1p5_TOP3);
             }
             for (let k = 0; k < 14; k++) {
                 const a = Math.random() * TAU, sp = 100 + Math.random() * 200;
@@ -583,8 +645,8 @@ export class StateFX {
         if (st === 'incoming' && this._near(c, 2200)) {
             for (let k = this._due(m, 're', 30, dt); k > 0; k--) {
                 fx.puff(c.worldX + (Math.random() - 0.5) * 14, c.worldY + (Math.random() - 0.5) * 14, (Math.random() - 0.5) * 30, (Math.random() - 0.5) * 30,
-                    1.5, 3 + Math.random() * 2, 0.6, 0.3, RAMP.fire, { drag: 2 });
-                if (Math.random() < 0.4) fx.puff(c.worldX, c.worldY, (Math.random() - 0.5) * 20, (Math.random() - 0.5) * 20, 2, 4, 6, 1, RAMP.smoke, { drag: 1.5, top: 3 });
+                    1.5, 3 + Math.random() * 2, 0.6, 0.3, RAMP.fire, O_DRAG2);
+                if (Math.random() < 0.4) fx.puff(c.worldX, c.worldY, (Math.random() - 0.5) * 20, (Math.random() - 0.5) * 20, 2, 4, 6, 1, RAMP.smoke, O_DRAG1p5_TOP3);
             }
             if (this._due(m, 'rl', 8, dt)) fx.light(c.worldX, c.worldY, 70, 0.5, 0.15, LIGHT.fire, 1);
         }
@@ -594,7 +656,7 @@ export class StateFX {
             fx.burst(c.worldX, c.worldY, RAMP.spark, 20, 150, 420);
             for (let k = 0; k < 10; k++) {
                 const a = Math.random() * TAU;
-                fx.puff(c.worldX + Math.cos(a) * 20, c.worldY + Math.sin(a) * 20, Math.cos(a) * 90, Math.sin(a) * 90, 3, 6, 9, 1.2, RAMP.dust, { drag: 1.6, top: 3 });
+                fx.puff(c.worldX + Math.cos(a) * 20, c.worldY + Math.sin(a) * 20, Math.cos(a) * 90, Math.sin(a) * 90, 3, 6, 9, 1.2, RAMP.dust, O_DRAG1p6_TOP3);
             }
             if (fx.synth) fx.synth.thump(1, c.worldX, c.worldY, 0.45);
         }
@@ -608,10 +670,11 @@ export class StateFX {
     // ── Special enemies + ram cycle + beam upgrade ─────────────────────────
     _enemy(e, dt) {
         if (!e.alive) return;
-        const n = e.constructor && e.constructor.name;
+        const n = evKind(e).n;
         const fx = this.fx, m = mem(e);
         const x = e.worldX, y = e.worldY, R = e.radius || 18;
         if (!this._near(e, 1400)) { m.st = e.state; return; }
+        if (e.isBoss) this._sight(e, e.bossId || n);
 
         // Ram cycle (kamikaze, cthulhu minions, drones, kamikaze upgrade).
         const st = e.state, pst = m.st; m.st = st;
@@ -635,6 +698,27 @@ export class StateFX {
         const nb = e.activeBeams ? e.activeBeams.length : 0;
         if (m.nb !== undefined && nb > m.nb) fx.beamFlash(x, y, e.angle || 0, 1600, RAMP.hull, LIGHT.red);
         m.nb = nb;
+
+        // ── Danger telegraphs: one grammar for every enemy attack ──
+        // GATHER (motes pull into the weapon, faster as it nears) → FLASH (a
+        // hard star the instant before) → RELEASE (the shot's own muzzle fx).
+        if (!e.isBoss) {
+            const ang = e.angle || 0;
+            // Opening shot of an attack run (not every shot of the burst).
+            if (st === 'attack' && pst !== 'attack') m.op = 1;
+            if (st !== 'attack' || (m.sht !== undefined && e.shootTimer > m.sht + 0.05)) m.op = 0;
+            m.sht = e.shootTimer;
+            if (m.op && e.upgradeType !== 'beam' && e.shootTimer != null)
+                this._telegraph(m, 'tg', x + Math.cos(ang) * R, y + Math.sin(ang) * R, RAMP.hull, e.shootTimer, 0.35, dt, R);
+            if (n === 'MissileEnemy' && e.missileTimer != null) {
+                for (const side of [1, -1]) {
+                    const px = x - 8 * Math.cos(ang) - 50 * side * Math.sin(ang), py = y - 8 * Math.sin(ang) + 50 * side * Math.cos(ang);
+                    this._telegraph(m, side > 0 ? 'tm1' : 'tm2', px, py, RAMP.fire, e.missileTimer, 0.6, dt, 20);
+                }
+            }
+            if (n === 'BerserkEnemy' && e.enraged && e.blossomTimer > 0)
+                this._telegraph(m, 'tb', x, y, RAMP.blood || RAMP.hull, e.blossomTimer, 0.8, dt, R * 1.4);
+        }
 
         switch (n) {
             case 'NaniteDrone': {
@@ -683,7 +767,7 @@ export class StateFX {
                 if (en) {
                     for (let k = this._due(m, 'em', 14, dt); k > 0; k--) {
                         const a = Math.random() * TAU, d = Math.random() * R * 0.6;
-                        fx.streaks(x + Math.cos(a) * d, y + Math.sin(a) * d, 1, RAMP.fire, { dir: a, spread: 1, speedMin: 30, speedMax: 120, lifeMin: 0.3, lifeMax: 0.6, drag: 2, len: 0.016 });
+                        { O_EMBER_DRIFT.dir = a; fx.streaks(x + Math.cos(a) * d, y + Math.sin(a) * d, 1, RAMP.fire, O_EMBER_DRIFT); }
                     }
                     if (this._due(m, 'el', 6, dt)) fx.light(x, y, R * 4, 0.4, 0.17, LIGHT.red, 1);
                 }
@@ -692,7 +776,7 @@ export class StateFX {
                     m.sp = (m.sp || 0) + dt * 9;
                     for (let k = this._due(m, 'bs', 50, dt); k > 0; k--) {
                         const a = m.sp + (k % 2) * Math.PI;
-                        fx.streaks(x, y, 1, RAMP.fire, { dir: a, spread: 0.2, speedMin: 200, speedMax: 380, lifeMin: 0.2, lifeMax: 0.4, drag: 2, len: 0.03 });
+                        { O_EMBER_JET.dir = a; fx.streaks(x, y, 1, RAMP.fire, O_EMBER_JET); }
                     }
                 }
                 break;
@@ -738,10 +822,10 @@ export class StateFX {
                 if (prn && !rn) {
                     fx.burst(x, y, RAMP.level, 12, 100, 300);
                     fx.star(x, y, 9, 0.3, RAMP.level, 1);
-                    for (let k = 0; k < 5; k++) fx.puff(x + (Math.random() - 0.5) * 30, y + (Math.random() - 0.5) * 30, (Math.random() - 0.5) * 50, (Math.random() - 0.5) * 50, 2, 5, 7, 1.0, RAMP.dust, { drag: 1.5, top: 4 });
+                    for (let k = 0; k < 5; k++) fx.puff(x + (Math.random() - 0.5) * 30, y + (Math.random() - 0.5) * 30, (Math.random() - 0.5) * 50, (Math.random() - 0.5) * 50, 2, 5, 7, 1.0, RAMP.dust, O_DRAG1p5_TOP4);
                 }
                 const cf = !!e.calcified, pcf = m.cf; m.cf = cf;
-                if (cf && pcf === false) for (let k = 0; k < 6; k++) fx.puff(x + (Math.random() - 0.5) * 30, y + (Math.random() - 0.5) * 30, 0, 0, 2, 5, 6, 1.2, RAMP.dust, { drag: 2, top: 2 });
+                if (cf && pcf === false) for (let k = 0; k < 6; k++) fx.puff(x + (Math.random() - 0.5) * 30, y + (Math.random() - 0.5) * 30, 0, 0, 2, 5, 6, 1.2, RAMP.dust, O_DRAG2_TOP2);
                 if (!cf && pcf) { fx.burst(x, y, RAMP.level, 14, 150, 400); fx.hitSpark(x, y, RAMP.level); }
                 break;
             }
@@ -754,8 +838,8 @@ export class StateFX {
         for (let k = this._due(m, 'ds', 16, dt); k > 0; k--) {
             const a = Math.random() * TAU, d = Math.random() * R * 0.7;
             const x = e.worldX + Math.cos(a) * d, y = e.worldY + Math.sin(a) * d;
-            if (Math.random() < 0.6) fx.puff(x, y, Math.cos(a) * 40, Math.sin(a) * 40, 3, 6 + Math.random() * 3, 9, 1.2, smokeRamp === RAMP.smoke ? RAMP.smoke : smokeRamp, { drag: 1.2, top: 3 });
-            else fx.puff(x, y, Math.cos(a) * 60, Math.sin(a) * 60, 2, 4, 0.8, 0.35, fireRamp === RAMP.spore ? RAMP.fire : fireRamp, { drag: 2 });
+            if (Math.random() < 0.6) fx.puff(x, y, Math.cos(a) * 40, Math.sin(a) * 40, 3, 6 + Math.random() * 3, 9, 1.2, smokeRamp === RAMP.smoke ? RAMP.smoke : smokeRamp, O_DRAG1p2_TOP3);
+            else fx.puff(x, y, Math.cos(a) * 60, Math.sin(a) * 60, 2, 4, 0.8, 0.35, fireRamp === RAMP.spore ? RAMP.fire : fireRamp, O_DRAG2);
         }
     }
 }

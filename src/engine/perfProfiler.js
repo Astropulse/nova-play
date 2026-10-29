@@ -12,6 +12,10 @@
  *   // In draw:
  *   profiler.draw(ctx, x, y, w, h);
  */
+// ~1024 begin() calls ≈ 10+ frames even at 8-pane split-screen call volume
+// (~90/frame), so a live profiler never disarms between two commits.
+const DISARM_AFTER_BEGINS = 1024;
+
 export class PerfProfiler {
     constructor() {
         // How many seconds of history to keep
@@ -30,6 +34,12 @@ export class PerfProfiler {
         // In-flight timing for the current frame
         this._pending = new Map(); // name -> startTime
         this._current = new Map(); // name -> accumulated ms this frame
+
+        // Timing is gated on commitFrame(): begin/end are no-ops until a frame
+        // is committed, and disarm themselves again after DISARM_AFTER_BEGINS
+        // begin() calls with no commit in between (dev overlay switched off).
+        this._armed = false;
+        this._beginsSinceCommit = 0;
 
         // Ordered list of component names for consistent legend & stacking
         this.components = [
@@ -66,11 +76,16 @@ export class PerfProfiler {
 
     /** Start timing a component. Nested calls for the same name accumulate. */
     begin(name) {
+        // Disarmed (no commitFrame lately = dev overlay off): a bare flag test,
+        // no performance.now() / Map traffic on the ~20+ call sites per frame.
+        if (!this._armed) return;
+        if (++this._beginsSinceCommit > DISARM_AFTER_BEGINS) { this._disarm(); return; }
         this._pending.set(name, performance.now());
     }
 
     /** Stop timing a component and accumulate into the current frame. */
     end(name) {
+        if (!this._armed) return;
         const start = this._pending.get(name);
         if (start === undefined) return;
         const elapsed = performance.now() - start;
@@ -79,11 +94,21 @@ export class PerfProfiler {
         this._current.set(name, prev + elapsed);
     }
 
+    _disarm() {
+        this._armed = false;
+        this._pending.clear();
+        this._current.clear();
+    }
+
     /**
      * Seal the current frame, write it to the ring buffer, and reset.
      * Call this once per frame, after all begin/end pairs are done.
      */
     commitFrame() {
+        // Committing is what "profiling on" means (PlayingState only commits
+        // while game.devMode is set), so it (re-)arms begin/end.
+        this._armed = true;
+        this._beginsSinceCommit = 0;
         // Snapshot current frame data with wall-clock timestamp
         const sample = { data: new Map(this._current), t: performance.now() };
 

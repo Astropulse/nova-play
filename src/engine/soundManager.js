@@ -9,6 +9,17 @@ export const MUSIC_STATE = {
     NONE: 'none'
 };
 
+// play() voice management. One-shots of the same key requested within
+// SFX_COALESCE_MS (≈ the same frame) merge into one voice at the max volume;
+// at most SFX_MAX_VOICES play() voices run at once. Protected keys (UI,
+// progression and boss-fanfare cues) are never coalesced away by the cap.
+const SFX_COALESCE_MS = 5;
+const SFX_MAX_VOICES = 32;
+const SFX_PROTECTED = new Set([
+    'achievement', 'level', 'buy', 'click', 'select', 'type',
+    'trumpet_1', 'trumpet_2', 'trumpet_3', 'trumpet_4'
+]);
+
 // Sound manager — uses Web Audio API for SFX (low latency) and Audio Element for Music (streaming)
 export class SoundManager {
     constructor() {
@@ -21,6 +32,20 @@ export class SoundManager {
         }
 
         this.sfxBuffers = {};     // key -> Array of AudioBuffers
+
+        // Active play() one-shot voices (see play(): coalescing + voice cap).
+        this._sfxVoices = [];          // live voice records, unordered
+        this._sfxRecent = new Map();   // key -> most recent live voice record
+        this._onSfxEnded = (e) => {
+            const source = e.target;
+            const rec = source._voice;
+            try { source.disconnect(); } catch (err) { /* gone */ }
+            if (rec) {
+                try { rec.gain.disconnect(); } catch (err) { /* gone */ }
+                this._releaseVoice(rec);
+                source._voice = null;
+            }
+        };
 
         // Music Management
         this.explorationTracks = []; // Audio elements
@@ -115,7 +140,19 @@ export class SoundManager {
             this._duckGain.gain.value = 1;
             this._duckAmt = 0;
 
-            this.musicGain.connect(this._duckGain);
+            // Adaptive intensity (music only): calm play is slightly muffled;
+            // a busy fight / hot kill streak opens the filter and lifts the
+            // gain a touch, so a swarm SOUNDS bigger. setMusicIntensity(0..1).
+            this._intensityFilter = this.ctx.createBiquadFilter();
+            this._intensityFilter.type = 'lowpass';
+            this._intensityFilter.frequency.value = 7000;
+            this._intensityFilter.Q.value = 0.5;
+            this._intensityGain = this.ctx.createGain();
+            this._intensityGain.gain.value = 0.92;
+            this._intensity = 0;
+            this.musicGain.connect(this._intensityFilter);
+            this._intensityFilter.connect(this._intensityGain);
+            this._intensityGain.connect(this._duckGain);
             this._duckGain.connect(this._fxBus);
             this._fxBus.connect(this._busDry);
             this._busDry.connect(this._stage2);
@@ -881,6 +918,18 @@ export class SoundManager {
         }
     }
 
+    // 0 = calm (music a little muffled), 1 = full-tilt fight (filter wide
+    // open, +8% gain). Eased on the audio clock so it never steps.
+    setMusicIntensity(x) {
+        if (!this.ctx || !this._intensityFilter) return;
+        x = Math.max(0, Math.min(1, x));
+        if (Math.abs(x - this._intensity) < 0.02) return;
+        this._intensity = x;
+        const t = this.ctx.currentTime;
+        this._intensityFilter.frequency.setTargetAtTime(7000 * Math.pow(20000 / 7000, x), t, 0.6);
+        this._intensityGain.gain.setTargetAtTime(0.92 + 0.16 * x, t, 0.6);
+    }
+
     play(key, options = 0.5) {
         if (!this.ctx) return;
 
@@ -913,26 +962,99 @@ export class SoundManager {
         const buffers = this.sfxBuffers[key];
         if (!buffers || buffers.length === 0) return;
 
+        // Variant pick stays first so the cosmetic Math.random() stream is
+        // consumed exactly as before even when the voice is coalesced/dropped.
         const buffer = buffers[Math.floor(Math.random() * buffers.length)];
+        const vol = Math.min(1.0, Math.max(0.0, volume));
+
+        // Same-sound-same-frame coalescing: a burst of identical one-shots
+        // (scrap pickups, multi-kill explosions, shotgun hits) started within
+        // SFX_COALESCE_MS reads as one sound anyway — keep the existing voice
+        // and lift it to the loudest requested volume instead of stacking.
+        const wall = (typeof performance !== 'undefined') ? performance.now() : Date.now();
+        const recent = this._sfxRecent.get(key);
+        if (recent && recent.active && wall - recent.wall < SFX_COALESCE_MS) {
+            if (vol > recent.vol) {
+                recent.vol = vol;
+                recent.gain.gain.value = vol;
+            }
+            return;
+        }
+
+        // Global voice cap. Protected cues (UI, level-up, achievement, boss
+        // fanfare, or options.important) always play; a combat one-shot at
+        // saturation steals the quietest unprotected voice if it is louder,
+        // otherwise it's the quietest itself and is dropped.
+        const important = SFX_PROTECTED.has(key) || (typeof options === 'object' && options !== null && options.important === true);
+        if (!important && this._sfxVoices.length >= SFX_MAX_VOICES) {
+            // Backstop: drop records whose onended never arrived (audio
+            // context suspended mid-sound, engine quirks) so a leaked slot
+            // can't wedge the cap shut.
+            for (let i = this._sfxVoices.length - 1; i >= 0; i--) {
+                const v = this._sfxVoices[i];
+                if (wall > v.expires) this._releaseVoice(v);
+            }
+        }
+        if (!important && this._sfxVoices.length >= SFX_MAX_VOICES) {
+            let quietest = null;
+            for (let i = 0; i < this._sfxVoices.length; i++) {
+                const v = this._sfxVoices[i];
+                if (v.important) continue;
+                if (!quietest || v.vol < quietest.vol) quietest = v;
+            }
+            if (!quietest || quietest.vol >= vol) return;
+            this._stealVoice(quietest);
+        }
+
         const source = this.ctx.createBufferSource();
         source.buffer = buffer;
-        if (typeof options === 'object' && options.pitch) {
+        if (typeof options === 'object' && options !== null && options.pitch) {
             source.playbackRate.value = options.pitch;
         }
 
         const gainNode = this.ctx.createGain();
-        gainNode.gain.value = Math.min(1.0, Math.max(0.0, volume));
+        gainNode.gain.value = vol;
 
         source.connect(gainNode);
         gainNode.connect(this._fxBus || this.ctx.destination);
 
-        // Disconnect nodes after playback to prevent audio graph leak
-        source.onended = () => {
-            source.disconnect();
-            gainNode.disconnect();
-        };
+        const rate = source.playbackRate.value || 1;
+        const expires = wall + (buffer.duration / rate) * 1000 + 2000;
+        const rec = { key, source, gain: gainNode, vol, wall, expires, important, active: true, idx: this._sfxVoices.length };
+        this._sfxVoices.push(rec);
+        this._sfxRecent.set(key, rec);
+        source._voice = rec;
+        // Shared handler (no per-call closure): disconnects the nodes to
+        // prevent an audio graph leak and releases the voice slot.
+        source.onended = this._onSfxEnded;
 
         source.start(0);
+    }
+
+    // Remove a voice record from the active list (swap-remove, O(1)).
+    _releaseVoice(rec) {
+        if (!rec.active) return;
+        rec.active = false;
+        const list = this._sfxVoices;
+        const last = list.pop();
+        if (last !== rec) {
+            list[rec.idx] = last;
+            last.idx = rec.idx;
+        }
+        if (this._sfxRecent.get(rec.key) === rec) this._sfxRecent.delete(rec.key);
+    }
+
+    // Voice-cap steal: fast fade (no click) then stop; the slot frees now,
+    // the nodes disconnect when onended fires.
+    _stealVoice(rec) {
+        this._releaseVoice(rec);
+        try {
+            const t = this.ctx.currentTime;
+            rec.gain.gain.cancelScheduledValues(t);
+            rec.gain.gain.setValueAtTime(rec.gain.gain.value, t);
+            rec.gain.gain.linearRampToValueAtTime(0, t + 0.015);
+            rec.source.stop(t + 0.02);
+        } catch (e) { /* already stopped */ }
     }
 
     // ── Gravity Distortion phase hum ────────────────────────────────────────

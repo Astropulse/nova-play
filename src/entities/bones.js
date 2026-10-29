@@ -4,6 +4,7 @@ import { Projectile } from './projectile.js';
 import { UPGRADES } from '../data/upgrades.js';
 import { MUSIC_STATE } from '../engine/soundManager.js';
 import { CACHE_CONFIG } from './spaceCache.js';
+import { drawShadowGlow } from './shadowGlow.js';
 
 export const CARCOSA_STATE = {
     DORMANT: 'carcosa_dormant', // Belt + sleeping ships (never 'dormant' — that
@@ -1144,9 +1145,11 @@ export class Carcosa {
                 ctx.save();
                 ctx.translate(sx, sy);
                 if (this.rebuilt) {
-                    // The remade city breathes golden light.
-                    ctx.shadowBlur = (14 + Math.sin(this._animClock * 1.6) * 6) * ws;
-                    ctx.shadowColor = CARCOSA_YELLOW;
+                    // The remade city breathes golden light. Baked shadow layer
+                    // (radius quantized to 0.5 logical px, LRU-cached per step)
+                    // instead of a per-frame animated shadowBlur.
+                    drawShadowGlow(ctx, img.canvas || img, img.width, img.height, -w / 2, -h / 2, w, h,
+                        (14 + Math.sin(this._animClock * 1.6) * 6) * ws, CARCOSA_YELLOW);
                 }
                 ctx.drawImage(img.canvas || img, -w / 2, -h / 2, w, h);
                 ctx.restore();

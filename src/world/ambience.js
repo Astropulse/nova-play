@@ -74,6 +74,32 @@ export class Ambience {
         return Math.max(0, (n - 0.35) / 0.65);
     }
 
+    // 0 cold grey dust, 1 embers, 2 ice glints, 3 spore haze. Fixed by
+    // position (shared lattice noise), so co-op pilots see the same sectors.
+    sectorKind(wx, wy) {
+        if (valueNoise(wx / REGION_SCALE - 97.3, wy / REGION_SCALE + 53.9) > 0.55) return 1;
+        const n = valueNoise(wx / REGION_SCALE + 41.1, wy / REGION_SCALE - 263.4);
+        return n > 0.6 ? 2 : n < 0.3 ? 3 : 0;
+    }
+
+    // Colour + alpha of one dust mote this frame (shared by both draw paths).
+    _dustLook(p) {
+        const lifeFrac = p.life / p.maxLife;
+        const base = Math.min(0.35, lifeFrac);
+        switch (p.kind) {
+            case 1: { // embers flicker
+                const f = Math.sin(this.time * 6 + p.ph);
+                return f > 0.6 ? [255, 154, 58, base * 1.1] : [202, 165, 106, base * 0.9];
+            }
+            case 2: { // ice: mostly dim, with a sharp glint now and then
+                const g = Math.sin(this.time * 1.7 + p.ph * 3);
+                return g > 0.94 ? [240, 250, 255, Math.min(0.8, base * 2.4)] : [150, 200, 235, base * 0.6];
+            }
+            case 3: return [154, 194, 74, base * 0.7];
+            default: return [138, 147, 166, base * 0.6];
+        }
+    }
+
     _dreadLevel() {
         return (this.state.dread && this.state.dread.level) || 0;
     }
@@ -112,6 +138,8 @@ export class Ambience {
             const p = this.dust[i];
             p.x += p.vx * dt;
             p.y += p.vy * dt;
+            // Spores wander on a slow wobble.
+            if (p.kind === 3) { p.x += Math.sin(this.time * 0.9 + p.ph) * 6 * dt; p.y += Math.cos(this.time * 0.7 + p.ph) * 6 * dt; }
             p.life -= dt;
             if (p.life <= 0 ||
                 Math.abs(p.x - lx) > halfW + margin * 2 ||
@@ -121,8 +149,10 @@ export class Ambience {
             }
         }
         if (this.dust.length < want) {
-            // Warm ember dust in some regions, cold grey in others
-            const warm = valueNoise(cam.x / REGION_SCALE - 97.3, cam.y / REGION_SCALE + 53.9) > 0.55;
+            // Sector identity: each region drifts its own kind of mote —
+            // embers, ice glints, spore haze, or plain cold grey dust.
+            const kind = this.sectorKind(cam.x, cam.y);
+            const warm = kind === 1;
             const spawn = Math.min(3, want - this.dust.length);
             for (let i = 0; i < spawn; i++) {
                 const ang = Math.random() * Math.PI * 2;
@@ -133,7 +163,7 @@ export class Ambience {
                     vy: Math.sin(ang) * (4 + Math.random() * 10),
                     life: 6 + Math.random() * 10,
                     maxLife: 16,
-                    warm,
+                    warm, kind, ph: Math.random() * 6.28,
                     size: Math.random() < 0.8 ? 1 : 2
                 });
             }
@@ -221,12 +251,10 @@ export class Ambience {
                 const sx = (p.x - camera.x * DUST_PARALLAX) * ws + W / 2;
                 const sy = (p.y - camera.y * DUST_PARALLAX) * ws + H / 2;
                 if (sx < -10 || sx > W + 10 || sy < -10 || sy > H + 10) continue;
-                const lifeFrac = p.life / p.maxLife;
-                const alpha = Math.min(0.35, lifeFrac) * (p.warm ? 0.9 : 0.6);
+                const L = this._dustLook(p);
                 const s = Math.max(1, Math.round(p.size * ws * 0.5));
                 const x = Math.round(sx), y = Math.round(sy);
-                if (p.warm) batch.rect(x + s / 2, y + s / 2, s, s, 0, 202 / 255, 165 / 255, 106 / 255, alpha, 0);
-                else batch.rect(x + s / 2, y + s / 2, s, s, 0, 138 / 255, 147 / 255, 166 / 255, alpha, 0);
+                batch.rect(x + s / 2, y + s / 2, s, s, 0, L[0] / 255, L[1] / 255, L[2] / 255, L[3], 0);
             }
         }
     }
@@ -292,9 +320,9 @@ export class Ambience {
                 const sx = (p.x - camera.x * DUST_PARALLAX) * ws + W / 2;
                 const sy = (p.y - camera.y * DUST_PARALLAX) * ws + H / 2;
                 if (sx < -10 || sx > W + 10 || sy < -10 || sy > H + 10) continue;
-                const lifeFrac = p.life / p.maxLife;
-                ctx.globalAlpha = Math.min(0.35, lifeFrac) * (p.warm ? 0.9 : 0.6);
-                ctx.fillStyle = p.warm ? '#caa56a' : '#8a93a6';
+                const L = this._dustLook(p);
+                ctx.globalAlpha = L[3];
+                ctx.fillStyle = `rgb(${L[0]},${L[1]},${L[2]})`;
                 const s = Math.max(1, Math.round(p.size * ws * 0.5));
                 ctx.fillRect(Math.round(sx), Math.round(sy), s, s);
             }

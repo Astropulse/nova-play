@@ -19,6 +19,11 @@ import { FractureModel, prewarmShatterSteps, ExpOrb } from '../entities/asteroid
 import { Enemy } from '../entities/enemy.js';
 import { ScreenFX } from './screenFx.js';
 import { FIRE_EXPLOSION_KEYS } from './vfx.js';
+import { prewarmImpactMasks } from '../ui/impactFx.js';
+
+// Enemy sprite families (enemy.js spriteKey = `${prefix}${variant}`).
+const IMPACT_MASK_PREFIXES = ['enemy_ship_', 'cthulhu_ship_', 'nanite_', 'nanite_drone_',
+    'shield_', 'missile_', 'blink_', 'berserk_', 'scavenger_', 'locust_', 'bone_'];
 
 // Piece counts must match what _generateProceduralDebris asks for — the
 // shatter cache keeps whichever layout is built first. Shared with
@@ -47,6 +52,19 @@ function buildTasks(game) {
     tasks.push(() => {
         if (!game.screenFx) game.screenFx = new ScreenFX(game);
         game.screenFx.warm();
+    });
+
+    // ImpactFX hull masks (ui/impactFx.js prewarmImpactMasks) for the regular
+    // enemy families, one mask per step, so the first hit on a new ship type
+    // never pays a getImageData readback mid-fight. Bosses are left lazy (big
+    // sprites; not worth holding on the title screen). Missing variant keys
+    // are skipped by the helper.
+    tasks.push(function* () {
+        for (const prefix of IMPACT_MASK_PREFIXES) {
+            for (let v = 0; v < 8; v++) {
+                if (prewarmImpactMasks(game.assets, [`${prefix}${v}`], 1)) yield;
+            }
+        }
     });
 
     // ExpOrb glow halo per GIF frame (one frame per step).

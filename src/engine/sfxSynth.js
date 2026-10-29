@@ -15,7 +15,7 @@
 // pickups climb a melody instead of a siren.
 const PENTA = [0, 2, 4, 7, 9, 12, 14, 16, 19, 21, 24];
 
-const MIN_GAP = { zap: 0.05, coin: 0.035, deflect: 0.045, thump: 0.06, crackle: 0.12, chime: 0.4, warp: 0.12, cash: 0.08, denied: 0.15, heartbeat: 0.3, drone: 1, shimmer: 1 };
+const MIN_GAP = { zap: 0.05, coin: 0.035, deflect: 0.045, thump: 0.06, crackle: 0.12, chime: 0.4, warp: 0.12, cash: 0.08, jackpot: 0.3, denied: 0.15, heartbeat: 0.3, drone: 1, shimmer: 1 };
 
 export class SfxSynth {
     constructor(sounds) {
@@ -121,6 +121,28 @@ export class SfxSynth {
         o1.start(t0); o2.start(t0);
         this._cleanup([o1, g1, lp], t0 + 0.12);
         this._cleanup([o2, g2], t0 + 0.22);
+    }
+
+    // Slot-machine payout chord: a fast major arpeggio (G-B-D, then the
+    // octave and the 9th at higher levels) that rings out together.
+    jackpot(level = 1, vol = 0.2) {
+        const v = this._gate('jackpot', vol, null, null);
+        if (!v) return;
+        const ctx = this.sounds.ctx, t0 = ctx.currentTime + 0.003;
+        const semis = [0, 4, 7, 12, 14, 19].slice(0, 3 + Math.min(3, level));
+        semis.forEach((s, i) => {
+            const t = t0 + i * 0.045, f = 392 * Math.pow(2, s / 12);
+            const o1 = ctx.createOscillator(); o1.type = 'square'; o1.frequency.value = f;
+            const o2 = ctx.createOscillator(); o2.type = 'sine'; o2.frequency.value = f * 2;
+            const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 4200;
+            const g1 = ctx.createGain(); this._env(g1, t, v * 0.22, 0.004, 0.5);
+            const g2 = ctx.createGain(); this._env(g2, t, v * 0.35, 0.004, 0.7);
+            o1.connect(g1); g1.connect(lp); lp.connect(this._out());
+            o2.connect(g2); g2.connect(this._out());
+            o1.start(t); o2.start(t);
+            this._cleanup([o1, g1, lp], t + 0.55);
+            this._cleanup([o2, g2], t + 0.75);
+        });
     }
 
     deflect(x, y, vol = 0.3) {

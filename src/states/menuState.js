@@ -4,6 +4,8 @@ import { TutorialState } from './tutorialState.js';
 import { MultiplayerState } from './multiplayerState.js';
 import { AchievementsState } from './achievementsState.js';
 import { UpgradesState } from './upgradesState.js';
+import { BestiaryState } from './bestiaryState.js';
+import { CODEX_BOSSES, CODEX_EVENTS } from '../data/codex.js';
 import { SettingsState } from './settingsState.js';
 import { KEYS, MOUSE, keyLabel, mouseLabel } from '../engine/controlBindings.js';
 import { ACHIEVEMENTS } from '../data/achievements.js';
@@ -47,6 +49,7 @@ export class MenuState {
         this.achievementsBtn = { x: 0, y: 0, w: 0, h: 0, hovered: false };
         this.multiplayerBtn = { x: 0, y: 0, w: 0, h: 0, hovered: false };
         this.upgradesBtn = { x: 0, y: 0, w: 0, h: 0, hovered: false };
+        this.codexBtn = { x: 0, y: 0, w: 0, h: 0, hovered: false };
         this.settingsBtn = { x: 0, y: 0, w: 0, h: 0, hovered: false };
 
         // Track last hover state for click sound
@@ -116,6 +119,7 @@ export class MenuState {
                 this._isInside(mouse, this.wordmarkBtn) ||
                 this._isInside(mouse, this.achievementsBtn) ||
                 this._isInside(mouse, this.upgradesBtn) ||
+                this._isInside(mouse, this.codexBtn) ||
                 this._isInside(mouse, this.settingsBtn)) {
                 this.game.sounds.play('click', 1.0);
             }
@@ -179,6 +183,7 @@ export class MenuState {
             { id: 'achievements', rect: this.achievementsBtn },
             { id: 'multiplayer',  rect: this.multiplayerBtn },
             { id: 'upgrades',     rect: this.upgradesBtn },
+            { id: 'codex',        rect: this.codexBtn },
             { id: 'settings',     rect: this.settingsBtn },
         ];
         if (this.focusIndex >= focusables.length) this.focusIndex = 0;
@@ -250,6 +255,7 @@ export class MenuState {
         this.achievementsBtn.hovered = this._isInside(mouse, this.achievementsBtn);
         this.multiplayerBtn.hovered = this._isInside(mouse, this.multiplayerBtn);
         this.upgradesBtn.hovered = this._isInside(mouse, this.upgradesBtn);
+        this.codexBtn.hovered = this._isInside(mouse, this.codexBtn);
         this.settingsBtn.hovered = this._isInside(mouse, this.settingsBtn);
 
         // Hover sounds - literal "play once on hover start" logic
@@ -327,6 +333,11 @@ export class MenuState {
             if (this.upgradesBtn.hovered) {
                 this.game.input.consumeMouseButton(0);
                 this.game.setState(new UpgradesState(this.game));
+                return;
+            }
+            if (this.codexBtn.hovered) {
+                this.game.input.consumeMouseButton(0);
+                this.game.setState(new BestiaryState(this.game));
                 return;
             }
             if (this.settingsBtn.hovered) {
@@ -414,6 +425,9 @@ export class MenuState {
                 case 'upgrades':
                     this.game.setState(new UpgradesState(this.game));
                     return 'transition';
+                case 'codex':
+                    this.game.setState(new BestiaryState(this.game));
+                    return 'transition';
                 case 'settings':
                     this.game.setState(new SettingsState(this.game));
                     return 'transition';
@@ -483,6 +497,7 @@ export class MenuState {
             this.achievementsBtn.hovered = id === 'achievements';
             this.multiplayerBtn.hovered = id === 'multiplayer';
             this.upgradesBtn.hovered = id === 'upgrades';
+            this.codexBtn.hovered = id === 'codex';
             this.settingsBtn.hovered = id === 'settings';
         }
     }
@@ -652,9 +667,15 @@ export class MenuState {
         this.upgradesBtn.w = labelW;
         this.upgradesBtn.h = labelH;
 
-        // Multiplayer text button — stacked under upgrades.
+        // Codex (bosses + events) — stacked under upgrades, same tall rect.
+        this.codexBtn.x = cw - marginTR - labelW;
+        this.codexBtn.y = this.upgradesBtn.y + this.upgradesBtn.h + Math.floor(game.uiScale * 4);
+        this.codexBtn.w = labelW;
+        this.codexBtn.h = labelH;
+
+        // Multiplayer text button — stacked under the codex.
         this.multiplayerBtn.x = cw - marginTR - labelW;
-        this.multiplayerBtn.y = this.upgradesBtn.y + this.upgradesBtn.h + Math.floor(game.uiScale * 4);
+        this.multiplayerBtn.y = this.codexBtn.y + this.codexBtn.h + Math.floor(game.uiScale * 4);
         this.multiplayerBtn.w = labelW;
         this.multiplayerBtn.h = Math.floor(game.uiScale * 12);
 
@@ -828,7 +849,26 @@ export class MenuState {
             }
         }
 
-        // Multiplayer text button — stacked under upgrades.
+        // Codex text button — bosses felled / events found hint.
+        {
+            const btn = this.codexBtn;
+            ctx.font = `${8 * game.uiScale}px Astro5x`;
+            ctx.textAlign = 'right';
+            ctx.fillStyle = btn.hovered ? '#ffffff' : '#44ddff';
+            ctx.fillText('CODEX ►', btn.x + btn.w, btn.y + Math.floor(game.uiScale * 8));
+            const mgr = game.achievements;
+            if (mgr) {
+                const L = mgr.lifetime;
+                let n = 0;
+                for (const b of CODEX_BOSSES) if (L.bossesDefeated && L.bossesDefeated[b.id]) n++;
+                for (const e of CODEX_EVENTS) if (L.eventTypes && L.eventTypes[e.id]) n++;
+                ctx.font = `${5 * game.uiScale}px Astro4x`;
+                ctx.fillStyle = '#667788';
+                ctx.fillText(`${n} / ${CODEX_BOSSES.length + CODEX_EVENTS.length}`, btn.x + btn.w, btn.y + Math.floor(game.uiScale * 16));
+            }
+        }
+
+        // Multiplayer text button — stacked under the codex.
         {
             const btn = this.multiplayerBtn;
             ctx.font = `${8 * game.uiScale}px Astro5x`;

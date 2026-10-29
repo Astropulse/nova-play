@@ -1,6 +1,7 @@
 // HUD uses its own scaling factor (4x)
 
 import { playerColor } from './chat.js';
+import { drawCachedText, TEXT_STROKE } from './textSprite.js';
 
 export class HUD {
     constructor(game, player) {
@@ -184,8 +185,10 @@ export class HUD {
 
         // Scrap counter — upper right. Briefly garbles during dread glitches.
         const dread = this.game.currentState && this.game.currentState.dread;
-        ctx.fillStyle = '#ccddee';
-        ctx.font = `${8 * this._hudScale}px Astro4x`;
+        const font8 = `${8 * this._hudScale}px Astro4x`;
+        let scrapFill = '#ccddee';
+        ctx.fillStyle = scrapFill;
+        ctx.font = font8;
         ctx.textAlign = 'right';
         // Payout roll-up: after encounter rewards, the counter visibly climbs
         const state = this.game.currentState;
@@ -200,13 +203,21 @@ export class HUD {
         // counter only climbs as the flying coins land — and flashes on each.
         const loot = state && state.lootFlight;
         if (loot && loot.inFlightScrap > 0) shownScrap = Math.max(0, shownScrap - Math.round(loot.inFlightScrap));
-        if (loot && loot.scrapFlash > 0) ctx.fillStyle = loot.scrapFlash > 0.5 ? '#ffffff' : '#ffe066';
+        if (loot && loot.scrapFlash > 0) ctx.fillStyle = scrapFill = loot.scrapFlash > 0.5 ? '#ffffff' : '#ffe066';
         const scrapText = (dread && dread.glitchScrap > 0)
             ? `SCRAP: ${dread.garble(String(p.scrap).length + 1)}`
             : `SCRAP: ${shownScrap}`;
-        ctx.fillText(scrapText, cw - margin, this._hudScale * 10);
+        // Steady readout → cached text sprite (textSprite.js); while it's
+        // rolling up / garbling it changes every frame, so draw it directly.
+        let scrapW = NaN;
+        if (state && state._scrapRoll || (dread && dread.glitchScrap > 0)) {
+            ctx.fillText(scrapText, cw - margin, this._hudScale * 10);
+        } else {
+            scrapW = drawCachedText(ctx, scrapText, cw - margin, this._hudScale * 10,
+                font8, 'right', 'alphabetic', scrapFill);
+        }
         // Flight anchors for LootFlight (coin target = middle of the number).
-        const scrapW = ctx.measureText(scrapText).width;
+        if (scrapW !== scrapW) scrapW = ctx.measureText(scrapText).width;
         this.scrapAnchorX = cw - margin - this._hudScale * 8;
         this.scrapAnchorY = this._hudScale * 6;
         this.scrapAnchorLeft = cw - margin - scrapW;
@@ -238,7 +249,9 @@ export class HUD {
             ctx.font = `${8 * this._hudScale}px Astro4x`;
             ctx.textAlign = 'left';
             const timerText = `NEXT WAVE: ${mins}:${secs}`;
-            ctx.fillText(timerText, margin, this._hudScale * 10);
+            // Changes once a second → cached text sprite.
+            let tw = drawCachedText(ctx, timerText, margin, this._hudScale * 10,
+                font8, 'left', 'alphabetic', '#ff4444');
 
             const state = this.game.currentState;
             const sync = state.netSync;
@@ -246,10 +259,13 @@ export class HUD {
                 const targetPid = sync.waveTargetPid;
                 const isMe = targetPid === sync.myPid;
                 const name = isMe ? 'YOU' : state.net.playerName(targetPid).toUpperCase();
-                const tw = ctx.measureText(timerText).width;
-                ctx.fillStyle = isMe ? '#ff8866' : '#ffd27a';
-                ctx.font = `${6 * this._hudScale}px Astro4x`;
-                ctx.fillText(`> TARGET: ${name}`, margin + tw + this._hudScale * 6, this._hudScale * 10);
+                if (tw !== tw) tw = ctx.measureText(timerText).width;
+                const tFill = isMe ? '#ff8866' : '#ffd27a';
+                const tFont = `${6 * this._hudScale}px Astro4x`;
+                ctx.fillStyle = tFill;
+                ctx.font = tFont;
+                drawCachedText(ctx, `> TARGET: ${name}`, margin + tw + this._hudScale * 6, this._hudScale * 10,
+                    tFont, 'left', 'alphabetic', tFill);
             }
         }
 
@@ -655,6 +671,39 @@ export class HUD {
         return c;
     }
 
+    // Padded blur(silhouette) surface for one exp-bar bloom radius, plus a
+    // same-size scratch canvas for the per-frame gradient multiply. Rebuilt
+    // only when the silhouette (bar size / fill width / sprite) or the blur
+    // radius changes. Pad = 3σ + 2 covers the whole Gaussian tail the
+    // filter would have drawn outside the bar.
+    _expBloomLayer(i, sigma, barW, barH, maskKey, asset) {
+        const layers = this._expBloom || (this._expBloom = []);
+        let L = layers[i];
+        if (!L) {
+            const canvas = document.createElement('canvas');
+            const scratch = document.createElement('canvas');
+            L = layers[i] = { canvas, ctx: canvas.getContext('2d'), scratch, sctx: scratch.getContext('2d'),
+                key: '', asset: null, pad: 0, w: 0, h: 0 };
+        }
+        const key = maskKey + '|' + sigma;
+        if (L.key !== key || L.asset !== asset) {
+            const pad = Math.ceil(sigma * 3) + 2;
+            const w = barW + pad * 2, h = barH + pad * 2;
+            if (L.canvas.width !== w || L.canvas.height !== h) {
+                L.canvas.width = w; L.canvas.height = h;
+                L.scratch.width = w; L.scratch.height = h;
+            } else {
+                L.ctx.clearRect(0, 0, w, h);
+            }
+            L.ctx.filter = `blur(${sigma}px)`;
+            L.ctx.drawImage(this._expMaskCanvas, pad, pad);
+            L.ctx.filter = 'none';
+            L.pad = pad; L.w = w; L.h = h;
+            L.key = key; L.asset = asset;
+        }
+        return L;
+    }
+
     _drawExpBar(ctx, cw, ch) {
         const p = this.player;
         const hudScale = this._hudScale;
@@ -738,42 +787,38 @@ export class HUD {
                 // pulse-wave still draw, so it stays readable and animated);
                 // capable hardware renders the full bloom unchanged.
                 if (!this.game.lowPerfMode) {
-                // Reuse a cached offscreen canvas for the aura
-                if (!this._auraTempCanvas) {
-                    this._auraTempCanvas = document.createElement('canvas');
-                    this._auraTempCtx = this._auraTempCanvas.getContext('2d');
-                }
-                if (this._auraTempCanvas.width !== barW || this._auraTempCanvas.height !== barH) {
-                    this._auraTempCanvas.width = barW;
-                    this._auraTempCanvas.height = barH;
-                }
-                const auraTempCanvas = this._auraTempCanvas;
-                const auraTempCtx = this._auraTempCtx;
-                auraTempCtx.clearRect(0, 0, barW, barH);
-                
-                auraTempCtx.drawImage(this.expGlowCanvas, 0, 0);
-                auraTempCtx.save();
-                auraTempCtx.globalCompositeOperation = 'source-in';
-                
-                // Gradient that peaks at the wave center
-                const auraMask = auraTempCtx.createLinearGradient(glowCenter - glowWidth * 1.5, 0, glowCenter + glowWidth * 1.5, 0);
-                auraMask.addColorStop(0, 'rgba(255, 255, 255, 0.2)'); // Base glow
-                auraMask.addColorStop(0.5, 'rgba(255, 255, 255, 1.0)'); // Peak at wave
-                auraMask.addColorStop(1, 'rgba(255, 255, 255, 0.2)'); // Base glow
-                auraTempCtx.fillStyle = auraMask;
-                auraTempCtx.fillRect(0, 0, barW, barH);
-                auraTempCtx.restore();
-
+                // Cached bloom: blur(mask) is pre-rendered per blur radius
+                // into padded offscreen canvases (rebuilt only when the
+                // silhouette / radius changes — see _expBloomLayer); each
+                // frame it is multiplied by the moving wave gradient
+                // (source-in) on a scratch canvas and screen-composited with
+                // NO ctx.filter. Was: aura = mask × gradient, blurred twice
+                // per frame. blur(m·g) ≈ blur(m)·g because the gradient is
+                // linear over ≥ 0.22·barW, far wider than the 1.5–3.5 HUD-px
+                // blur — the delta is a couple of 8-bit levels at the fill's
+                // end caps only. Without ctx.filter support (old Safari) the
+                // cache holds the unblurred mask, i.e. the same unblurred
+                // aura today's code produced there.
+                const gx0 = glowCenter - glowWidth * 1.5, gx1 = glowCenter + glowWidth * 1.5;
                 ctx.save();
                 ctx.globalCompositeOperation = 'screen';
-                // Apply bloom filters to the localized aura
-                ctx.filter = `blur(${hudScale * 3.5}px)`;
-                ctx.globalAlpha = 0.75 * pulseIntensity;
-                ctx.drawImage(auraTempCanvas, x, y);
-
-                ctx.filter = `blur(${hudScale * 1.5}px)`;
-                ctx.globalAlpha = 0.5 * pulseIntensity;
-                ctx.drawImage(auraTempCanvas, x, y);
+                for (let li = 0; li < 2; li++) {
+                    const L = this._expBloomLayer(li, hudScale * (li === 0 ? 3.5 : 1.5), barW, barH, maskKey, fullAsset);
+                    const sc = L.sctx, pad = L.pad;
+                    sc.clearRect(0, 0, L.w, L.h);
+                    sc.globalCompositeOperation = 'source-over';
+                    sc.drawImage(L.canvas, 0, 0);
+                    sc.globalCompositeOperation = 'source-in';
+                    // Gradient that peaks at the wave center (shifted by the pad)
+                    const auraMask = sc.createLinearGradient(gx0 + pad, 0, gx1 + pad, 0);
+                    auraMask.addColorStop(0, 'rgba(255, 255, 255, 0.2)'); // Base glow
+                    auraMask.addColorStop(0.5, 'rgba(255, 255, 255, 1.0)'); // Peak at wave
+                    auraMask.addColorStop(1, 'rgba(255, 255, 255, 0.2)'); // Base glow
+                    sc.fillStyle = auraMask;
+                    sc.fillRect(0, 0, L.w, L.h);
+                    ctx.globalAlpha = (li === 0 ? 0.75 : 0.5) * pulseIntensity;
+                    ctx.drawImage(L.scratch, x - pad, y - pad);
+                }
                 ctx.restore();
                 } // end bloom (skipped in lowPerfMode)
 
@@ -817,7 +862,8 @@ export class HUD {
         ctx.strokeStyle = '#000000';
         ctx.lineWidth = hudScale * 1; // 1 HUD-pixel outline
         ctx.lineJoin = 'round';
-        ctx.font = `${6 * hudScale}px Astro5x`;
+        const levelFont = `${6 * hudScale}px Astro5x`;
+        ctx.font = levelFont;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'bottom';
         const textY = y - hudScale * 1.5;
@@ -832,8 +878,14 @@ export class HUD {
         } else {
             ctx.fillStyle = '#ffffff';
         }
-        ctx.strokeText(`LEVEL ${p.level}`, cw / 2, textY);
-        ctx.fillText(`LEVEL ${p.level}`, cw / 2, textY);
+        if (hasUnclaimed) {
+            // Flashing colour changes every frame — draw directly.
+            ctx.strokeText(`LEVEL ${p.level}`, cw / 2, textY);
+            ctx.fillText(`LEVEL ${p.level}`, cw / 2, textY);
+        } else {
+            drawCachedText(ctx, `LEVEL ${p.level}`, cw / 2, textY, levelFont, 'center', 'bottom',
+                '#ffffff', TEXT_STROKE, '#000000', hudScale * 1, 'round');
+        }
 
         // "CLAIM LEVELS IN INVENTORY" prompt when level-ups are queued.
         // Yellow flashing white — the exact same treatment as the LEVEL text

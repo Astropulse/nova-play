@@ -13,10 +13,20 @@ import { loadBindings } from './controlBindings.js';
 // without allocating an object every frame.
 const ZERO_FX = { crt: 0, warp: 0 };
 
+// Main game canvas 2D context attributes (shared with src/main.js — whichever
+// getContext call runs first fixes them, so both must ask for the same thing).
+export const CANVAS_2D_ATTRS = { alpha: false };
+
 export class Game {
     constructor(canvas) {
         this.canvas = canvas;
-        this.ctx = canvas.getContext('2d');
+        // Opaque backing store (alpha:false): every frame starts with an opaque
+        // black clear and nothing on this context punches alpha (the body is
+        // black too), so the displayed pixels are unchanged — but the
+        // compositor skips blending the page under it and the ScreenFX
+        // canvas→texture upload never has to un-premultiply. The FIRST
+        // getContext call fixes the attributes; src/main.js passes the same.
+        this.ctx = canvas.getContext('2d', CANVAS_2D_ATTRS);
 
         // Touch-first device (phone/tablet in a browser or the Android
         // WebView wrapper). Committed once at boot: enables the virtual
@@ -371,7 +381,8 @@ export class Game {
 
         const frameStart = performance.now();
         const now = frameStart;
-        const dt = Math.min((now - this._lastFrameTime) / 1000, 0.1);
+        const rawIntervalMs = now - this._lastFrameTime;
+        const dt = Math.min(rawIntervalMs / 1000, 0.1);
         this._lastFrameTime = now;
 
         // --- Logic Updates ---
@@ -399,10 +410,16 @@ export class Game {
         }
 
         // --- Rendering ---
+        // One full-screen pass: on the opaque (alpha:false) context clearRect
+        // yields opaque black — the old clearRect + black fillRect pair in one
+        // op, and (unlike fillRect) immune to any leaked globalAlpha /
+        // composite state. The black base stays: states may paint before the
+        // starfield blit, and that blit is source-over onto this black.
         if (!this.currentState || !this.currentState.skipClear) {
             this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+            // Kept: draw code may rely on the frame starting with this
+            // fillStyle (it used to be set for the black fillRect).
             this.ctx.fillStyle = '#000';
-            this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
         }
 
         if (this.isEncoding) {
@@ -530,8 +547,68 @@ export class Game {
             this._potentialFpsCounter = 0;
             this._potentialFpsAccumulator = 0;
         }
+        this._trackFramePacing(rawIntervalMs);
 
         requestAnimationFrame(() => this.loop());
+    }
+
+    // Second low-perf trigger, from the REAL rAF frame interval. potentialFps
+    // above only times the JS loop, so a GPU/compositor-bound device (cheap JS,
+    // slow fill/present) never trips it. This watches delivered frame rate in
+    // ~1 s windows and latches lowPerfMode only when sustained gameplay runs
+    // well under BOTH 0.75x the measured display refresh AND 45 fps. Deliberately
+    // conservative so capable machines never latch:
+    //  - refresh = the fastest clean 1 s window ever seen (menus included); a
+    //    device that never reaches refresh just gets a lower bar, never a false trip;
+    //  - only counts while a run is live (state has world + player, unpaused,
+    //    same state for ≥2 s, no dev console / clip recording / encoding);
+    //  - document hidden, or any stall >250 ms, discards the window and streak;
+    //  - a window locked exactly to a refresh multiple with near-zero jitter is
+    //    treated as a browser frame-rate cap (e.g. energy-saver 30 fps), not load;
+    //  - needs 6 consecutive slow windows; window.__novaNoPerfLatch never latches.
+    // Same sticky + persisted (nova_lowperf) semantics as the trigger above.
+    _trackFramePacing(intervalMs) {
+        const p = this._pacing || (this._pacing = {
+            n: 0, sum: 0, sumSq: 0, refreshMs: Infinity, slowWindows: 0,
+            state: null, stateSince: 0,
+        });
+        const resetWindow = () => { p.n = 0; p.sum = 0; p.sumSq = 0; };
+        const hidden = typeof document !== 'undefined' && document.visibilityState === 'hidden';
+        if (hidden || !(intervalMs > 0) || intervalMs > 250) {
+            resetWindow(); p.slowWindows = 0; return;
+        }
+        const st = this.currentState;
+        const now = this._lastFrameTime;
+        if (st !== p.state) { p.state = st; p.stateSince = now; resetWindow(); p.slowWindows = 0; }
+        p.n++; p.sum += intervalMs; p.sumSq += intervalMs * intervalMs;
+        if (p.sum < 1000) return;
+
+        const mean = p.sum / p.n;
+        const sd = Math.sqrt(Math.max(0, p.sumSq / p.n - mean * mean));
+        resetWindow();
+        // Refresh estimate: fastest clean window, floored at 250 Hz.
+        if (mean < p.refreshMs) p.refreshMs = Math.max(4, mean);
+        if (this.lowPerfMode) return;
+
+        const inRun = st && st.world && st.player && !st.paused
+            && now - p.stateSince >= 2000
+            && !(this.devConsole && this.devConsole.active)
+            && !this.isRecording && !this.isEncoding;
+        if (!inRun || !isFinite(p.refreshMs)) { p.slowWindows = 0; return; }
+
+        const fps = 1000 / mean;
+        const thresholdFps = Math.min(0.75 * (1000 / p.refreshMs), 45);
+        const mult = mean / p.refreshMs, k = Math.round(mult);
+        const capped = k >= 2 && Math.abs(mult - k) < 0.06 && sd < 0.05 * mean;
+        if (fps < thresholdFps && !capped) {
+            if (++p.slowWindows >= 6 && !window.__novaNoPerfLatch) {
+                this.lowPerfMode = true;
+                try { localStorage.setItem('nova_lowperf', '1'); } catch (e) { /* no storage */ }
+                console.log(`[Perf] low-performance mode on (sustained ~${Math.round(fps)}fps delivered vs ~${Math.round(1000 / p.refreshMs)}Hz display) — shedding cosmetic-only effects`);
+            }
+        } else {
+            p.slowWindows = 0;
+        }
     }
 
     // Draw a sprite at a given scale at the given position (in screen pixels)

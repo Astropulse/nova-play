@@ -1,6 +1,7 @@
 // Dynamic scaling is now handled via game.worldScale
 
 import { SETTINGS } from '../engine/settings.js';
+import { drawShadowGlow } from './shadowGlow.js';
 import { BLEND_SRC_OVER, BLEND_LIGHTER, BLEND_SCREEN } from '../world/spriteBatch.js';
 
 // Asteroid sizes — maps to asset keys, stats, and split behavior
@@ -366,8 +367,8 @@ export class FractureModel {
         const img = asset.canvas || asset;
         model.lw = asset.width || img.width;
         model.lh = asset.height || img.height;
-        // Physical (prescaled) dimensions — composite at this resolution so a
-        // chipped sprite matches the crispness of the un-chipped one exactly.
+        // Physical (prescaled) dimensions (informational; HullFracture.composite
+        // works at logical size — the NN prescale makes that pixel-identical).
         model.pw = img.width;
         model.ph = img.height;
         model.prescale = asset.prescale || (model.lw ? img.width / model.lw : 1);
@@ -402,14 +403,64 @@ export class FractureModel {
         const shards = Array.from({ length: numPieces }, () => ({
             minX: lw, minY: lh, maxX: 0, maxY: 0, count: 0, edge: false, pixels: [],
         }));
+        // Nearest-seed lookup via a uniform bucket grid (~2 seeds per bucket)
+        // searched in expanding Chebyshev rings. EXACT same answer as the
+        // brute-force scan: same squared-distance metric, ties broken by the
+        // lower seed index, and a ring is only skipped when its distance lower
+        // bound is STRICTLY greater than the best so far (an equal bound could
+        // still hold a lower-index tie). Buckets list seeds in index order.
+        // .autotest/fracture_grid_equiv_test.mjs proves it against the old scan.
+        const G = Math.max(2, Math.ceil(Math.sqrt((lw * lh) / numPieces * 2)));
+        const gw = Math.max(1, Math.ceil(lw / G)), gh = Math.max(1, Math.ceil(lh / G));
+        const seedX = new Int32Array(numPieces), seedY = new Int32Array(numPieces);
+        const bucketStart = new Int32Array(gw * gh + 1);
+        const seedBucket = new Int32Array(numPieces);
+        for (let i = 0; i < numPieces; i++) {
+            const sx = seeds[i].x, sy = seeds[i].y;
+            seedX[i] = sx; seedY[i] = sy;
+            const bx = Math.min(gw - 1, Math.max(0, (sx / G) | 0));
+            const by = Math.min(gh - 1, Math.max(0, (sy / G) | 0));
+            const b = by * gw + bx;
+            seedBucket[i] = b;
+            bucketStart[b + 1]++;
+        }
+        for (let b = 0; b < gw * gh; b++) bucketStart[b + 1] += bucketStart[b];
+        const bucketSeeds = new Int32Array(numPieces);
+        {
+            const cursor = bucketStart.slice(0, gw * gh);
+            for (let i = 0; i < numPieces; i++) bucketSeeds[cursor[seedBucket[i]]++] = i;
+        }
         for (let y = 0; y < lh; y++) {
+            const pcy = (y / G) | 0;
             for (let x = 0; x < lw; x++) {
                 if (!map[y * lw + x]) continue;
                 let minD = Infinity, nearest = 0;
-                for (let i = 0; i < numPieces; i++) {
-                    const dx = x - seeds[i].x, dy = y - seeds[i].y;
-                    const d = dx * dx + dy * dy;
-                    if (d < minD) { minD = d; nearest = i; }
+                const pcx = (x / G) | 0;
+                const maxR = Math.max(pcx, gw - 1 - pcx, pcy, gh - 1 - pcy);
+                for (let r = 0; r <= maxR; r++) {
+                    if (r > 0) {
+                        // Lower bound on the distance to any seed in ring r.
+                        const lbx = Math.min(x - (pcx - r + 1) * G + 1, (pcx + r) * G - x);
+                        const lby = Math.min(y - (pcy - r + 1) * G + 1, (pcy + r) * G - y);
+                        const lb = lbx < lby ? lbx : lby;
+                        if (lb * lb > minD) break;
+                    }
+                    const y0 = pcy - r, y1 = pcy + r, x0 = pcx - r, x1 = pcx + r;
+                    const cyA = y0 < 0 ? 0 : y0, cyB = y1 > gh - 1 ? gh - 1 : y1;
+                    for (let cy = cyA; cy <= cyB; cy++) {
+                        // Interior rows of the ring only touch its two side columns.
+                        const step = (cy === y0 || cy === y1) ? 1 : (x1 - x0);
+                        for (let cx = x0; cx <= x1; cx += step) {
+                            if (cx < 0 || cx >= gw) continue;
+                            const b = cy * gw + cx;
+                            for (let k = bucketStart[b], kEnd = bucketStart[b + 1]; k < kEnd; k++) {
+                                const i = bucketSeeds[k];
+                                const dx = x - seedX[i], dy = y - seedY[i];
+                                const d = dx * dx + dy * dy;
+                                if (d < minD || (d === minD && i < nearest)) { minD = d; nearest = i; }
+                            }
+                        }
+                    }
                 }
                 const s = shards[nearest];
                 if (x < s.minX) s.minX = x;
@@ -573,22 +624,26 @@ export class HullFracture {
             return this._composite;
         }
         const m = this.model;
-        const s = m.prescale;
+        // Composite at LOGICAL (native) resolution: the asset loader's prescale
+        // is a nearest-neighbour block upscale (assetLoader.js, smoothing off),
+        // so an NN downsample recovers the native pixels exactly, and every
+        // caller (Asteroid / Hive / dragon statue draw) blits the composite with
+        // imageSmoothingEnabled=false — the on-screen pixels are identical to
+        // the old prescaled composite at 1/prescale² of the rebuild cost.
+        const lw = m.lw, lh = m.lh;
         let cv = this._composite;
-        if (!cv) { cv = document.createElement('canvas'); cv.width = m.pw; cv.height = m.ph; this._composite = cv; }
+        if (!cv) { cv = document.createElement('canvas'); cv.width = lw; cv.height = lh; this._composite = cv; }
         const ctx = cv.getContext('2d');
-        ctx.clearRect(0, 0, m.pw, m.ph);
+        ctx.clearRect(0, 0, lw, lh);
         ctx.imageSmoothingEnabled = false;
         ctx.globalCompositeOperation = 'source-over';
-        ctx.drawImage(srcImg, 0, 0, srcImg.width, srcImg.height, 0, 0, m.pw, m.ph);
-        // Erase broken cells at physical resolution (cell masks are logical, so
-        // upscale them by prescale — nearest-neighbor lines up with the sprite).
+        ctx.drawImage(srcImg, 0, 0, srcImg.width, srcImg.height, 0, 0, lw, lh);
+        // Erase broken cells (cell masks are already logical-resolution).
         ctx.globalCompositeOperation = 'destination-out';
         for (const idx of this.removed) {
             const c = m.cells[idx];
             const cellCanvas = m.ensureCanvas(c);
-            ctx.drawImage(cellCanvas, 0, 0, cellCanvas.width, cellCanvas.height,
-                c.ox * s, c.oy * s, cellCanvas.width * s, cellCanvas.height * s);
+            ctx.drawImage(cellCanvas, c.ox, c.oy);
         }
         ctx.globalCompositeOperation = 'source-over';
         this._compositeVer = this.version;
@@ -1184,6 +1239,18 @@ export class Asteroid {
         this.size = size;
         this.alive = true;
 
+        // Fields other systems attach later (playingState broad-phase,
+        // spatialHash, impactFx, netSync). Declared up front for one stable
+        // hidden class; each value means exactly "absent" at every read site
+        // (truthiness / `|| 0` get false/0; `=== undefined` and ordered-compare
+        // reads get undefined). No site uses `in`.
+        this._nearPlayer = false;   // truthiness
+        this._collIdx = undefined;  // ordered compares
+        this._shStamp = undefined;  // `=== stamp`
+        this._fxTether = 0;         // `(x || 0) - dt`
+        this._netVx = undefined;    // netSync: `!== undefined`
+        this._netVy = undefined;
+
         const type = ASTEROID_TYPES[size];
         this.hp = type.hp;
         this.maxHp = type.hp;
@@ -1456,15 +1523,16 @@ export class Asteroid {
         ctx.translate(sx, sy);
         ctx.rotate(this.rotation);
 
-        if (this.highlightRed) {
-            ctx.shadowBlur = 15 * this.game.worldScale;
-            ctx.shadowColor = '#ff4444';
-        }
-
         // Once chipped, draw the composited sprite (logical-size, broken cells
         // erased) instead of the full sprite.
-        const src = (this._fx && this._fx.count > 0) ? this._fx.composite(this.img) : (this.img.canvas || this.img);
+        const chipped = this._fx && this._fx.count > 0;
+        const src = chipped ? this._fx.composite(this.img) : (this.img.canvas || this.img);
         ctx.imageSmoothingEnabled = false;
+        if (this.highlightRed) {
+            // Baked shadow layer (was shadowBlur 15*ws, '#ff4444' on the draw).
+            drawShadowGlow(ctx, src, this.img.width, this.img.height, -w / 2, -h / 2, w, h,
+                15 * this.game.worldScale, '#ff4444', chipped ? this._fx.version : 0);
+        }
         ctx.drawImage(src, -w / 2, -h / 2, w, h);
         ctx.restore();
     }
@@ -1705,26 +1773,32 @@ export class ExpOrb {
 export function resolveSpawnOverlap(game, x, y, radius, padding = 20) {
     const state = game.currentState;
     if (!state) return { x, y };
-    const entities = [];
-    if (state.asteroids) entities.push(...state.asteroids);
-    if (state.enemies) entities.push(...state.enemies);
-
-    for (const e of entities) {
-        if (!e.alive) continue;
-        const dx = x - e.worldX;
-        const dy = y - e.worldY;
-        const distSq = dx * dx + dy * dy;
-        const minDist = (radius + (e.radius || 0) + padding);
-        if (distSq < minDist * minDist) {
-            // Push candidate away from the overlapping entity
-            const dist = Math.sqrt(distSq) || 1;
-            const push = minDist - dist + 1;
-            x += (dx / dist) * push;
-            y += (dy / dist) * push;
+    // Asteroids then enemies, in array order (no concatenated copy). The
+    // lists are snapshotted by length first, exactly like the old spread.
+    for (let pass = 0; pass < 2; pass++) {
+        const list = pass === 0 ? state.asteroids : state.enemies;
+        if (!list) continue;
+        for (let i = 0, n = list.length; i < n; i++) {
+            const e = list[i];
+            if (!e.alive) continue;
+            const dx = x - e.worldX;
+            const dy = y - e.worldY;
+            const distSq = dx * dx + dy * dy;
+            const minDist = (radius + (e.radius || 0) + padding);
+            if (distSq < minDist * minDist) {
+                // Push candidate away from the overlapping entity
+                const dist = Math.sqrt(distSq) || 1;
+                const push = minDist - dist + 1;
+                x += (dx / dist) * push;
+                y += (dy / dist) * push;
+            }
         }
     }
     return { x, y };
 }
+
+// Shared, frozen "nothing spawned this frame" result (no per-frame array).
+const NO_SPAWNS = Object.freeze([]);
 
 // Spawner — creates asteroids ahead of the player in their direction of travel
 export class AsteroidSpawner {
@@ -1736,16 +1810,24 @@ export class AsteroidSpawner {
         // Track previous player position to calculate distance moved
         this.lastPlayerX = null;
         this.lastPlayerY = null;
+        this._randBound = () => this._rand(); // allocated once, not per frame
     }
 
-    update(dt, playerWorldX, playerWorldY, playerVx, playerVy, spawnMult = 1.0) {
-        const spawned = [];
-
-        // Seeded asteroid stream drives spawn chance/size/position/drift so the
-        // field is reproducible along the same flight path. Tiny cosmetic belt
-        // wobble stays on Math.random(). Falls back outside a run.
+    // Seeded asteroid stream drives spawn chance/size/position/drift so the
+    // field is reproducible along the same flight path. Tiny cosmetic belt
+    // wobble stays on Math.random(). Falls back outside a run. (A method, not
+    // a per-frame closure; identical call order/count.)
+    _rand() {
         const R = this.game.rng ? this.game.rng.asteroids : null;
-        const rand = () => R ? R.next() : Math.random();
+        return R ? R.next() : Math.random();
+    }
+
+    // Returns the asteroids spawned this frame. When nothing spawned (almost
+    // every frame) it returns the shared frozen NO_SPAWNS array — callers only
+    // read it (length / iterate / spread), never mutate.
+    update(dt, playerWorldX, playerWorldY, playerVx, playerVy, spawnMult = 1.0) {
+        let spawned = NO_SPAWNS;
+        const rand = this._randBound;
 
         if (this.lastPlayerX === null || this.lastPlayerY === null) {
             this.lastPlayerX = playerWorldX;
@@ -1838,6 +1920,7 @@ export class AsteroidSpawner {
                 const resolved = resolveSpawnOverlap(this.game, wx, wy, ast.radius);
                 ast.worldX = resolved.x;
                 ast.worldY = resolved.y;
+                if (spawned === NO_SPAWNS) spawned = [];
                 spawned.push(ast);
 
                 this.beltCooldown--;
@@ -1894,6 +1977,7 @@ export class AsteroidSpawner {
                             const beltResolved = resolveSpawnOverlap(this.game, ax, ay, beltAst.radius);
                             beltAst.worldX = beltResolved.x;
                             beltAst.worldY = beltResolved.y;
+                            if (spawned === NO_SPAWNS) spawned = [];
                             spawned.push(beltAst);
                         }
                     }

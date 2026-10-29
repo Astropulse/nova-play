@@ -88,7 +88,7 @@ export class AssetLoader {
 
         // Atlas state (populated by loadAtlas). When present, get() lazily
         // slices + prescales sprites out of the atlas pages on first access.
-        this.atlasPages = [];      // HTMLImageElement per page
+        this.atlasPages = [];      // ImageBitmap (or HTMLImageElement fallback) per page
         this.atlasImages = null;   // key -> { page, x, y, w, h }
         this.atlasAnims = null;    // key -> { frames: [{ page, x, y, w, h, delay }] }
         this.atlasHitboxes = null; // key -> { rx, ry } ellipse half-extents (native px)
@@ -118,16 +118,11 @@ export class AssetLoader {
         // boot atlas first, then the full atlas); each sprite stores a direct
         // reference to its page image so page indices never collide between
         // atlases. Later calls merge into the same key tables.
-        const pages = await Promise.all(atlas.pages.map(p => new Promise((resolve, reject) => {
-            const img = new Image();
-            img.onload = async () => {
-                if (img.decode) { try { await img.decode(); } catch { /* drawImage still works */ } }
-                this.loaded++;
-                resolve(img);
-            };
-            img.onerror = () => reject(new Error(`Failed to load atlas page: ${p.file}`));
-            img.src = `${baseDir}/${p.file}`;
-        })));
+        const pages = await Promise.all(atlas.pages.map(async p => {
+            const page = await this._loadAtlasPage(`${baseDir}/${p.file}`, p.file);
+            this.loaded++;
+            return page;
+        }));
         this.atlasPages.push(...pages);
 
         if (!this.atlasImages) this.atlasImages = {};
@@ -152,6 +147,33 @@ export class AssetLoader {
     // sprite, or the atlas predates hitboxes — callers fall back to a circle).
     getHitbox(key) {
         return (this.atlasHitboxes && this.atlasHitboxes[key]) || null;
+    }
+
+    // Decode one atlas page. Preferred: fetch → createImageBitmap, which holds
+    // the decoded pixels for the page's lifetime — an <img> may have its decode
+    // discarded under memory pressure and silently re-decoded (a multi-MB PNG)
+    // inside whichever frame next slices a sprite from it. Default bitmap
+    // options (premultiply 'default', colorSpaceConversion 'default',
+    // orientation 'from-image') match what drawImage(<img>) uses, so the
+    // nearest-neighbour slices in _materializeRect are byte-identical.
+    // Falls back to the old <img> path where createImageBitmap is missing or
+    // the fetch/decode fails (e.g. a file:// context without fetch access).
+    async _loadAtlasPage(url, label) {
+        if (typeof createImageBitmap === 'function') {
+            try {
+                const resp = await fetch(url);
+                if (resp.ok) return await createImageBitmap(await resp.blob());
+            } catch { /* fall through to <img> */ }
+        }
+        return new Promise((resolve, reject) => {
+            const img = new Image();
+            img.onload = async () => {
+                if (img.decode) { try { await img.decode(); } catch { /* drawImage still works */ } }
+                resolve(img);
+            };
+            img.onerror = () => reject(new Error(`Failed to load atlas page: ${label}`));
+            img.src = url;
+        });
     }
 
     // Slice a rect out of its atlas page into a prescaled canvas, matching the
@@ -387,7 +409,10 @@ export class AssetLoader {
         this._prefetch.length = 0;
 
         // Release atlas page images + rect tables.
-        for (const page of this.atlasPages) page.src = '';
+        for (const page of this.atlasPages) {
+            if (typeof page.close === 'function') page.close(); // ImageBitmap
+            else page.src = '';                                 // <img> fallback
+        }
         this.atlasPages = [];
         this.atlasImages = null;
         this.atlasAnims = null;

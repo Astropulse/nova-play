@@ -6,7 +6,6 @@
     "androidScheme": "https"
   },
   "android": {
-    "backgroundColor": "#000000",
-    "webContentsDebuggingEnabled": true
+    "backgroundColor": "#000000"
   }
 }

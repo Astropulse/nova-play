@@ -86,6 +86,11 @@ export class SettingsState {
                 hint: 'Fewer sparks and debris, thinner starfield.',
                 btn: mkBtn(),
             },
+            {
+                type: 'slider', key: 'juiceDensity', label: 'JUICE DENSITY',
+                hint: 'How many sparks, smoke puffs and bursts the effects spawn.',
+                dec: mkBtn(), inc: mkBtn(),
+            },
         ];
 
         // ── CONTROLS rows ───────────────────────────────────────────────────

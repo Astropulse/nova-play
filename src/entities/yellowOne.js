@@ -4,6 +4,7 @@ import { Scrap, ItemPickup, ExpOrb, VoronoiSlicer, ProceduralDebris } from './as
 import { UPGRADES } from '../data/upgrades.js';
 import { MUSIC_STATE } from '../engine/soundManager.js';
 import { drawBeamStrip } from '../engine/vfx.js';
+import { drawShadowGlow } from './shadowGlow.js';
 
 export const YO_STATE = {
     IDLE: 'idle',
@@ -1719,24 +1720,23 @@ export class YellowOne {
         ctx.translate(screen.x, screen.y);
         // No rotation - the yellow one doesn't turn like ships
 
-        // Glow effect
-        if (this.state === YO_STATE.PHASE2 || this.state === YO_STATE.ENRAGED) {
-            ctx.shadowBlur = 25 * this.game.worldScale;
-            ctx.shadowColor = this.glowColor;
-        }
-
-        // Phase 2 yellow glow
+        // Glow: baked shadow layer drawn under the sprite (was a per-frame
+        // shadowBlur). PHASE2 / ENRAGED each fully set their own blur+color
+        // (the old generic glowColor pass was always overridden).
+        let glowBlur = 0, glowColor = null;
         if (this.state === YO_STATE.PHASE2) {
+            // Phase 2 yellow glow
             const pulse = 0.7 + 0.3 * Math.sin(Date.now() / 200);
-            ctx.shadowBlur = 25 * this.game.worldScale * pulse;
-            ctx.shadowColor = '#ffdd44';
-        }
-
-        // Enraged orange glow
-        if (this.state === YO_STATE.ENRAGED) {
+            glowBlur = 25 * this.game.worldScale * pulse;
+            glowColor = '#ffdd44';
+        } else if (this.state === YO_STATE.ENRAGED) {
+            // Enraged orange glow
             const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 100);
-            ctx.shadowBlur = 35 * this.game.worldScale * pulse;
-            ctx.shadowColor = '#ff8800';
+            glowBlur = 35 * this.game.worldScale * pulse;
+            glowColor = '#ff8800';
+        }
+        if (glowBlur > 0) {
+            drawShadowGlow(ctx, img, logicalW, logicalH, -w / 2, -h / 2, w, h, glowBlur, glowColor);
         }
 
         ctx.drawImage(img, -w / 2, -h / 2, w, h);
@@ -1772,9 +1772,10 @@ export class YellowOne {
                 ctx.globalAlpha = this.christusAlpha;
 
                 if (this.christusGlowing) {
+                    // Baked shadow layer (was a ramping per-frame shadowBlur).
                     const glowProgress = Math.min(1.0, (kv - 17) / 4.0);
-                    ctx.shadowBlur = 40 * this.game.worldScale * glowProgress;
-                    ctx.shadowColor = '#ffffff';
+                    drawShadowGlow(ctx, img, logicalW, logicalH, screen.x - w / 2, screen.y - h / 2, w, h,
+                        40 * this.game.worldScale * glowProgress, '#ffffff');
                 }
 
                 ctx.drawImage(img, screen.x - w / 2, screen.y - h / 2, w, h);
@@ -1798,9 +1799,9 @@ export class YellowOne {
                 ctx.save();
                 ctx.globalAlpha = fadeIn;
 
-                // Light rays
-                ctx.shadowBlur = 30 * this.game.worldScale;
-                ctx.shadowColor = '#ffffcc';
+                // Light rays — baked shadow layer (was shadowBlur 30*ws).
+                drawShadowGlow(ctx, img, logicalW, logicalH, screen.x - w / 2, screen.y - h / 2, w, h,
+                    30 * this.game.worldScale, '#ffffcc');
 
                 ctx.drawImage(img, screen.x - w / 2, screen.y - h / 2, w, h);
                 ctx.restore();
@@ -1888,8 +1889,9 @@ export class YellowOne {
             // Lean into the note with a brass vibrato while it holds
             ctx.rotate(-0.07 * tp.blare + 0.05 * tp.blare * Math.sin(kv * 22 + tp.bob));
             if (tp.blare > 0.05) {
-                ctx.shadowBlur = 20 * ws * tp.blare;
-                ctx.shadowColor = '#ffdd44';
+                // Baked shadow layer (was a per-frame shadowBlur).
+                drawShadowGlow(ctx, canvas, logicalW, logicalH, -w / 2, -h / 2, w, h,
+                    20 * ws * tp.blare, '#ffdd44');
             }
             ctx.drawImage(canvas, -w / 2, -h / 2, w, h);
             ctx.restore();

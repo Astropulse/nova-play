@@ -30,6 +30,9 @@ export const GP = {
 };
 
 const STICK_DEADZONE = 0.18;
+// While no gamepad is connected, getGamepads() is probed only this often
+// (frames) as a backstop to the 'gamepadconnected' event.
+const GP_IDLE_PROBE_FRAMES = 30;
 const TRIGGER_THRESHOLD = 0.35;
 // Trigger hold hysteresis: a trigger counts as held once it passes
 // TRIGGER_THRESHOLD and stays held until it drops below TRIGGER_RELEASE.
@@ -70,6 +73,9 @@ export class InputManager {
         // connected) for single-player and UI. Per-pad state lives in `_pads`
         // so local co-op can route each controller to its own pilot.
         this.gamepadConnected = false;
+        // Per-frame getGamepads() gate (see _pollGamepad). Starts true so the
+        // very first update() polls once and picks up an already-exposed pad.
+        this._gpPollActive = true;
         this.leftStickX = 0;
         this.leftStickY = 0;
         this.rightStickX = 0;
@@ -148,6 +154,7 @@ export class InputManager {
         };
         this._gamepadConnectedListener = (e) => {
             this.gamepadConnected = true;
+            this._gpPollActive = true; // resume per-frame getGamepads() polling
         };
         this._gamepadDisconnectedListener = (e) => {
             // Re-check on the next poll; there may still be others connected.
@@ -186,7 +193,18 @@ export class InputManager {
     }
 
     _pollGamepad() {
-        const pads = (typeof navigator !== 'undefined' && navigator.getGamepads) ? navigator.getGamepads() : null;
+        // navigator.getGamepads() allocates fresh snapshots every call
+        // (Chromium), so only hit it every frame while a pad may be present:
+        // from the first 'gamepadconnected' until a poll finds none
+        // connected. Otherwise probe every GP_IDLE_PROBE_FRAMES as a backstop
+        // for engines that expose an already-attached pad without firing the
+        // event. With polling idle, pads=null takes the exact "no pads" path
+        // below (mirror zeroed each frame), which touch relies on.
+        let pads = null;
+        if (typeof navigator !== 'undefined' && navigator.getGamepads
+            && (this._gpPollActive || (this._frame % GP_IDLE_PROBE_FRAMES) === 0)) {
+            pads = navigator.getGamepads();
+        }
         const len = pads ? pads.length : 0;
 
         let primary = -1;
@@ -225,6 +243,10 @@ export class InputManager {
         }
 
         this.gamepadConnected = primary >= 0;
+        // Keep polling every frame while any pad is connected; the poll that
+        // first sees none (after it marked every _pads[] entry disconnected
+        // above) parks polling until the next 'gamepadconnected' / probe.
+        if (pads) this._gpPollActive = primary >= 0;
 
         // Mirror the primary pad into the legacy top-level fields (single-player
         // + UI cursor read these).

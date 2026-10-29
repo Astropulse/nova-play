@@ -29,6 +29,7 @@ import { UPGRADES, makeItem } from '../data/upgrades.js';
 import { ACHIEVEMENTS } from '../data/achievements.js';
 import { Projectile } from '../entities/projectile.js';
 import { Scrap, ExpOrb, Asteroid } from '../entities/asteroid.js';
+import { RAMP } from './impactFx.js';
 
 const TAU = Math.PI * 2;
 
@@ -575,6 +576,99 @@ export class JuicePreview {
                     const c = s.cacheSpawner.spawnNear(this.ax, this.ay, 220, 260);
                     s.caches.push(c);
                     this.owned.add(c);
+                }
+            },
+            {
+                title: 'ITEM SIGNATURES', sub: 'bomb arm, rocket cough, turret tracer, claw lash, brass casings, cloak fold, blink, boost kick, battery, sacrifice, rich vein, condenser',
+                dur: 14, start: () => {
+                    const fx = this.state.impactFx, X = this.ax, Y = this.ay;
+                    this.at(0.4, () => fx.itemBombDrop(X - 160, Y + 60));
+                    this.every(1.2, 2.0, 0.4, () => fx.itemRocketLaunch(X - 60, Y - 80, -0.6));
+                    this.every(2.2, 3.0, 0.12, () => fx.itemTurret(X + 120, Y - 60, 0.3));
+                    this.at(3.4, () => {
+                        const a = this.enemy(Enemy, 220, -40, { hp: 999 }), b = this.enemy(Enemy, 160, 90, { hp: 999 });
+                        this.at(3.9, () => fx.itemClaw(X + 120, Y + 20, [a, b]));
+                    });
+                    this.every(4.6, 5.6, 0.08, () => fx.casing(this.p.worldX, this.p.worldY, this.p.angle || 0));
+                    this.at(6.0, () => fx.cloakIn(this.p.worldX, this.p.worldY));
+                    this.at(7.2, () => fx.cloakOut(this.p.worldX, this.p.worldY));
+                    this.at(8.0, () => fx.blinkOut(X - 200, Y));
+                    this.at(8.25, () => fx.blinkIn(X + 200, Y));
+                    this.at(9.0, () => fx.boostKick(this.p.worldX, this.p.worldY, this.p.angle || 0));
+                    this.at(9.8, () => fx.battery(this.p.worldX, this.p.worldY));
+                    this.at(10.8, () => fx.sacrifice(X + 180, Y - 40));
+                    this.at(12.2, () => fx.richVein(X - 180, Y - 60, 30));
+                    this.every(12.6, 13.4, 0.1, () => fx.condense(X + (Math.random() - 0.5) * 200, Y + 90));
+                }
+            },
+            {
+                title: 'DANGER TELEGRAPHS', sub: 'every attack: energy GATHERS at the weapon, a hard FLASH, then the RELEASE',
+                dur: 7, start: () => {
+                    const sf = this.state.stateFx, X = this.ax, Y = this.ay;
+                    const tele = (t0, total, x, y, ramp, R, after) => {
+                        const m = {};
+                        const n = Math.round(total * 30);
+                        for (let j = 0; j <= n; j++) this.at(t0 + j / 30, () => sf._telegraph(m, 't', x, y, ramp, total - j / 30, total, 1 / 30, R));
+                        if (after) this.at(t0 + total, after);
+                    };
+                    const en = this.enemy(Enemy, 240, -60, { hp: 999 });
+                    tele(0.5, 0.35, X + 220, Y - 60, RAMP.hull, 20, () => this.enemyShoot(en));
+                    tele(2.0, 0.6, X - 200, Y + 80, RAMP.fire, 20, () => this.state.impactFx.itemRocketLaunch(X - 200, Y + 80, 0));
+                    tele(3.6, 0.6, X - 200, Y - 80, RAMP.fire, 20, () => this.state.impactFx.itemRocketLaunch(X - 200, Y - 80, 0));
+                    tele(5.0, 0.8, X + 60, Y + 140, RAMP.blood, 40, () => this.state.impactFx.burst(X + 60, Y + 140, RAMP.blood, 30, 200, 500));
+                }
+            },
+            {
+                title: 'GRAZE', sub: 'a shot that slips past the hull pays a sliver of XP and shield; chains count up',
+                dur: 5, start: () => {
+                    this.every(0.5, 3.5, 0.45, () => {
+                        const p = this.p, a = Math.random() * Math.PI * 2;
+                        this.state._graze(p, { worldX: p.worldX + Math.cos(a) * 30, worldY: p.worldY + Math.sin(a) * 30, vx: -Math.sin(a) * 500, vy: Math.cos(a) * 500 });
+                    });
+                }
+            },
+            {
+                title: 'SCRAP JACKPOT', sub: 'a big unbroken haul landing on the counter pays out a chord at 12 / 25 / 40 pieces',
+                dur: 6, start: () => {
+                    const hud = this.state.hud, W = this.game.width;
+                    const x = hud.scrapAnchorX || W - 40, y = hud.scrapAnchorY || 20;
+                    [1, 2, 3].forEach((l, k) => this.at(0.5 + k * 1.6, () => {
+                        this.state.uiFx.scrapJackpot(x, y, l, 40 * l);
+                        if (this.state.sfx) this.state.sfx.jackpot(l);
+                    }));
+                }
+            },
+            {
+                title: 'COMBINE FANFARE', sub: 'fusing up the ladder: the higher the tier, the bigger the payout; the max tier rains gold',
+                dur: 8, start: () => {
+                    const ui = this.state.uiFx, W = this.game.width, H = this.game.height;
+                    [[4, '#4a9eff'], [6, '#c86bff'], [7, '#e09a8a'], [8, '#ffb02a']].forEach(([t, c], k) =>
+                        this.at(0.4 + k * 1.8, () => ui.combineTier(W * (0.25 + k * 0.17), H * 0.5, c, t, t >= 8)));
+                }
+            },
+            {
+                title: 'MUTATORS', sub: 'timed run modifiers from encounter deals and rare caches: a reel, a burst, a HUD chip that drains',
+                dur: 7, start: () => {
+                    const s = this.state;
+                    this.at(0.4, () => s.addMutator('overclock'));
+                    this.at(2.2, () => s.addMutator('glass_cannon'));
+                    this.at(4.0, () => s.addMutator('magnet_storm'));
+                    this.at(6.8, () => { s.mutators.length = 0; for (const lp of s.localPlayers) s._onInventoryChanged(lp.player); });
+                }
+            },
+            {
+                title: 'WORLD MOMENTS', sub: 'far off: a nebula lightning storm and a derelict blinking SOS; a comet grazes a rock; a fight leaves a scar',
+                dur: 16, start: () => {
+                    const m = this.state.moments, X = this.ax, Y = this.ay;
+                    this.at(0.3, () => { m.startStorm(); m.storm.dur = 15; });
+                    this.at(0.5, () => { m.startBeacon(); m.beacon.dur = 15; });
+                    this.at(1.0, () => {
+                        const a = new Asteroid(this.game, X + 160, Y - 40, 'big', 0, 0);
+                        this.state.asteroids.push(a); this.owned.add(a);
+                        this.at(1.5, () => m.grazer());
+                        this.at(5.5, () => m.grazer());
+                    });
+                    this.at(8.0, () => { this.state.impactFx.bigExplode(X - 180, Y + 60, 90); m.scar(X - 180, Y + 60, 90); });
                 }
             },
             {

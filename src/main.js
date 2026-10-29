@@ -1,4 +1,4 @@
-import { Game } from './engine/game.js';
+import { Game, CANVAS_2D_ATTRS } from './engine/game.js';
 
 let game = null;
 
@@ -16,7 +16,9 @@ window.addEventListener('DOMContentLoaded', async () => {
     window.__novaGame = game;
 
     // Show loading text
-    const ctx = canvas.getContext('2d');
+    // Same attributes as Game's constructor (it ran first, so this returns
+    // that context; the attrs must still match if the order ever changes).
+    const ctx = canvas.getContext('2d', CANVAS_2D_ATTRS);
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = '#445566';

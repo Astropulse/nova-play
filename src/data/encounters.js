@@ -272,6 +272,11 @@ function executeActions(actions, vars, player, state, encounter) {
                 }
                 break;
             }
+            case 'add_mutator': {
+                // Timed run modifier (data/mutators.js), e.g. "add_mutator:overclock".
+                if (state && state.addMutator && paramStr) state.addMutator(paramStr, player.worldX, player.worldY);
+                break;
+            }
             case 'add_perm_health': {
                 const amt = resolveParam();
                 player.addPermHealthBonus(amt);

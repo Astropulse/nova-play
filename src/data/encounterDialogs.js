@@ -50,6 +50,7 @@
  *   "heal:N"                    heal player by N fraction (0.2 = 20%)
  *   "convert_hostile"           convert encounter to hostile enemy
  *   "recalc"                    recalculate player stats
+ *   "add_mutator:id"            start a timed mutator (data/mutators.js)
  *
  * options[].negotiate - if present, this is a negotiation option:
  *   { chance: 0.5, price: "varName", fallbackPrice: "varName" }
@@ -60,6 +61,74 @@
  */
 
 export const DIALOG_SCENARIOS = [
+
+    // ──────────────────────────────────────────────────────────────
+    //  MUTATOR DEALS (timed run modifiers — data/mutators.js)
+    // ──────────────────────────────────────────────────────────────
+
+    {
+        type: 'tuner',
+        id: 'mut_overclock',
+        condition: 'always',
+        vars: { cost: 40 },
+        message: "I can pull the limiter off your reactor. [good]+25% fire rate[/good] for ninety seconds, then it settles back. [cost]{cost} scrap[/cost].",
+        options: [
+            {
+                label: "Overclock it ([cost]-{cost} scrap[/cost])",
+                actions: ['remove_scrap:cost', 'add_mutator:overclock'],
+                response: "Limiter's off. Don't touch the casing."
+            },
+            { label: "Not today", response: "Your call, pilot." }
+        ]
+    },
+
+    {
+        type: 'black_market',
+        id: 'mut_glass_cannon',
+        condition: 'always',
+        vars: {},
+        message: "Free sample. Strips your hull plating and feeds the power to your guns - [good]+50% damage[/good], [warn]+50% damage taken[/warn]. Ninety seconds of glory.",
+        options: [
+            {
+                label: "Strip it",
+                actions: ['add_mutator:glass_cannon'],
+                response: "Try not to get hit. Seriously."
+            },
+            { label: "I like my plating", response: "Coward's money keeps, I suppose." }
+        ]
+    },
+
+    {
+        type: 'engineer',
+        id: 'mut_ricochet',
+        condition: 'always',
+        vars: { cost: 50 },
+        message: "Experimental rounds - they [good]bounce to the next target[/good] after a hit. Batch burns out in ninety seconds. [cost]{cost} scrap[/cost].",
+        options: [
+            {
+                label: "Load them ([cost]-{cost} scrap[/cost])",
+                actions: ['remove_scrap:cost', 'add_mutator:ricochet'],
+                response: "Loaded. Aim for the crowds."
+            },
+            { label: "Pass", response: "Suit yourself." }
+        ]
+    },
+
+    {
+        type: 'junker',
+        id: 'mut_magnet_storm',
+        condition: 'always',
+        vars: { cost: 30 },
+        message: "Rigged a field coil out of a dead freighter. Strap it on and your [good]scrap pull doubles[/good] for two minutes. [cost]{cost} scrap[/cost].",
+        options: [
+            {
+                label: "Strap it on ([cost]-{cost} scrap[/cost])",
+                actions: ['remove_scrap:cost', 'add_mutator:magnet_storm'],
+                response: "Hums a bit. That's normal. Probably."
+            },
+            { label: "No thanks", response: "More for me." }
+        ]
+    },
 
     // ──────────────────────────────────────────────────────────────
     //  CARGO TRADER

@@ -1,4 +1,5 @@
 import { BOSS_PHASE, BOSS_STATE } from '../entities/boss.js';
+import { drawCachedText, TEXT_OUTLINE4 } from './textSprite.js';
 
 // Threat readouts for the warning banner. Deliberately no boss names —
 // enemy identity/strength stays unknown until the player learns it by fighting.
@@ -499,15 +500,22 @@ export class CinematicDirector {
             ctx.save();
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.font = `${Math.floor(7 * rScale * scale)}px Astro4x`;
+            const reelFont = `${Math.floor(7 * rScale * scale)}px Astro4x`;
             ctx.globalAlpha = fadeOut;
-            ctx.fillStyle = '#000000';
-            ctx.fillText(text, cx - o, cy);
-            ctx.fillText(text, cx + o, cy);
-            ctx.fillText(text, cx, cy - o);
-            ctx.fillText(text, cx, cy + o);
-            ctx.fillStyle = color;
-            ctx.fillText(text, cx, cy);
+            if (r.t >= r.settleAt && scale === 1 && fadeOut === 1) {
+                // Settled, steady name → shared text-sprite cache.
+                drawCachedText(ctx, text, cx, cy, reelFont, 'center', 'middle', color, TEXT_OUTLINE4, '#000000', o);
+            } else {
+                // Spinning reels / settle pop / fade: changes every frame.
+                ctx.font = reelFont;
+                ctx.fillStyle = '#000000';
+                ctx.fillText(text, cx - o, cy);
+                ctx.fillText(text, cx + o, cy);
+                ctx.fillText(text, cx, cy - o);
+                ctx.fillText(text, cx, cy + o);
+                ctx.fillStyle = color;
+                ctx.fillText(text, cx, cy);
+            }
             ctx.restore();
         }
 
@@ -553,15 +561,13 @@ export class CinematicDirector {
             const blink = (t % 0.7) < 0.45 ? 1 : 0.45;
             const o = Math.max(1, Math.round(hudScale / 2));
             const cx = Math.round(W / 2);
-            ctx.font = `${Math.floor(10 * hudScale)}px Astro4x`;
+            const titleFont = `${Math.floor(10 * hudScale)}px Astro4x`;
             ctx.globalAlpha = blink * bandAlpha;
-            ctx.fillStyle = '#000000';
-            ctx.fillText(title, cx - o, titleY);
-            ctx.fillText(title, cx + o, titleY);
-            ctx.fillText(title, cx, titleY - o);
-            ctx.fillText(title, cx, titleY + o);
-            ctx.fillStyle = accent;
-            ctx.fillText(title, cx, titleY);
+            // Shared text-sprite cache. While the band is fully in, the
+            // alpha only takes the two blink values (1 / 0.45), so it is
+            // baked into the sprite; during the fades it draws directly.
+            drawCachedText(ctx, title, cx, titleY, titleFont, 'center', 'middle', accent,
+                TEXT_OUTLINE4, '#000000', o, 'miter', bandAlpha === 1);
 
             // Subtitle teletypes in beneath the title (steady, no blink)
             if (t > 0.45) {
@@ -569,15 +575,23 @@ export class CinematicDirector {
                 const text = this.card.subtitle.substring(0, chars);
                 if (text.length > 0) {
                     const subY = bandY + Math.round(15.5 * hudScale);
-                    ctx.font = `${Math.floor(6 * hudScale)}px Astro4x`;
+                    const subFont = `${Math.floor(6 * hudScale)}px Astro4x`;
                     ctx.globalAlpha = bandAlpha;
-                    ctx.fillStyle = '#000000';
-                    ctx.fillText(text, cx - o, subY);
-                    ctx.fillText(text, cx + o, subY);
-                    ctx.fillText(text, cx, subY - o);
-                    ctx.fillText(text, cx, subY + o);
-                    ctx.fillStyle = '#ccddee';
-                    ctx.fillText(text, cx, subY);
+                    if (text.length === this.card.subtitle.length) {
+                        // Fully typed → cached (alpha 1 while the band holds).
+                        drawCachedText(ctx, text, cx, subY, subFont, 'center', 'middle', '#ccddee',
+                            TEXT_OUTLINE4, '#000000', o);
+                    } else {
+                        // Teletyping: a new string every frame or two.
+                        ctx.font = subFont;
+                        ctx.fillStyle = '#000000';
+                        ctx.fillText(text, cx - o, subY);
+                        ctx.fillText(text, cx + o, subY);
+                        ctx.fillText(text, cx, subY - o);
+                        ctx.fillText(text, cx, subY + o);
+                        ctx.fillStyle = '#ccddee';
+                        ctx.fillText(text, cx, subY);
+                    }
                 }
             }
             ctx.restore();

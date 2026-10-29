@@ -381,6 +381,7 @@ export class Player {
             this.isCloaked = true;
             this.cloakTimer = 0;
             this.cloakFade = 0;
+            { const st = this.game.currentState; if (st && st.impactFx) st.impactFx.cloakIn(this.worldX, this.worldY); }
             // Engage: the blink's warp crack, then the held phase hum
             // (startPhaseHum) rides underneath until release.
             this.game.sounds.play('teleport', { volume: 0.5, x: this.worldX, y: this.worldY });
@@ -404,6 +405,7 @@ export class Player {
         this._cloakReleaseAlpha = this.cloakHullAlpha();
         this.isCloaked = false;
         this.cloakFade = 1;
+        { const st = this.game.currentState; if (st && st.impactFx) st.impactFx.cloakOut(this.worldX, this.worldY); }
         // Disengage: the hum cuts and fires its release sweep (stopPhaseHum),
         // under the boost thump as space snaps back.
         if (this.game.sounds.stopPhaseHum) this.game.sounds.stopPhaseHum();
@@ -739,6 +741,7 @@ export class Player {
                 };
 
                 // Initialize Warp
+                { const st = this.game.currentState; if (st && st.impactFx) st.impactFx.blinkOut(this.worldX, this.worldY); }
                 this.isWarping = true;
                 this.warpTimer = 0;
                 this.warpStartX = this.worldX;
@@ -791,6 +794,7 @@ export class Player {
                 this.isWarping = false;
                 this.isBoosting = false;
                 this.teleportOutlineFade = 1.0;
+                { const st = this.game.currentState; if (st && st.impactFx) st.impactFx.blinkIn(this.worldX, this.worldY); }
 
                 // Explicit Exit Momentum
                 // We set velocity directly to ensure we come out of the warp with consistent forward power,
@@ -826,6 +830,7 @@ export class Player {
                 if (!this.isBoosting) {
                     this.game.sounds.play('boost', { volume: 0.5, x: this.worldX, y: this.worldY });
                     this.game.camera.shake(1.2, 15.0);
+                    { const st = this.game.currentState; if (st && st.impactFx) st.impactFx.boostKick(this.worldX, this.worldY, this.angle); }
                     // Boost dodge (hold variant): arm once at the press, while
                     // vx/vy are still the pre-boost drift (this frame's boost
                     // power is applied below).
@@ -1180,6 +1185,8 @@ export class Player {
                 if (st && st._addMuzzleFlash) {
                     for (const o of origins) st._addMuzzleFlash(o.px, o.py, o.angle ?? fireAngle);
                 }
+                // Repeater: brass flicks out with every shot.
+                if (this.hasRepeater && st && st.impactFx) st.impactFx.casing(this.worldX, this.worldY, fireAngle);
             }
         }
 
@@ -1476,7 +1483,8 @@ export class Player {
             // Low health red pulse
             if (this.lowHealthPulseTimer > 0) {
                 const pulseIntensity = (Math.sin(this.lowHealthPulseTimer) + 1) / 2; // 0 to 1
-                this._drawTinted(ctx, img, -Math.floor(w / 2), -Math.floor(h / 2), w, h, `rgba(255, 0, 0, ${pulseIntensity * 0.5})`);
+                this._drawTinted(ctx, img, -Math.floor(w / 2), -Math.floor(h / 2), w, h, 255, 0, 0, pulseIntensity * 0.5,
+                    asset.width || img.width, asset.height || img.height);
             }
         }
 
@@ -1494,7 +1502,8 @@ export class Player {
         // Teleport Outline Phase-in
         if (this.teleportOutlineFade > 0.01) {
             ctx.globalCompositeOperation = 'screen';
-            this._drawTinted(ctx, img, -Math.floor(w / 2), -Math.floor(h / 2), w, h, `rgba(0, 150, 255, ${this.teleportOutlineFade * 0.8})`);
+            this._drawTinted(ctx, img, -Math.floor(w / 2), -Math.floor(h / 2), w, h, 0, 150, 255, this.teleportOutlineFade * 0.8,
+                asset.width || img.width, asset.height || img.height);
             ctx.globalCompositeOperation = 'source-over';
         }
 
@@ -1700,8 +1709,56 @@ export class Player {
 
     /**
      * Draws an image tinted with a solid color, masked by the image's alpha channel.
+     * Tint = rgba(r, g, b, a). `lw`/`lh` = the sprite's logical size.
+     *
+     * Fast path (smoothing off — the default): the tinted sprite is cached per
+     * (frame canvas, rgb, 8-bit alpha) at LOGICAL resolution in a bounded LRU
+     * and blitted nearest-neighbour. The tint is a per-pixel op, so it
+     * commutes with the asset loader's NN prescale and the blit is
+     * pixel-identical to tinting the prescaled canvas (canvas fill alpha is
+     * 8-bit on the 8888 backbuffer anyway). With smoothing on (bilinear blit
+     * of the prescaled canvas), or a non-integer prescale, it falls back to
+     * the original per-frame rebuild so the output never changes.
      */
-    _drawTinted(ctx, img, x, y, w, h, color) {
+    _drawTinted(ctx, img, x, y, w, h, r, g, b, a, lw, lh) {
+        const srcCanvas = img.canvas || img;
+        const a8 = Math.round(Math.max(0, Math.min(1, a)) * 255);
+        if (!ctx.imageSmoothingEnabled && lw > 0 && lh > 0 &&
+            srcCanvas.width % lw === 0 && srcCanvas.height % lh === 0) {
+            const tinted = Player._getTintedFrame(srcCanvas, lw, lh, r, g, b, a8);
+            ctx.drawImage(tinted, x, y, w, h);
+            return;
+        }
+        this._drawTintedSlow(ctx, img, x, y, w, h, `rgba(${r}, ${g}, ${b}, ${a})`);
+    }
+
+    static _tintCache = new Map(); // key -> canvas (LRU, insertion order)
+    static _tintIds = new WeakMap();
+    static _tintNextId = 1;
+    static _getTintedFrame(srcCanvas, lw, lh, r, g, b, a8) {
+        let id = Player._tintIds.get(srcCanvas);
+        if (id === undefined) { id = Player._tintNextId++; Player._tintIds.set(srcCanvas, id); }
+        const key = `${id}|${lw}x${lh}|${r},${g},${b}|${a8}`;
+        const cache = Player._tintCache;
+        let c = cache.get(key);
+        if (c) { cache.delete(key); cache.set(key, c); return c; }
+        c = document.createElement('canvas');
+        c.width = lw;
+        c.height = lh;
+        const t = c.getContext('2d');
+        t.imageSmoothingEnabled = false;
+        t.drawImage(srcCanvas, 0, 0, srcCanvas.width, srcCanvas.height, 0, 0, lw, lh);
+        t.globalCompositeOperation = 'source-atop';
+        t.fillStyle = `rgba(${r}, ${g}, ${b}, ${a8 / 255})`;
+        t.fillRect(0, 0, lw, lh);
+        t.globalCompositeOperation = 'source-over';
+        cache.set(key, c);
+        // ~1-2k logical-res frames ≈ a few MB; pulses sweep ≤256 alpha steps.
+        while (cache.size > 768) cache.delete(cache.keys().next().value);
+        return c;
+    }
+
+    _drawTintedSlow(ctx, img, x, y, w, h, color) {
         if (!this._tintCanvas) {
             this._tintCanvas = document.createElement('canvas');
             this._tintCtx = this._tintCanvas.getContext('2d');

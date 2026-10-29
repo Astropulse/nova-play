@@ -6,6 +6,7 @@ import { Projectile } from './projectile.js';
 import { ENCOUNTER_ASSETS } from '../data/encounters.js';
 import { MUSIC_STATE } from '../engine/soundManager.js';
 import { pickFireExplosion, fireExplosionFrame, drawBeamStrip } from '../engine/vfx.js';
+import { drawShadowGlow } from './shadowGlow.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // THE DRAGON — the final boss. Seven massive ships, the seven heads of the
@@ -4167,14 +4168,15 @@ export class GravenIdol {
         ctx.save();
         ctx.translate(sx, sy);
         ctx.globalAlpha = 0.35 + 0.65 * grow;
-        if (this._hitFlash > 0) {
-            ctx.shadowBlur = 16 * ws;
-            ctx.shadowColor = GOLD;
-        }
-        const src = (this._fx && this._fx.count > 0) ? this._fx.composite(gold) : gold.canvas;
+        const chipped = this._fx && this._fx.count > 0;
+        const src = chipped ? this._fx.composite(gold) : gold.canvas;
         ctx.imageSmoothingEnabled = false;
+        if (this._hitFlash > 0) {
+            // Baked shadow layer (was shadowBlur 16*ws, GOLD on the draw).
+            drawShadowGlow(ctx, src, gold.width, gold.height, -w / 2, -h / 2, w, h,
+                16 * ws, GOLD, chipped ? this._fx.version : 0);
+        }
         ctx.drawImage(src, -w / 2, -h / 2, w, h);
-        ctx.shadowBlur = 0;
 
         // Tithe: coins orbiting as it fattens on your scrap.
         if (this.type === 'tithe' && this.stolen > 0) {

@@ -11,9 +11,24 @@
 // gradients, no text scale-throb (brightness only). Cosmetic only.
 
 import { RARITY_COLORS } from '../data/upgrades.js';
+import { RectBins } from './rectBins.js';
 
 const TAU = Math.PI * 2;
 const MAX_PARTS = 700;
+const RAY_BAND_R = [1, 0.66, 0.36];
+// Banded glow rings: (radius factor, alpha) pairs, widest first.
+const GLOW_BANDS = [1, 0.035, 0.7, 0.06, 0.42, 0.12, 0.2, 0.28];
+
+// Stable in-place removal of entries flagged `_dead` (one pass, order kept,
+// no per-removal splice shifting / allocation).
+function sweepDead(arr) {
+    let j = 0;
+    for (let i = 0; i < arr.length; i++) {
+        const e = arr[i];
+        if (!e._dead) arr[j++] = e;
+    }
+    arr.length = j;
+}
 
 function shade(hex, k) {
     const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
@@ -199,6 +214,46 @@ export class UIFX {
         this.burst(rect.x + 6 * this.px, rect.y + rect.h / 2, WHITE, 12, 60, 200, { dir: 0, spread: 1.2, life: 0.45 });
     }
 
+    // Combining up the tier ladder: the higher the result, the bigger the
+    // jackpot — rays and bursts from 4, rings + confetti from 6, a screen
+    // flash and double rings at 8, a full gold rain + white-out at the max.
+    combineTier(x, y, color, tier, isMax) {
+        const ramp = rampOf(color || '#ffd24a'), px = this.px, W = this.game.width;
+        if (tier < 4) { this.burst(x, y, ramp, 10, 60, 180, { life: 0.5 }); return; }
+        this.raysAt(x, y, (40 + tier * 10) * px, 0.9 + tier * 0.08, [ramp[1], ramp[2], ramp[3]], { n: 10 + tier, alpha: 0.3 + tier * 0.03 });
+        this.burst(x, y, ramp, 14 + tier * 4, 80, 200 + tier * 25, { g: 240, life: 0.8, dir: -Math.PI / 2, spread: 2.6, drag: 1.2 });
+        if (tier >= 6) {
+            this.ring(x, y, 4 * px, (60 + tier * 8) * px, 0.6, 2, ramp);
+            for (let k = 0; k < 10 + (tier - 6) * 10; k++) this.spark(x + (Math.random() - 0.5) * 220 * px, y - (40 + Math.random() * 120) * px,
+                (Math.random() - 0.5) * 40 * px, (20 + Math.random() * 60) * px, 1.5, ramp, { g: 120 * px, drag: 1, kind: 3, delay: Math.random() * 0.4 });
+        }
+        if (tier >= 8) {
+            this.ring(x, y, 4 * px, (120 + tier * 10) * px, 0.8, 2, ramp, { delay: 0.12 });
+            this.flashScreen(ramp[3], 0.4, 0.25);
+            if (this.state.sfx) { this.state.sfx.chime(0.22); this.state.sfx.thump(1.2, null, null, 0.4); }
+        }
+        if (isMax) {
+            this.flashScreen('#ffffff', 0.7, 0.45);
+            for (let k = 0; k < 90; k++) this.spark(Math.random() * W, -10 - Math.random() * 60, (Math.random() - 0.5) * 30 * px,
+                (40 + Math.random() * 80) * px, 2.4, Math.random() < 0.5 ? GOLD : ramp, { g: 100 * px, drag: 0.8, kind: 3, delay: Math.random() * 1.2 });
+            this.raysAt(x, y, 260 * px, 2.0, ['#c98a1c', '#ffd24a', '#fff3b0'], { n: 22, alpha: 0.4, spin: 0.3, delay: 0.1 });
+            if (this.state.sfx) { this.state.sfx.shimmer(2.5, 0.12); this.state.sfx.thump(2, null, null, 0.6); }
+        }
+    }
+
+    // Scrap vacuum jackpot at the SCRAP counter (level 1..3).
+    scrapJackpot(x, y, lvl, amount) {
+        const px = this.px;
+        this.burst(x, y, GOLD, 10 + lvl * 10, 60, 160 + lvl * 50, { g: 260, life: 0.7, dir: -Math.PI / 2, spread: 2.4, drag: 1.4 });
+        this.ring(x, y, 2 * px, (24 + lvl * 16) * px, 0.4 + lvl * 0.1, 1, GOLD);
+        if (lvl >= 2) this.raysAt(x, y, (40 + lvl * 20) * px, 0.9, ['#c98a1c', '#ffd24a', '#fff3b0'], { n: 10 + lvl * 2, alpha: 0.3 });
+        if (lvl >= 3) {
+            this.ring(x, y, 2 * px, 110 * px, 0.7, 2, GOLD, { delay: 0.1 });
+            for (let k = 0; k < 24; k++) this.spark(x + (Math.random() - 0.5) * 160 * px, y - Math.random() * 20 * px,
+                (Math.random() - 0.5) * 60 * px, (-40 - Math.random() * 120) * px, 1.2, GOLD, { g: 200 * px, drag: 1, kind: 3, delay: Math.random() * 0.3 });
+        }
+    }
+
     consumable(x, y, color) {
         const ramp = rampOf(color || '#c9a6ec');
         this.ring(x, y, 4 * this.px, 50 * this.px, 0.45, 2, ramp);
@@ -212,21 +267,30 @@ export class UIFX {
         const dt = this._last ? Math.min(0.05, (now - this._last) / 1000) : 0.016;
         this._last = now;
         this.time += dt;
-        for (let i = this.timers.length - 1; i >= 0; i--) {
-            if (this.time >= this.timers[i].t) { const f = this.timers[i].fn; this.timers.splice(i, 1); f(); }
+        // Fire due timers (newest first, as before). A callback may queue
+        // new timers (appended, not visited this frame); dead ones are swept
+        // in one stable pass afterwards.
+        const timers = this.timers;
+        let firedAny = false;
+        for (let i = timers.length - 1; i >= 0; i--) {
+            const tm = timers[i];
+            if (!tm._dead && this.time >= tm.t) { tm._dead = true; firedAny = true; tm.fn(); }
         }
+        if (firedAny) sweepDead(timers);
         if (this.onFrame) this.onFrame(dt);
         if (!this.parts.length && !this.rings.length && !this.rays.length && !this.flashes.length && !this.cards.length && !this.screen.length && !this.crack && !this.glows.length && !this.sprites.length) return;
         const px = this.px, W = this.game.width, H = this.game.height;
         ctx.save();
         ctx.imageSmoothingEnabled = false;
         // Full-screen flashes first (under everything else this layer draws).
+        let dead = 0;
         for (let i = this.screen.length - 1; i >= 0; i--) {
             const f = this.screen[i]; f.t += dt;
-            if (f.t >= f.dur) { this.screen.splice(i, 1); continue; }
+            if (f.t >= f.dur) { f._dead = true; dead++; continue; }
             ctx.globalAlpha = f.peak * (1 - f.t / f.dur);
             ctx.fillStyle = f.col; ctx.fillRect(0, 0, W, H);
         }
+        if (dead) { sweepDead(this.screen); dead = 0; }
         this._drawGlows(ctx, dt);
         this._drawSprites(ctx, dt);
         this._drawRays(ctx, dt, px);
@@ -235,7 +299,7 @@ export class UIFX {
         // Rect flashes: flat fill fading + a bright 1px frame.
         for (let i = this.flashes.length - 1; i >= 0; i--) {
             const f = this.flashes[i]; f.t += dt;
-            if (f.t >= f.dur) { this.flashes.splice(i, 1); continue; }
+            if (f.t >= f.dur) { f._dead = true; dead++; continue; }
             const u = f.t / f.dur;
             ctx.globalAlpha = 0.45 * (1 - u);
             ctx.fillStyle = f.col; ctx.fillRect(f.x, f.y, f.w, f.h);
@@ -243,6 +307,7 @@ export class UIFX {
             ctx.fillRect(f.x, f.y, f.w, px); ctx.fillRect(f.x, f.y + f.h - px, f.w, px);
             ctx.fillRect(f.x, f.y, px, f.h); ctx.fillRect(f.x + f.w - px, f.y, px, f.h);
         }
+        if (dead) sweepDead(this.flashes);
         this._drawRings(ctx, dt, px);
         this._drawParts(ctx, dt, px, W, H);
         this._drawCards(ctx, dt, px, W, H);
@@ -280,54 +345,76 @@ export class UIFX {
             if (p.kind === 3) p.x += Math.sin(p.t * 8 + p.ph) * 20 * px * dt;
             if (!p.orb) { p.x += p.vx * dt; p.y += p.vy * dt; }
             let sx = p.x, sy = p.y;
-            if (p.w) [sx, sy] = this._toScreen(p.x, p.y);
+            if (p.w) { const cam = this.state.camera; sx = p.x * cam.wtsScale + cam.wtsOffX; sy = p.y * cam.wtsScale + cam.wtsOffY; }
             if (sx < -20 || sy < -20 || sx > W + 20 || sy > H + 20) continue;
             const ci = Math.max(0, Math.min(p.ramp.length - 1, Math.round((1 - u * u) * (p.ramp.length - 1))));
             const c = p.ramp[ci];
             const want = p.bl || 'source-over';
-            if (want !== blend) { blend = want; ctx.globalCompositeOperation = blend; }
+            if (want !== blend) {
+                // Keep painter order across blend groups: flush the batched
+                // source-over pixels before switching.
+                this._flushBins(ctx);
+                blend = want; ctx.globalCompositeOperation = blend;
+            }
+            // Opaque source-over pixels are binned per colour and filled as
+            // one path per colour (like ImpactFX._flush): alpha is 1 and all
+            // rects are integer-aligned, so same-colour overlaps are
+            // identical. Additive ('lighter') particles stay per-rect —
+            // overlaps there must add twice.
+            const bin = blend === 'source-over';
             // One pixel of the layer the particle belongs to (world-anchored /
             // world-pixel particles use the world pixel, UI ones the HUD pixel).
             const s = (p.w || p.wp) ? this.wpx : px;
             const X = Math.round(sx / s) * s, Y = Math.round(sy / s) * s;
-            ctx.fillStyle = c;
             if (p.kind === 1) {
                 // Streak: 3 pixels back along velocity, dimmer tail.
                 const sp = Math.sqrt(p.vx * p.vx + p.vy * p.vy) || 1;
                 const dx = -p.vx / sp * px, dy = -p.vy / sp * px;
-                ctx.fillRect(X, Y, s, s);
                 const ddx = dx / px * s, ddy = dy / px * s;
-                ctx.fillStyle = p.ramp[Math.max(0, ci - 1)];
-                ctx.fillRect(Math.round((sx + ddx) / s) * s, Math.round((sy + ddy) / s) * s, s, s);
-                ctx.fillStyle = p.ramp[Math.max(0, ci - 2)];
-                ctx.fillRect(Math.round((sx + ddx * 2) / s) * s, Math.round((sy + ddy * 2) / s) * s, s, s);
+                const X1 = Math.round((sx + ddx) / s) * s, Y1 = Math.round((sy + ddy) / s) * s;
+                const X2 = Math.round((sx + ddx * 2) / s) * s, Y2 = Math.round((sy + ddy * 2) / s) * s;
+                // Later pixels overwrite earlier ones at the same spot (slow
+                // streaks collapse onto the head): emit only the survivors
+                // so binning can't reorder them.
+                if (!bin || ((X !== X1 || Y !== Y1) && (X !== X2 || Y !== Y2))) this._rect(ctx, bin, c, X, Y, s, s);
+                if (!bin || X1 !== X2 || Y1 !== Y2) this._rect(ctx, bin, p.ramp[Math.max(0, ci - 1)], X1, Y1, s, s);
+                this._rect(ctx, bin, p.ramp[Math.max(0, ci - 2)], X2, Y2, s, s);
             } else if (p.kind === 2) {
                 // 4-ray twinkle star.
                 const L = u < 0.5 ? 2 : 1;
-                ctx.fillRect(X, Y, s, s);
-                ctx.fillStyle = p.ramp[Math.max(0, ci - 1)];
+                this._rect(ctx, bin, c, X, Y, s, s);
+                const c2 = p.ramp[Math.max(0, ci - 1)];
                 for (let k = 1; k <= L; k++) {
-                    ctx.fillRect(X + k * s, Y, s, s); ctx.fillRect(X - k * s, Y, s, s);
-                    ctx.fillRect(X, Y + k * s, s, s); ctx.fillRect(X, Y - k * s, s, s);
+                    this._rect(ctx, bin, c2, X + k * s, Y, s, s); this._rect(ctx, bin, c2, X - k * s, Y, s, s);
+                    this._rect(ctx, bin, c2, X, Y + k * s, s, s); this._rect(ctx, bin, c2, X, Y - k * s, s, s);
                 }
             } else if (p.kind === 3) {
                 // Confetti: tumbles between tall and wide.
                 const tall = ((p.t * 7 + p.ph) | 0) % 2 === 0;
-                ctx.fillStyle = p.ramp[2 + (((p.ph * 10) | 0) % 2)];
-                ctx.fillRect(X, Y, tall ? s : s * 2, tall ? s * 2 : s);
+                this._rect(ctx, bin, p.ramp[2 + (((p.ph * 10) | 0) % 2)], X, Y, tall ? s : s * 2, tall ? s * 2 : s);
             } else {
-                ctx.fillRect(X, Y, s, s);
+                this._rect(ctx, bin, c, X, Y, s, s);
             }
         }
+        this._flushBins(ctx);
         ctx.globalCompositeOperation = 'source-over';
     }
 
+    // Pixel rect: binned (opaque source-over) or drawn immediately.
+    _rect(ctx, bin, col, x, y, w, h) {
+        if (!bin) { ctx.fillStyle = col; ctx.fillRect(x, y, w, h); return; }
+        (this._bins || (this._bins = new RectBins())).add(col, x, y, w, h);
+    }
+
+    _flushBins(ctx) { if (this._bins) this._bins.flush(ctx); }
+
     _drawRings(ctx, dt, px) {
+        let dead = 0;
         for (let i = this.rings.length - 1; i >= 0; i--) {
             const r = this.rings[i];
             r.t += dt;
             if (r.t < 0) continue;
-            if (r.t >= r.dur) { this.rings.splice(i, 1); continue; }
+            if (r.t >= r.dur) { r._dead = true; dead++; continue; }
             const u = r.t / r.dur, e = 1 - Math.pow(1 - u, 3);
             let x = r.x, y = r.y, scale = 1;
             if (r.w) { [x, y] = this._toScreen(r.x, r.y); scale = this.state.camera.wtsScale; }
@@ -354,6 +441,7 @@ export class UIFX {
             }
             ctx.fill();
         }
+        if (dead) sweepDead(this.rings);
     }
 
     // Rotating hard rays (3 colour bands), additive. Rasterised into a
@@ -363,16 +451,41 @@ export class UIFX {
     _drawRays(ctx, dt, px) {
         if (!this.rays.length) return;
         const W = this.game.width, H = this.game.height;
-        for (const layer of [0, 1]) {
+        for (let layer = 0; layer < 2; layer++) {
             const lp = layer ? this.wpx : this.px;
             const bw = Math.ceil(W / lp), bh = Math.ceil(H / lp);
-            let any = false;
-            for (const r of this.rays) if (!!r.w === !!layer && r.t >= 0) { any = true; break; }
-            if (!any) continue;
+            // Bounding box (buffer pixels) of this layer's live rays: only
+            // that region is cleared, rasterised and blitted. Ray geometry
+            // stays in full-buffer coordinates (no translate), so the
+            // anti-aliased edges are bit-identical; the blit is nearest-
+            // neighbour at an integer scale, so a sub-rect blit samples the
+            // same texels as the old full-buffer one ('lighter' adds 0
+            // outside the rays anyway).
+            let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+            for (const r of this.rays) {
+                if (!!r.w !== !!layer || r.t < 0) continue;
+                const u = r.t / r.dur;
+                const env = u < 0.15 ? u / 0.15 : u > 0.6 ? 1 - (u - 0.6) / 0.4 : 1;
+                let x = r.x, y = r.y, scale = 1;
+                if (r.w) { const cam = this.state.camera; x = x * cam.wtsScale + cam.wtsOffX; y = y * cam.wtsScale + cam.wtsOffY; scale = cam.wtsScale; }
+                x /= lp; y /= lp;
+                // Tips reach R; the base corners sit at radius 1.
+                const reach = Math.max(1, Math.abs(r.r * scale * (0.6 + 0.4 * env) / lp)) + 2;
+                if (x - reach < x0) x0 = x - reach;
+                if (y - reach < y0) y0 = y - reach;
+                if (x + reach > x1) x1 = x + reach;
+                if (y + reach > y1) y1 = y + reach;
+            }
+            if (x1 < x0) continue; // no live rays on this layer
+            const rx0 = Math.max(0, Math.floor(x0)), ry0 = Math.max(0, Math.floor(y0));
+            const rx1 = Math.min(bw, Math.ceil(x1)), ry1 = Math.min(bh, Math.ceil(y1));
+            if (rx1 <= rx0 || ry1 <= ry0) continue; // entirely off-screen
+            const rw = rx1 - rx0, rh = ry1 - ry0;
             const buf = this._rayBuf || (this._rayBuf = document.createElement('canvas'));
             if (buf.width !== bw || buf.height !== bh) { buf.width = bw; buf.height = bh; }
-            const g = buf.getContext('2d');
-            g.clearRect(0, 0, bw, bh);
+            const g = this._rayCtx && this._rayCtxBuf === buf ? this._rayCtx : (this._rayCtx = buf.getContext('2d'));
+            this._rayCtxBuf = buf;
+            g.clearRect(rx0, ry0, rw, rh);
             g.globalCompositeOperation = 'lighter';
             for (const r of this.rays) {
                 if (!!r.w !== !!layer || r.t < 0) continue;
@@ -383,12 +496,11 @@ export class UIFX {
                 x /= lp; y /= lp;
                 const R = r.r * scale * (0.6 + 0.4 * env) / lp;
                 const rot = r.t * r.spin;
-                const bandR = [1, 0.66, 0.36];
                 for (let b2 = 0; b2 < 3; b2++) {
                     g.globalAlpha = r.alpha * env;
                     g.fillStyle = r.cols[b2];
                     g.beginPath();
-                    const rr = R * bandR[b2];
+                    const rr = R * RAY_BAND_R[b2];
                     for (let k = 0; k < r.n; k++) {
                         const a = rot + (k / r.n) * TAU, hw = (TAU / r.n) * 0.22;
                         g.moveTo(x + Math.cos(a - hw), y + Math.sin(a - hw));
@@ -402,23 +514,26 @@ export class UIFX {
             ctx.globalCompositeOperation = 'lighter';
             ctx.globalAlpha = 1;
             ctx.imageSmoothingEnabled = false;
-            ctx.drawImage(buf, 0, 0, bw * lp, bh * lp);
+            ctx.drawImage(buf, rx0, ry0, rw, rh, rx0 * lp, ry0 * lp, rw * lp, rh * lp);
         }
+        let dead = 0;
         for (let i = this.rays.length - 1; i >= 0; i--) {
             const r = this.rays[i];
             r.t += dt;
-            if (r.t >= r.dur) this.rays.splice(i, 1);
+            if (r.t >= r.dur) { r._dead = true; dead++; }
         }
+        if (dead) sweepDead(this.rays);
         ctx.globalCompositeOperation = 'source-over';
         ctx.globalAlpha = 1;
     }
 
     _drawSprites(ctx, dt) {
+        let dead = 0;
         for (let i = this.sprites.length - 1; i >= 0; i--) {
             const s = this.sprites[i];
             s.t += dt;
             if (s.t < 0) continue;
-            if (s.t >= s.dur) { this.sprites.splice(i, 1); continue; }
+            if (s.t >= s.dur) { s._dead = true; dead++; continue; }
             const f = Math.min(1, s.t / s.fall), e = 1 - Math.pow(1 - f, 3);
             const wy = s.wy0 + (s.wy - s.wy0) * e + (f >= 1 ? Math.sin((s.t - s.fall) * 2) * 3 : 0);
             const [x, y] = this._toScreen(s.wx, wy);
@@ -430,6 +545,7 @@ export class UIFX {
             ctx.imageSmoothingEnabled = false;
             ctx.drawImage(cv, Math.round((x - w / 2) / wp) * wp, Math.round((y - h / 2) / wp) * wp, w, h);
         }
+        if (dead) sweepDead(this.sprites);
         ctx.globalCompositeOperation = 'source-over';
         ctx.globalAlpha = 1;
     }
@@ -438,18 +554,20 @@ export class UIFX {
         if (!this.glows.length) return;
         const wp = this.wpx;
         ctx.globalCompositeOperation = 'lighter';
+        let dead = 0;
         for (let i = this.glows.length - 1; i >= 0; i--) {
             const g = this.glows[i];
             g.t += dt;
             if (g.t < 0) continue;
-            if (g.t >= g.dur) { this.glows.splice(i, 1); continue; }
+            if (g.t >= g.dur) { g._dead = true; dead++; continue; }
             const u = g.t / g.dur;
             const env = (u < 0.25 ? u / 0.25 : u > 0.7 ? 1 - (u - 0.7) / 0.3 : 1) * (1 + g.pulse * Math.sin(this.time * 3));
             const [x, y] = this._toScreen(g.x, g.y);
             const R0 = g.r * this.state.camera.wtsScale;
             ctx.fillStyle = g.col;
             // Steep falloff: faint wide bands, a small bright core.
-            for (const [k, al] of [[1, 0.035], [0.7, 0.06], [0.42, 0.12], [0.2, 0.28]]) {
+            for (let bi = 0; bi < GLOW_BANDS.length; bi += 2) {
+                const k = GLOW_BANDS[bi], al = GLOW_BANDS[bi + 1];
                 ctx.globalAlpha = al * env * g.peak * 2.5;
                 ctx.beginPath();
                 const R = R0 * k, J = Math.floor(R / wp);
@@ -461,6 +579,7 @@ export class UIFX {
                 ctx.fill();
             }
         }
+        if (dead) sweepDead(this.glows);
         ctx.globalCompositeOperation = 'source-over';
         ctx.globalAlpha = 1;
     }
@@ -468,11 +587,12 @@ export class UIFX {
     // Title card: letter-spaced name in its colour, small kicker above, a
     // sub-line below, a hard rule; fades in/out, flashes white on entry.
     _drawCards(ctx, dt, px, W, H) {
+        let dead = 0;
         for (let i = this.cards.length - 1; i >= 0; i--) {
             const c = this.cards[i];
             c.t += dt;
             if (c.t < 0) continue;
-            if (c.t >= c.dur) { this.cards.splice(i, 1); continue; }
+            if (c.t >= c.dur) { c._dead = true; dead++; continue; }
             const u = c.t;
             const a = Math.min(1, u / 0.18, (c.dur - u) / 0.5);
             const hs = this.game.hudScale || 2;
@@ -500,6 +620,7 @@ export class UIFX {
                 ctx.fillText(c.sub, W / 2, y + 13 * hs);
             }
         }
+        if (dead) sweepDead(this.cards);
         ctx.globalAlpha = 1;
     }
 

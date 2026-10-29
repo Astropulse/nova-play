@@ -13,7 +13,8 @@
 //   * Adaptable / not size-dependent: assets are auto-discovered. New files
 //     just get packed on the next run; pages are added as needed.
 //   * Bounded memory: each page's decoded RGBA footprint stays under a budget
-//     (default 512 MB) and within a max texture dimension (default 8192).
+//     (default 512 MB) and within a max texture dimension (default 4096 — the GL_MAX_TEXTURE_SIZE
+//     floor of older Android GPUs, so Skia never has to tile/CPU-fall-back a page).
 //   * Key compatibility: keys used by existing game code are preserved by
 //     reading them straight out of the manifests in src/engine/game.js. Files
 //     not in those manifests get a deterministic slug key (logged on run).
@@ -38,7 +39,7 @@ const ASSETS_DIR = join(ROOT, 'Assets');
 const OUT_DIR = join(ASSETS_DIR, 'atlas');     // pages + atlas.json live here
 const GAME_JS = join(ROOT, 'src', 'engine', 'game.js');
 
-const MAX_DIM = 8192;                            // max page width/height (px)
+const MAX_DIM = 4096;                            // max page width/height (px); 4096 = older-mobile-GPU max texture size
 const MEMORY_BUDGET_BYTES = 512 * 1024 * 1024;   // max decoded RGBA per page
 const PADDING = 1;                               // px gutter between sprites
 const PRESCALE = 4;                              // recorded for the loader

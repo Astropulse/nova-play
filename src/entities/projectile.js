@@ -22,6 +22,8 @@ export class Projectile {
         // path is unchanged.
         this.img = game.assets.get(spriteKey);
         this._frames = null;
+        this._frameIdx = 0; // only read when _frames is set (stable shape)
+        this._frameT = 0;
         if (Array.isArray(this.img)) {
             this._frames = this.img;
             this._frameIdx = Math.floor(Math.random() * this._frames.length); // desync swarms
@@ -54,6 +56,16 @@ export class Projectile {
         else if (spriteKey.includes('red')) this.glowColor = '#ff4444';
         else if (spriteKey.includes('green')) this.glowColor = '#44ff44';
         else if (spriteKey.includes('fire')) this.glowColor = '#ff8833';
+
+        // Fields other systems set later (playingState / netSync / juice
+        // preview). Declared up front so every Projectile shares one hidden
+        // class; every read site is a truthiness / identity test, for which
+        // false/null are identical to "absent" (no `in` / `=== undefined`).
+        this.friendly = false;   // player-owned shot
+        this.netVisual = false;  // remote replica: visual only, no local damage
+        this._nearMiss = false;  // graze already scored
+        this._grazeP = null;     // pilot the graze is pending against
+        this._bounced = false;   // ricochet mutator already applied
     }
 
     update(dt) {

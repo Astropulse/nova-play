@@ -10,6 +10,8 @@
 // keep the plain HUD). Cosmetic: the real scrap is credited immediately — the
 // HUD just displays `scrap - inFlightScrap` until the coins arrive.
 
+import { RectBins } from './rectBins.js';
+
 const MAX_FLY = 120;
 const MAX_SPARK = 160;
 const GOLD = ['#7a4a10', '#c98a1c', '#ffd24a', '#fff3b0'];
@@ -118,7 +120,7 @@ export class LootFlight {
     update(dt) {
         this.scrapFlash = Math.max(0, this.scrapFlash - dt * 6);
         this.tallyT += dt;
-        if (this.tallyT > 1.1) this.tally = 0;
+        if (this.tallyT > 1.1) { this.tally = 0; this._landN = 0; this._jpLvl = 0; }
         this._ladderT += dt;
 
         for (let i = this.n - 1; i >= 0; i--) {
@@ -139,6 +141,15 @@ export class LootFlight {
                 this._ladder = Math.min(this._ladder + 1, 10);
                 this._ladderT = 0;
                 this._burst(tx, ty, 0, 5);
+                // Vacuum jackpot: a big haul landing in one unbroken stream
+                // pays out a chord + a counter burst at 12 / 25 / 40 pieces.
+                this._landN = (this._landN || 0) + 1;
+                const lvl = this._landN >= 40 ? 3 : this._landN >= 25 ? 2 : this._landN >= 12 ? 1 : 0;
+                if (lvl > (this._jpLvl || 0)) {
+                    this._jpLvl = lvl;
+                    if (this.synth) this.synth.jackpot(lvl);
+                    if (this.state.uiFx) this.state.uiFx.scrapJackpot(tx, ty, lvl, this.tally);
+                }
             } else {
                 this._burst(tx, ty, 1, 4);
             }
@@ -206,7 +217,9 @@ export class LootFlight {
         const dt = this._ovLast ? Math.min(0.05, (now - this._ovLast) / 1000) : 0.016;
         this._ovLast = now;
         const hs = Math.max(1, Math.round((this.state.hud && this.state.hud._hudScale) || 2));
+        const bins = this._bins || (this._bins = new RectBins(32));
         ctx.save();
+        ctx.globalAlpha = 1;
         for (let i = this.confetti.length - 1; i >= 0; i--) {
             const c = this.confetti[i];
             c.t += dt;
@@ -217,12 +230,25 @@ export class LootFlight {
             c.vx *= d; c.vy *= d;
             c.x += (c.vx + Math.sin(c.t * 9 + c.ph) * 30 * hs) * dt;
             c.y += c.vy * dt;
-            ctx.globalAlpha = Math.min(1, (c.life - c.t) / 0.3);
-            ctx.fillStyle = c.c;
+            const al = Math.min(1, (c.life - c.t) / 0.3);
             // Flip between tall and wide as it tumbles.
             const tall = ((c.t * 7 + c.ph) | 0) % 2 === (c.tall ? 0 : 1);
-            ctx.fillRect(Math.round(c.x / hs) * hs, Math.round(c.y / hs) * hs, tall ? hs : hs * 2, tall ? hs * 2 : hs);
+            const rx = Math.round(c.x / hs) * hs, ry = Math.round(c.y / hs) * hs;
+            const rw = tall ? hs : hs * 2, rh = tall ? hs * 2 : hs;
+            if (al >= 1) {
+                // Opaque: batched per colour (one path + fill per colour).
+                bins.add(c.c, rx, ry, rw, rh);
+            } else {
+                // Fading (alpha < 1) pieces stay individual; flush first so
+                // they still paint over the opaque ones queued before them.
+                bins.flush(ctx);
+                ctx.globalAlpha = al;
+                ctx.fillStyle = c.c;
+                ctx.fillRect(rx, ry, rw, rh);
+                ctx.globalAlpha = 1;
+            }
         }
+        bins.flush(ctx);
         ctx.globalAlpha = 1;
         // Twinkles ride the toast card's LIVE rect (the HUD refreshes it every
         // frame it draws the toast) and vanish the moment the card is gone.
@@ -246,13 +272,15 @@ export class LootFlight {
             else { x = R.x; y = R.y + R.h - (d - 2 * R.w - R.h); }
             const u = s.t / s.dur, L = u < 0.5 ? 2 : 1;
             const px = Math.round(x / hs) * hs, py = Math.round(y / hs) * hs;
-            ctx.fillStyle = u < 0.4 ? '#ffffff' : '#ffd24a';
-            ctx.fillRect(px, py, hs, hs);
+            // Opaque single-colour twinkles: batched per colour.
+            const col = u < 0.4 ? '#ffffff' : '#ffd24a';
+            bins.add(col, px, py, hs, hs);
             for (let k = 1; k <= L; k++) {
-                ctx.fillRect(px + k * hs, py, hs, hs); ctx.fillRect(px - k * hs, py, hs, hs);
-                ctx.fillRect(px, py + k * hs, hs, hs); ctx.fillRect(px, py - k * hs, hs, hs);
+                bins.add(col, px + k * hs, py, hs, hs); bins.add(col, px - k * hs, py, hs, hs);
+                bins.add(col, px, py + k * hs, hs, hs); bins.add(col, px, py - k * hs, hs, hs);
             }
         }
+        bins.flush(ctx);
         ctx.restore();
     }
 
@@ -282,23 +310,27 @@ export class LootFlight {
                 ctx.drawImage(img.canvas || img, -w / 2, -h / 2, w, h);
                 ctx.setTransform(1, 0, 0, 1, 0, 0);
             } else {
-                // Violet mote with a two-step trail behind it.
+                // Violet mote with a two-step trail behind it — drawn on the
+                // WORLD pixel grid (it's an XP orb leaving the world).
+                const wp = Math.max(1, Math.round(this.game.worldScale || 2));
                 const [qx, qy] = this._pos(i, Math.max(0, u - 0.07), tx, ty);
                 ctx.fillStyle = VIOLET[2];
-                ctx.fillRect(Math.round(qx / hs) * hs, Math.round(qy / hs) * hs, hs, hs);
-                const px = Math.round(x / hs) * hs, py = Math.round(y / hs) * hs;
+                ctx.fillRect(Math.round(qx / wp) * wp, Math.round(qy / wp) * wp, wp, wp);
+                const px = Math.round(x / wp) * wp, py = Math.round(y / wp) * wp;
                 ctx.fillStyle = VIOLET[3];
-                ctx.fillRect(px - hs, py, hs * 3, hs);
-                ctx.fillRect(px, py - hs, hs, hs * 3);
+                ctx.fillRect(px - wp, py, wp * 3, wp);
+                ctx.fillRect(px, py - wp, wp, wp * 3);
                 ctx.fillStyle = VIOLET[4];
-                ctx.fillRect(px, py, hs, hs);
+                ctx.fillRect(px, py, wp, wp);
             }
         }
         for (let i = 0; i < this.kN; i++) {
             const u = 1 - this.kl[i] / this.km[i];
             const pal = this.kc[i] ? VIOLET : GOLD;
+            // XP sparkles share the motes' world pixel; scrap ones stay on the HUD grid.
+            const sp = this.kc[i] ? Math.max(1, Math.round(this.game.worldScale || 2)) : hs;
             ctx.fillStyle = pal[Math.max(0, pal.length - 1 - Math.floor(u * pal.length))];
-            ctx.fillRect(Math.round(this.kx[i] / hs) * hs, Math.round(this.ky[i] / hs) * hs, hs, hs);
+            ctx.fillRect(Math.round(this.kx[i] / sp) * sp, Math.round(this.ky[i] / sp) * sp, sp, sp);
         }
         // Running "+N" tally to the left of the counter while coins pour in.
         if (this.tally > 0 && hud.scrapAnchorLeft) {

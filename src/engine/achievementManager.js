@@ -29,6 +29,8 @@ const COMBINE_CAP_LADDER = [
 
 export class AchievementManager {
     static STORAGE_KEY = 'nova_achievements';
+    // Minimum gap between routine (non-unlock) profile writes. See _scheduleSave.
+    static SAVE_THROTTLE_MS = 3000;
 
     constructor(game) {
         this.game = game;
@@ -79,6 +81,9 @@ export class AchievementManager {
             } catch (err) { /* stat shape from an older save — skip */ }
         }
         if (reconciled) this._save();
+
+        // Throttled saves (see _scheduleSave) flush when the page hides/unloads.
+        this._installFlushHooks();
     }
 
     // Lifetime totals — persisted to localStorage. Survive deaths and new
@@ -111,6 +116,7 @@ export class AchievementManager {
             // so these counters double as "ways you've resolved this event".
             knowledgeEventResolutions: { item: 0, enemy: 0, combat: 0 },
             bossesDefeated: {},
+            bossesEncountered: {},      // codex: bosses seen at least once
             eventTypes: {},
             asteroidsByType: { big: 0, medium: 0, small: 0, tiny: 0 },
             enemyKillsByClass: {},
@@ -276,6 +282,17 @@ export class AchievementManager {
                 this._pushKill(this.run.timeAlive);
                 break;
             }
+
+            case 'boss_encountered':
+                // Codex first sighting (StateFX). Payload: { bossId }.
+                if (payload && payload.bossId) {
+                    if (!this.lifetime.bossesEncountered) this.lifetime.bossesEncountered = {};
+                    if (!this.lifetime.bossesEncountered[payload.bossId]) {
+                        this.lifetime.bossesEncountered[payload.bossId] = 1;
+                        this._scheduleSave();
+                    }
+                }
+                break;
 
             case 'boss_defeated':
                 // Used by non-Enemy bosses (e.g. YellowOne) that don't flow
@@ -567,11 +584,11 @@ export class AchievementManager {
 
         this._checkAchievements();
 
-        // Persist every notify — lifetime totals (kills, scrap, runs) need to
-        // survive a crash mid-run, not just unlock moments. localStorage
-        // writes are cheap, but coalesce inside the same tick so a burst of
-        // notifies only triggers one disk hit.
-        this._scheduleSave();
+        // Persist — lifetime totals (kills, scrap, runs) need to survive a
+        // crash mid-run, not just unlock moments. Routine notifies go through
+        // the ~3 s throttle (_scheduleSave); a run ending writes immediately.
+        if (event === 'run_ended') this._save();
+        else this._scheduleSave();
     }
 
     // Called from PlayingState's main update so per-run time-alive accumulates
@@ -635,8 +652,35 @@ export class AchievementManager {
         }
     }
 
+    // Still-locked achievements in ACHIEVEMENTS order. notify() fires many
+    // times per combat frame; walking only the locked remainder skips the
+    // already-earned bulk of a veteran profile. Rebuilt lazily whenever the
+    // unlocked Set is replaced (load/reset/main.js dev wipe) or its size
+    // changes (any unlock) — the set only ever grows in place. The per-entry
+    // unlocked.has() guard below keeps iteration identical to a full
+    // ACHIEVEMENTS walk even if an unlock lands mid-loop.
+    _pendingAchievements() {
+        const set = this.unlocked;
+        if (!this._pending || this._pendingSet !== set || this._pendingSize !== set.size) {
+            const out = this._pending || [];
+            out.length = 0;
+            for (const ach of ACHIEVEMENTS) {
+                if (!set.has(ach.id)) out.push(ach);
+            }
+            this._pending = out;
+            this._pendingSet = set;
+            this._pendingSize = set.size;
+        }
+        return this._pending;
+    }
+
     _checkAchievements() {
-        for (const ach of ACHIEVEMENTS) {
+        const pending = this._pendingAchievements();
+        // Index walk over a length snapshot: an unlock mid-loop only changes
+        // the set's size (the rebuild happens on the next call), so the
+        // array is never mutated under us.
+        for (let i = 0, n = pending.length; i < n; i++) {
+            const ach = pending[i];
             if (this.unlocked.has(ach.id)) continue;
             try {
                 if (ach.check && ach.check(this)) this._unlock(ach);
@@ -726,15 +770,41 @@ export class AchievementManager {
         return inRun ? this.runUnlocked : this.lastRunUnlocked;
     }
 
-    // Microtask-debounced save — multiple notifies in the same frame all
-    // collapse into one localStorage write at the end of the tick.
+    // Throttled save. notify() fires almost every combat frame, and _save()
+    // is a synchronous JSON.stringify + localStorage.setItem of the whole
+    // profile — so routine stat churn only marks the store dirty and a timer
+    // writes it at most once per SAVE_THROTTLE_MS. Moments that matter save
+    // immediately via _save()/flushSave(): unlocks, run end, engagement
+    // gifts, unlockAll/reset, and the page being hidden or torn down
+    // (pagehide / visibilitychange→hidden / beforeunload, wired in
+    // _installFlushHooks). Worst case a hard crash loses <3 s of counters.
     _scheduleSave() {
-        if (this._saveScheduled) return;
-        this._saveScheduled = true;
-        Promise.resolve().then(() => {
-            this._saveScheduled = false;
-            this._save();
-        });
+        this._saveDirty = true;
+        if (this._saveTimer) return;
+        const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+        const last = (typeof this._lastSaveAt === 'number') ? this._lastSaveAt : -Infinity;
+        const wait = Math.max(0, last + AchievementManager.SAVE_THROTTLE_MS - now);
+        this._saveTimer = setTimeout(() => {
+            this._saveTimer = null;
+            if (this._saveDirty) this._save();
+        }, wait);
+    }
+
+    // Write now if anything is pending (cancels the throttle timer).
+    flushSave() {
+        if (this._saveDirty) this._save();
+    }
+
+    _installFlushHooks() {
+        if (typeof window === 'undefined' || !window.addEventListener) return;
+        const flush = () => this.flushSave();
+        window.addEventListener('pagehide', flush);
+        window.addEventListener('beforeunload', flush);
+        if (typeof document !== 'undefined' && document.addEventListener) {
+            document.addEventListener('visibilitychange', () => {
+                if (document.visibilityState === 'hidden') flush();
+            });
+        }
     }
 
     // HUD drives this from its draw loop. Returns the toast currently being
@@ -897,6 +967,10 @@ export class AchievementManager {
     }
 
     _save() {
+        // Any direct save satisfies a pending throttled one.
+        this._saveDirty = false;
+        if (this._saveTimer) { clearTimeout(this._saveTimer); this._saveTimer = null; }
+        this._lastSaveAt = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
         try {
             const data = {
                 lifetime: this.lifetime,

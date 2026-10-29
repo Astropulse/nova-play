@@ -1,5 +1,6 @@
 import { Projectile } from './projectile.js';
 import { Boss, BOSS_PHASE, BOSS_STATE } from './boss.js';
+import { drawDiscShadow, drawSegmentShadow } from './shadowGlow.js';
 
 // Extra states for Event Horizon's unique movement
 const EH_STATE = {
@@ -766,8 +767,8 @@ export class EventHorizon extends Boss {
             ctx.save();
             ctx.globalAlpha = 0.3 * pulse;
             ctx.fillStyle = '#ff2200';
-            ctx.shadowBlur = 15 * this.game.worldScale;
-            ctx.shadowColor = '#ff2200';
+            // Baked shadow layer (was shadowBlur 15*ws on the fill).
+            drawDiscShadow(ctx, screen.x, screen.y, radius, 15 * this.game.worldScale, '#ff2200', this.game.worldScale);
             ctx.beginPath();
             ctx.arc(screen.x, screen.y, radius, 0, Math.PI * 2);
             ctx.fill();
@@ -783,10 +784,11 @@ export class EventHorizon extends Boss {
             ctx.globalAlpha = 0.4;
             ctx.strokeStyle = '#ff6600';
             ctx.lineWidth = 3 * this.game.worldScale;
-            ctx.shadowBlur = 10 * this.game.worldScale;
-            ctx.shadowColor = '#ff4400';
-            ctx.beginPath();
             const trailLen = 80 * this.game.worldScale;
+            // Baked shadow layer (was shadowBlur 10*ws, '#ff4400' on the stroke).
+            drawSegmentShadow(ctx, screen.x, screen.y, trailAngle, trailLen, 3 * this.game.worldScale,
+                10 * this.game.worldScale, '#ff4400', this.game.worldScale);
+            ctx.beginPath();
             ctx.moveTo(screen.x, screen.y);
             ctx.lineTo(
                 screen.x + Math.cos(trailAngle) * trailLen,

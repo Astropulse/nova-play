@@ -179,12 +179,24 @@ export class ScreenFX {
             canvas.style.left = '0';
             canvas.style.pointerEvents = 'none';
             canvas.style.display = 'none';
+            // premultipliedAlpha:true (the compositor's native format): every
+            // overlay pixel is either the cleared (0,0,0,0) or shader output
+            // with alpha 1.0, and for those premultiplied == straight, so the
+            // composited result is identical — minus a per-frame conversion.
             const gl = canvas.getContext('webgl2', {
                 alpha: true, depth: false, stencil: false,
-                antialias: false, premultipliedAlpha: false,
+                antialias: false, premultipliedAlpha: true,
                 preserveDrawingBuffer: false
             });
             if (!gl) { this._failed = true; return; }
+            // The game canvas is opaque (alpha:false 2D context, see game.js),
+            // so premultiplied == straight for every uploaded texel and the
+            // shader reads only .rgb anyway. Matching the 2D canvas's own
+            // premultiplied storage lets the browser keep the canvas→texture
+            // copy on its fast GPU path instead of un-premultiplying (often a
+            // CPU readback). No Y flip either: the shader flips V itself.
+            gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+            gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
             if (!this.canvas) {
                 this._onContextLost = e => {
                     e.preventDefault();
@@ -317,14 +329,17 @@ export class ScreenFX {
         gl.bindTexture(gl.TEXTURE_2D, this._texture);
         gl.bindVertexArray(null);
         gl.disable(gl.BLEND);
-        if (this._texW !== w || this._texH !== h) {
-            this._texW = w; this._texH = h;
+        // Always full resolution: a downscaled upload blurs the whole screen.
+        const tw = w, th = h;
+        if (this.canvas.width !== w || this.canvas.height !== h) {
             this.canvas.width = w; this.canvas.height = h;
             this.canvas.style.width = '100vw'; this.canvas.style.height = '100vh';
             gl.viewport(0, 0, w, h);
-            // Keep full-resolution addressing (the shader is unchanged). Only
-            // sampled texels need fresh pixels; storage is allocated on resize.
-            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+        }
+        if (this._texW !== tw || this._texH !== th) {
+            this._texW = tw; this._texH = th;
+            // Storage is (re)allocated only when the texture size changes.
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, tw, th, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
         }
         // TexImageSource subrect overload: no crop canvas, ImageBitmap, readback
         // or async copy. Texture Y follows source rows (top-down); the existing

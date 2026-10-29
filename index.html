@@ -6,6 +6,46 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>NOVA</title>
     <link rel="stylesheet" href="style.css">
+    <!-- Fonts: fetch in parallel with the CSS instead of after first use. -->
+    <link rel="preload" href="Assets/Fonts/Astro3x8pt.ttf" as="font" type="font/ttf" crossorigin>
+    <link rel="preload" href="Assets/Fonts/Astro4x8pt.ttf" as="font" type="font/ttf" crossorigin>
+    <link rel="preload" href="Assets/Fonts/Astro5x8pt.ttf" as="font" type="font/ttf" crossorigin>
+    <!-- No bundler: flatten the first three levels of the static import graph
+         (main.js -> game.js -> menuState.js -> ...) so they download in
+         parallel instead of as a request waterfall. Optional hints only —
+         a stale entry costs one wasted fetch, never correctness. -->
+    <link rel="modulepreload" href="src/main.js">
+    <link rel="modulepreload" href="src/engine/game.js">
+    <link rel="modulepreload" href="src/engine/assetLoader.js">
+    <link rel="modulepreload" href="src/engine/inputManager.js">
+    <link rel="modulepreload" href="src/engine/soundManager.js">
+    <link rel="modulepreload" href="src/engine/achievementManager.js">
+    <link rel="modulepreload" href="src/states/menuState.js">
+    <link rel="modulepreload" href="src/ui/devConsole.js">
+    <link rel="modulepreload" href="src/engine/screenFx.js">
+    <link rel="modulepreload" href="src/engine/settings.js">
+    <link rel="modulepreload" href="src/engine/controlBindings.js">
+    <link rel="modulepreload" href="src/engine/gifDecoder.js">
+    <link rel="modulepreload" href="src/engine/touchControls.js">
+    <link rel="modulepreload" href="src/data/achievements.js">
+    <link rel="modulepreload" href="src/data/upgrades.js">
+    <link rel="modulepreload" href="src/data/ships.js">
+    <link rel="modulepreload" href="src/states/playingState.js">
+    <link rel="modulepreload" href="src/states/tutorialState.js">
+    <link rel="modulepreload" href="src/states/multiplayerState.js">
+    <link rel="modulepreload" href="src/states/achievementsState.js">
+    <link rel="modulepreload" href="src/states/upgradesState.js">
+    <link rel="modulepreload" href="src/states/bestiaryState.js">
+    <link rel="modulepreload" href="src/data/codex.js">
+    <link rel="modulepreload" href="src/states/settingsState.js">
+    <link rel="modulepreload" href="src/world/world.js">
+    <link rel="modulepreload" href="src/world/camera.js">
+    <link rel="modulepreload" href="src/entities/player.js">
+    <link rel="modulepreload" href="src/ui/hud.js">
+    <link rel="modulepreload" href="src/engine/rng.js">
+    <link rel="modulepreload" href="src/engine/prewarm.js">
+    <link rel="modulepreload" href="src/engine/saveManager.js">
+    <link rel="modulepreload" href="src/engine/screenFxBounds.js">
 </head>
 
 <body>

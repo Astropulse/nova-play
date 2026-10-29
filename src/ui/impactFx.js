@@ -104,12 +104,37 @@ const CLOUD_SIZES = [3, 4, 5, 7, 9, 12];
 const CLOUD_VARIANTS = 6;
 const CLOUD_EROSION = 6;
 
+const SUN_BAND_R = [1, 0.72, 0.4];
+
+// Hoisted per-particle option objects for the per-frame emitters (puff() /
+// streaks() only READ their options, synchronously, so sharing is safe; the
+// two with per-call fields are mutated right before each call).
+const O_DMG_SMOKE_2 = { drag: 1.4, top: 2 };
+const O_DMG_SMOKE_4 = { drag: 1.4, top: 4 };
+const O_DRAG3 = { drag: 3 };
+const O_DMG_SPARK = { speedMin: 120, speedMax: 320, lifeMin: 0.1, lifeMax: 0.25, drag: 5, len: 0.024, vx: 0, vy: 0 };
+const O_STARCORE_EMBER = { dir: 0, spread: 0.8, speedMin: 50, speedMax: 160, lifeMin: 0.4, lifeMax: 0.9, drag: 1.5, len: 0.02 };
+const O_CRUSH_DUST_2 = { drag: 1.5, top: 2 };
+const O_CRUSH_DUST_3 = { drag: 1.5, top: 3 };
+const O_TRACTOR_DUST = { drag: 2, top: 3 };
+
+// constructor.name, memoised per constructor (entity classes are fixed, so
+// the name never changes; WeakMap so classes are never pinned).
+const _ctorNames = new WeakMap();
+function ctorName(en) {
+    const k = en && en.constructor;
+    if (!k) return undefined;
+    let n = _ctorNames.get(k);
+    if (n === undefined) { n = k.name; _ctorNames.set(k, n); }
+    return n;
+}
 export const SUN_LEVEL = ['#c8c020', '#ffff44', '#ffffc8'];
 export const SUN_STAR = ['#d6531e', '#ffd865', '#fff6d8'];
 export const SUN_GOLD = ['#c98a1c', '#ffd24a', '#fff3b0'];
 export const SUN_BONE = ['#8a8277', '#e2dccf', '#ffffff'];
 export const SUN_ABYSS = ['#2e1a4a', '#5a3a8a', '#c8b0ff'];
 export const SUN_SPORE = ['#3e5a16', '#7a9a2a', '#eaffa0'];
+export const SUN_VIOLET = ['#5a2a8a', '#b070ff', '#f0d8ff'];
 
 function energy(u) { return u < 0.15 ? 1 : 1 - (u - 0.15) / 0.85; }
 function easeOut3(u) { const v = 1 - u; return 1 - v * v * v; }
@@ -202,7 +227,7 @@ export class ImpactFX {
 
         // Sprite pixel masks (per spriteKey) so damage fire/smoke only comes
         // off real hull pixels; built lazily, at most one per frame.
-        this._masks = new Map();
+        this._masks = HULL_MASKS; // module-level: shared across runs + prewarmable
         this._maskBudget = 1;
         this._hx = 0; this._hy = 0; // scratch out-params for _hullPoint
 
@@ -217,7 +242,8 @@ export class ImpactFX {
     }
 
     _q() {
-        let q = 1;
+        let q = SETTINGS.juiceDensity != null ? SETTINGS.juiceDensity : 1;
+        if (this.game.touchMode) q *= 0.7; // phones: a lighter default mix
         if (SETTINGS.reducedParticles) q *= 0.5;
         if (this.game.lowPerfMode) q *= 0.5;
         if (this.sN > MAX_STREAKS * 0.6 || this.pN > MAX_PUFFS * 0.6) q *= 0.5;
@@ -565,7 +591,7 @@ export class ImpactFX {
                 en._fxSeen = true;
                 // Children born mid-fight (nanite drones, locusts, risen bone
                 // ships) have their own birth visuals — skip; budget the rest.
-                const cn = en.constructor && en.constructor.name;
+                const cn = ctorName(en);
                 if (!noWarp && this.time > 3 && this._warpBudget >= 1 && cn !== 'NaniteDrone' && cn !== 'LocustEnemy' && cn !== 'BoneEnemy' && cn !== 'SwarmMother') {
                     this._warpBudget -= 1;
                     for (let p = 0; p < pilots.length; p++) {
@@ -616,7 +642,7 @@ export class ImpactFX {
                 this.puff(this._hx, this._hy,
                     vx * 0.15 + (Math.random() - 0.5) * 24, vy * 0.15 + (Math.random() - 0.5) * 24,
                     rp * 0.5, rp, rp * 1.5, 0.7 + Math.random() * 0.6, RAMP.smoke,
-                    { drag: 1.4, top: ratio < 0.4 ? 2 : 4 });
+                    ratio < 0.4 ? O_DMG_SMOKE_2 : O_DMG_SMOKE_4);
             }
             if (ratio < 0.45) {
                 // Fire licks off the hull, dragged a little behind the ship.
@@ -627,7 +653,7 @@ export class ImpactFX {
                     const rp = 1.5 + Math.random() * 2 + r * 0.03;
                     this.puff(this._hx, this._hy,
                         vx * 0.55 + (Math.random() - 0.5) * 40, vy * 0.55 + (Math.random() - 0.5) * 40,
-                        rp * 0.6, rp, rp * 0.2, 0.2 + Math.random() * 0.15, RAMP.fire, { drag: 3 });
+                        rp * 0.6, rp, rp * 0.2, 0.2 + Math.random() * 0.15, RAMP.fire, O_DRAG3);
                 }
                 acc.light -= dt;
                 if (acc.light <= 0) {
@@ -645,10 +671,9 @@ export class ImpactFX {
                 while (acc.spark >= 1) {
                     acc.spark -= 1;
                     this._hullPoint(en, mask, spots, 0.7);
-                    this.streaks(this._hx, this._hy, 2, RAMP.spark, {
-                        speedMin: 120, speedMax: 320, lifeMin: 0.1, lifeMax: 0.25, drag: 5, len: 0.024,
-                        vx: vx * 0.5, vy: vy * 0.5
-                    });
+                    // Hoisted option object (streaks() reads it synchronously).
+                    O_DMG_SPARK.vx = vx * 0.5; O_DMG_SPARK.vy = vy * 0.5;
+                    this.streaks(this._hx, this._hy, 2, RAMP.spark, O_DMG_SPARK);
                 }
                 if (!lowPerf) {
                     acc.arc -= dt;
@@ -672,6 +697,96 @@ export class ImpactFX {
 
 
 
+
+    // ══ Item signatures — each item's trigger gets its own small mark ══════
+
+    // Bomb Fabricator: the mine arms with an electric blink.
+    itemBombDrop(x, y) {
+        this.star(x, y, 6, 0.25, RAMP.electric, 1);
+        this.ring(x, y, 2, 22, 0.3, 1, RAMP.electric);
+        this.light(x, y, 30, 0.5, 0.2, LIGHT.electric);
+    }
+    // Rockets: a launch flash and a cough of smoke behind the tube.
+    itemRocketLaunch(x, y, ang) {
+        this.hitSpark(x, y, RAMP.spark);
+        this.burst(x, y, RAMP.fire, 6, 120, 300, ang + Math.PI, 0.8, 0.2);
+        for (let k = 0; k < 3; k++) this.puff(x, y, -Math.cos(ang) * 60 + (Math.random() - 0.5) * 30, -Math.sin(ang) * 60 + (Math.random() - 0.5) * 30,
+            1.5, 3, 5, 0.7, RAMP.smoke, { drag: 2, top: 3 });
+        this.light(x, y, 30, 0.5, 0.12, LIGHT.fire);
+    }
+    // Auto Turret: a crisp tracer flash at the turret.
+    itemTurret(x, y, ang) {
+        this.star(x, y, 4, 0.1, RAMP.white, 0);
+        this.burst(x, y, RAMP.spark, 4, 200, 420, ang, 0.4, 0.12);
+    }
+    // Mechanical Claw: a snap ring out to its reach and an electric lash
+    // to every ship it grabs, which glitter as they freeze.
+    itemClaw(x, y, targets) {
+        this.ring(x, y, 10, 150, 0.35, 2, RAMP.electric);
+        for (const en of targets) {
+            const b = this.bolt(x, y, en.worldX, en.worldY, 0.3, null, 0.3);
+            if (b) b.ramp = RAMP.electric;
+            for (let k = 0; k < 4; k++) this.star(en.worldX + (Math.random() - 0.5) * 30, en.worldY + (Math.random() - 0.5) * 30, 3, 0.6 + Math.random() * 0.4, RAMP.electric, 0);
+        }
+        this.light(x, y, 150, 0.5, 0.3, LIGHT.electric);
+        if (this.synth) this.synth.zap(x, y, 0.25);
+    }
+    // Repeater: a hot casing flicked out sideways with every shot.
+    casing(x, y, ang) {
+        const side = ang + Math.PI / 2 * (Math.random() < 0.5 ? 1 : -1);
+        const sp = 90 + Math.random() * 60;
+        this.star(x, y, 1, 0.45, RAMP.gold, 0, Math.cos(side) * sp - Math.cos(ang) * 40, Math.sin(side) * sp - Math.sin(ang) * 40, 0);
+    }
+    // Gravity Distortion: space folds IN as you phase out, and snaps back
+    // OUT when you return.
+    cloakIn(x, y) {
+        this.inward(x, y, RAMP.abyss, 26, 90, 0.25);
+        this.star(x, y, 10, 0.25, RAMP.abyss, 1);
+        this.light(x, y, 70, 0.5, 0.25, LIGHT.electric);
+    }
+    cloakOut(x, y) {
+        this.hitSpark(x, y, RAMP.electric);
+        this.burst(x, y, RAMP.abyss, 22, 150, 420);
+        this.ring(x, y, 6, 70, 0.35, 2, RAMP.abyss);
+    }
+    // Blink Engine (player): implode at the start, flare at the arrival.
+    blinkOut(x, y) { this.inward(x, y, RAMP.electric, 18, 70, 0.18); this.light(x, y, 60, 0.5, 0.2, LIGHT.electric); }
+    blinkIn(x, y) {
+        this.hitSpark(x, y, RAMP.electric);
+        this.burst(x, y, RAMP.electric, 16, 150, 400);
+        this.light(x, y, 70, 0.6, 0.25, LIGHT.electric);
+    }
+    // Boost Drive: a kick of ion streaks out of the stern (one-shot, not a trail).
+    boostKick(x, y, ang) {
+        this.burst(x, y, RAMP.electric, 18, 250, 600, ang + Math.PI, 0.7, 0.3);
+        this.star(x - Math.cos(ang) * 14, y - Math.sin(ang) * 14, 7, 0.18, RAMP.electric, 1);
+    }
+    // Small Battery: a charge crackles round the hull.
+    battery(x, y) {
+        this.ring(x, y, 6, 60, 0.4, 2, RAMP.heal);
+        this.storm(x, y, 14, 46, 4, RAMP.electric, 0.22);
+        this.burst(x, y, RAMP.heal, 14, 80, 220);
+        if (this.synth) this.synth.zap(x, y, 0.12);
+    }
+    // Sacrifice: you come back — a violet sunburst and a fountain of light.
+    sacrifice(x, y) {
+        this.sunburst(x, y, SUN_VIOLET, 1.6, 1.6);
+        this.ring(x, y, 10, 220, 0.8, 4, RAMP.abyss);
+        for (let k = 0; k < 24; k++) {
+            const a = -Math.PI / 2 + (Math.random() - 0.5) * 2.4, sp = 200 + Math.random() * 280;
+            this.star(x, y, 2 + (Math.random() < 0.4 ? 1 : 0), 0.9 + Math.random() * 0.5, RAMP.abyss, 0, Math.cos(a) * sp, Math.sin(a) * sp, 520);
+        }
+        this.light(x, y, 200, 1, 0.9, LIGHT.electric);
+        if (this.synth) { this.synth.chime(0.3); this.synth.thump(1.5, x, y, 0.5); }
+    }
+    // Asteroid Drill bonus: a rich vein — gold glints burst from the rock.
+    richVein(x, y, r) {
+        this.star(x, y, 8, 0.3, RAMP.gold, 1);
+        this.burst(x, y, RAMP.gold, 14, 100, 320);
+        for (let k = 0; k < 6; k++) this.star(x + (Math.random() - 0.5) * r, y + (Math.random() - 0.5) * r, 2, 0.5, RAMP.gold, 0);
+    }
+    // Experience Condenser: condensed XP sparkles violet as it's absorbed.
+    condense(x, y) { this.star(x, y, 3, 0.25, RAMP.abyss, 0); }
 
     // ══ Generic building blocks (used by StateFX) ══════════════════════════
 
@@ -743,7 +858,7 @@ export class ImpactFX {
         const q = this._q();
         for (let i = 0; i < list.length; i++) {
             const e = list[i];
-            const n = e._fxName || (e.constructor && e.constructor.name);
+            const n = e._fxName || ctorName(e);
             if (e.state === 'shattered') {
                 if (!e._fxShattered) { e._fxShattered = true; this.bossDeath(e, n); }
                 continue;
@@ -843,8 +958,10 @@ export class ImpactFX {
     // Boss death finales (on top of bigExplode where the kill path runs it).
     // `nameOverride` lets the preview fire any finale.
     bossDeath(en, nameOverride) {
-        const n = nameOverride || en._fxName || (en.constructor && en.constructor.name);
+        const n = nameOverride || en._fxName || ctorName(en);
         const x = en.worldX, y = en.worldY, R = Math.min(en.radius || 100, 170);
+        // The fight leaves a scar: cooling embers and hull specks for minutes.
+        if (this.moments) this.moments.scar(x, y, R);
         const q = this._q();
         if (n === 'Starcore') {
             // Supernova: a huge gold sunburst + rings of fire.
@@ -985,7 +1102,7 @@ export class ImpactFX {
 
     themeRamp(en) {
         if (en._fxTheme !== undefined) return en._fxTheme;
-        const n = en.constructor && en.constructor.name;
+        const n = ctorName(en);
         const t = BOSS_THEME[n];
         en._fxTheme = t ? RAMP[t] : RAMP.spark;
         return en._fxTheme;
@@ -993,7 +1110,7 @@ export class ImpactFX {
 
     // Per-frame signature particles for the big wave bosses.
     bossAmbient(en, dt) {
-        const n = en.constructor && en.constructor.name;
+        const n = ctorName(en);
         if (n !== 'Starcore' && n !== 'EventHorizon' && n !== 'AsteroidCrusher') return;
         const q = this._q();
         const R = en.radius || 100;
@@ -1014,9 +1131,8 @@ export class ImpactFX {
                 acc.b -= 1;
                 this._hullPoint(en, mask, null, 0);
                 const a = Math.atan2(this._hy - en.worldY, this._hx - en.worldX);
-                this.streaks(this._hx, this._hy, 1, RAMP.fire, {
-                    dir: a, spread: 0.8, speedMin: 50, speedMax: 160, lifeMin: 0.4, lifeMax: 0.9, drag: 1.5, len: 0.02
-                });
+                O_STARCORE_EMBER.dir = a;
+                this.streaks(this._hx, this._hy, 1, RAMP.fire, O_STARCORE_EMBER);
             }
             // Mega-beam charge: fire is sucked into the muzzle, light swells.
             if (en.isChargingBeam) {
@@ -1066,7 +1182,7 @@ export class ImpactFX {
                 this._hullPoint(en, mask, null, 0);
                 const rp = 3 + Math.random() * 3;
                 this.puff(this._hx, this._hy, (en._fxVX || 0) * 0.2 + (Math.random() - 0.5) * 20, (en._fxVY || 0) * 0.2 + (Math.random() - 0.5) * 20,
-                    rp * 0.5, rp, rp * 1.4, 0.8 + Math.random() * 0.5, RAMP.dust, { drag: 1.5, top: 2 + (Math.random() < 0.5 ? 1 : 0) });
+                    rp * 0.5, rp, rp * 1.4, 0.8 + Math.random() * 0.5, RAMP.dust, Math.random() < 0.5 ? O_CRUSH_DUST_3 : O_CRUSH_DUST_2);
             }
         }
     }
@@ -1083,7 +1199,7 @@ export class ImpactFX {
         if (Math.random() < 0.5) {
             const a = Math.random() * TAU, r = (ast.radius || 30) * 0.7;
             this.puff(ast.worldX + Math.cos(a) * r, ast.worldY + Math.sin(a) * r, Math.cos(a) * 30, Math.sin(a) * 30,
-                2, 4, 5, 0.6, RAMP.dust, { drag: 2, top: 3 });
+                2, 4, 5, 0.6, RAMP.dust, O_TRACTOR_DUST);
         }
         if (this.synth && Math.random() < 0.15) this.synth.zap(ast.worldX, ast.worldY, 0.06);
     }
@@ -1147,41 +1263,20 @@ export class ImpactFX {
     _maskFor(en) {
         const key = en.spriteKey;
         let img = en.img;
-        if (key && !img && this.game.assets) {
-            const a = this.game.assets.get(key);
-            img = Array.isArray(a) ? (a[0] && (a[0].canvas ? a[0] : null)) : a;
-        }
+        if (key && !img && this.game.assets) img = maskAssetImage(this.game.assets, key);
         if (!key || !img) return null;
         let m = this._masks.get(key);
         if (m !== undefined) return m;
         if (this._maskBudget <= 0) return null;
         this._maskBudget--;
-        const src = img.canvas || img;
-        const w = Math.round(img.width || src.width), h = Math.round(img.height || src.height);
-        m = null;
-        if (w > 0 && h > 0 && w * h < 300 * 300) {
-            try {
-                const cv = document.createElement('canvas');
-                cv.width = w; cv.height = h;
-                const g = cv.getContext('2d', { willReadFrequently: true });
-                g.imageSmoothingEnabled = false;
-                g.drawImage(src, 0, 0, w, h);
-                const d = g.getImageData(0, 0, w, h).data;
-                const pts = [];
-                for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-                    if (d[(y * w + x) * 4 + 3] > 140) pts.push(x + 0.5 - w / 2, y + 0.5 - h / 2);
-                }
-                // Subsample big hulls to ≤ 500 points.
-                const n = pts.length >> 1;
-                const stride = Math.max(1, Math.ceil(n / 500));
-                const out = new Float32Array(Math.ceil(n / stride) * 2);
-                let o = 0;
-                for (let i = 0; i < n; i += stride) { out[o++] = pts[i * 2]; out[o++] = pts[i * 2 + 1]; }
-                m = o ? out.subarray(0, o) : null;
-            } catch (e) { m = null; }
-        }
+        m = buildHullMask(img);
         this._masks.set(key, m);
         return m;
+    }
+
+    // Instance form of prewarmImpactMasks (same shared cache).
+    prewarmMasks(keys, maxBuild = Infinity) {
+        return prewarmImpactMasks(this.game.assets, keys, maxBuild);
     }
 
     // Local sprite coords → world (sprites draw rotated by angle + π/2).
@@ -2397,7 +2492,7 @@ export class ImpactFX {
     // native res (angle/distance table precomputed once) and blitted
     // additively at the pixel grid.
     _drawSunbursts(ctx, S, OX, OY, pix) {
-        const bandR = [1, 0.72, 0.4];
+        const bandR = SUN_BAND_R;
         const cache = this._sunCanvases || (this._sunCanvases = new Map());
         ctx.globalCompositeOperation = 'lighter';
         for (const s of this.sunbursts) {
@@ -2408,7 +2503,7 @@ export class ImpactFX {
             if (!entry) {
                 const cv = document.createElement('canvas');
                 cv.width = cv.height = D;
-                entry = { cv, g: cv.getContext('2d') };
+                entry = { cv, g: cv.getContext('2d'), ext: R };
                 cache.set(R, entry);
             }
             const g = entry.g;
@@ -2418,10 +2513,19 @@ export class ImpactFX {
             const bands = s.bands;
             const rot = s.t * 0.55 * TAU / 14;
             const rays = 14;
-            // Tapered rays (wide at the hub, pointed tips), filled at native
-            // res in three hard colour bands — outer band first, inner bands
-            // clipped on top. A handful of path fills instead of per-pixel work.
-            g.clearRect(0, 0, D, D);
+            // Only the square the rays can reach this frame (rad + AA margin)
+            // is cleared, filled and blitted — the rest of the D×D canvas is
+            // transparent and adds nothing under 'lighter'. The clear also
+            // covers whatever the previous use of this canvas drew (entry.ext).
+            // Geometry stays in full-canvas coordinates and the blit is
+            // nearest-neighbour at the integer pixel scale, so the result is
+            // pixel-identical to the full-canvas redraw. (Caching frames by
+            // rotation step was rejected: the tips move ~1.5 native px per
+            // frame, so any step coarse enough to reuse would visibly judder.)
+            const e = Math.min(R, Math.ceil(rad) + 2);
+            const ce = Math.max(e, entry.ext);
+            g.clearRect(R - ce, R - ce, ce * 2 + 1, ce * 2 + 1);
+            entry.ext = e;
             for (let b = 0; b < 3; b++) {
                 g.save();
                 if (b > 0) { g.beginPath(); g.arc(R, R, rad * bandR[b], 0, TAU); g.clip(); }
@@ -2444,7 +2548,8 @@ export class ImpactFX {
             const sx = Math.round((p.worldX * S + OX) / pix) * pix - Math.round(size / 2);
             const sy = Math.round((p.worldY * S + OY) / pix) * pix - Math.round(size / 2);
             ctx.globalAlpha = 0.5 * env;
-            ctx.drawImage(entry.cv, sx, sy, size, size);
+            const e0 = R - e, ew = e * 2 + 1;
+            ctx.drawImage(entry.cv, e0, e0, ew, ew, sx + e0 * pix, sy + e0 * pix, ew * pix, ew * pix);
         }
         ctx.globalAlpha = 1;
     }
@@ -2483,3 +2588,69 @@ function hexRgb(h) {
     }
     return c;
 }
+
+// ── Hull masks (shared, prewarmable) ─────────────────────────────────────
+// Opaque logical-pixel offsets of a sprite, keyed by sprite key. Immutable
+// art → one cache for the whole session (every ImpactFX instance uses it).
+const HULL_MASKS = new Map();
+
+function maskAssetImage(assets, key) {
+    const a = assets.get(key);
+    return Array.isArray(a) ? (a[0] && (a[0].canvas ? a[0] : null)) : a;
+}
+
+// One readback at the sprite's LOGICAL size; ≤ 500 centred points or null.
+function buildHullMask(img) {
+    const src = img.canvas || img;
+    const w = Math.round(img.width || src.width), h = Math.round(img.height || src.height);
+    let m = null;
+    if (w > 0 && h > 0 && w * h < 300 * 300) {
+        try {
+            const cv = document.createElement('canvas');
+            cv.width = w; cv.height = h;
+            const g = cv.getContext('2d', { willReadFrequently: true });
+            g.imageSmoothingEnabled = false;
+            g.drawImage(src, 0, 0, w, h);
+            const d = g.getImageData(0, 0, w, h).data;
+            const pts = [];
+            for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+                if (d[(y * w + x) * 4 + 3] > 140) pts.push(x + 0.5 - w / 2, y + 0.5 - h / 2);
+            }
+            // Subsample big hulls to ≤ 500 points.
+            const n = pts.length >> 1;
+            const stride = Math.max(1, Math.ceil(n / 500));
+            const out = new Float32Array(Math.ceil(n / stride) * 2);
+            let o = 0;
+            for (let i = 0; i < n; i += stride) { out[o++] = pts[i * 2]; out[o++] = pts[i * 2 + 1]; }
+            m = o ? out.subarray(0, o) : null;
+        } catch (e) { m = null; }
+    }
+    return m;
+}
+
+/**
+ * Warm ImpactFX hull masks ahead of combat so the first hit on a new sprite
+ * type never pays the getImageData readback mid-fight (_maskFor otherwise
+ * builds at most one new mask per frame, returning null until then).
+ * @param {AssetLoader} assets  game.assets
+ * @param {Iterable<string>} keys  entity spriteKey values (asset keys)
+ * @param {number} [maxBuild=Infinity]  cap on NEW masks built this call (for
+ *        a time-sliced pump: call again until it returns 0)
+ * @returns {number} masks newly built by this call
+ */
+export function prewarmImpactMasks(assets, keys, maxBuild = Infinity) {
+    if (!assets || !keys) return 0;
+    let built = 0;
+    for (const key of keys) {
+        if (built >= maxBuild) break;
+        if (!key || HULL_MASKS.has(key)) continue;
+        const img = maskAssetImage(assets, key);
+        if (!img) continue;
+        HULL_MASKS.set(key, buildHullMask(img));
+        built++;
+    }
+    return built;
+}
+
+/** True when a hull mask for `key` is already cached (built or known-null). */
+export function hasImpactMask(key) { return HULL_MASKS.has(key); }

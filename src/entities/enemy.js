@@ -6,6 +6,7 @@ import { Starcore } from './starcore.js';
 import { AsteroidCrusher } from './asteroidCrusher.js';
 import { EventHorizon } from './eventHorizon.js';
 import { pickFireExplosion, fireExplosionFrame, drawBeamStrip } from '../engine/vfx.js';
+import { drawShadowGlow } from './shadowGlow.js';
 
 export const AI_STATE = {
     PURSUIT: 'pursuit',   // Move toward player
@@ -80,6 +81,32 @@ export class Enemy {
         this.angle = Math.random() * Math.PI * 2;
         this.alive = true;
         this.difficultyScale = difficultyScale;
+
+        // Fields other systems attach later (ui/impactFx, ui/stateFx,
+        // playingState, engine/spatialHash, AI steering). Declared up front so
+        // every enemy keeps one hidden class instead of growing transitions
+        // mid-fight. Each initial value is identical in meaning to "absent" at
+        // every read site: truthiness / `||` reads get false/null/0, and any
+        // field read with `=== undefined` (or ordered compares where undefined
+        // behaves specially) is explicitly undefined. No site uses `in`.
+        this._fxSeen = false;        // impactFx: `!en._fxSeen`
+        this._fxPX = undefined;      // impactFx: `!== undefined`
+        this._fxPY = undefined;
+        this._fxVX = 0;              // impactFx: set before read / `|| 0`
+        this._fxVY = 0;
+        this._fxAcc = null;          // impactFx: `||` lazy init
+        this._fxSpots = undefined;   // impactFx: passed through raw
+        this._fxTheme = undefined;   // impactFx: `!== undefined`
+        this._fxBoss = null;         // impactFx: `||` lazy init
+        this._fxMaxHp = undefined;   // impactFx: `!(x >= health)` (0 would differ)
+        this._sfx = null;            // stateFx: `||` lazy init
+        this._killDX = undefined;    // playingState: `!== undefined`
+        this._killDY = undefined;
+        this._nearPlayer = false;    // playingState / netSync: truthiness
+        this._collIdx = undefined;   // playingState: ordered compares
+        this._shStamp = undefined;   // spatialHash: `=== stamp`
+        this._avoidDelta = undefined;     // steering: `=== undefined`
+        this._avoidRecompute = true;      // steering: `!== false`
 
         // Spawn-time content seed: this enemy's gameplay attributes (upgrade
         // path) and loot drops are fixed at spawn for reproducibility. AI/combat
@@ -628,8 +655,9 @@ export class Enemy {
         ctx.rotate(this.angle + Math.PI / 2);
         ctx.globalAlpha = intensity * pulse;
         ctx.globalCompositeOperation = 'lighter';
-        ctx.shadowBlur = (10 + 20 * progress) * this.game.worldScale;
-        ctx.shadowColor = '#ff3322';
+        // Baked shadow layer (was a per-frame shadowBlur on the sprite).
+        drawShadowGlow(ctx, canvas, this.img.width || canvas.width, this.img.height || canvas.height,
+            -w / 2, -h / 2, w, h, (10 + 20 * progress) * this.game.worldScale, '#ff3322');
         ctx.drawImage(canvas, -w / 2, -h / 2, w, h);
         ctx.restore();
     }
